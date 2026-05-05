@@ -1,0 +1,49 @@
+node_modules/
+dist/
+build/
+out/
+cache/
+broadcast/
+artifacts/
+typechain-types/
+coverage/
+.turbo/
+.next/
+
+# Local data
+data/
+*.sqlite
+*.sqlite-journal
+*.sqlite-shm
+*.sqlite-wal
+*.db
+*.db-journal
+
+# Env / secrets
+.env
+.env.local
+.env.*.local
+ops/secrets/
+*.pem
+*.key
+
+# Logs
+*.log
+logs/
+npm-debug.log*
+pnpm-debug.log*
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Foundry
+broadcast/*/dry-run/
+cache/forge/
+cache/foundry/
+
+# pnpm / npm
+.pnpm-store/
+package-lock.json.bak

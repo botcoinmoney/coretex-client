@@ -1,0 +1,25 @@
+{
+  "name": "@botcoin/cortex",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Botcoin Core decoder, evaluator, and CLI for the Cortex memory codec.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "botcoin-cortex": "dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test:unit": "node --test --test-reporter=spec ./test/unit"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20.10"
+  }
+}

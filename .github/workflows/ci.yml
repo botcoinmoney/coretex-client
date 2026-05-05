@@ -1,0 +1,133 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint-type-unit:
+    name: Lint + Type + Unit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run lint --if-present
+      - run: npm run typecheck --if-present
+      - run: npm run test:unit --if-present
+
+  contracts:
+    name: Contracts (forge)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: foundry-rs/foundry-toolchain@v1
+      - run: forge build --root contracts --sizes
+      - run: forge test --root contracts -vv
+
+  context-freshness:
+    name: context.md freshness
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify context.md was touched if any checklist items flipped
+        run: node scripts/check-context-freshness.mjs
+
+  e2e-phase-1:
+    name: E2E phase-1 (state spec)
+    runs-on: ubuntu-latest
+    needs: lint-type-unit
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run test:e2e -- --filter phase-1
+
+  e2e-phase-2:
+    name: E2E phase-2 (contracts)
+    runs-on: ubuntu-latest
+    needs: contracts
+    env:
+      BASE_RPC_URL: ${{ secrets.BASE_RPC_URL }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - uses: foundry-rs/foundry-toolchain@v1
+      - run: npm ci
+      - run: npm run test:e2e -- --filter phase-2
+
+  e2e-phase-3:
+    name: E2E phase-3 (Core decoder)
+    runs-on: ubuntu-latest
+    needs: lint-type-unit
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run test:e2e -- --filter phase-3
+
+  e2e-phase-4:
+    name: E2E phase-4 (CortexBench)
+    runs-on: ubuntu-latest
+    needs: lint-type-unit
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run test:e2e -- --filter phase-4
+
+  e2e-phase-5:
+    name: E2E phase-5 (mining API)
+    runs-on: ubuntu-latest
+    needs: [lint-type-unit, contracts]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run test:e2e -- --filter phase-5
+
+  e2e-all:
+    name: E2E all (merge gate)
+    runs-on: ubuntu-latest
+    needs: [e2e-phase-1, e2e-phase-2, e2e-phase-3, e2e-phase-4, e2e-phase-5]
+    if: github.ref == 'refs/heads/main' || github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+      - run: echo "All phase E2Es green."
