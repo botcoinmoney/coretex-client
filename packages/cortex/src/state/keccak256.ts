@@ -1,0 +1,176 @@
+/**
+ * Minimal Keccak-256 implementation — no external dependencies.
+ * Matches EVM keccak256 / Solidity keccak256 / Ethereum's keccak256.
+ * This is NOT the NIST SHA-3 (which uses a different padding byte).
+ *
+ * Based on the reference Keccak specification: https://keccak.team/files/Keccak-reference-3.0.pdf
+ * Rate = 1088 bits (136 bytes), capacity = 512 bits, output = 256 bits.
+ * Domain separator: 0x01 (plain Keccak, not SHA-3 which uses 0x06).
+ */
+
+// Keccak-f[1600] round constants (64-bit, as two 32-bit halves [hi, lo])
+const RC: readonly [number, number][] = [
+  [0x00000001, 0x00000000], [0x00008082, 0x00000000],
+  [0x0000808A, 0x80000000], [0x80008000, 0x80000000],
+  [0x0000808B, 0x00000000], [0x80000001, 0x00000000],
+  [0x80008081, 0x80000000], [0x00008009, 0x80000000],
+  [0x0000008A, 0x00000000], [0x00000088, 0x00000000],
+  [0x80008009, 0x00000000], [0x8000000A, 0x00000000],
+  [0x8000808B, 0x00000000], [0x0000008B, 0x80000000],
+  [0x00008089, 0x80000000], [0x00008003, 0x80000000],
+  [0x00008002, 0x80000000], [0x00000080, 0x80000000],
+  [0x0000800A, 0x00000000], [0x8000000A, 0x80000000],
+  [0x80008081, 0x80000000], [0x00008080, 0x80000000],
+  [0x80000001, 0x00000000], [0x80008008, 0x80000000],
+];
+
+// Rotation offsets for Rho step (indexed by [x][y], but stored as flat array)
+// Row = x, col = y, reading rho[x + 5*y] for lane (x, y)
+const RHO: readonly number[] = [
+  0, 36, 3, 41, 18,
+  1, 44, 10, 45, 2,
+  62, 6, 43, 15, 61,
+  28, 55, 25, 21, 56,
+  27, 20, 39, 8, 14,
+];
+
+// Pi permutation: pi[i] = new index for lane at position i
+const PI: readonly number[] = [
+  0, 10, 20, 5, 15,
+  16, 1, 11, 21, 6,
+  7, 17, 2, 12, 22,
+  23, 8, 18, 3, 13,
+  14, 24, 9, 19, 4,
+];
+
+function rot64(hi: number, lo: number, n: number): [number, number] {
+  n = ((n % 64) + 64) % 64;
+  if (n === 0) return [hi, lo];
+  if (n === 32) return [lo, hi];
+  if (n < 32) {
+    return [
+      ((hi << n) | (lo >>> (32 - n))) >>> 0,
+      ((lo << n) | (hi >>> (32 - n))) >>> 0,
+    ];
+  }
+  // n > 32
+  n -= 32;
+  return [
+    ((lo << n) | (hi >>> (32 - n))) >>> 0,
+    ((hi << n) | (lo >>> (32 - n))) >>> 0,
+  ];
+}
+
+function keccakF1600(stateHi: Uint32Array, stateLo: Uint32Array): void {
+  const BC_hi = new Uint32Array(5);
+  const BC_lo = new Uint32Array(5);
+
+  for (let round = 0; round < 24; round++) {
+    // Theta
+    for (let x = 0; x < 5; x++) {
+      let h = 0, l = 0;
+      for (let y = 0; y < 5; y++) {
+        h ^= stateHi[x + 5 * y]!;
+        l ^= stateLo[x + 5 * y]!;
+      }
+      BC_hi[x] = h;
+      BC_lo[x] = l;
+    }
+    for (let x = 0; x < 5; x++) {
+      const [th, tl] = rot64(BC_hi[(x + 1) % 5]!, BC_lo[(x + 1) % 5]!, 1);
+      const dh = BC_hi[(x + 4) % 5]! ^ th;
+      const dl = BC_lo[(x + 4) % 5]! ^ tl;
+      for (let y = 0; y < 5; y++) {
+        stateHi[x + 5 * y] ^= dh;
+        stateLo[x + 5 * y] ^= dl;
+      }
+    }
+
+    // Rho and Pi combined
+    const tmpHi = new Uint32Array(25);
+    const tmpLo = new Uint32Array(25);
+    for (let i = 0; i < 25; i++) {
+      const [rh, rl] = rot64(stateHi[i]!, stateLo[i]!, RHO[i]!);
+      tmpHi[PI[i]!] = rh;
+      tmpLo[PI[i]!] = rl;
+    }
+
+    // Chi
+    for (let y = 0; y < 5; y++) {
+      for (let x = 0; x < 5; x++) {
+        const i = x + 5 * y;
+        stateHi[i] = tmpHi[i]! ^ ((~tmpHi[(x + 1) % 5 + 5 * y]!) & tmpHi[(x + 2) % 5 + 5 * y]!);
+        stateLo[i] = tmpLo[i]! ^ ((~tmpLo[(x + 1) % 5 + 5 * y]!) & tmpLo[(x + 2) % 5 + 5 * y]!);
+      }
+    }
+
+    // Iota
+    stateHi[0] ^= RC[round]![0]!;
+    stateLo[0] ^= RC[round]![1]!;
+  }
+}
+
+/**
+ * Compute Keccak-256 of `data`. Returns 32 bytes.
+ * This matches EVM keccak256 (NOT NIST SHA-3).
+ */
+export function keccak256(data: Uint8Array): Uint8Array {
+  const rate = 136; // 1088 bits / 8
+  const stateHi = new Uint32Array(25);
+  const stateLo = new Uint32Array(25);
+
+  // Absorb
+  let offset = 0;
+  while (offset + rate <= data.length) {
+    absorbBlock(stateHi, stateLo, data, offset, rate);
+    keccakF1600(stateHi, stateLo);
+    offset += rate;
+  }
+
+  // Pad: Keccak uses 0x01 padding (not 0x06 like SHA-3)
+  const last = new Uint8Array(rate);
+  last.set(data.subarray(offset));
+  last[data.length - offset] = 0x01;
+  last[rate - 1] |= 0x80;
+  absorbBlock(stateHi, stateLo, last, 0, rate);
+  keccakF1600(stateHi, stateLo);
+
+  // Squeeze 32 bytes
+  const out = new Uint8Array(32);
+  for (let i = 0; i < 4; i++) {
+    const lane = i * 2;
+    const byteOffset = i * 8;
+    // Each lane is 64-bit little-endian [lo, hi]
+    const lo = stateLo[lane]!;
+    const hi = stateHi[lane]!;
+    out[byteOffset + 0] = lo & 0xff;
+    out[byteOffset + 1] = (lo >>> 8) & 0xff;
+    out[byteOffset + 2] = (lo >>> 16) & 0xff;
+    out[byteOffset + 3] = (lo >>> 24) & 0xff;
+    out[byteOffset + 4] = hi & 0xff;
+    out[byteOffset + 5] = (hi >>> 8) & 0xff;
+    out[byteOffset + 6] = (hi >>> 16) & 0xff;
+    out[byteOffset + 7] = (hi >>> 24) & 0xff;
+  }
+  return out;
+}
+
+function absorbBlock(
+  stateHi: Uint32Array,
+  stateLo: Uint32Array,
+  data: Uint8Array,
+  offset: number,
+  rate: number,
+): void {
+  // XOR data into state, lane by lane (each lane = 8 bytes, little-endian)
+  for (let i = 0; i < rate / 8; i++) {
+    const base = offset + i * 8;
+    let lo = 0, hi = 0;
+    for (let b = 0; b < 4; b++) {
+      lo |= (data[base + b] ?? 0) << (b * 8);
+      hi |= (data[base + 4 + b] ?? 0) << (b * 8);
+    }
+    stateLo[i] ^= lo >>> 0;
+    stateHi[i] ^= hi >>> 0;
+  }
+}
