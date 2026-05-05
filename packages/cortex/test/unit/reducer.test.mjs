@@ -262,8 +262,8 @@ describe('buildEpochEligibility()', () => {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 describe('multiplier-cap', () => {
-  test('MERGE_MULTIPLIER_BPS = 15000 (1.5×)', () => {
-    assert.equal(MERGE_MULTIPLIER_BPS, 15_000n);
+  test('MERGE_MULTIPLIER_BPS = 20000 (2.0×)', () => {
+    assert.equal(MERGE_MULTIPLIER_BPS, 20_000n);
   });
 
   test('computeMinerBonus gives 0.5× claimBase', () => {

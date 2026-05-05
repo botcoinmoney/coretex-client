@@ -2,7 +2,7 @@
  * Multiplier-cap calculation for CortexMergeBonus funding.
  *
  * Per reducer_v0.md §Credit mechanics:
- *   MERGE_MULTIPLIER_BPS = 15000 (1.5×)
+ *   MERGE_MULTIPLIER_BPS = 20000 (2.0×)
  *   V0 cap: (MERGE_MULTIPLIER_BPS − 10000) × claimBase / 10000 per miner per epoch.
  *   Single merge in an epoch is sufficient; additional merges grant no extra uplift.
  *
@@ -13,8 +13,8 @@ import type { EpochEligibility } from './eligibility.js';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-/** Default merge multiplier in basis points (1.5× = 15000 bps). */
-export const MERGE_MULTIPLIER_BPS = 15_000n;
+/** Default merge multiplier in basis points (2.0× = 20000 bps). */
+export const MERGE_MULTIPLIER_BPS = 20_000n;
 export const BPS_DIVISOR = 10_000n;
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -82,7 +82,7 @@ export function computeMinerBonus(
  *
  * @param eligibility     - Eligibility ledger for the epoch
  * @param claimBases      - Per-miner claim bases (pro-rata epoch reward)
- * @param multiplierBps   - Multiplier in basis points (default 15000)
+ * @param multiplierBps   - Multiplier in basis points (default 20000)
  */
 export function buildEpochBonusLeaves(
   eligibility: EpochEligibility,
