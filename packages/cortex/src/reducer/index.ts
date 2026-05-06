@@ -62,4 +62,5 @@ export {
   computeBonusMerkleRoot,
   buildFundEpochCalldata,
   buildMinerClaimProof,
+  verifyMinerClaimProof,
 } from './funding-tx.js';

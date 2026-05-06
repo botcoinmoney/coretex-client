@@ -241,3 +241,73 @@ function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
   }
   return true;
 }
+
+// ─── Reducer-only apply path ──────────────────────────────────────────────────
+//
+// Every screener-pass patch in an epoch carries the same `parentStateRoot` —
+// the EPOCH parent root. The reducer validates each patch's parentStateRoot
+// against the epoch parent root ONCE (before sorting/applying), then applies
+// non-overlapping word writes onto the running `current` state without
+// re-validating parent root (which has already advanced).
+//
+// applyPatchOntoCurrent does the writes only:
+//   - wordCount in [1, 4]                    → E03 OVER_BUDGET
+//   - target indices outside reserved range  → E02 WRONG_TYPE_FIELD
+//   - resulting state respects reserved bits → E04 RESERVED_BIT_SET
+//   - patch is not a no-op vs current state  → E05 NOOP_PATCH
+//
+// It does NOT validate parentStateRoot. Use applyPatch() for any non-reducer
+// apply where the caller has not already validated parent root.
+
+/**
+ * Apply a patch onto `current` for the reducer. Skips the parent-root check
+ * (the reducer pre-validates parent against the epoch parent root via
+ * checkPatchParentRoot or applyPatch on the parent state).
+ */
+export function applyPatchOntoCurrent(current: CortexState, patch: Patch): PatchResult {
+  if (patch.wordCount < 1 || patch.wordCount > 4) {
+    return patchError('E03');
+  }
+
+  let anyChange = false;
+  for (let i = 0; i < patch.wordCount; i++) {
+    if ((current.words[patch.indices[i]!] ?? 0n) !== (patch.newWords[i] ?? 0n)) {
+      anyChange = true;
+      break;
+    }
+  }
+  if (!anyChange) {
+    return patchError('E05');
+  }
+
+  const newWords: bigint[] = [...current.words];
+  for (let i = 0; i < patch.wordCount; i++) {
+    const idx = patch.indices[i]!;
+    if (idx >= RANGES.RESERVED_START && idx <= RANGES.RESERVED_END) {
+      return patchError('E02');
+    }
+    if (idx < 0 || idx >= RANGES.WORD_COUNT) {
+      return patchError('E02');
+    }
+    newWords[idx] = patch.newWords[i] ?? 0n;
+  }
+
+  const resultState: CortexState = { words: newWords };
+  if (hasNonZeroReservedBits(resultState)) {
+    return patchError('E04');
+  }
+
+  return { ok: true, state: resultState };
+}
+
+/**
+ * Pre-validate that `patch.parentStateRoot` matches the epoch parent root.
+ * Used by the reducer to gate patches before applying onto the running
+ * `current` state.
+ */
+export function patchMatchesEpochParent(
+  patch: Patch,
+  epochParentRoot: Uint8Array,
+): boolean {
+  return bytesEqual(patch.parentStateRoot, epochParentRoot);
+}

@@ -51,6 +51,8 @@ export {
   encodePatch,
   decodePatch,
   applyPatch,
+  applyPatchOntoCurrent,
+  patchMatchesEpochParent,
 } from './patch.js';
 
 export { keccak256 } from './keccak256.js';

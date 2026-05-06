@@ -171,7 +171,7 @@ switch (cmd) {
     let currentState = state;
     const applied: string[] = [];
     const usedIndices = new Set<number>();
-    const parentRoot = '0x' + bytesToHex(merkleizeState(state));
+    const parentRoot = bytesToHex(merkleizeState(state));
 
     // Sort by scoreDelta desc, wordCount asc, patchHash asc
     type PatchRecord = {
@@ -205,7 +205,7 @@ switch (cmd) {
       applied.push(r.patchHash);
     }
 
-    const newRoot = '0x' + bytesToHex(merkleizeState(currentState));
+    const newRoot = bytesToHex(merkleizeState(currentState));
     process.stdout.write(toJsonOutput({
       ok: true,
       newStateRoot: newRoot,
@@ -233,12 +233,12 @@ switch (cmd) {
     // Reconstruct Uint8Array fields from hex strings if necessary
     if (eventsData.snapshotEvent && typeof eventsData.snapshotEvent.fullStateBytes === 'string') {
       const hex = eventsData.snapshotEvent.fullStateBytes as string;
-      (eventsData.snapshotEvent as Record<string, unknown>)['fullStateBytes'] = hexToBytes(hex);
+      (eventsData.snapshotEvent as unknown as Record<string, unknown>)['fullStateBytes'] = hexToBytes(hex);
     }
     for (const pe of eventsData.patchEvents) {
-      if (typeof (pe as Record<string, unknown>)['compactPatchBytes'] === 'string') {
-        const hex = (pe as Record<string, unknown>)['compactPatchBytes'] as string;
-        (pe as Record<string, unknown>)['compactPatchBytes'] = hexToBytes(hex);
+      if (typeof (pe as unknown as Record<string, unknown>)['compactPatchBytes'] === 'string') {
+        const hex = (pe as unknown as Record<string, unknown>)['compactPatchBytes'] as string;
+        (pe as unknown as Record<string, unknown>)['compactPatchBytes'] = hexToBytes(hex);
       }
     }
 
@@ -256,7 +256,7 @@ switch (cmd) {
       finalizedEvent: eventsData.finalizedEvent,
       patchEvents: eventsData.patchEvents,
       snapshotEvent: eventsData.snapshotEvent,
-      genesisState,
+      ...(genesisState ? { genesisState } : {}),
     });
     process.stdout.write(toJsonOutput(result) + '\n');
     if (result.ok && !result.match) process.exit(3);
@@ -274,7 +274,7 @@ switch (cmd) {
     }
     const stateBytes = fs.readFileSync(stateFile);
     const state = unpack(new Uint8Array(stateBytes));
-    const stateRoot = '0x' + bytesToHex(merkleizeState(state));
+    const stateRoot = bytesToHex(merkleizeState(state));
     const fullStateBytesHex = Buffer.from(pack(state)).toString('hex');
     process.stdout.write(toJsonOutput({ ok: true, stateRoot, fullStateBytesHex }) + '\n');
     break;
@@ -299,7 +299,7 @@ switch (cmd) {
       const oldCvh = args[oldCvhIdx + 1] ?? '0x' + '00'.repeat(32);
       const newCvh = args[newCvhIdx + 1] ?? '0x' + '00'.repeat(32);
       const { event, state: newState } = executeReset(state, genesisState, epoch, oldCvh, newCvh);
-      const newRoot = '0x' + bytesToHex(merkleizeState(newState));
+      const newRoot = bytesToHex(merkleizeState(newState));
       process.stdout.write(toJsonOutput({ ok: true, event, newStateRoot: newRoot }) + '\n');
     } else {
       const stateFile = args[0];

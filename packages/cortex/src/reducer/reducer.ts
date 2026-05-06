@@ -10,15 +10,24 @@
  */
 
 import type { CortexState, Patch } from '../state/types.js';
-import { applyPatch } from '../state/patch.js';
+import {
+  applyPatch,
+  applyPatchOntoCurrent,
+  patchMatchesEpochParent,
+  encodePatch,
+} from '../state/patch.js';
 import { merkleizeState, bytesToHex } from '../state/merkle.js';
 import { keccak256 } from '../state/keccak256.js';
-import { encodePatch } from '../state/patch.js';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 /** Stable rejection codes for the reducer. */
-export type RejectionCode = 'R01_TARGET_OVERLAP' | 'R02_SEMANTIC_CONFLICT';
+export type RejectionCode =
+  | 'R01_TARGET_OVERLAP'
+  | 'R02_SEMANTIC_CONFLICT'
+  | 'R03_WRONG_PARENT_ROOT'
+  | 'R04_INVALID_TARGET'
+  | 'R05_RESERVED_BIT_SET';
 
 /** A screener-pass patch as input to the reducer. */
 export interface ReducerInputPatch {
@@ -172,18 +181,39 @@ export function reduce(
   patches: ReducerInputPatch[],
   threshold: bigint = 0n,
 ): ReducerOutput {
+  // The EPOCH parent root: every screener-pass patch must reference this.
+  const epochParentRoot = merkleizeState(parentState);
+
+  // Pre-pass: drop patches whose parentStateRoot does not match the epoch
+  // parent. They are rejected with R03_WRONG_PARENT_ROOT and never compete
+  // for ordering. Without this pass, applyPatch in the loop would reject
+  // every patch after the first because `current` advances.
+  const eligible: ReducerInputPatch[] = [];
+  const rejectedSet: RejectedPatch[] = [];
+  for (const item of patches) {
+    if (!patchMatchesEpochParent(item.patch, epochParentRoot)) {
+      rejectedSet.push({
+        patch: item.patch,
+        patchBytes: item.patchBytes,
+        reason: 'R03_WRONG_PARENT_ROOT',
+      });
+      continue;
+    }
+    eligible.push(item);
+  }
+
   // 1. Sort by (-scoreDelta, +patchSize, +patchHash) — stable
-  const ordered = stableSort(patches, (a, b) =>
+  const ordered = stableSort(eligible, (a, b) =>
     comparePatchPriority(
       { scoreDelta: a.scoreDelta, patch: a.patch, patchBytes: a.patchBytes },
       { scoreDelta: b.scoreDelta, patch: b.patch, patchBytes: b.patchBytes },
     ),
   );
 
-  // 2. Greedy application
+  // 2. Greedy application onto `current` (parent root has already been
+  //    validated; we apply word writes only via applyPatchOntoCurrent).
   let current: CortexState = parentState;
   const acceptedSet: AcceptedPatch[] = [];
-  const rejectedSet: RejectedPatch[] = [];
   const acceptedTargets = new Set<number>();
 
   for (const item of ordered) {
@@ -209,15 +239,21 @@ export function reduce(
       continue;
     }
 
-    // 2c. Apply patch
-    const applyResult = applyPatch(current, item.patch);
+    // 2c. Apply patch onto current (skips the now-stale parent root check).
+    const applyResult = applyPatchOntoCurrent(current, item.patch);
     if (!applyResult.ok) {
-      // Patch fails apply (wrong parent root after state evolution).
-      // Treat as semantic conflict — state has advanced beyond this patch.
+      // The only failures here are E02 (invalid target index), E03 (over-budget),
+      // E04 (reserved-bit set in resulting state), or E05 (no-op vs current
+      // — meaning earlier accepted patches already wrote those exact words).
+      // Map them to stable reducer codes.
+      const reason: RejectionCode =
+        applyResult.code === 'E04' ? 'R05_RESERVED_BIT_SET'
+        : applyResult.code === 'E05' ? 'R02_SEMANTIC_CONFLICT'
+        : 'R04_INVALID_TARGET';
       rejectedSet.push({
         patch: item.patch,
         patchBytes: item.patchBytes,
-        reason: 'R02_SEMANTIC_CONFLICT',
+        reason,
       });
       continue;
     }

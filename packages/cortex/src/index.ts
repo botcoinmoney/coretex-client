@@ -11,3 +11,5 @@ export * from './workers/pool.js';
 export * from './upgrade/index.js';
 export * from './verify-epoch/index.js';
 export * from './reducer/index.js';
+export * from './shards.js';
+export * from './event-topics.js';

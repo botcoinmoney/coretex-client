@@ -89,8 +89,9 @@ function keccakF1600(stateHi: Uint32Array, stateLo: Uint32Array): void {
       const dh = BC_hi[(x + 4) % 5]! ^ th;
       const dl = BC_lo[(x + 4) % 5]! ^ tl;
       for (let y = 0; y < 5; y++) {
-        stateHi[x + 5 * y] ^= dh;
-        stateLo[x + 5 * y] ^= dl;
+        const idx = x + 5 * y;
+        stateHi[idx] = (stateHi[idx]! ^ dh) >>> 0;
+        stateLo[idx] = (stateLo[idx]! ^ dl) >>> 0;
       }
     }
 
@@ -113,8 +114,8 @@ function keccakF1600(stateHi: Uint32Array, stateLo: Uint32Array): void {
     }
 
     // Iota
-    stateHi[0] ^= RC[round]![0]!;
-    stateLo[0] ^= RC[round]![1]!;
+    stateHi[0] = (stateHi[0]! ^ RC[round]![0]!) >>> 0;
+    stateLo[0] = (stateLo[0]! ^ RC[round]![1]!) >>> 0;
   }
 }
 
@@ -139,7 +140,7 @@ export function keccak256(data: Uint8Array): Uint8Array {
   const last = new Uint8Array(rate);
   last.set(data.subarray(offset));
   last[data.length - offset] = 0x01;
-  last[rate - 1] |= 0x80;
+  last[rate - 1] = (last[rate - 1]! | 0x80) & 0xff;
   absorbBlock(stateHi, stateLo, last, 0, rate);
   keccakF1600(stateHi, stateLo);
 
@@ -178,7 +179,7 @@ function absorbBlock(
       lo |= (data[base + b] ?? 0) << (b * 8);
       hi |= (data[base + 4 + b] ?? 0) << (b * 8);
     }
-    stateLo[i] ^= lo >>> 0;
-    stateHi[i] ^= hi >>> 0;
+    stateLo[i] = (stateLo[i]! ^ (lo >>> 0)) >>> 0;
+    stateHi[i] = (stateHi[i]! ^ (hi >>> 0)) >>> 0;
   }
 }

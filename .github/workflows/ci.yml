@@ -6,6 +6,11 @@ on:
   pull_request:
     branches: [main]
 
+# Node 22 across the board: cortex-server uses node:sqlite which requires
+# Node >=22.5 (was Node 20 which broke on every job using cortex-server).
+env:
+  NODE_VERSION: "22"
+
 jobs:
   lint-type-unit:
     name: Lint + Type + Unit
@@ -16,11 +21,12 @@ jobs:
           submodules: recursive
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: ${{ env.NODE_VERSION }}
           cache: npm
       - run: npm ci
       - run: npm run lint --if-present
       - run: npm run typecheck --if-present
+      - run: npm run build --if-present
       - run: npm run test:unit --if-present
 
   contracts:
@@ -33,6 +39,20 @@ jobs:
       - uses: foundry-rs/foundry-toolchain@v1
       - run: forge build --root contracts --sizes
       - run: forge test --root contracts -vv
+
+  contracts-fork:
+    name: Contracts (forge fork against Base mainnet)
+    runs-on: ubuntu-latest
+    needs: contracts
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+    env:
+      BASE_RPC_URL: ${{ secrets.BASE_RPC_URL || 'https://mainnet.base.org' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: foundry-rs/foundry-toolchain@v1
+      - run: forge test --root contracts --match-contract CortexForkTest -vv
 
   context-freshness:
     name: context.md freshness
@@ -55,7 +75,7 @@ jobs:
           submodules: recursive
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: ${{ env.NODE_VERSION }}
           cache: npm
       - run: npm ci
       - run: npm run test:e2e -- --filter phase-1
@@ -70,7 +90,7 @@ jobs:
           submodules: recursive
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: ${{ env.NODE_VERSION }}
           cache: npm
       - uses: actions/setup-python@v5
         with:
@@ -88,14 +108,14 @@ jobs:
     runs-on: ubuntu-latest
     needs: contracts
     env:
-      BASE_RPC_URL: ${{ secrets.BASE_RPC_URL }}
+      BASE_RPC_URL: ${{ secrets.BASE_RPC_URL || 'https://mainnet.base.org' }}
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: ${{ env.NODE_VERSION }}
           cache: npm
       - uses: foundry-rs/foundry-toolchain@v1
       - run: npm ci
@@ -111,7 +131,7 @@ jobs:
           submodules: recursive
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: ${{ env.NODE_VERSION }}
           cache: npm
       - run: npm ci
       - run: npm run test:e2e -- --filter phase-3
@@ -126,7 +146,7 @@ jobs:
           submodules: recursive
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: ${{ env.NODE_VERSION }}
           cache: npm
       - run: npm ci
       - run: npm run test:e2e -- --filter phase-4
@@ -141,15 +161,85 @@ jobs:
           submodules: recursive
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: ${{ env.NODE_VERSION }}
           cache: npm
       - run: npm ci
       - run: npm run test:e2e -- --filter phase-5
 
+  e2e-phase-6:
+    name: E2E phase-6 (reducer + credit)
+    runs-on: ubuntu-latest
+    needs: lint-type-unit
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - run: npm run test:e2e -- --filter phase-6
+
+  e2e-phase-7:
+    name: E2E phase-7 (baselines)
+    runs-on: ubuntu-latest
+    needs: lint-type-unit
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - run: npm run test:e2e -- --filter phase-7
+
+  e2e-phase-8:
+    name: E2E phase-8 (testnet golden fixture — CI MERGE GATE)
+    runs-on: ubuntu-latest
+    needs: lint-type-unit
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - run: npm run test:e2e -- --filter phase-8
+
+  e2e-phase-9:
+    name: E2E phase-9 (mainnet ops + receipt-mapping observability)
+    runs-on: ubuntu-latest
+    needs: lint-type-unit
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - run: npm run test:e2e -- --filter phase-9
+
   e2e-all:
     name: E2E all (merge gate)
     runs-on: ubuntu-latest
-    needs: [e2e-phase-1, e2e-phase-1b, e2e-phase-2, e2e-phase-3, e2e-phase-4, e2e-phase-5]
+    needs:
+      - e2e-phase-1
+      - e2e-phase-1b
+      - e2e-phase-2
+      - e2e-phase-3
+      - e2e-phase-4
+      - e2e-phase-5
+      - e2e-phase-6
+      - e2e-phase-7
+      - e2e-phase-8
+      - e2e-phase-9
     if: github.ref == 'refs/heads/main' || github.event_name == 'pull_request'
     steps:
       - uses: actions/checkout@v4

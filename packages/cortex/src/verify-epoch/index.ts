@@ -19,8 +19,8 @@
  */
 
 import { unpack } from '../state/codec.js';
-import { decodePatch } from '../state/patch.js';
-import { applyPatch, merkleizeState, bytesToHex, hexToBytes } from '../state/index.js';
+import { decodePatch, applyPatchOntoCurrent } from '../state/patch.js';
+import { merkleizeState, bytesToHex, hexToBytes } from '../state/index.js';
 import { keccak256 } from '../state/keccak256.js';
 import type { CortexState } from '../state/types.js';
 
@@ -60,17 +60,9 @@ function keccak256Hex(sig: string): string {
   return hex;
 }
 
-export const EVENT_TOPICS = {
-  CortexPatchAccepted: '0x' + keccak256Hex(
-    'CortexPatchAccepted(uint64,address,bytes32,bytes32,bytes32,bytes)',
-  ),
-  CortexEpochFinalized: '0x' + keccak256Hex(
-    'CortexEpochFinalized(uint64,bytes32,bytes32,bytes32,bytes32,bytes32)',
-  ),
-  CortexStateSnapshot: '0x' + keccak256Hex(
-    'CortexStateSnapshot(uint64,bytes32,bytes)',
-  ),
-} as const;
+// EVENT_TOPICS moved to ../event-topics.ts as the canonical source of truth.
+// Re-export here for back-compat.
+export { EVENT_TOPICS } from '../event-topics.js';
 
 // ─── ABI log decoders (no external deps) ─────────────────────────────────────
 
@@ -105,9 +97,9 @@ export function decodePatchAcceptedLog(
   const miner = decodeAddress(topics[2] ?? '0x' + '00'.repeat(32));
   const dataBytes = hexToBytes(data.startsWith('0x') ? data : '0x' + data);
 
-  const parentStateRoot = '0x' + bytesToHex(readSlice32(dataBytes, 0));
-  const patchHash = '0x' + bytesToHex(readSlice32(dataBytes, 32));
-  const evalReportHash = '0x' + bytesToHex(readSlice32(dataBytes, 64));
+  const parentStateRoot = bytesToHex(readSlice32(dataBytes, 0));
+  const patchHash = bytesToHex(readSlice32(dataBytes, 32));
+  const evalReportHash = bytesToHex(readSlice32(dataBytes, 64));
   // compactPatchBytes is ABI-encoded bytes (dynamic): offset at [96], then length, then data
   const dynamicOffset = Number(readBigEndian32From(dataBytes, 96));
   const byteLen = Number(readBigEndian32From(dataBytes, dynamicOffset));
@@ -129,11 +121,11 @@ export function decodeEpochFinalizedLog(
   const dataBytes = hexToBytes(data.startsWith('0x') ? data : '0x' + data);
   return {
     epoch,
-    parentStateRoot: '0x' + bytesToHex(readSlice32(dataBytes, 0)),
-    patchSetRoot: '0x' + bytesToHex(readSlice32(dataBytes, 32)),
-    newStateRoot: '0x' + bytesToHex(readSlice32(dataBytes, 64)),
-    coreVersionHash: '0x' + bytesToHex(readSlice32(dataBytes, 96)),
-    experienceCorpusRoot: '0x' + bytesToHex(readSlice32(dataBytes, 128)),
+    parentStateRoot: bytesToHex(readSlice32(dataBytes, 0)),
+    patchSetRoot: bytesToHex(readSlice32(dataBytes, 32)),
+    newStateRoot: bytesToHex(readSlice32(dataBytes, 64)),
+    coreVersionHash: bytesToHex(readSlice32(dataBytes, 96)),
+    experienceCorpusRoot: bytesToHex(readSlice32(dataBytes, 128)),
   };
 }
 
@@ -148,7 +140,7 @@ export function decodeStateSnapshotLog(
 ): StateSnapshotEvent {
   const epoch = BigInt(topics[1] ?? '0x0');
   const dataBytes = hexToBytes(data.startsWith('0x') ? data : '0x' + data);
-  const stateRoot = '0x' + bytesToHex(readSlice32(dataBytes, 0));
+  const stateRoot = bytesToHex(readSlice32(dataBytes, 0));
   const dynamicOffset = Number(readBigEndian32From(dataBytes, 32));
   const byteLen = Number(readBigEndian32From(dataBytes, dynamicOffset));
   const fullStateBytes = dataBytes.subarray(dynamicOffset + 32, dynamicOffset + 32 + byteLen);
@@ -161,9 +153,12 @@ function runReducer(
   parentState: CortexState,
   patches: readonly PatchAcceptedEvent[],
 ): { state: CortexState; acceptedHashes: string[] } {
-  const parentRoot = bytesToHex(merkleizeState(parentState));
+  const parentRoot = bytesToHex(merkleizeState(parentState)); // already '0x...'-prefixed
+
+  // Pre-pass: only patches whose parentStateRoot matches the EPOCH parent
+  // are eligible (matches reducer.ts R03_WRONG_PARENT_ROOT semantics).
   const eligible = patches.filter(
-    (p) => p.parentStateRoot.toLowerCase() === ('0x' + parentRoot).toLowerCase(),
+    (p) => p.parentStateRoot.toLowerCase() === parentRoot.toLowerCase(),
   );
 
   // Sort: scoreDelta desc, wordCount asc, patchHash asc
@@ -178,13 +173,15 @@ function runReducer(
     return a.ev.patchHash < b.ev.patchHash ? -1 : 1;
   });
 
+  // Apply each accepted patch onto `current` via the reducer-only path so we
+  // don't reject everything-after-the-first-with-stale-parent.
   const usedIndices = new Set<number>();
   let currentState = parentState;
   const acceptedHashes: string[] = [];
 
   for (const { ev, patch } of decoded) {
     if (patch.indices.some((i) => usedIndices.has(i))) continue;
-    const result = applyPatch(currentState, patch);
+    const result = applyPatchOntoCurrent(currentState, patch);
     if (!result.ok) continue;
     for (const i of patch.indices) usedIndices.add(i);
     currentState = result.state;
@@ -264,7 +261,7 @@ export function verifyEpoch(input: VerifyEpochInput): VerifyEpochResult {
   }
 
   const { state: finalState, acceptedHashes } = runReducer(startState, input.patchEvents);
-  const reproducedStateRoot = ('0x' + bytesToHex(merkleizeState(finalState))).toLowerCase();
+  const reproducedStateRoot = (bytesToHex(merkleizeState(finalState))).toLowerCase();
   const expectedStateRoot = input.finalizedEvent.newStateRoot.toLowerCase();
 
   return {
