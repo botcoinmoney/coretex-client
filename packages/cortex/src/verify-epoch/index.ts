@@ -8,7 +8,8 @@
  *
  * Reducer order per reducer_v0.md (deterministic):
  *   Sort by (scoreDelta desc, wordCount asc, patchHash asc).
- *   Apply; skip patches with conflicting indices or stale parentStateRoot.
+ *   Apply; skip patches with conflicting indices, forged patch hashes, or
+ *   wrong epoch parent roots.
  *
  * Modes:
  *   - Local/anvil: accepts pre-fetched event arrays (no live RPC).
@@ -58,6 +59,10 @@ function keccak256Hex(sig: string): string {
   let hex = '';
   for (const b of hash) hex += b.toString(16).padStart(2, '0');
   return hex;
+}
+
+function hexEq(a: string, b: string): boolean {
+  return a.toLowerCase() === b.toLowerCase();
 }
 
 // EVENT_TOPICS moved to ../event-topics.ts as the canonical source of truth.
@@ -155,22 +160,37 @@ function runReducer(
 ): { state: CortexState; acceptedHashes: string[] } {
   const parentRoot = bytesToHex(merkleizeState(parentState)); // already '0x...'-prefixed
 
-  // Pre-pass: only patches whose parentStateRoot matches the EPOCH parent
-  // are eligible (matches reducer.ts R03_WRONG_PARENT_ROOT semantics).
-  const eligible = patches.filter(
-    (p) => p.parentStateRoot.toLowerCase() === parentRoot.toLowerCase(),
-  );
+  // Pre-pass: only patches whose event parentStateRoot, decoded wire parent,
+  // and patch hash all match chain data are eligible. The registry emits
+  // compactPatchBytes beside patchHash; public replay must bind those two
+  // fields instead of trusting coordinator-provided metadata.
+  const eligible = patches.filter((p) => {
+    if (!hexEq(p.parentStateRoot, parentRoot)) return false;
+
+    let patch;
+    try {
+      patch = decodePatch(p.compactPatchBytes);
+    } catch {
+      return false;
+    }
+
+    if (!hexEq(bytesToHex(patch.parentStateRoot), parentRoot)) return false;
+
+    const computedPatchHash = bytesToHex(keccak256(p.compactPatchBytes));
+    return hexEq(p.patchHash, computedPatchHash);
+  });
 
   // Sort: scoreDelta desc, wordCount asc, patchHash asc
   const decoded = eligible.map((ev) => {
     const patch = decodePatch(ev.compactPatchBytes);
-    return { ev, patch };
+    const computedPatchHash = bytesToHex(keccak256(ev.compactPatchBytes));
+    return { ev, patch, computedPatchHash };
   });
   decoded.sort((a, b) => {
     if (a.patch.scoreDelta > b.patch.scoreDelta) return -1;
     if (a.patch.scoreDelta < b.patch.scoreDelta) return 1;
     if (a.patch.wordCount !== b.patch.wordCount) return a.patch.wordCount - b.patch.wordCount;
-    return a.ev.patchHash < b.ev.patchHash ? -1 : 1;
+    return a.computedPatchHash < b.computedPatchHash ? -1 : 1;
   });
 
   // Apply each accepted patch onto `current` via the reducer-only path so we
@@ -179,13 +199,13 @@ function runReducer(
   let currentState = parentState;
   const acceptedHashes: string[] = [];
 
-  for (const { ev, patch } of decoded) {
+  for (const { patch, computedPatchHash } of decoded) {
     if (patch.indices.some((i) => usedIndices.has(i))) continue;
     const result = applyPatchOntoCurrent(currentState, patch);
     if (!result.ok) continue;
     for (const i of patch.indices) usedIndices.add(i);
     currentState = result.state;
-    acceptedHashes.push(ev.patchHash);
+    acceptedHashes.push(computedPatchHash);
   }
 
   return { state: currentState, acceptedHashes };

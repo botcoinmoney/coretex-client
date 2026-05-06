@@ -29,7 +29,7 @@ function makeValidPatch(state) {
     wordCount: 1,
     scoreDelta: 0n,
     parentStateRoot: root,
-    indices: [400],
+    indices: [401],
     newWords: [0xdeadbeefn],
   };
 }
@@ -93,13 +93,13 @@ describe('parseStatTranslationPatch', () => {
     const state = makeCleanState();
     const p1 = makeValidPatch(state);
     // Apply p1 to get new state for p2's parent root
-    const p1Root = merkleizeState({ words: state.words.map((w, i) => i === 400 ? 0xdeadbeefn : w) });
+    const p1Root = merkleizeState({ words: state.words.map((w, i) => i === 401 ? 0xdeadbeefn : w) });
     const p2 = {
       patchType: PATCH_TYPE.KEY_UPDATE,
       wordCount: 1,
       scoreDelta: 0n,
       parentStateRoot: p1Root,
-      indices: [401],
+      indices: [402],
       newWords: [0xcafebaben],
     };
     const translation = makeTranslation(state, [p1, p2]);
@@ -125,7 +125,7 @@ describe('applyStatTranslationPatch', () => {
       assert.equal(result.patchesApplied, 1);
       assert.match(result.newStateRoot, /^0x[0-9a-f]{64}$/);
       // Verify state changed
-      assert.equal(result.state.words[400], 0xdeadbeefn);
+      assert.equal(result.state.words[401], 0xdeadbeefn);
     }
   });
 
@@ -146,7 +146,7 @@ describe('applyStatTranslationPatch', () => {
       wordCount: 1,
       scoreDelta: 0n,
       parentStateRoot: new Uint8Array(32).fill(0xff),
-      indices: [400],
+      indices: [401],
       newWords: [1n],
     };
     const translation = makeTranslation(state, [badPatch]);
@@ -162,7 +162,7 @@ describe('applyStatTranslationPatch', () => {
     assert.equal(result.ok, true);
     if (result.ok) {
       assert.equal(result.patchesApplied, 0);
-      const originalRoot = '0x' + bytesToHex(merkleizeState(state));
+      const originalRoot = bytesToHex(merkleizeState(state));
       assert.equal(result.newStateRoot.toLowerCase(), originalRoot.toLowerCase());
     }
   });
@@ -174,7 +174,7 @@ describe('executeReset', () => {
   test('emits ResetEvent with CORTEX_RESET marker', () => {
     const oldState = makeCleanState();
     const newGenesis = makeCleanState();
-    newGenesis.words[400] = 0x1234n; // different from old
+    newGenesis.words[401] = 0x1234n; // different from old
     const { event, state } = executeReset(
       oldState,
       newGenesis,
@@ -189,7 +189,7 @@ describe('executeReset', () => {
     assert.match(event.oldStateRoot, /^0x[0-9a-f]{64}$/);
     assert.match(event.newGenesisStateRoot, /^0x[0-9a-f]{64}$/);
     // The returned state should be the genesis state
-    assert.equal(state.words[400], 0x1234n);
+    assert.equal(state.words[401], 0x1234n);
   });
 
   test('oldStateRoot and newGenesisStateRoot differ when states differ', () => {

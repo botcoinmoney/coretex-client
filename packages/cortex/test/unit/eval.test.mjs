@@ -22,7 +22,7 @@ function makePatch(state, overrides = {}) {
     wordCount: 1,
     scoreDelta: 1000000n,
     parentStateRoot: root,
-    indices: [400],
+    indices: [401],
     newWords: [0xdeadbeefn],
     ...overrides,
   };
@@ -53,7 +53,7 @@ describe('evalPatch — accepted patch', () => {
     const patchResult = applyPatch(state, patch);
     assert.equal(patchResult.ok, true);
     if (patchResult.ok) {
-      const expectedRoot = '0x' + bytesToHex(merkleizeState(patchResult.state));
+      const expectedRoot = bytesToHex(merkleizeState(patchResult.state));
       assert.equal(report.newStateRoot, expectedRoot);
     }
   });
@@ -77,7 +77,7 @@ describe('evalPatch — accepted patch', () => {
     const state = makeCleanState();
     const { patch, patchWireBytes } = makeEncodedPatch(state);
     const report = evalPatch(state, patch, { patchWireBytes });
-    const expectedRoot = '0x' + bytesToHex(merkleizeState(state));
+    const expectedRoot = bytesToHex(merkleizeState(state));
     assert.equal(report.parentStateRoot, expectedRoot);
   });
 });
@@ -91,7 +91,7 @@ describe('evalPatch — rejected patch', () => {
       wordCount: 1,
       scoreDelta: 0n,
       parentStateRoot: wrongRoot,
-      indices: [400],
+      indices: [401],
       newWords: [1n],
     };
     const patchWireBytes = encodePatch(patch);
@@ -109,7 +109,7 @@ describe('evalPatch — rejected patch', () => {
       wordCount: 1,
       scoreDelta: 0n,
       parentStateRoot: root,
-      indices: [400],
+      indices: [401],
       newWords: [0n], // no-op (state is all zeros)
     };
     const patchWireBytes = encodePatch(patch);
@@ -143,10 +143,10 @@ describe('evalPatch — rejected patch', () => {
       wordCount: 5,
       scoreDelta: 0n,
       parentStateRoot: root,
-      indices: [400, 401, 402, 403, 404],
+      indices: [401, 402, 403, 404, 405],
       newWords: [1n, 2n, 3n, 4n, 5n],
     };
-    const patchWireBytes = encodePatch(patch);
+    const patchWireBytes = new Uint8Array(0);
     const report = evalPatch(state, patch, { patchWireBytes });
     assert.equal(report.accepted, false);
     assert.equal(report.errorCode, 'E03');

@@ -66,7 +66,7 @@ function makePatch(overrides = {}) {
     wordCount: 1,
     scoreDelta: 1000000n,
     parentStateRoot: new Uint8Array(32).fill(0xab),
-    indices: [400],
+    indices: [401],
     newWords: [0x123456789n],
     ...overrides,
   };
@@ -173,7 +173,7 @@ describe('applyPatch', () => {
     const state = makeCleanState();
     const patch = makePatch({
       parentStateRoot: new Uint8Array(32).fill(0xff),
-      indices: [400],
+      indices: [401],
       newWords: [1n],
     });
     const result = applyPatch(state, patch);
@@ -186,7 +186,7 @@ describe('applyPatch', () => {
     const root = merkleizeState(state);
     const patch = makePatch({
       parentStateRoot: root,
-      indices: [400],
+      indices: [401],
       newWords: [0n], // same as current (all-zero state)
     });
     const result = applyPatch(state, patch);
@@ -224,16 +224,16 @@ describe('applyPatch', () => {
   test('successful patch: KEY_UPDATE', () => {
     const state = makeCleanState();
     const root = merkleizeState(state);
-    // Word 400 is in RetrievalKeys range (384–671) — no reserved bits constraint
+    // Word 401 is in RetrievalKeys KEY_VECTOR range — no reserved bits constraint.
     const patch = makePatch({
       parentStateRoot: root,
-      indices: [400],
+      indices: [401],
       newWords: [0xdeadbeefn],
     });
     const result = applyPatch(state, patch);
     assert.equal(result.ok, true);
     if (result.ok) {
-      assert.equal(result.state.words[400], 0xdeadbeefn);
+      assert.equal(result.state.words[401], 0xdeadbeefn);
     }
   });
 
@@ -261,7 +261,7 @@ describe('applyPatch', () => {
     const newWordValue = 0xdeadbeefcafebaben;
     const patch = makePatch({
       parentStateRoot: root,
-      indices: [400],
+      indices: [401],
       newWords: [newWordValue],
     });
     const result = applyPatch(state, patch);
