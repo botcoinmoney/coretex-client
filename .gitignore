@@ -12,6 +12,7 @@ coverage/
 
 # Local data
 data/
+dataset/
 *.sqlite
 *.sqlite-journal
 *.sqlite-shm
@@ -56,3 +57,7 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 *.tsbuildinfo
+
+# Local/generated experiment scratch outputs
+experiments/results/phase7-real-smoke/
+experiments/results/synthetic-dryrun/winner.json
