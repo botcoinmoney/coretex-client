@@ -1,20 +1,21 @@
 /**
- * Multiplier-cap calculation for CortexMergeBonus funding.
+ * Legacy merge-bonus calculation for CortexMergeBonus funding.
  *
  * Per reducer_v0.md §Credit mechanics:
- *   MERGE_MULTIPLIER_BPS = 20000 (2.0×)
+ *   MERGE_MULTIPLIER_BPS = 10000 (1.0×, no separate uplift)
  *   V0 cap: (MERGE_MULTIPLIER_BPS − 10000) × claimBase / 10000 per miner per epoch.
- *   Single merge in an epoch is sufficient; additional merges grant no extra uplift.
+ *   State-advance credits are paid through normal epoch accounting instead.
  *
- * The cap is encoded into each Merkle leaf (capBOTCOIN field) for on-chain enforcement.
+ * The cap is retained for compatibility with the legacy CortexMergeBonus
+ * contract, but V0 production should not fund zero-uplift epochs.
  */
 
 import type { EpochEligibility } from './eligibility.js';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-/** Default merge multiplier in basis points (2.0× = 20000 bps). */
-export const MERGE_MULTIPLIER_BPS = 20_000n;
+/** Default merge multiplier in basis points (1.0× = no separate uplift). */
+export const MERGE_MULTIPLIER_BPS = 10_000n;
 export const BPS_DIVISOR = 10_000n;
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -76,13 +77,12 @@ export function computeMinerBonus(
 /**
  * Build the full set of MinerBonusLeaf entries for an epoch.
  *
- * Only miners with at least one merged patch (multiplierAccrual) get a leaf.
- * The single-uplift cap means we compute ONE bonus per miner regardless of
- * how many patches they merged.
+ * Only miners with at least one merged patch and non-zero computed uplift get a
+ * leaf. With the default 1.0× setting this intentionally returns no leaves.
  *
  * @param eligibility     - Eligibility ledger for the epoch
  * @param claimBases      - Per-miner claim bases (pro-rata epoch reward)
- * @param multiplierBps   - Multiplier in basis points (default 20000)
+ * @param multiplierBps   - Multiplier in basis points (default 10000)
  */
 export function buildEpochBonusLeaves(
   eligibility: EpochEligibility,
@@ -113,7 +113,11 @@ export function buildEpochBonusLeaves(
       continue;
     }
 
-    leaves.push(computeMinerBonus(miner, claimBase, multiplierBps));
+    const leaf = computeMinerBonus(miner, claimBase, multiplierBps);
+    if (leaf.bonusBotcoin === 0n) {
+      continue;
+    }
+    leaves.push(leaf);
   }
 
   // Sort by miner address for deterministic ordering

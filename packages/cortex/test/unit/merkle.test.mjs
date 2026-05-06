@@ -4,7 +4,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { merkleizeState, bytesToHex } from '../../dist/state/merkle.js';
+import { buildMerkleCache, merkleizeState, updateMerkleCache, bytesToHex } from '../../dist/state/merkle.js';
 import { keccak256 } from '../../dist/state/keccak256.js';
 
 function makeState(fill = 0n) {
@@ -81,5 +81,68 @@ describe('merkleizeState', () => {
     assert.match(hex, /^0x[0-9a-f]{64}$/);
     // And that it's not all zeros (a non-trivial computation occurred)
     assert.notEqual(hex, '0x' + '00'.repeat(32));
+  });
+});
+
+describe('incremental Merkle cache', () => {
+  test('buildMerkleCache root matches merkleizeState', () => {
+    const state = makeState();
+    state.words[401] = 123n;
+    state.words[602] = 456n;
+    const cache = buildMerkleCache(state);
+    assert.deepEqual(cache.root, merkleizeState(state));
+    assert.equal(cache.levels.length, 11);
+    assert.equal(cache.levels[0].length, 1024);
+    assert.equal(cache.levels[10].length, 1);
+  });
+
+  test('single-word update matches full recompute and does not mutate input cache', () => {
+    const state = makeState();
+    const cache = buildMerkleCache(state);
+    const oldRoot = bytesToHex(cache.root);
+
+    const nextState = { words: [...state.words] };
+    nextState.words[401] = 0xdeadbeefn;
+    const nextCache = updateMerkleCache(cache, [{ index: 401, word: nextState.words[401] }]);
+
+    assert.equal(bytesToHex(cache.root), oldRoot);
+    assert.deepEqual(nextCache.root, merkleizeState(nextState));
+  });
+
+  test('four-word update matches full recompute', () => {
+    const state = makeState();
+    const cache = buildMerkleCache(state);
+    const nextState = { words: [...state.words] };
+    const updates = [
+      { index: 400, word: 1n },
+      { index: 511, word: 2n },
+      { index: 672, word: 3n << 192n },
+      { index: 900, word: 4n },
+    ];
+    for (const update of updates) {
+      nextState.words[update.index] = update.word;
+    }
+
+    const nextCache = updateMerkleCache(cache, updates);
+    assert.deepEqual(nextCache.root, merkleizeState(nextState));
+  });
+
+  test('duplicate updates use last write', () => {
+    const state = makeState();
+    const cache = buildMerkleCache(state);
+    const nextState = { words: [...state.words] };
+    nextState.words[401] = 2n;
+
+    const nextCache = updateMerkleCache(cache, [
+      { index: 401, word: 1n },
+      { index: 401, word: 2n },
+    ]);
+
+    assert.deepEqual(nextCache.root, merkleizeState(nextState));
+  });
+
+  test('rejects out-of-range update index', () => {
+    const cache = buildMerkleCache(makeState());
+    assert.throws(() => updateMerkleCache(cache, [{ index: 1024, word: 1n }]), /out of range/i);
   });
 });

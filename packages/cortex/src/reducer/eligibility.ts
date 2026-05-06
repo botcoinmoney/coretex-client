@@ -3,11 +3,12 @@
  *
  * Enforces the no-double-credit invariant:
  *   For any (epoch, miner, patchHash):
- *     - ScreenerPassed: exactly one tier-credit issuance
- *     - PatchMerged: at most one multiplier accrual
+ *     - StateAdvance/ScreenerPassed: exactly one tier-credit issuance
+ *     - PatchMerged: at most one legacy accrual record
  *
  * This module models the coordinator's in-memory ledger used when
- * processing CortexPatchAccepted and CortexEpochFinalized events.
+ * processing CortexStateAdvanced/CortexPatchAccepted and CortexEpochFinalized
+ * events.
  * It is also used by the replay script (scripts/replay-reducer.mjs).
  */
 
@@ -36,7 +37,7 @@ export interface CreditIssuance {
   readonly tierCredits: bigint;
 }
 
-/** A record of a multiplier accrual. */
+/** A record of a legacy merge accrual. */
 export interface MultiplierAccrual {
   readonly epoch: bigint;
   readonly miner: string;
@@ -45,11 +46,12 @@ export interface MultiplierAccrual {
 
 /** Eligibility ledger result for an epoch. */
 export interface EpochEligibility {
-  /** All credit issuances for this epoch (one per screener-pass). */
+  /** All credit issuances for this epoch (one per verified state advance). */
   readonly creditIssuances: CreditIssuance[];
   /**
-   * All multiplier accruals for this epoch.
-   * At most one per (epoch, miner) — see multiplier cap in multiplier-cap.ts.
+   * All legacy merge accruals for this epoch.
+   * V0 production sets the separate uplift to zero; this is retained so
+   * historical/legacy proof paths stay replayable.
    */
   readonly multiplierAccruals: MultiplierAccrual[];
   /**
@@ -65,10 +67,10 @@ export interface EpochEligibility {
  * Build the eligibility ledger for an epoch from its event stream.
  *
  * Rules:
- *   1. For each unique (epoch, miner, patchHash) in ScreenerPassed events,
+ *   1. For each unique (epoch, miner, patchHash) in StateAdvance/ScreenerPassed events,
  *      issue exactly one tier-credit.
  *   2. For each PatchMerged event whose (epoch, miner, patchHash) is also
- *      in the screener-passed set, record a multiplier accrual.
+ *      in the credit-issued set, record a legacy accrual.
  *   3. Duplicate ScreenerPassed events (same tuple) are silently skipped
  *      and logged in duplicatesSkipped.
  *   4. PatchMerged events without a corresponding ScreenerPassed are skipped
@@ -140,7 +142,8 @@ function eligibilityKey(epoch: bigint, miner: string, patchHash: string): string
 
 /**
  * Count total tier credits earned by a miner in an epoch.
- * (Screener-pass credits only; merge bonus is separate.)
+ * V0 production credits are attached to verified state advances; screener-only
+ * candidates do not receive credits.
  */
 export function minerScreenerCredits(
   eligibility: EpochEligibility,
@@ -157,9 +160,8 @@ export function minerScreenerCredits(
 }
 
 /**
- * Returns true iff the miner has at least one multiplier accrual in this epoch.
- * (I.e., at least one patch was merged — single-uplift cap means one accrual
- * is sufficient and the cap is enforced in multiplier-cap.ts.)
+ * Returns true iff the miner has at least one legacy merge accrual in this
+ * epoch. The default V0 uplift is zero; use this as an audit helper only.
  */
 export function minerHasMerge(eligibility: EpochEligibility, miner: string): boolean {
   const m = miner.toLowerCase();

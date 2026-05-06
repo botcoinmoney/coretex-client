@@ -35,8 +35,15 @@ export {
 
 export {
   merkleizeState,
+  buildMerkleCache,
+  updateMerkleCache,
   bytesToHex,
   hexToBytes,
+} from './merkle.js';
+
+export type {
+  MerkleTreeCache,
+  MerkleWordUpdate,
 } from './merkle.js';
 
 export {

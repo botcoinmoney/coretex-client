@@ -15,8 +15,15 @@
  * No frontier / API model in canonical scoring.
  */
 
-import type { CortexState, Patch, PatchResult } from '../state/index.js';
-import { applyPatch, merkleizeState, bytesToHex } from '../state/index.js';
+import type { CortexState, Patch, PatchError, MerkleTreeCache } from '../state/index.js';
+import {
+  buildMerkleCache,
+  updateMerkleCache,
+  bytesToHex,
+  ERROR_NAMES,
+  RANGES,
+  hasNonZeroReservedBits,
+} from '../state/index.js';
 import { keccak256 } from '../state/keccak256.js';
 import { decodeCortexState } from '../decoder/index.js';
 import type { DecodedCortexState } from '../decoder/index.js';
@@ -129,6 +136,14 @@ export interface EvalOptions {
   shardId?: Uint8Array;
   /** Patch wire bytes (for hash computation). Provide the encoded patch bytes. */
   patchWireBytes: Uint8Array;
+  /**
+   * Optional Merkle cache for `state`.
+   *
+   * Production callers should keep one cache per canonical parent state and
+   * pass it here. evalPatch treats the cache as immutable and returns roots
+   * from incremental leaf-path recomputation.
+   */
+  merkleCache?: MerkleTreeCache;
 }
 
 /**
@@ -152,8 +167,8 @@ export function evalPatch(
   const loader: CorpusLoader = opts.loader ?? new StubCorpusLoader();
   const shardId: Uint8Array = opts.shardId ?? new Uint8Array(32);
 
-  // Compute parent state root
-  const parentRootBytes = merkleizeState(state);
+  const parentCache = opts.merkleCache ?? buildMerkleCache(state);
+  const parentRootBytes = parentCache.root;
   const parentStateRoot = bytesToHex(parentRootBytes);
 
   // Compute patch hash
@@ -166,8 +181,7 @@ export function evalPatch(
     baselineScore = BigInt(Math.round(loader.score(decodeResult.decoded, shardId) * 1_000_000));
   }
 
-  // Apply patch
-  const patchResult: PatchResult = applyPatch(state, patch);
+  const patchResult = applyPatchWithCachedParent(state, patch, parentRootBytes);
 
   let newStateRoot: string | null = null;
   let candidateScore = 0n;
@@ -177,7 +191,8 @@ export function evalPatch(
 
   if (patchResult.ok) {
     accepted = true;
-    newStateRoot = bytesToHex(merkleizeState(patchResult.state));
+    const nextCache = updateMerkleCache(parentCache, patchResult.updates);
+    newStateRoot = bytesToHex(nextCache.root);
     const candidateDecodeResult = decodeCortexState(patchResult.state);
     if (candidateDecodeResult.ok) {
       candidateScore = BigInt(Math.round(loader.score(candidateDecodeResult.decoded, shardId) * 1_000_000));
@@ -217,4 +232,73 @@ export function evalPatch(
   const reportHash = bytesToHex(keccak256(canonBytes));
 
   return { ...reportWithoutHash, reportHash };
+}
+
+interface CachedApplySuccess {
+  readonly ok: true;
+  readonly state: CortexState;
+  readonly updates: readonly { readonly index: number; readonly word: bigint }[];
+}
+
+type CachedApplyResult = CachedApplySuccess | PatchError;
+
+function applyPatchWithCachedParent(
+  state: CortexState,
+  patch: Patch,
+  parentRoot: Uint8Array,
+): CachedApplyResult {
+  if (patch.wordCount < 1 || patch.wordCount > 4) {
+    return patchError('E03');
+  }
+
+  if (!bytesEqual(patch.parentStateRoot, parentRoot)) {
+    return patchError('E01');
+  }
+
+  let anyChange = false;
+  for (let i = 0; i < patch.wordCount; i++) {
+    const idx = patch.indices[i]!;
+    if ((state.words[idx] ?? 0n) !== (patch.newWords[i] ?? 0n)) {
+      anyChange = true;
+      break;
+    }
+  }
+  if (!anyChange) {
+    return patchError('E05');
+  }
+
+  const newWords: bigint[] = [...state.words];
+  const updates: { index: number; word: bigint }[] = [];
+  for (let i = 0; i < patch.wordCount; i++) {
+    const idx = patch.indices[i]!;
+    if (idx >= RANGES.RESERVED_START && idx <= RANGES.RESERVED_END) {
+      return patchError('E02');
+    }
+    if (!Number.isInteger(idx) || idx < 0 || idx >= RANGES.WORD_COUNT) {
+      return patchError('E02');
+    }
+
+    const word = patch.newWords[i] ?? 0n;
+    newWords[idx] = word;
+    updates.push({ index: idx, word });
+  }
+
+  const resultState: CortexState = { words: newWords };
+  if (hasNonZeroReservedBits(resultState)) {
+    return patchError('E04');
+  }
+
+  return { ok: true, state: resultState, updates };
+}
+
+function patchError(code: PatchError['code']): PatchError {
+  return { ok: false, code, message: `${code}: ${ERROR_NAMES[code]}` };
+}
+
+function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
 }

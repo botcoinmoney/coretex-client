@@ -1,5 +1,5 @@
 /**
- * Coordinator funding-tx builder for CortexMergeBonus.fundEpoch().
+ * Legacy coordinator funding-tx builder for CortexMergeBonus.fundEpoch().
  *
  * Builds the OZ-compatible binary Merkle root over (miner, bonusBOTCOIN,
  * capBOTCOIN) leaves and emits ABI-encoded calldata for:
@@ -9,6 +9,9 @@
  *   leaf  = keccak256(abi.encodePacked(miner, bonusBOTCOIN, capBOTCOIN))
  *   pair  = keccak256(min(left, right) || max(left, right))         (sorted-pair)
  *   tree  = bottom-up; odd-length levels carry the unpaired leaf up unchanged
+ *
+ * V0 production does not fund this rail by default because state advances
+ * settle through normal credits and MERGE_MULTIPLIER_BPS is 10000.
  *
  * No external runtime deps. Pure functions. Compatible with
  * @openzeppelin/contracts/utils/cryptography/MerkleProof.sol verify().
@@ -148,7 +151,8 @@ export interface FundEpochCalldata {
 }
 
 /**
- * Build calldata for CortexMergeBonus.fundEpoch(uint64 epoch, bytes32 root, uint256 totalBonus).
+ * Build calldata for a legacy CortexMergeBonus.fundEpoch(uint64 epoch,
+ * bytes32 root, uint256 totalBonus) call.
  */
 export function buildFundEpochCalldata(
   epoch: bigint,

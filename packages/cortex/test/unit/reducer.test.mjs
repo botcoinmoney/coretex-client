@@ -13,9 +13,10 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 
 // Import from dist/ (requires `npm run build` first)
-let reducer, eligibility, multiplierCap, fundingTx, state;
+let reducer, liveEpoch, eligibility, multiplierCap, fundingTx, state;
 try {
   reducer = await import('../../dist/reducer/reducer.js');
+  liveEpoch = await import('../../dist/reducer/live-epoch.js');
   eligibility = await import('../../dist/reducer/eligibility.js');
   multiplierCap = await import('../../dist/reducer/multiplier-cap.js');
   fundingTx = await import('../../dist/reducer/funding-tx.js');
@@ -32,6 +33,11 @@ const {
   stubMarginalEvaluator,
   computePatchSetRoot,
 } = reducer;
+
+const {
+  advanceEpochState,
+  makeLiveEpochInput,
+} = liveEpoch;
 
 const {
   buildEpochEligibility,
@@ -112,6 +118,19 @@ function makePatch(parentState, indices, newWords, scoreDelta) {
     newWords: newWords.map(BigInt),
   };
   return makeReducerInput(patch);
+}
+
+function makeLivePatch(miner, parentState, indices, newWords, scoreDelta, marginalEvaluator) {
+  const parentStateRoot = merkleizeState(parentState);
+  const patch = {
+    patchType: 0x01,
+    wordCount: indices.length,
+    scoreDelta: BigInt(scoreDelta),
+    parentStateRoot,
+    indices,
+    newWords: newWords.map(BigInt),
+  };
+  return makeLiveEpochInput(miner, patch, encodePatch(patch), marginalEvaluator);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -247,6 +266,67 @@ describe('reduce()', () => {
   });
 });
 
+describe('advanceEpochState()', () => {
+  test('mid-epoch accepts two different-area improvements regardless of relative score', () => {
+    const s = makeTestState(301);
+    const i1 = safeTarget(1, 1);
+    const first = makeLivePatch('0xaaaa', s, [i1], [(s.words[i1] ?? 0n) ^ 1n], 10);
+    const afterFirst = applyPatch(s, first.patch);
+    assert.equal(afterFirst.ok, true);
+
+    const i2 = safeTarget(2, 1);
+    const second = makeLivePatch('0xbbbb', afterFirst.state, [i2], [(afterFirst.state.words[i2] ?? 0n) ^ 2n], 100);
+
+    const result = advanceEpochState(s, [first, second], 0n);
+    assert.equal(result.advances.length, 2);
+    assert.equal(result.rejected.length, 0);
+    assert.equal(result.newState.words[i1], first.patch.newWords[0]);
+    assert.equal(result.newState.words[i2], second.patch.newWords[0]);
+    assert.equal(result.advances[0].creditUnits, 10n);
+    assert.equal(result.advances[1].creditUnits, 100n);
+  });
+
+  test('stale-parent same-epoch patch is rejected until rebased on live root', () => {
+    const s = makeTestState(302);
+    const i1 = safeTarget(3, 1);
+    const i2 = safeTarget(4, 1);
+    const first = makeLivePatch('0xaaaa', s, [i1], [(s.words[i1] ?? 0n) ^ 1n], 10);
+    const staleSecond = makeLivePatch('0xbbbb', s, [i2], [(s.words[i2] ?? 0n) ^ 2n], 100);
+
+    const result = advanceEpochState(s, [first, staleSecond], 0n);
+    assert.equal(result.advances.length, 1);
+    assert.equal(result.rejected.length, 1);
+    assert.equal(result.rejected[0].reason, 'R03_WRONG_PARENT_ROOT');
+  });
+
+  test('screener-looking patch with no marginal improvement earns no credits', () => {
+    const s = makeTestState(303);
+    const idx = safeTarget(5, 1);
+    const candidate = makeLivePatch('0xaaaa', s, [idx], [(s.words[idx] ?? 0n) ^ 1n], 1_000, () => 0n);
+
+    const result = advanceEpochState(s, [candidate], 0n);
+    assert.equal(result.advances.length, 0);
+    assert.equal(result.rejected.length, 1);
+    assert.equal(result.rejected[0].reason, 'L01_NOT_IMPROVEMENT');
+    assert.equal(bytesToHex(result.newStateRoot), bytesToHex(merkleizeState(s)));
+  });
+
+  test('overlapping later patch can advance if it improves current live state', () => {
+    const s = makeTestState(304);
+    const idx = safeTarget(6, 1);
+    const first = makeLivePatch('0xaaaa', s, [idx], [(s.words[idx] ?? 0n) ^ 1n], 10);
+    const afterFirst = applyPatch(s, first.patch);
+    assert.equal(afterFirst.ok, true);
+
+    const second = makeLivePatch('0xbbbb', afterFirst.state, [idx], [(afterFirst.state.words[idx] ?? 0n) ^ 2n], 20);
+
+    const result = advanceEpochState(s, [first, second], 0n);
+    assert.equal(result.advances.length, 2);
+    assert.equal(result.rejected.length, 0);
+    assert.equal(result.newState.words[idx], second.patch.newWords[0]);
+  });
+});
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // Eligibility tests
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -324,16 +404,14 @@ describe('buildEpochEligibility()', () => {
 // Multiplier cap tests
 // ═══════════════════════════════════════════════════════════════════════════════
 
-describe('multiplier-cap', () => {
-  test('MERGE_MULTIPLIER_BPS = 20000 (2.0×)', () => {
-    assert.equal(MERGE_MULTIPLIER_BPS, 20_000n);
+describe('legacy multiplier-cap', () => {
+  test('MERGE_MULTIPLIER_BPS = 10000 (1.0×, no separate uplift)', () => {
+    assert.equal(MERGE_MULTIPLIER_BPS, 10_000n);
   });
 
-  test('computeMinerBonus gives 1.0× claimBase (V0: 2.0× multiplier minus 1× base)', () => {
+  test('computeMinerBonus gives zero uplift at the V0 default', () => {
     const bonus = computeMinerBonus('0xaaaa', 1_000_000n);
-    // (MERGE_MULTIPLIER_BPS − 10000) × claimBase / 10000
-    // = (20000 − 10000) × 1_000_000 / 10000 = 1_000_000
-    assert.equal(bonus.bonusBotcoin, 1_000_000n);
+    assert.equal(bonus.bonusBotcoin, 0n);
     assert.equal(bonus.capBotcoin, bonus.bonusBotcoin);
   });
 
@@ -352,7 +430,7 @@ describe('multiplier-cap', () => {
     assert.throws(() => assertBonusWithinCap(leaf), /cap violation/);
   });
 
-  test('buildEpochBonusLeaves: single leaf per miner (cap enforced)', () => {
+  test('buildEpochBonusLeaves: default no-uplift setting emits no funding leaves', () => {
     const epoch = 1n;
     const miner = '0xeeee';
     const hash1 = '0x1111'; const hash2 = '0x2222';
@@ -362,8 +440,7 @@ describe('multiplier-cap', () => {
       () => 10n,
     );
     const leaves = buildEpochBonusLeaves(elig, [{ miner, claimBase: 1_000_000n }]);
-    assert.equal(leaves.length, 1, 'exactly one leaf per miner');
-    assert.equal(leaves[0].bonusBotcoin, 1_000_000n); // (20000-10000)*1_000_000/10000 = 1_000_000
+    assert.equal(leaves.length, 0);
   });
 
   test('computeEpochTotalBonus sums correctly', () => {

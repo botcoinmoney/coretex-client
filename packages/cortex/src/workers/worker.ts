@@ -5,13 +5,14 @@
  * It receives EvalWorkerRequest messages, runs evalPatch, and posts back
  * EvalWorkerResponse or EvalWorkerError.
  *
- * Cache: decoded state is cached per parentStateRoot (hex) to avoid
- * redundant keccak256/merkleize on repeated parent within a worker.
+ * Cache: decoded state + Merkle tree are cached per parentStateRoot (hex) to
+ * avoid redundant unpack/keccak work on repeated parent within a worker.
  */
 
 import { isMainThread, parentPort } from 'node:worker_threads';
 import { unpack } from '../state/codec.js';
 import { decodePatch } from '../state/patch.js';
+import { buildMerkleCache, bytesToHex } from '../state/merkle.js';
 import { evalPatch, StubCorpusLoader } from '../eval/index.js';
 import type { EvalWorkerRequest, EvalWorkerMessage } from './pool.js';
 
@@ -24,52 +25,61 @@ if (!parentPort) {
 }
 
 // ─── Per-worker state root cache ──────────────────────────────────────────────
-// Avoids re-decoding the same state repeatedly within a worker.
+// Avoids re-decoding and re-merkleizing the same state repeatedly within a worker.
 // Capacity: 16 entries (LRU eviction — simple, no external dep).
 
 const CACHE_CAPACITY = 16;
-const decodeCache = new Map<string, ReturnType<typeof unpack>>();
+type CachedParent = {
+  readonly state: ReturnType<typeof unpack>;
+  readonly merkleCache: ReturnType<typeof buildMerkleCache>;
+};
+const parentCache = new Map<string, CachedParent>();
 
-function cacheGet(key: string): ReturnType<typeof unpack> | undefined {
-  const val = decodeCache.get(key);
+function cacheGet(key: string): CachedParent | undefined {
+  const val = parentCache.get(key);
   if (val !== undefined) {
     // LRU: refresh by delete+set
-    decodeCache.delete(key);
-    decodeCache.set(key, val);
+    parentCache.delete(key);
+    parentCache.set(key, val);
   }
   return val;
 }
 
-function cacheSet(key: string, val: ReturnType<typeof unpack>): void {
-  if (decodeCache.size >= CACHE_CAPACITY) {
+function cacheSet(key: string, val: CachedParent): void {
+  if (parentCache.size >= CACHE_CAPACITY) {
     // Evict oldest
-    const oldest = decodeCache.keys().next().value;
-    if (oldest !== undefined) decodeCache.delete(oldest);
+    const oldest = parentCache.keys().next().value;
+    if (oldest !== undefined) parentCache.delete(oldest);
   }
-  decodeCache.set(key, val);
+  parentCache.set(key, val);
 }
 
 // ─── Message handler ──────────────────────────────────────────────────────────
 
 parentPort.on('message', (req: EvalWorkerRequest) => {
   try {
-    // Use cached state if available (keyed by first 8 bytes of stateBytes as hex)
-    // We use patchWireBytes parent root for cache key (first 32 bytes after offset 10)
-    // Actually simpler: key = hex of stateBytes slice 0:8 (enough to distinguish)
-    const cacheKey = bufToHex(req.stateBytes.subarray(0, 8));
-    let state = cacheGet(cacheKey);
-    if (!state) {
-      state = unpack(req.stateBytes);
-      cacheSet(cacheKey, state);
+    const patch = decodePatch(req.patchWireBytes);
+    const cacheKey = bytesToHex(patch.parentStateRoot).toLowerCase();
+    let cached = cacheGet(cacheKey);
+    if (!cached) {
+      const state = unpack(req.stateBytes);
+      const merkleCache = buildMerkleCache(state);
+      if (bytesToHex(merkleCache.root).toLowerCase() === cacheKey) {
+        cached = { state, merkleCache };
+        cacheSet(cacheKey, cached);
+      } else {
+        // Do not cache mismatched inputs; evalPatch will return E01.
+        cached = { state, merkleCache };
+      }
     }
 
-    const patch = decodePatch(req.patchWireBytes);
     const loader = new StubCorpusLoader(req.corpusRoot);
 
-    const report = evalPatch(state, patch, {
+    const report = evalPatch(cached.state, patch, {
       loader,
       shardId: req.shardId,
       patchWireBytes: req.patchWireBytes,
+      merkleCache: cached.merkleCache,
     });
 
     // Serialize bigints as strings with "n" suffix for round-trip
@@ -85,11 +95,3 @@ parentPort.on('message', (req: EvalWorkerRequest) => {
     parentPort!.postMessage(response);
   }
 });
-
-function bufToHex(buf: Uint8Array): string {
-  let h = '';
-  for (const b of buf) {
-    h += b.toString(16).padStart(2, '0');
-  }
-  return h;
-}

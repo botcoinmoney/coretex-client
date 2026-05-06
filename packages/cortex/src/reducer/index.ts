@@ -21,6 +21,19 @@ export {
   stubMarginalEvaluator,
 } from './reducer.js';
 
+export type {
+  LiveEpochInputPatch,
+  LiveEpochOutput,
+  LiveRejectedPatch,
+  LiveRejectionCode,
+  StateAdvance,
+} from './live-epoch.js';
+
+export {
+  advanceEpochState,
+  makeLiveEpochInput,
+} from './live-epoch.js';
+
 // Eligibility
 export type {
   ScreenerPassedEvent,

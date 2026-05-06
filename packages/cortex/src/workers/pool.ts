@@ -1,7 +1,8 @@
 /**
  * Phase 3 — Worker-pool wrapper around the evaluator.
  *
- * Pool size: os.cpus().length - 1, clamped to [1, 8].
+ * Pool size: 1 worker on small hosts; otherwise os.cpus().length - 2,
+ * clamped to [1, 8]. Operators may override with an explicit size.
  * Eval is NEVER run on the main (HTTP request) thread.
  *
  * Architecture:
@@ -19,7 +20,8 @@ import { fileURLToPath } from 'node:url';
 
 export function defaultPoolSize(): number {
   const cpus = os.cpus().length;
-  return Math.max(1, Math.min(8, cpus - 1));
+  if (cpus <= 4) return 1;
+  return Math.max(1, Math.min(8, cpus - 2));
 }
 
 // ─── Message types ────────────────────────────────────────────────────────────

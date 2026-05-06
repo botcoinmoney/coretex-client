@@ -5,7 +5,7 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { evalPatch, StubCorpusLoader, canonicalJson } from '../../dist/eval/index.js';
-import { merkleizeState, bytesToHex, hexToBytes } from '../../dist/state/merkle.js';
+import { buildMerkleCache, merkleizeState, bytesToHex, hexToBytes } from '../../dist/state/merkle.js';
 import { applyPatch, encodePatch, decodePatch } from '../../dist/state/patch.js';
 import { PATCH_TYPE } from '../../dist/state/types.js';
 
@@ -56,6 +56,21 @@ describe('evalPatch — accepted patch', () => {
       const expectedRoot = bytesToHex(merkleizeState(patchResult.state));
       assert.equal(report.newStateRoot, expectedRoot);
     }
+  });
+
+  test('cached Merkle eval matches uncached eval roots', () => {
+    const state = makeCleanState();
+    const { patch, patchWireBytes } = makeEncodedPatch(state);
+    const uncached = evalPatch(state, patch, { patchWireBytes });
+    const cached = evalPatch(state, patch, {
+      patchWireBytes,
+      merkleCache: buildMerkleCache(state),
+    });
+
+    assert.equal(cached.accepted, true);
+    assert.equal(cached.parentStateRoot, uncached.parentStateRoot);
+    assert.equal(cached.newStateRoot, uncached.newStateRoot);
+    assert.equal(cached.patchHash, uncached.patchHash);
   });
 
   test('reportHash is 0x-prefixed 64-char hex', () => {
@@ -150,6 +165,20 @@ describe('evalPatch — rejected patch', () => {
     const report = evalPatch(state, patch, { patchWireBytes });
     assert.equal(report.accepted, false);
     assert.equal(report.errorCode, 'E03');
+  });
+
+  test('E04 invalid parent reserved bit remains rejected on cached path', () => {
+    const state = makeCleanState();
+    state.words[11] = 1n; // header word 11 is fully reserved.
+    const { patch, patchWireBytes } = makeEncodedPatch(state);
+    const report = evalPatch(state, patch, {
+      patchWireBytes,
+      merkleCache: buildMerkleCache(state),
+    });
+
+    assert.equal(report.accepted, false);
+    assert.equal(report.errorCode, 'E04');
+    assert.equal(report.newStateRoot, null);
   });
 });
 
