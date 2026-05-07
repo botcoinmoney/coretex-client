@@ -35,10 +35,16 @@ export interface CoreTexWorkPolicy {
   readonly bpsDivisor: string | bigint | number;
   readonly screenerPass: {
     readonly outcome: number;
-    readonly minDeterministicDeltaPpm: string | bigint | number;
     readonly minLocalModelDeltaPpm: string | bigint | number;
     readonly maxRelevantNearCollisionPpm: string | bigint | number;
     readonly workUnitsBps: string | bigint | number;
+    readonly calibration: {
+      readonly scoreScalePpm: string | bigint | number;
+      readonly minDeltaPpm: string | bigint | number;
+      readonly remainingHeadroomBps: string | bigint | number;
+      readonly noiseFloorMultiplierBps: string | bigint | number;
+      readonly maxThresholdPpm: string | bigint | number;
+    };
   };
   readonly stateAdvance: {
     readonly outcome: number;
@@ -64,10 +70,16 @@ export const DEFAULT_CORETEX_WORK_POLICY: CoreTexWorkPolicy = Object.freeze({
   bpsDivisor: '10000',
   screenerPass: Object.freeze({
     outcome: OUTCOME_CORETEX_SCREENER_PASS,
-    minDeterministicDeltaPpm: '1',
     minLocalModelDeltaPpm: '0',
     maxRelevantNearCollisionPpm: '250000',
     workUnitsBps: '10000',
+    calibration: Object.freeze({
+      scoreScalePpm: '1000000',
+      minDeltaPpm: '50',
+      remainingHeadroomBps: '5',
+      noiseFloorMultiplierBps: '20000',
+      maxThresholdPpm: '5000',
+    }),
   }),
   stateAdvance: Object.freeze({
     outcome: OUTCOME_CORETEX_STATE_ADVANCE,
@@ -99,6 +111,8 @@ export interface ComputeCoreTexWorkUnitsInput {
 
 export interface CoreTexWorkQualificationInput extends ComputeCoreTexWorkUnitsInput {
   readonly deterministicDeltaPpm: string | bigint | number;
+  readonly baselineScorePpm?: string | bigint | number;
+  readonly recentNoiseFloorPpm?: string | bigint | number;
   readonly localModelDeltaPpm?: string | bigint | number;
   readonly relevantNearCollisionPpm?: string | bigint | number;
   readonly parentMatchesLiveRoot: boolean;
@@ -115,6 +129,13 @@ export interface CoreTexWorkQualification {
     | 'W05_RELEVANT_NEAR_COLLISION'
     | 'W06_STATE_NOT_ADVANCED';
   readonly workUnitsBps: bigint;
+  readonly requiredDeterministicDeltaPpm: bigint;
+}
+
+export interface ComputeCoreTexScreenerThresholdInput {
+  readonly baselineScorePpm?: string | bigint | number;
+  readonly recentNoiseFloorPpm?: string | bigint | number;
+  readonly policy?: CoreTexWorkPolicy;
 }
 
 export function computeCoreTexWorkUnitsBps(input: ComputeCoreTexWorkUnitsInput): bigint {
@@ -145,52 +166,88 @@ export function computeCoreTexWorkUnitsBps(input: ComputeCoreTexWorkUnitsInput):
   return selected;
 }
 
+export function computeCoreTexScreenerThresholdPpm(input: ComputeCoreTexScreenerThresholdInput = {}): bigint {
+  const policy = input.policy ?? DEFAULT_CORETEX_WORK_POLICY;
+  assertValidCoreTexWorkPolicy(policy);
+
+  const calibration = policy.screenerPass.calibration;
+  const scale = toBigInt(calibration.scoreScalePpm, 'screenerPass.calibration.scoreScalePpm');
+  const baseline = clamp(
+    toBigInt(input.baselineScorePpm ?? 0n, 'baselineScorePpm'),
+    0n,
+    scale,
+  );
+  const remaining = scale - baseline;
+  const minDelta = toBigInt(calibration.minDeltaPpm, 'screenerPass.calibration.minDeltaPpm');
+  const headroomDelta =
+    (remaining * toBigInt(calibration.remainingHeadroomBps, 'screenerPass.calibration.remainingHeadroomBps')) / WORK_BPS_DIVISOR;
+  const noiseDelta =
+    (toBigInt(input.recentNoiseFloorPpm ?? 0n, 'recentNoiseFloorPpm')
+      * toBigInt(calibration.noiseFloorMultiplierBps, 'screenerPass.calibration.noiseFloorMultiplierBps')) / WORK_BPS_DIVISOR;
+  const maxThreshold = toBigInt(calibration.maxThresholdPpm, 'screenerPass.calibration.maxThresholdPpm');
+
+  return min(max(minDelta, max(headroomDelta, noiseDelta)), maxThreshold);
+}
+
 export function evaluateCoreTexWorkQualification(input: CoreTexWorkQualificationInput): CoreTexWorkQualification {
   const policy = input.policy ?? DEFAULT_CORETEX_WORK_POLICY;
   assertValidCoreTexWorkPolicy(policy);
 
   if (input.outcome !== policy.screenerPass.outcome && input.outcome !== policy.stateAdvance.outcome) {
-    return { qualified: false, reason: 'W01_UNKNOWN_OUTCOME', workUnitsBps: 0n };
+    return { qualified: false, reason: 'W01_UNKNOWN_OUTCOME', workUnitsBps: 0n, requiredDeterministicDeltaPpm: 0n };
   }
   if (!input.parentMatchesLiveRoot) {
-    return { qualified: false, reason: 'W02_STALE_PARENT', workUnitsBps: 0n };
+    return { qualified: false, reason: 'W02_STALE_PARENT', workUnitsBps: 0n, requiredDeterministicDeltaPpm: 0n };
   }
 
   const deterministicDelta = toSignedBigInt(input.deterministicDeltaPpm, 'deterministicDeltaPpm');
   const localModelDelta = toSignedBigInt(input.localModelDeltaPpm ?? 0n, 'localModelDeltaPpm');
   const isStateAdvance = input.outcome === policy.stateAdvance.outcome;
-  const minDeterministic = toBigInt(
-    isStateAdvance ? policy.stateAdvance.minDeterministicDeltaPpm : policy.screenerPass.minDeterministicDeltaPpm,
-    isStateAdvance ? 'stateAdvance.minDeterministicDeltaPpm' : 'screenerPass.minDeterministicDeltaPpm',
-  );
+  const thresholdInput: {
+    baselineScorePpm?: string | bigint | number;
+    recentNoiseFloorPpm?: string | bigint | number;
+    policy: CoreTexWorkPolicy;
+  } = { policy };
+  if (input.baselineScorePpm !== undefined) thresholdInput.baselineScorePpm = input.baselineScorePpm;
+  if (input.recentNoiseFloorPpm !== undefined) thresholdInput.recentNoiseFloorPpm = input.recentNoiseFloorPpm;
+  const screenerThreshold = computeCoreTexScreenerThresholdPpm(thresholdInput);
+  const minDeterministic = isStateAdvance
+    ? max(toBigInt(policy.stateAdvance.minDeterministicDeltaPpm, 'stateAdvance.minDeterministicDeltaPpm'), screenerThreshold)
+    : screenerThreshold;
   const minLocal = toBigInt(
     isStateAdvance ? policy.stateAdvance.minLocalModelDeltaPpm : policy.screenerPass.minLocalModelDeltaPpm,
     isStateAdvance ? 'stateAdvance.minLocalModelDeltaPpm' : 'screenerPass.minLocalModelDeltaPpm',
   );
 
   if (deterministicDelta < minDeterministic) {
-    return { qualified: false, reason: 'W03_DETERMINISTIC_DELTA_TOO_LOW', workUnitsBps: 0n };
+    return {
+      qualified: false,
+      reason: 'W03_DETERMINISTIC_DELTA_TOO_LOW',
+      workUnitsBps: 0n,
+      requiredDeterministicDeltaPpm: minDeterministic,
+    };
   }
   if (localModelDelta < minLocal) {
-    return { qualified: false, reason: 'W04_LOCAL_MODEL_REGRESSION', workUnitsBps: 0n };
+    return { qualified: false, reason: 'W04_LOCAL_MODEL_REGRESSION', workUnitsBps: 0n, requiredDeterministicDeltaPpm: minDeterministic };
   }
 
   const nearCollision = input.relevantNearCollisionPpm;
   if (nearCollision !== undefined) {
     const maxCollision = toBigInt(policy.screenerPass.maxRelevantNearCollisionPpm, 'screenerPass.maxRelevantNearCollisionPpm');
     if (toBigInt(nearCollision, 'relevantNearCollisionPpm') > maxCollision) {
-      return { qualified: false, reason: 'W05_RELEVANT_NEAR_COLLISION', workUnitsBps: 0n };
+      return { qualified: false, reason: 'W05_RELEVANT_NEAR_COLLISION', workUnitsBps: 0n, requiredDeterministicDeltaPpm: minDeterministic };
     }
   }
 
   if (isStateAdvance && policy.stateAdvance.requireLiveStateAdvance && input.liveStateAdvanced !== true) {
-    return { qualified: false, reason: 'W06_STATE_NOT_ADVANCED', workUnitsBps: 0n };
+    return { qualified: false, reason: 'W06_STATE_NOT_ADVANCED', workUnitsBps: 0n, requiredDeterministicDeltaPpm: minDeterministic };
   }
 
   return {
     qualified: true,
     reason: 'OK',
     workUnitsBps: computeCoreTexWorkUnitsBps(input),
+    requiredDeterministicDeltaPpm: minDeterministic,
   };
 }
 
@@ -209,6 +266,19 @@ export function assertValidCoreTexWorkPolicy(policy: CoreTexWorkPolicy): void {
   }
   if (policy.screenerPass.outcome !== OUTCOME_CORETEX_SCREENER_PASS) {
     throw new RangeError('policy.screenerPass.outcome must be 1');
+  }
+  const calibration = policy.screenerPass.calibration;
+  const scoreScale = toBigInt(calibration.scoreScalePpm, 'screenerPass.calibration.scoreScalePpm');
+  const minDelta = toBigInt(calibration.minDeltaPpm, 'screenerPass.calibration.minDeltaPpm');
+  const maxThreshold = toBigInt(calibration.maxThresholdPpm, 'screenerPass.calibration.maxThresholdPpm');
+  if (scoreScale !== 1_000_000n) throw new RangeError('scoreScalePpm must be 1000000');
+  if (minDelta < 10n) throw new RangeError('screener minimum delta is too low');
+  if (maxThreshold < minDelta) throw new RangeError('screener max threshold must be >= min delta');
+  if (toBigInt(calibration.remainingHeadroomBps, 'screenerPass.calibration.remainingHeadroomBps') === 0n) {
+    throw new RangeError('remainingHeadroomBps must be positive');
+  }
+  if (toBigInt(calibration.noiseFloorMultiplierBps, 'screenerPass.calibration.noiseFloorMultiplierBps') < WORK_BPS_DIVISOR) {
+    throw new RangeError('noiseFloorMultiplierBps must be at least 1x');
   }
   if (policy.stateAdvance.outcome !== OUTCOME_CORETEX_STATE_ADVANCE) {
     throw new RangeError('policy.stateAdvance.outcome must be 2');
@@ -265,6 +335,18 @@ function toSignedBigInt(value: string | bigint | number, label: string): bigint 
     throw new RangeError(`${label} must be a signed decimal string`);
   }
   return BigInt(value);
+}
+
+function min(a: bigint, b: bigint): bigint {
+  return a < b ? a : b;
+}
+
+function max(a: bigint, b: bigint): bigint {
+  return a > b ? a : b;
+}
+
+function clamp(value: bigint, lo: bigint, hi: bigint): bigint {
+  return min(max(value, lo), hi);
 }
 
 function canonicalValue(value: unknown): string {

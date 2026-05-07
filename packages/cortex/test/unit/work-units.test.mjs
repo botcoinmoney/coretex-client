@@ -18,6 +18,7 @@ const {
   CORETEX_WORK_RULES_VERSION,
   DEFAULT_CORETEX_WORK_POLICY,
   computeCoreTexWorkUnitsBps,
+  computeCoreTexScreenerThresholdPpm,
   evaluateCoreTexWorkQualification,
   coreTexWorkPolicyHash,
   assertValidCoreTexWorkPolicy,
@@ -90,15 +91,35 @@ describe('CoreTex V4 work-unit policy', () => {
     );
   });
 
+  test('screener threshold adapts to baseline headroom and measured noise', () => {
+    assert.equal(
+      computeCoreTexScreenerThresholdPpm({ baselineScorePpm: 0, recentNoiseFloorPpm: 0 }),
+      500n,
+    );
+    assert.equal(
+      computeCoreTexScreenerThresholdPpm({ baselineScorePpm: 900_000, recentNoiseFloorPpm: 0 }),
+      50n,
+    );
+    assert.equal(
+      computeCoreTexScreenerThresholdPpm({ baselineScorePpm: 900_000, recentNoiseFloorPpm: 80 }),
+      160n,
+    );
+    assert.equal(
+      computeCoreTexScreenerThresholdPpm({ baselineScorePpm: 0, recentNoiseFloorPpm: 10_000 }),
+      5_000n,
+    );
+  });
+
   test('qualification requires current parent root and real signal', () => {
     assert.deepEqual(
       evaluateCoreTexWorkQualification({
         outcome: OUTCOME_CORETEX_SCREENER_PASS,
-        deterministicDeltaPpm: 1,
+        deterministicDeltaPpm: 500,
+        baselineScorePpm: 0,
         localModelDeltaPpm: 0,
         parentMatchesLiveRoot: true,
       }),
-      { qualified: true, reason: 'OK', workUnitsBps: 10_000n },
+      { qualified: true, reason: 'OK', workUnitsBps: 10_000n, requiredDeterministicDeltaPpm: 500n },
     );
 
     assert.equal(
@@ -114,6 +135,17 @@ describe('CoreTex V4 work-unit policy', () => {
       evaluateCoreTexWorkQualification({
         outcome: OUTCOME_CORETEX_SCREENER_PASS,
         deterministicDeltaPpm: 0,
+        baselineScorePpm: 0,
+        parentMatchesLiveRoot: true,
+      }).reason,
+      'W03_DETERMINISTIC_DELTA_TOO_LOW',
+    );
+
+    assert.equal(
+      evaluateCoreTexWorkQualification({
+        outcome: OUTCOME_CORETEX_SCREENER_PASS,
+        deterministicDeltaPpm: 49,
+        baselineScorePpm: 900_000,
         parentMatchesLiveRoot: true,
       }).reason,
       'W03_DETERMINISTIC_DELTA_TOO_LOW',
@@ -124,7 +156,8 @@ describe('CoreTex V4 work-unit policy', () => {
     assert.equal(
       evaluateCoreTexWorkQualification({
         outcome: OUTCOME_CORETEX_STATE_ADVANCE,
-        deterministicDeltaPpm: 10,
+        deterministicDeltaPpm: 500,
+        baselineScorePpm: 0,
         localModelDeltaPpm: 0,
         parentMatchesLiveRoot: true,
         liveStateAdvanced: false,
@@ -135,7 +168,8 @@ describe('CoreTex V4 work-unit policy', () => {
     assert.equal(
       evaluateCoreTexWorkQualification({
         outcome: OUTCOME_CORETEX_STATE_ADVANCE,
-        deterministicDeltaPpm: 10,
+        deterministicDeltaPpm: 500,
+        baselineScorePpm: 0,
         localModelDeltaPpm: -1,
         parentMatchesLiveRoot: true,
         liveStateAdvanced: true,
@@ -146,13 +180,14 @@ describe('CoreTex V4 work-unit policy', () => {
     assert.deepEqual(
       evaluateCoreTexWorkQualification({
         outcome: OUTCOME_CORETEX_STATE_ADVANCE,
-        deterministicDeltaPpm: 10,
+        deterministicDeltaPpm: 500,
+        baselineScorePpm: 0,
         localModelDeltaPpm: 0,
         parentMatchesLiveRoot: true,
         liveStateAdvanced: true,
         qualifiedScreenerPassesSinceLastStateAdvance: 500,
       }),
-      { qualified: true, reason: 'OK', workUnitsBps: 120_000n },
+      { qualified: true, reason: 'OK', workUnitsBps: 120_000n, requiredDeterministicDeltaPpm: 500n },
     );
   });
 
@@ -160,7 +195,8 @@ describe('CoreTex V4 work-unit policy', () => {
     assert.equal(
       evaluateCoreTexWorkQualification({
         outcome: OUTCOME_CORETEX_SCREENER_PASS,
-        deterministicDeltaPpm: 10,
+        deterministicDeltaPpm: 500,
+        baselineScorePpm: 0,
         localModelDeltaPpm: 0,
         relevantNearCollisionPpm: 250_001,
         parentMatchesLiveRoot: true,
@@ -188,5 +224,9 @@ describe('CoreTex V4 work-unit policy', () => {
     const badScreener = structuredClone(DEFAULT_CORETEX_WORK_POLICY);
     badScreener.screenerPass.workUnitsBps = '20000';
     assert.throws(() => assertValidCoreTexWorkPolicy(badScreener), /screener pass/);
+
+    const badCalibration = structuredClone(DEFAULT_CORETEX_WORK_POLICY);
+    badCalibration.screenerPass.calibration.minDeltaPpm = '1';
+    assert.throws(() => assertValidCoreTexWorkPolicy(badCalibration), /minimum delta/);
   });
 });

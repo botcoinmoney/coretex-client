@@ -6,6 +6,7 @@ export {
   CORTEX_RULES_VERSION as CORETEX_WORK_RULES_VERSION,
   DEFAULT_CORETEX_WORK_POLICY,
   computeCoreTexWorkUnitsBps,
+  computeCoreTexScreenerThresholdPpm,
   evaluateCoreTexWorkQualification,
   coreTexWorkPolicyHash,
   assertValidCoreTexWorkPolicy,
@@ -14,6 +15,7 @@ export type {
   StateAdvanceWorkTier,
   CoreTexWorkPolicy,
   ComputeCoreTexWorkUnitsInput,
+  ComputeCoreTexScreenerThresholdInput,
   CoreTexWorkQualificationInput,
   CoreTexWorkQualification,
 } from './work-units.js';
