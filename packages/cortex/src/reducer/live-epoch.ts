@@ -13,6 +13,11 @@ import { buildMerkleCache, updateMerkleCache, bytesToHex } from '../state/merkle
 import { keccak256 } from '../state/keccak256.js';
 import type { MarginalEvaluator, RejectionCode, AcceptedPatch } from './reducer.js';
 import { computePatchSetRoot, stubMarginalEvaluator } from './reducer.js';
+import {
+  OUTCOME_CORETEX_STATE_ADVANCE,
+  computeCoreTexWorkUnitsBps,
+  type CoreTexWorkPolicy,
+} from '../rewards/index.js';
 
 export type LiveRejectionCode = RejectionCode | 'L01_NOT_IMPROVEMENT';
 
@@ -32,7 +37,9 @@ export interface StateAdvance {
   readonly parentStateRoot: string;
   readonly newStateRoot: string;
   readonly marginalGain: bigint;
-  /** Credits paid through the normal epoch credit accounting path. */
+  /** V4 work units in basis points; 30000 means 3x current tier credits. */
+  readonly workUnitsBps: bigint;
+  /** Backward-compatible alias for the V4 work-unit amount. */
   readonly creditUnits: bigint;
   readonly advanceIndex: number;
 }
@@ -54,6 +61,11 @@ export interface LiveEpochOutput {
   readonly rejected: LiveRejectedPatch[];
 }
 
+export interface LiveEpochRewardOptions {
+  readonly qualifiedScreenerPassesSinceLastStateAdvance?: string | bigint | number;
+  readonly workPolicy?: CoreTexWorkPolicy;
+}
+
 /**
  * Advance the epoch state as verified improvements arrive.
  *
@@ -70,6 +82,7 @@ export function advanceEpochState(
   parentState: CortexState,
   patches: readonly LiveEpochInputPatch[],
   threshold: bigint = 0n,
+  rewardOptions: LiveEpochRewardOptions = {},
 ): LiveEpochOutput {
   let current = parentState;
   let currentMerkle = buildMerkleCache(current);
@@ -122,6 +135,13 @@ export function advanceEpochState(
       item.patch.indices.map((index, i) => ({ index, word: item.patch.newWords[i] ?? 0n })),
     );
     const newStateRootHex = bytesToHex(currentMerkle.root);
+    const workUnitInput = {
+      outcome: OUTCOME_CORETEX_STATE_ADVANCE,
+      qualifiedScreenerPassesSinceLastStateAdvance:
+        toBigInt(rewardOptions.qualifiedScreenerPassesSinceLastStateAdvance ?? 0n) + BigInt(advances.length),
+      ...(rewardOptions.workPolicy ? { policy: rewardOptions.workPolicy } : {}),
+    };
+    const workUnitsBps = computeCoreTexWorkUnitsBps(workUnitInput);
     advances.push({
       miner: item.miner.toLowerCase(),
       patch: item.patch,
@@ -130,7 +150,8 @@ export function advanceEpochState(
       parentStateRoot: parentRootHex,
       newStateRoot: newStateRootHex,
       marginalGain,
-      creditUnits: marginalGain,
+      workUnitsBps,
+      creditUnits: workUnitsBps,
       advanceIndex: advances.length,
     });
   }
@@ -153,6 +174,16 @@ export function advanceEpochState(
     advances,
     rejected,
   };
+}
+
+function toBigInt(value: string | bigint | number): bigint {
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'number') {
+    if (!Number.isSafeInteger(value) || value < 0) throw new RangeError('reward counter must be a non-negative safe integer');
+    return BigInt(value);
+  }
+  if (!/^(0|[1-9][0-9]*)$/.test(value)) throw new RangeError('reward counter must be a non-negative decimal string');
+  return BigInt(value);
 }
 
 export function makeLiveEpochInput(

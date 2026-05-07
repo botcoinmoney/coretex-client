@@ -282,8 +282,12 @@ describe('advanceEpochState()', () => {
     assert.equal(result.rejected.length, 0);
     assert.equal(result.newState.words[i1], first.patch.newWords[0]);
     assert.equal(result.newState.words[i2], second.patch.newWords[0]);
-    assert.equal(result.advances[0].creditUnits, 10n);
-    assert.equal(result.advances[1].creditUnits, 100n);
+    assert.equal(result.advances[0].marginalGain, 10n);
+    assert.equal(result.advances[1].marginalGain, 100n);
+    assert.equal(result.advances[0].workUnitsBps, 30_000n);
+    assert.equal(result.advances[1].workUnitsBps, 30_000n);
+    assert.equal(result.advances[0].creditUnits, 30_000n);
+    assert.equal(result.advances[1].creditUnits, 30_000n);
   });
 
   test('stale-parent same-epoch patch is rejected until rebased on live root', () => {
@@ -324,6 +328,20 @@ describe('advanceEpochState()', () => {
     assert.equal(result.advances.length, 2);
     assert.equal(result.rejected.length, 0);
     assert.equal(result.newState.words[idx], second.patch.newWords[0]);
+  });
+
+  test('state-advance work units scale from screener-pass difficulty counter', () => {
+    const s = makeTestState(305);
+    const idx = safeTarget(7, 1);
+    const candidate = makeLivePatch('0xaaaa', s, [idx], [(s.words[idx] ?? 0n) ^ 1n], 10);
+
+    const result = advanceEpochState(s, [candidate], 0n, {
+      qualifiedScreenerPassesSinceLastStateAdvance: 500n,
+    });
+
+    assert.equal(result.advances.length, 1);
+    assert.equal(result.advances[0].workUnitsBps, 120_000n);
+    assert.equal(result.advances[0].creditUnits, 120_000n);
   });
 });
 

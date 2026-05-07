@@ -1,0 +1,285 @@
+/**
+ * CoreTex V4 work-credit policy.
+ *
+ * This module is deliberately pure and dependency-light: it is the verifier
+ * mirror of BotcoinMiningV4.submitWorkReceipt(). The contract enforces signer,
+ * solve-chain, stake tier, lane/outcome bounds, and the active policy hash.
+ * CoreTex nodes use this file to reproduce the workUnitsBps that the
+ * coordinator signed for a screener pass or state advance.
+ *
+ * Open-sourcing the policy should not make passes trivial to grind because the
+ * pass calculation is over the current live parent root and hidden shard. The
+ * formula is public; the epoch-secret-derived shard and changing live state are
+ * the anti-gaming pressure.
+ */
+
+import { bytesToHex } from '../state/merkle.js';
+import { keccak256 } from '../state/keccak256.js';
+
+export const WORK_BPS_DIVISOR = 10_000n;
+export const LANE_CORETEX = 2;
+export const OUTCOME_CORETEX_SCREENER_PASS = 1;
+export const OUTCOME_CORETEX_STATE_ADVANCE = 2;
+export const CORTEX_RULES_VERSION = 0xC0;
+
+export interface StateAdvanceWorkTier {
+  readonly minQualifiedScreenerPassesSinceLastStateAdvance: string | bigint | number;
+  readonly workUnitsBps: string | bigint | number;
+}
+
+export interface CoreTexWorkPolicy {
+  readonly name: string;
+  readonly version: number;
+  readonly rulesVersion: number;
+  readonly lane: number;
+  readonly bpsDivisor: string | bigint | number;
+  readonly screenerPass: {
+    readonly outcome: number;
+    readonly minDeterministicDeltaPpm: string | bigint | number;
+    readonly minLocalModelDeltaPpm: string | bigint | number;
+    readonly maxRelevantNearCollisionPpm: string | bigint | number;
+    readonly workUnitsBps: string | bigint | number;
+  };
+  readonly stateAdvance: {
+    readonly outcome: number;
+    readonly minDeterministicDeltaPpm: string | bigint | number;
+    readonly minLocalModelDeltaPpm: string | bigint | number;
+    readonly requireLiveStateAdvance: boolean;
+    readonly difficultyCounter: 'qualifiedScreenerPassesSinceLastStateAdvance';
+    readonly tiers: readonly StateAdvanceWorkTier[];
+  };
+  readonly antiGaming: {
+    readonly currentParentStateRootRequired: boolean;
+    readonly hiddenShardDerivedFromEpochSecret: boolean;
+    readonly uniquePatchHashPerEpochMiner: boolean;
+    readonly modelNoRegressionRequiredForStateAdvance: boolean;
+  };
+}
+
+export const DEFAULT_CORETEX_WORK_POLICY: CoreTexWorkPolicy = Object.freeze({
+  name: 'botcoin-coretex-work-policy',
+  version: 1,
+  rulesVersion: CORTEX_RULES_VERSION,
+  lane: LANE_CORETEX,
+  bpsDivisor: '10000',
+  screenerPass: Object.freeze({
+    outcome: OUTCOME_CORETEX_SCREENER_PASS,
+    minDeterministicDeltaPpm: '1',
+    minLocalModelDeltaPpm: '0',
+    maxRelevantNearCollisionPpm: '250000',
+    workUnitsBps: '10000',
+  }),
+  stateAdvance: Object.freeze({
+    outcome: OUTCOME_CORETEX_STATE_ADVANCE,
+    minDeterministicDeltaPpm: '1',
+    minLocalModelDeltaPpm: '0',
+    requireLiveStateAdvance: true,
+    difficultyCounter: 'qualifiedScreenerPassesSinceLastStateAdvance',
+    tiers: Object.freeze([
+      Object.freeze({ minQualifiedScreenerPassesSinceLastStateAdvance: '0', workUnitsBps: '30000' }),
+      Object.freeze({ minQualifiedScreenerPassesSinceLastStateAdvance: '25', workUnitsBps: '40000' }),
+      Object.freeze({ minQualifiedScreenerPassesSinceLastStateAdvance: '100', workUnitsBps: '60000' }),
+      Object.freeze({ minQualifiedScreenerPassesSinceLastStateAdvance: '250', workUnitsBps: '90000' }),
+      Object.freeze({ minQualifiedScreenerPassesSinceLastStateAdvance: '500', workUnitsBps: '120000' }),
+    ]),
+  }),
+  antiGaming: Object.freeze({
+    currentParentStateRootRequired: true,
+    hiddenShardDerivedFromEpochSecret: true,
+    uniquePatchHashPerEpochMiner: true,
+    modelNoRegressionRequiredForStateAdvance: true,
+  }),
+});
+
+export interface ComputeCoreTexWorkUnitsInput {
+  readonly outcome: number;
+  readonly qualifiedScreenerPassesSinceLastStateAdvance?: string | bigint | number;
+  readonly policy?: CoreTexWorkPolicy;
+}
+
+export interface CoreTexWorkQualificationInput extends ComputeCoreTexWorkUnitsInput {
+  readonly deterministicDeltaPpm: string | bigint | number;
+  readonly localModelDeltaPpm?: string | bigint | number;
+  readonly relevantNearCollisionPpm?: string | bigint | number;
+  readonly parentMatchesLiveRoot: boolean;
+  readonly liveStateAdvanced?: boolean;
+}
+
+export interface CoreTexWorkQualification {
+  readonly qualified: boolean;
+  readonly reason: 'OK'
+    | 'W01_UNKNOWN_OUTCOME'
+    | 'W02_STALE_PARENT'
+    | 'W03_DETERMINISTIC_DELTA_TOO_LOW'
+    | 'W04_LOCAL_MODEL_REGRESSION'
+    | 'W05_RELEVANT_NEAR_COLLISION'
+    | 'W06_STATE_NOT_ADVANCED';
+  readonly workUnitsBps: bigint;
+}
+
+export function computeCoreTexWorkUnitsBps(input: ComputeCoreTexWorkUnitsInput): bigint {
+  const policy = input.policy ?? DEFAULT_CORETEX_WORK_POLICY;
+  assertValidCoreTexWorkPolicy(policy);
+
+  if (input.outcome === policy.screenerPass.outcome) {
+    return toBigInt(policy.screenerPass.workUnitsBps, 'screenerPass.workUnitsBps');
+  }
+  if (input.outcome !== policy.stateAdvance.outcome) {
+    throw new RangeError(`unknown CoreTex outcome ${input.outcome}`);
+  }
+
+  const count = toBigInt(
+    input.qualifiedScreenerPassesSinceLastStateAdvance ?? 0n,
+    'qualifiedScreenerPassesSinceLastStateAdvance',
+  );
+  let selected = toBigInt(policy.stateAdvance.tiers[0]!.workUnitsBps, 'stateAdvance.tiers[0].workUnitsBps');
+  for (const [i, tier] of policy.stateAdvance.tiers.entries()) {
+    const min = toBigInt(
+      tier.minQualifiedScreenerPassesSinceLastStateAdvance,
+      `stateAdvance.tiers[${i}].minQualifiedScreenerPassesSinceLastStateAdvance`,
+    );
+    if (count >= min) {
+      selected = toBigInt(tier.workUnitsBps, `stateAdvance.tiers[${i}].workUnitsBps`);
+    }
+  }
+  return selected;
+}
+
+export function evaluateCoreTexWorkQualification(input: CoreTexWorkQualificationInput): CoreTexWorkQualification {
+  const policy = input.policy ?? DEFAULT_CORETEX_WORK_POLICY;
+  assertValidCoreTexWorkPolicy(policy);
+
+  if (input.outcome !== policy.screenerPass.outcome && input.outcome !== policy.stateAdvance.outcome) {
+    return { qualified: false, reason: 'W01_UNKNOWN_OUTCOME', workUnitsBps: 0n };
+  }
+  if (!input.parentMatchesLiveRoot) {
+    return { qualified: false, reason: 'W02_STALE_PARENT', workUnitsBps: 0n };
+  }
+
+  const deterministicDelta = toSignedBigInt(input.deterministicDeltaPpm, 'deterministicDeltaPpm');
+  const localModelDelta = toSignedBigInt(input.localModelDeltaPpm ?? 0n, 'localModelDeltaPpm');
+  const isStateAdvance = input.outcome === policy.stateAdvance.outcome;
+  const minDeterministic = toBigInt(
+    isStateAdvance ? policy.stateAdvance.minDeterministicDeltaPpm : policy.screenerPass.minDeterministicDeltaPpm,
+    isStateAdvance ? 'stateAdvance.minDeterministicDeltaPpm' : 'screenerPass.minDeterministicDeltaPpm',
+  );
+  const minLocal = toBigInt(
+    isStateAdvance ? policy.stateAdvance.minLocalModelDeltaPpm : policy.screenerPass.minLocalModelDeltaPpm,
+    isStateAdvance ? 'stateAdvance.minLocalModelDeltaPpm' : 'screenerPass.minLocalModelDeltaPpm',
+  );
+
+  if (deterministicDelta < minDeterministic) {
+    return { qualified: false, reason: 'W03_DETERMINISTIC_DELTA_TOO_LOW', workUnitsBps: 0n };
+  }
+  if (localModelDelta < minLocal) {
+    return { qualified: false, reason: 'W04_LOCAL_MODEL_REGRESSION', workUnitsBps: 0n };
+  }
+
+  const nearCollision = input.relevantNearCollisionPpm;
+  if (nearCollision !== undefined) {
+    const maxCollision = toBigInt(policy.screenerPass.maxRelevantNearCollisionPpm, 'screenerPass.maxRelevantNearCollisionPpm');
+    if (toBigInt(nearCollision, 'relevantNearCollisionPpm') > maxCollision) {
+      return { qualified: false, reason: 'W05_RELEVANT_NEAR_COLLISION', workUnitsBps: 0n };
+    }
+  }
+
+  if (isStateAdvance && policy.stateAdvance.requireLiveStateAdvance && input.liveStateAdvanced !== true) {
+    return { qualified: false, reason: 'W06_STATE_NOT_ADVANCED', workUnitsBps: 0n };
+  }
+
+  return {
+    qualified: true,
+    reason: 'OK',
+    workUnitsBps: computeCoreTexWorkUnitsBps(input),
+  };
+}
+
+export function coreTexWorkPolicyHash(policy: CoreTexWorkPolicy = DEFAULT_CORETEX_WORK_POLICY): string {
+  assertValidCoreTexWorkPolicy(policy);
+  return bytesToHex(keccak256(new TextEncoder().encode(canonicalValue(policy))));
+}
+
+export function assertValidCoreTexWorkPolicy(policy: CoreTexWorkPolicy): void {
+  if (policy.name.length === 0) throw new RangeError('policy.name is required');
+  if (policy.version <= 0) throw new RangeError('policy.version must be positive');
+  if (policy.rulesVersion !== CORTEX_RULES_VERSION) throw new RangeError('policy.rulesVersion must be 0xC0');
+  if (policy.lane !== LANE_CORETEX) throw new RangeError('policy.lane must be CoreTex');
+  if (toBigInt(policy.bpsDivisor, 'bpsDivisor') !== WORK_BPS_DIVISOR) {
+    throw new RangeError('policy.bpsDivisor must be 10000');
+  }
+  if (policy.screenerPass.outcome !== OUTCOME_CORETEX_SCREENER_PASS) {
+    throw new RangeError('policy.screenerPass.outcome must be 1');
+  }
+  if (policy.stateAdvance.outcome !== OUTCOME_CORETEX_STATE_ADVANCE) {
+    throw new RangeError('policy.stateAdvance.outcome must be 2');
+  }
+  const screenerBps = toBigInt(policy.screenerPass.workUnitsBps, 'screenerPass.workUnitsBps');
+  if (screenerBps !== WORK_BPS_DIVISOR) {
+    throw new RangeError('screener pass must stay exactly 1x');
+  }
+  if (policy.stateAdvance.tiers.length === 0) {
+    throw new RangeError('stateAdvance.tiers must not be empty');
+  }
+
+  let prevMin = -1n;
+  let prevBps = 0n;
+  for (const [i, tier] of policy.stateAdvance.tiers.entries()) {
+    const min = toBigInt(
+      tier.minQualifiedScreenerPassesSinceLastStateAdvance,
+      `stateAdvance.tiers[${i}].minQualifiedScreenerPassesSinceLastStateAdvance`,
+    );
+    const bps = toBigInt(tier.workUnitsBps, `stateAdvance.tiers[${i}].workUnitsBps`);
+    if (min <= prevMin) throw new RangeError('stateAdvance.tiers must have strictly increasing min counts');
+    if (bps < 3n * WORK_BPS_DIVISOR) throw new RangeError('state advance must be at least 3x');
+    if (bps < prevBps) throw new RangeError('stateAdvance.tiers bps must be nondecreasing');
+    prevMin = min;
+    prevBps = bps;
+  }
+  if (toBigInt(policy.stateAdvance.tiers[0]!.minQualifiedScreenerPassesSinceLastStateAdvance, 'stateAdvance.tiers[0].min') !== 0n) {
+    throw new RangeError('first stateAdvance tier must start at 0');
+  }
+}
+
+function toBigInt(value: string | bigint | number, label: string): bigint {
+  if (typeof value === 'bigint') {
+    if (value < 0n) throw new RangeError(`${label} must be non-negative`);
+    return value;
+  }
+  if (typeof value === 'number') {
+    if (!Number.isSafeInteger(value) || value < 0) throw new RangeError(`${label} must be a non-negative safe integer`);
+    return BigInt(value);
+  }
+  if (!/^(0|[1-9][0-9]*)$/.test(value)) {
+    throw new RangeError(`${label} must be a non-negative decimal string`);
+  }
+  return BigInt(value);
+}
+
+function toSignedBigInt(value: string | bigint | number, label: string): bigint {
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'number') {
+    if (!Number.isSafeInteger(value)) throw new RangeError(`${label} must be a safe integer`);
+    return BigInt(value);
+  }
+  if (!/^-?(0|[1-9][0-9]*)$/.test(value)) {
+    throw new RangeError(`${label} must be a signed decimal string`);
+  }
+  return BigInt(value);
+}
+
+function canonicalValue(value: unknown): string {
+  if (value === null) return 'null';
+  if (typeof value === 'boolean') return value ? 'true' : 'false';
+  if (typeof value === 'number') {
+    if (!Number.isSafeInteger(value)) throw new TypeError('canonicalValue: numbers must be safe integers');
+    return String(value);
+  }
+  if (typeof value === 'string') return JSON.stringify(value);
+  if (typeof value === 'bigint') return JSON.stringify(value.toString());
+  if (Array.isArray(value)) return '[' + value.map(canonicalValue).join(',') + ']';
+  if (typeof value === 'object') {
+    const obj = value as Record<string, unknown>;
+    return '{' + Object.keys(obj).sort().map((k) => `${JSON.stringify(k)}:${canonicalValue(obj[k])}`).join(',') + '}';
+  }
+  throw new TypeError(`canonicalValue: unsupported type ${typeof value}`);
+}
