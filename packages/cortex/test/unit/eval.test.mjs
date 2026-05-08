@@ -5,7 +5,7 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { evalPatch, StubCorpusLoader, canonicalJson } from '../../dist/eval/index.js';
-import { ProductionCorpusLoader, eventIdToMem128, loadProductionCorpus, scoreProductionState } from '../../dist/eval/corpus.js';
+import { ProductionCorpusLoader, eventIdToKey128, eventIdToMem128, loadProductionCorpus, scoreProductionState } from '../../dist/eval/corpus.js';
 import { buildMerkleCache, merkleizeState, bytesToHex, hexToBytes } from '../../dist/state/merkle.js';
 import { applyPatch, encodePatch, decodePatch } from '../../dist/state/patch.js';
 import { PATCH_TYPE } from '../../dist/state/types.js';
@@ -316,5 +316,82 @@ describe('ProductionCorpusLoader', () => {
     assert.equal(report.accepted, true);
     assert.equal(report.corpusRoot, corpus.corpusRoot);
     assert.ok(report.candidateScore > report.baselineScore);
+  });
+
+  test('production composite matches the launch bundle 20/20/20/20/10/10 profile', () => {
+    const corpus = {
+      corpusRoot: '0x' + '11'.repeat(32),
+      sources: {},
+      events: {
+        near_collision: [{
+          id: 'near-1',
+          family: 'near_collision',
+          taskType: 'near',
+          isProtected: false,
+          epochCommitted: 1,
+          sourceRef: 'test',
+          queryText: '',
+          truthText: '',
+          isStaleTruth: false,
+          relevant: true,
+        }],
+        temporal: [
+          {
+            id: 'stale-1',
+            family: 'temporal',
+            taskType: 'stale',
+            isProtected: false,
+            epochCommitted: 1,
+            sourceRef: 'test',
+            queryText: '',
+            truthText: '',
+            isStaleTruth: true,
+            relevant: true,
+          },
+          {
+            id: 'current-1',
+            family: 'temporal',
+            taskType: 'current',
+            isProtected: false,
+            epochCommitted: 1,
+            sourceRef: 'test',
+            queryText: '',
+            truthText: '',
+            isStaleTruth: false,
+            relevant: true,
+          },
+        ],
+        long_horizon: [{
+          id: 'long-1',
+          family: 'long_horizon',
+          taskType: 'long',
+          isProtected: false,
+          epochCommitted: 1,
+          sourceRef: 'test',
+          queryText: '',
+          truthText: '',
+          isStaleTruth: false,
+          relevant: true,
+        }],
+      },
+    };
+    const state = makeCleanState();
+    state.words[32] = (eventIdToMem128('current-1') << 128n) | (1n << 64n);
+    state.words[40] = (eventIdToMem128('stale-1') << 128n) | (3n << 64n);
+    state.words[48] = (eventIdToMem128('long-1') << 128n) | (1n << 64n);
+    state.words[384] = (eventIdToKey128('near-1') << 128n) | (1n << 80n);
+    for (let i = 672; i <= 799; i++) state.words[i] = 1n << 192n;
+    for (let slot = 0; slot < 48; slot++) {
+      state.words[896 + slot * 2] = (BigInt(slot + 1) << 240n) | (1n << 224n) | (1n << 208n);
+    }
+
+    const score = scoreProductionState(state, corpus, { shardId: '0x' + '00'.repeat(16), evalItemsPerFamily: 0 });
+    assert.equal(score.components.nearCollisionRetrieval, 1);
+    assert.equal(score.components.temporalCurrentStale, 1);
+    assert.equal(score.components.longHorizonCompression, 1);
+    assert.equal(score.components.relationMultiHop, 1);
+    assert.equal(score.components.codebookCompression, 1);
+    assert.equal(score.components.localModelAgreement, 1);
+    assert.equal(score.composite, 1);
   });
 });

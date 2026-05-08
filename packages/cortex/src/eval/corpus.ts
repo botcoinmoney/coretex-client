@@ -34,13 +34,19 @@ export interface ProductionCorpusLoaderOptions {
 export interface ProductionCorpusScore {
   readonly composite: number;
   readonly components: {
+    readonly nearCollisionRetrieval: number;
+    readonly temporalCurrentStale: number;
+    readonly longHorizonCompression: number;
+    readonly relationMultiHop: number;
+    readonly codebookCompression: number;
+    readonly localModelAgreement: number;
     readonly exactRetrieval: number;
     readonly staleMemoryRejection: number;
     readonly temporalUpdateCorrectness: number;
     readonly compressionSurvival: number;
     readonly routingAccuracy: number;
   };
-  readonly familyScores: Record<ProductionCorpusFamily, number>;
+  readonly familyScores: Record<string, number>;
   readonly hits: Record<string, number>;
   readonly totals: Record<string, number>;
 }
@@ -146,6 +152,14 @@ export function scoreProductionState(
   for (let i = 672; i <= 799; i++) {
     if (((state.words[i] ?? 0n) >> 192n) & 0xffffn) filledRel++;
   }
+  let activeCodebook = 0;
+  for (let slot = 0; slot < 48; slot++) {
+    const w0 = state.words[896 + slot * 2] ?? 0n;
+    const code = Number((w0 >> 240n) & 0xffffn);
+    const codeType = Number((w0 >> 224n) & 0xffffn);
+    const flags = Number((w0 >> 208n) & 0xffffn);
+    if (code !== 0 && (codeType === 1 || codeType === 2) && (flags & 0x0001) !== 0) activeCodebook++;
+  }
 
   const nc = selected.near_collision.filter((event) => event.relevant);
   const stale = selected.temporal.filter((event) => event.isStaleTruth);
@@ -162,18 +176,36 @@ export function scoreProductionState(
   const temporalUpdateCorrectness = ratio(currentHits, current.length);
   const compressionSurvival = ratio(longHits, lh.length);
   const routingAccuracy = filledRel / 128;
-  const longHorizon = (compressionSurvival * 0.30 + routingAccuracy * 0.05) / 0.35;
+  const nearCollisionRetrieval = exactRetrieval;
+  const temporalCurrentStale = (staleMemoryRejection + temporalUpdateCorrectness) / 2;
+  const longHorizonCompression = compressionSurvival;
+  const relationMultiHop = routingAccuracy;
+  const codebookCompression = activeCodebook / 48;
+  const localModelAgreement = (
+    nearCollisionRetrieval
+    + temporalCurrentStale
+    + longHorizonCompression
+    + relationMultiHop
+    + codebookCompression
+  ) / 5;
   const composite = clamp01(
-    0.30 * exactRetrieval
-    + 0.15 * staleMemoryRejection
-    + 0.15 * temporalUpdateCorrectness
-    + 0.30 * compressionSurvival
-    + 0.05 * routingAccuracy,
+    0.20 * nearCollisionRetrieval
+    + 0.20 * temporalCurrentStale
+    + 0.20 * longHorizonCompression
+    + 0.20 * relationMultiHop
+    + 0.10 * codebookCompression
+    + 0.10 * localModelAgreement,
   );
 
   return {
     composite,
     components: {
+      nearCollisionRetrieval,
+      temporalCurrentStale,
+      longHorizonCompression,
+      relationMultiHop,
+      codebookCompression,
+      localModelAgreement,
       exactRetrieval,
       staleMemoryRejection,
       temporalUpdateCorrectness,
@@ -181,12 +213,17 @@ export function scoreProductionState(
       routingAccuracy,
     },
     familyScores: {
-      near_collision: exactRetrieval,
-      temporal: (staleMemoryRejection + temporalUpdateCorrectness) / 2,
-      long_horizon: longHorizon,
+      near_collision_retrieval: nearCollisionRetrieval,
+      temporal_current_stale: temporalCurrentStale,
+      long_horizon: longHorizonCompression,
+      relation_multi_hop: relationMultiHop,
+      codebook_compression: codebookCompression,
+      local_model_agreement: localModelAgreement,
+      near_collision: nearCollisionRetrieval,
+      temporal: temporalCurrentStale,
     },
-    hits: { near_collision: ncHits, stale: staleHits, current: currentHits, long_horizon: longHits, relations: filledRel },
-    totals: { near_collision: nc.length, stale: stale.length, current: current.length, long_horizon: lh.length, relations: 128 },
+    hits: { near_collision: ncHits, stale: staleHits, current: currentHits, long_horizon: longHits, relations: filledRel, codebook: activeCodebook },
+    totals: { near_collision: nc.length, stale: stale.length, current: current.length, long_horizon: lh.length, relations: 128, codebook: 48 },
   };
 }
 
