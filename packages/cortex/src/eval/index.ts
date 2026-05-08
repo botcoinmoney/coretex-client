@@ -47,6 +47,11 @@ export interface CorpusLoader {
   score(decoded: DecodedCortexState, shardId: Uint8Array): number;
 }
 
+export interface StateCorpusLoader extends CorpusLoader {
+  /** Evaluate a raw 1024-word state against the corpus and return a score in [0, 1]. */
+  scoreState(state: CortexState, shardId: Uint8Array): number;
+}
+
 /**
  * Stub corpus loader — always returns 0.5.
  * Used until Phase 4 delivers real benchmark generators.
@@ -176,10 +181,7 @@ export function evalPatch(
 
   // Baseline score
   const decodeResult = decodeCortexState(state);
-  let baselineScore = 0n;
-  if (decodeResult.ok) {
-    baselineScore = BigInt(Math.round(loader.score(decodeResult.decoded, shardId) * 1_000_000));
-  }
+  const baselineScore = scoreWithLoader(loader, state, decodeResult.ok ? decodeResult.decoded : null, shardId);
 
   const patchResult = applyPatchWithCachedParent(state, patch, parentRootBytes);
 
@@ -194,9 +196,7 @@ export function evalPatch(
     const nextCache = updateMerkleCache(parentCache, patchResult.updates);
     newStateRoot = bytesToHex(nextCache.root);
     const candidateDecodeResult = decodeCortexState(patchResult.state);
-    if (candidateDecodeResult.ok) {
-      candidateScore = BigInt(Math.round(loader.score(candidateDecodeResult.decoded, shardId) * 1_000_000));
-    }
+    candidateScore = scoreWithLoader(loader, patchResult.state, candidateDecodeResult.ok ? candidateDecodeResult.decoded : null, shardId);
   } else {
     errorCode = patchResult.code;
     errorMessage = patchResult.message;
@@ -293,6 +293,28 @@ function applyPatchWithCachedParent(
 
 function patchError(code: PatchError['code']): PatchError {
   return { ok: false, code, message: `${code}: ${ERROR_NAMES[code]}` };
+}
+
+function scoreWithLoader(
+  loader: CorpusLoader,
+  state: CortexState,
+  decoded: DecodedCortexState | null,
+  shardId: Uint8Array,
+): bigint {
+  const score = hasStateScore(loader)
+    ? loader.scoreState(state, shardId)
+    : decoded
+      ? loader.score(decoded, shardId)
+      : 0;
+  return BigInt(Math.round(clamp01(score) * 1_000_000));
+}
+
+function hasStateScore(loader: CorpusLoader): loader is StateCorpusLoader {
+  return typeof (loader as { scoreState?: unknown }).scoreState === 'function';
+}
+
+function clamp01(value: number): number {
+  return Math.max(0, Math.min(1, value));
 }
 
 function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {

@@ -5,9 +5,11 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { evalPatch, StubCorpusLoader, canonicalJson } from '../../dist/eval/index.js';
+import { ProductionCorpusLoader, eventIdToMem128, loadProductionCorpus, scoreProductionState } from '../../dist/eval/corpus.js';
 import { buildMerkleCache, merkleizeState, bytesToHex, hexToBytes } from '../../dist/state/merkle.js';
 import { applyPatch, encodePatch, decodePatch } from '../../dist/state/patch.js';
 import { PATCH_TYPE } from '../../dist/state/types.js';
+import { fileURLToPath } from 'node:url';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -32,6 +34,9 @@ function makeEncodedPatch(state, overrides = {}) {
   const patch = makePatch(state, overrides);
   return { patch, patchWireBytes: encodePatch(patch) };
 }
+
+const repoRoot = fileURLToPath(new URL('../../../..', import.meta.url));
+const season1Path = `${repoRoot}/benchmark/fixtures/season1/coretex_season1_10000.json`;
 
 // ─── EvalPatch tests ──────────────────────────────────────────────────────────
 
@@ -260,5 +265,56 @@ describe('StubCorpusLoader', () => {
     const root = '0x' + 'ab'.repeat(32);
     const loader = new StubCorpusLoader(root);
     assert.equal(loader.corpusRoot, root);
+  });
+});
+
+describe('ProductionCorpusLoader', () => {
+  test('loads season1 with verified corpus root', () => {
+    const corpus = loadProductionCorpus(season1Path);
+    assert.equal(corpus.corpusRoot, '0x43ebf3457a51476adc5c563bbaace98af00106d7d28f92b5d7d29ec859fd8f7f');
+    assert.equal(corpus.events.long_horizon.length > 0, true);
+  });
+
+  test('scores a raw state against corpus records deterministically', () => {
+    const corpus = loadProductionCorpus(season1Path);
+    const event = corpus.events.long_horizon[0];
+    const state = makeCleanState();
+    const base = scoreProductionState(state, corpus, { shardId: '0x' + '42'.repeat(16), evalItemsPerFamily: 0 });
+    state.words[32] =
+      (eventIdToMem128(event.id) << 128n)
+      | (1n << 96n)
+      | (1n << 80n)
+      | (1n << 64n);
+    const candidate = scoreProductionState(state, corpus, { shardId: '0x' + '42'.repeat(16), evalItemsPerFamily: 0 });
+    assert.equal(base.composite, 0);
+    assert.ok(candidate.composite > base.composite);
+    assert.equal(candidate.hits.long_horizon, 1);
+  });
+
+  test('evalPatch uses the production corpus raw-state scorer', () => {
+    const corpus = loadProductionCorpus(season1Path);
+    const event = corpus.events.long_horizon[0];
+    const state = makeCleanState();
+    const word =
+      (eventIdToMem128(event.id) << 128n)
+      | (1n << 96n)
+      | (1n << 80n)
+      | (1n << 64n);
+    const patch = makePatch(state, {
+      patchType: PATCH_TYPE.SLOT_REPLACE,
+      scoreDelta: 1n,
+      indices: [32],
+      newWords: [word],
+    });
+    const patchWireBytes = encodePatch(patch);
+    const loader = ProductionCorpusLoader.fromFile(season1Path, { evalItemsPerFamily: 0 });
+    const report = evalPatch(state, patch, {
+      loader,
+      patchWireBytes,
+      shardId: new Uint8Array(32).fill(0x42),
+    });
+    assert.equal(report.accepted, true);
+    assert.equal(report.corpusRoot, corpus.corpusRoot);
+    assert.ok(report.candidateScore > report.baselineScore);
   });
 });

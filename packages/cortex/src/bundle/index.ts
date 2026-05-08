@@ -95,6 +95,7 @@ const DEFAULT_IMPL_FILES = [
 
 const DEFAULT_EVALUATOR_FILES = [
   'packages/cortex/src/eval/index.ts',
+  'packages/cortex/src/eval/corpus.ts',
   'packages/cortex/src/replay/v4.ts',
   'packages/cortex/src/replay-cli.ts',
 ] as const;

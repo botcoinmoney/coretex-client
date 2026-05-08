@@ -23,6 +23,7 @@ import { merkleizeState, bytesToHex, hexToBytes } from './state/merkle.js';
 import { applyPatch, decodePatch, encodePatch } from './state/patch.js';
 import { decodeCortexState } from './decoder/index.js';
 import { evalPatch, StubCorpusLoader } from './eval/index.js';
+import { ProductionCorpusLoader } from './eval/corpus.js';
 import { verifyEpoch } from './verify-epoch/index.js';
 import type {
   PatchAcceptedEvent,
@@ -143,7 +144,7 @@ switch (cmd) {
 
   // ── eval ──────────────────────────────────────────────────────────────────
   case 'eval': {
-    // Usage: botcoin-cortex eval <state.bin> <patch.bin> [--corpus-root 0x...]
+    // Usage: botcoin-cortex eval <state.bin> <patch.bin> [--corpus-root 0x...] [--corpus-file file.json]
     const stateFile = args[0];
     const patchFile = args[1];
     if (!stateFile || !patchFile) {
@@ -156,7 +157,12 @@ switch (cmd) {
     const patch = decodePatch(patchWire);
     const corpusRootArg = args.indexOf('--corpus-root');
     const corpusRoot = corpusRootArg >= 0 ? (args[corpusRootArg + 1] ?? '0x' + '00'.repeat(32)) : '0x' + '00'.repeat(32);
-    const loader = new StubCorpusLoader(corpusRoot);
+    const corpusFile = flagValue(args, '--corpus-file');
+    const evalItemsArg = flagValue(args, '--eval-items-per-family');
+    const evalItemsPerFamily = evalItemsArg ? Number(evalItemsArg) : undefined;
+    const loader = corpusFile
+      ? ProductionCorpusLoader.fromFile(corpusFile, evalItemsPerFamily === undefined ? {} : { evalItemsPerFamily })
+      : new StubCorpusLoader(corpusRoot);
     const report = evalPatch(state, patch, { loader, patchWireBytes: patchWire });
     process.stdout.write(toJsonOutput(report) + '\n');
     break;
