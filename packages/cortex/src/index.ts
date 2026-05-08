@@ -17,3 +17,4 @@ export * from './event-topics.js';
 export * from './bundle/index.js';
 export * from './replay/v4.js';
 export * from './eval/corpus.js';
+export * from './coordinator/endpoints.js';
