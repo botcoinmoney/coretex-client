@@ -12,6 +12,7 @@ import {
 } from './replay/v4.js';
 import { unpack } from './state/codec.js';
 import { hexToBytes } from './state/merkle.js';
+import { verifyBundleManifest, type CoreTexBundleManifest } from './bundle/index.js';
 
 function die(message: string): never {
   process.stderr.write(message + '\n');
@@ -58,12 +59,14 @@ async function main() {
   if (!cmd || cmd === '--help' || cmd === '-h') {
     process.stderr.write(
       'usage: coretex-replay {tx|current|watch} --parent-state state.bin [--logs logs.json | --rpc url --tx hash]\n'
-      + '       coretex-replay watch --rpc url --parent-state state.bin [--v4 addr] [--cortex-state addr] [--from-block n] [--once]\n',
+      + '       coretex-replay watch --rpc url --parent-state state.bin [--v4 addr] [--cortex-state addr] [--from-block n] [--once]\n'
+      + '       optional: --bundle-manifest manifest.json --expected-bundle-hash 0x...\n',
     );
     process.exit(cmd ? 0 : 1);
   }
 
   let parentState = loadPackedState(required(args, '--parent-state'));
+  verifyBundleIfRequested(args);
 
   if (cmd === 'tx') {
     const logs = opt(args, '--logs')
@@ -108,6 +111,21 @@ async function main() {
   }
 
   die(`unknown command ${cmd}`);
+}
+
+function verifyBundleIfRequested(args: readonly string[]): void {
+  const manifestPath = opt(args, '--bundle-manifest');
+  if (!manifestPath) return;
+  const repoRoot = opt(args, '--repo-root') ?? process.cwd();
+  const expectedHash = opt(args, '--expected-bundle-hash') ?? opt(args, '--core-version-hash');
+  const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as CoreTexBundleManifest;
+  const errors = verifyBundleManifest(manifest, repoRoot);
+  if (expectedHash && manifest.bundleHash.toLowerCase() !== expectedHash.toLowerCase()) {
+    errors.push(`bundleHash mismatch: expected ${expectedHash} got ${manifest.bundleHash}`);
+  }
+  if (errors.length) {
+    die(`bundle manifest verification failed: ${errors.join('; ')}`);
+  }
 }
 
 main().catch((error) => die(error instanceof Error ? error.message : String(error)));
