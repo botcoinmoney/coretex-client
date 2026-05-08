@@ -8,12 +8,13 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "bin": {
-    "botcoin-cortex": "dist/cli.js"
+    "botcoin-cortex": "dist/cli.js",
+    "coretex-replay": "dist/replay-cli.js"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test:unit": "node --test --test-reporter=spec \"./test/unit/*.test.mjs\""
+    "test:unit": "node --test --test-reporter=spec ./test/unit/*.test.mjs"
   },
   "files": [
     "dist",

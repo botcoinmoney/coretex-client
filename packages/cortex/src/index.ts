@@ -14,3 +14,5 @@ export * from './reducer/index.js';
 export * from './rewards/index.js';
 export * from './shards.js';
 export * from './event-topics.js';
+export * from './bundle/index.js';
+export * from './replay/v4.js';

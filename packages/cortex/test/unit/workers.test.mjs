@@ -18,8 +18,9 @@ describe('defaultPoolSize', () => {
     assert.ok(size >= 1 && size <= 8, `Expected 1-8, got ${size}`);
   });
 
-  test('equals Math.max(1, Math.min(8, cpus-1))', () => {
-    const expected = Math.max(1, Math.min(8, os.cpus().length - 1));
+  test('matches the small-host reserve policy', () => {
+    const cpus = os.cpus().length;
+    const expected = cpus <= 4 ? 1 : Math.max(1, Math.min(8, cpus - 2));
     assert.equal(defaultPoolSize(), expected);
   });
 });

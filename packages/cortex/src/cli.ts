@@ -35,6 +35,12 @@ import {
   executeReset,
   encodeStatTranslationPatch,
 } from './upgrade/index.js';
+import {
+  buildBundleManifest,
+  verifyBundleManifest,
+  type ModelFetchManifest,
+  type CoreTexBundleManifest,
+} from './bundle/index.js';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -72,7 +78,7 @@ const [, , cmd, ...args] = process.argv;
 
 if (!cmd) {
   process.stderr.write(
-    'usage: botcoin-cortex {decode|apply-patch|eval|reduce-epoch|verify-epoch|snapshot|upgrade}\n',
+    'usage: botcoin-cortex {decode|apply-patch|eval|reduce-epoch|verify-epoch|snapshot|upgrade|bundle-manifest}\n',
   );
   process.exit(1);
 }
@@ -320,6 +326,40 @@ switch (cmd) {
     break;
   }
 
+  case 'bundle-manifest': {
+    const subcmd = args[0];
+    if (subcmd === 'build') {
+      const repoRoot = flagValue(args, '--repo-root') ?? process.cwd();
+      const corpusRoot = requireFlag(args, '--corpus-root');
+      const corpusFiles = requireFlag(args, '--corpus-files').split(',').map((s) => s.trim()).filter(Boolean);
+      const modelFile = requireFlag(args, '--model-manifest');
+      const snapshotFiles = (flagValue(args, '--snapshot-files') ?? '').split(',').map((s) => s.trim()).filter(Boolean);
+      const model = JSON.parse(fs.readFileSync(modelFile, 'utf8')) as ModelFetchManifest;
+      const manifest = buildBundleManifest({ repoRoot, corpusRoot, corpusFiles, model, snapshotFiles });
+      process.stdout.write(toJsonOutput(manifest) + '\n');
+      break;
+    }
+    if (subcmd === 'verify') {
+      const repoRoot = flagValue(args, '--repo-root') ?? process.cwd();
+      const manifestFile = requireFlag(args, '--manifest');
+      const manifest = JSON.parse(fs.readFileSync(manifestFile, 'utf8')) as CoreTexBundleManifest;
+      const errors = verifyBundleManifest(manifest, repoRoot);
+      process.stdout.write(toJsonOutput({ ok: errors.length === 0, errors }) + '\n');
+      if (errors.length) process.exit(1);
+      break;
+    }
+    die('bundle-manifest: usage: botcoin-cortex bundle-manifest {build|verify} ...');
+  }
+
   default:
-    die(`botcoin-cortex: unknown command "${cmd}"\nusage: botcoin-cortex {decode|apply-patch|eval|reduce-epoch|verify-epoch|snapshot|upgrade}`, 1);
+    die(`botcoin-cortex: unknown command "${cmd}"\nusage: botcoin-cortex {decode|apply-patch|eval|reduce-epoch|verify-epoch|snapshot|upgrade|bundle-manifest}`, 1);
+}
+
+function flagValue(args: readonly string[], name: string): string | undefined {
+  const i = args.indexOf(name);
+  return i >= 0 ? args[i + 1] : undefined;
+}
+
+function requireFlag(args: readonly string[], name: string): string {
+  return flagValue(args, name) ?? die(`missing ${name}`);
 }
