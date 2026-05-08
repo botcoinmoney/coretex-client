@@ -27,6 +27,20 @@ dataset/
 ops/secrets/
 *.pem
 *.key
+*.seed
+*.token
+*.secret
+*private-key*
+*wallet*.json
+
+# Local model/cache material; commit manifests/hashes instead unless release policy approves.
+models/
+model-cache/
+.cache/
+*.safetensors
+*.gguf
+*.onnx
+*.bin
 
 # Logs
 *.log
