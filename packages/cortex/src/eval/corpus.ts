@@ -8,6 +8,10 @@ import type { CorpusLoader } from './index.js';
 
 export type ProductionCorpusFamily = 'near_collision' | 'temporal' | 'long_horizon';
 
+export type ProductionCorpusRegion = 'memory_index' | 'retrieval_keys' | 'relations' | 'temporal' | 'codebook';
+
+export type ProductionCorpusNoveltyBucket = 'low' | 'medium' | 'high';
+
 export interface ProductionCorpusEvent {
   readonly id: string;
   readonly family: ProductionCorpusFamily;
@@ -19,6 +23,14 @@ export interface ProductionCorpusEvent {
   readonly truthText: string;
   readonly isStaleTruth: boolean;
   readonly relevant: boolean;
+  // §9 extension fields
+  readonly distractors: readonly string[];
+  readonly relations: readonly string[];
+  readonly expectedStateRegions: ReadonlyArray<ProductionCorpusRegion>;
+  readonly validFromEpoch: number;
+  readonly expiresAtEpoch: number;
+  readonly noveltyBucket: ProductionCorpusNoveltyBucket;
+  readonly hardnessSignal: number;
 }
 
 export interface ProductionCorpus {
@@ -241,21 +253,76 @@ function normalizeProductionItem(item: unknown): ProductionCorpusEvent {
   const family = rawFamily === 'near_collision' || rawFamily === 'temporal' || rawFamily === 'long_horizon'
     ? rawFamily
     : fail(`production corpus item ${String(obj.id)} has unsupported family ${rawFamily}`);
+
+  // §9 extension: distractors
+  const distractors: readonly string[] = Array.isArray(obj.distractors)
+    ? (obj.distractors as unknown[]).map((d) => String(d))
+    : [];
+
+  // §9 extension: relations
+  const relations: readonly string[] = Array.isArray(obj.relations)
+    ? (obj.relations as unknown[]).map((r) => String(r))
+    : [];
+
+  // §9 extension: expectedStateRegions
+  const validRegions: ReadonlyArray<ProductionCorpusRegion> = ['memory_index', 'retrieval_keys', 'relations', 'temporal', 'codebook'];
+  const expectedStateRegions: ReadonlyArray<ProductionCorpusRegion> = Array.isArray(obj.expected_state_regions)
+    ? (obj.expected_state_regions as unknown[])
+        .map((r) => String(r))
+        .filter((r): r is ProductionCorpusRegion => (validRegions as readonly string[]).includes(r))
+    : defaultRegionsForFamily(family);
+
+  // §9 extension: validFromEpoch / expiresAtEpoch
+  const epochCommitted = Number(obj.epoch_committed ?? 0);
+  const validFromEpoch = obj.valid_from_epoch !== undefined ? Number(obj.valid_from_epoch) : epochCommitted;
+  const expiresAtEpoch = Number(obj.expires_at_epoch ?? 0);
+
+  // §9 extension: noveltyBucket — derive from field or hash-bucket manifestHash/id
+  const noveltyBucket: ProductionCorpusNoveltyBucket = (() => {
+    const raw = String(obj.novelty_bucket ?? '');
+    if (raw === 'low' || raw === 'medium' || raw === 'high') return raw;
+    // derive from id hash if not present
+    const h = sha256Bytes(String(obj.id ?? ''));
+    const v = (h[0]! + h[1]! * 256) % 3;
+    return v === 0 ? 'low' : v === 1 ? 'medium' : 'high';
+  })();
+
+  // §9 extension: hardnessSignal — derive from field or hash of (id + epochCommitted)
+  const hardnessSignal: number = (() => {
+    if (typeof obj.hardness_signal === 'number') return Math.max(0, Math.min(1, obj.hardness_signal));
+    const h = sha256Bytes(`${String(obj.id ?? '')}:${String(epochCommitted)}`);
+    return ((h[0]! * 256 + h[1]!) % 100) / 100;
+  })();
+
   return {
     id: String(obj.id ?? fail('production corpus item missing id')),
     family,
     taskType: String(obj.task ?? obj.config ?? obj.source ?? family),
     isProtected: obj.protected === true,
-    epochCommitted: Number(obj.epoch_committed ?? 0),
+    epochCommitted,
     sourceRef: String(obj.source_ref ?? ''),
     queryText: String(obj.query ?? ''),
     truthText: String(obj.truth ?? obj.passage ?? ''),
     isStaleTruth: obj.is_stale === true,
     relevant: obj.relevant !== false,
+    // §9 fields
+    distractors,
+    relations,
+    expectedStateRegions,
+    validFromEpoch,
+    expiresAtEpoch,
+    noveltyBucket,
+    hardnessSignal,
   };
 }
 
-function computeProductionCorpusRoot(items: readonly unknown[]): string {
+function defaultRegionsForFamily(family: ProductionCorpusFamily): ReadonlyArray<ProductionCorpusRegion> {
+  if (family === 'near_collision') return ['memory_index', 'retrieval_keys'];
+  if (family === 'temporal') return ['memory_index', 'temporal'];
+  return ['memory_index', 'retrieval_keys']; // long_horizon
+}
+
+export function computeProductionCorpusRoot(items: readonly unknown[]): string {
   const events = items
     .map((item) => {
       const obj = item as Record<string, unknown>;
