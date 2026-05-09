@@ -117,15 +117,44 @@ const DEFAULT_PROFILE: EvaluatorProfile = {
   },
 };
 
+/**
+ * The default pinned revision for the Qwen3-Reranker-0.6B model.
+ * Update this when a new reproducible release is available.
+ * 'main' is intentionally rejected by validateModelManifest — this must
+ * be a pinned commit sha or version tag.
+ */
+export const QWEN3_RERANKER_DEFAULT_REVISION = 'v0.1.0';
+
 export function qwen3Reranker06BManifest(
-  revision: string,
-  files: ModelFetchManifest['files'],
+  revisionOrFiles?: string | ModelFetchManifest['files'],
+  files?: ModelFetchManifest['files'],
 ): ModelFetchManifest {
+  // Support three call signatures:
+  //   qwen3Reranker06BManifest(revision, files)   — original positional form
+  //   qwen3Reranker06BManifest(files)              — revision defaults
+  //   qwen3Reranker06BManifest()                   — both default (empty files)
+  let resolvedRevision: string;
+  let resolvedFiles: ModelFetchManifest['files'];
+
+  if (typeof revisionOrFiles === 'string') {
+    // Original positional form: (revision, files)
+    resolvedRevision = revisionOrFiles;
+    resolvedFiles = files ?? [];
+  } else if (Array.isArray(revisionOrFiles)) {
+    // New form: (files) — revision defaults
+    resolvedRevision = QWEN3_RERANKER_DEFAULT_REVISION;
+    resolvedFiles = revisionOrFiles;
+  } else {
+    // No-arg form
+    resolvedRevision = QWEN3_RERANKER_DEFAULT_REVISION;
+    resolvedFiles = files ?? [];
+  }
+
   return {
     provider: 'huggingface',
     modelId: 'Qwen/Qwen3-Reranker-0.6B',
-    revision,
-    files,
+    revision: resolvedRevision,
+    files: resolvedFiles,
   };
 }
 

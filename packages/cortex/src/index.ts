@@ -18,3 +18,8 @@ export * from './bundle/index.js';
 export * from './replay/v4.js';
 export * from './eval/corpus.js';
 export * from './coordinator/endpoints.js';
+export * from './eval/reranker.js';
+export * from './eval/reranker-eval.js';
+export * from './corpus/v3-bridge.js';
+export * from './corpus/admission.js';
+export * from './corpus/delta.js';
