@@ -7,7 +7,7 @@
  */
 
 import type { CortexState, Patch, PatchError, PatchResult } from './types.js';
-import { ERROR_NAMES, RANGES } from './types.js';
+import { ERROR_NAMES, PATCH_TYPE, RANGES } from './types.js';
 import { writeBigEndian32, readBigEndian32 } from './codec.js';
 import { merkleizeState } from './merkle.js';
 import { hasNonZeroReservedBits } from './validate.js';
@@ -70,6 +70,10 @@ export function encodePatch(patch: Patch): Uint8Array {
   }
   if (patch.indices.length !== patch.wordCount || patch.newWords.length !== patch.wordCount) {
     throw new RangeError('encodePatch: indices/newWords length mismatch with wordCount');
+  }
+  const typeValidation = validatePatchType(patch.patchType, patch.indices);
+  if (!typeValidation.ok) {
+    throw new RangeError(`encodePatch: ${typeValidation.reason}`);
   }
 
   // Encode indices
@@ -199,6 +203,10 @@ export function applyPatch(state: CortexState, patch: Patch): PatchResult {
     return patchError('E01');
   }
 
+  if (!validatePatchType(patch.patchType, patch.indices).ok) {
+    return patchError('E02');
+  }
+
   // 3. No-op check
   let anyChange = false;
   for (let i = 0; i < patch.wordCount; i++) {
@@ -269,6 +277,10 @@ export function applyPatchOntoCurrent(current: CortexState, patch: Patch): Patch
     return patchError('E03');
   }
 
+  if (!validatePatchType(patch.patchType, patch.indices).ok) {
+    return patchError('E02');
+  }
+
   let anyChange = false;
   for (let i = 0; i < patch.wordCount; i++) {
     if ((current.words[patch.indices[i]!] ?? 0n) !== (patch.newWords[i] ?? 0n)) {
@@ -310,4 +322,56 @@ export function patchMatchesEpochParent(
   epochParentRoot: Uint8Array,
 ): boolean {
   return bytesEqual(patch.parentStateRoot, epochParentRoot);
+}
+
+export function validatePatchType(
+  patchType: number,
+  indices: readonly number[],
+): { ok: true } | { ok: false; reason: string } {
+  for (const idx of indices) {
+    if (!Number.isInteger(idx) || idx < 0 || idx >= RANGES.WORD_COUNT) {
+      return { ok: false, reason: `index ${idx} is outside state word range` };
+    }
+    if (idx >= RANGES.RESERVED_START && idx <= RANGES.RESERVED_END) {
+      return { ok: false, reason: `index ${idx} is reserved` };
+    }
+  }
+
+  if (patchType === PATCH_TYPE.MIXED) {
+    return { ok: true };
+  }
+
+  const range = patchTypeRange(patchType);
+  if (!range) {
+    return { ok: false, reason: `unknown patchType ${patchType}` };
+  }
+
+  for (const idx of indices) {
+    if (idx < range.start || idx > range.end) {
+      return {
+        ok: false,
+        reason: `patchType ${patchType} cannot target index ${idx}`,
+      };
+    }
+  }
+  return { ok: true };
+}
+
+function patchTypeRange(patchType: number): { start: number; end: number } | undefined {
+  switch (patchType) {
+    case PATCH_TYPE.KEY_UPDATE:
+      return { start: RANGES.RETRIEVAL_KEYS_START, end: RANGES.RETRIEVAL_KEYS_END };
+    case PATCH_TYPE.SLOT_REPLACE:
+      return { start: RANGES.MEMORY_INDEX_START, end: RANGES.MEMORY_INDEX_END };
+    case PATCH_TYPE.TEMPORAL_UPDATE:
+      return { start: RANGES.TEMPORAL_START, end: RANGES.TEMPORAL_END };
+    case PATCH_TYPE.RELATION_UPDATE:
+      return { start: RANGES.RELATIONS_START, end: RANGES.RELATIONS_END };
+    case PATCH_TYPE.CODEBOOK_UPDATE:
+      return { start: RANGES.CODEBOOK_START, end: RANGES.CODEBOOK_END };
+    case PATCH_TYPE.HEADER_UPDATE:
+      return { start: RANGES.HEADER_START, end: RANGES.HEADER_END };
+    default:
+      return undefined;
+  }
 }

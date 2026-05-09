@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 
 import {
   encodeLEB128, decodeLEB128,
-  encodePatch, decodePatch, applyPatch,
+  encodePatch, decodePatch, applyPatch, applyPatchOntoCurrent, validatePatchType,
 } from '../../dist/state/patch.js';
 import { merkleizeState, bytesToHex } from '../../dist/state/merkle.js';
 import { RANGES, PATCH_TYPE } from '../../dist/state/types.js';
@@ -72,6 +72,19 @@ function makePatch(overrides = {}) {
   };
 }
 
+function validIndexForPatchType(patchType) {
+  switch (patchType) {
+    case PATCH_TYPE.KEY_UPDATE: return 401;
+    case PATCH_TYPE.SLOT_REPLACE: return 40;
+    case PATCH_TYPE.TEMPORAL_UPDATE: return 805;
+    case PATCH_TYPE.RELATION_UPDATE: return 700;
+    case PATCH_TYPE.CODEBOOK_UPDATE: return 900;
+    case PATCH_TYPE.HEADER_UPDATE: return 1;
+    case PATCH_TYPE.MIXED: return 401;
+    default: throw new Error(`unknown patch type ${patchType}`);
+  }
+}
+
 // ─── Encode/decode tests ──────────────────────────────────────────────────────
 
 describe('patch wire encode/decode', () => {
@@ -102,6 +115,7 @@ describe('patch wire encode/decode', () => {
 
   test('wire size: 4-word patch, indices < 128 ≤ 174 bytes', () => {
     const patch = makePatch({
+      patchType: PATCH_TYPE.SLOT_REPLACE,
       wordCount: 4,
       indices: [32, 40, 50, 60],
       newWords: [1n, 2n, 3n, 4n],
@@ -132,7 +146,8 @@ describe('patch wire encode/decode', () => {
   test('encode/decode: all patch types', () => {
     const types = Object.values(PATCH_TYPE);
     for (const t of types) {
-      const patch = makePatch({ patchType: t });
+      const idx = validIndexForPatchType(t);
+      const patch = makePatch({ patchType: t, indices: [idx] });
       const decoded = decodePatch(encodePatch(patch));
       assert.equal(decoded.patchType, t);
     }
@@ -140,6 +155,26 @@ describe('patch wire encode/decode', () => {
 
   test('encode throws on wordCount > 4', () => {
     assert.throws(() => encodePatch(makePatch({ wordCount: 5, indices: [1,2,3,4,5], newWords: [1n,2n,3n,4n,5n] })));
+  });
+
+  test('encode rejects patch type/index range mismatches', () => {
+    assert.throws(() => encodePatch(makePatch({
+      patchType: PATCH_TYPE.KEY_UPDATE,
+      indices: [32],
+    })), /patchType/);
+    assert.throws(() => encodePatch(makePatch({
+      patchType: PATCH_TYPE.SLOT_REPLACE,
+      indices: [384],
+    })), /patchType/);
+    assert.throws(() => encodePatch(makePatch({
+      patchType: 0x7e,
+      indices: [384],
+    })), /unknown patchType/);
+  });
+
+  test('validatePatchType accepts mixed non-reserved ranges', () => {
+    assert.deepEqual(validatePatchType(PATCH_TYPE.MIXED, [40, 401, 700, 805]), { ok: true });
+    assert.equal(validatePatchType(PATCH_TYPE.MIXED, [992]).ok, false);
   });
 
   test('decode throws on truncated input', () => {
@@ -207,11 +242,39 @@ describe('applyPatch', () => {
     assert.equal(result.code, 'E02');
   });
 
+  test('E02: patch type/index mismatch rejected', () => {
+    const state = makeCleanState();
+    const root = merkleizeState(state);
+    const patch = makePatch({
+      patchType: PATCH_TYPE.KEY_UPDATE,
+      parentStateRoot: root,
+      indices: [32],
+      newWords: [1n],
+    });
+    const result = applyPatch(state, patch);
+    assert.equal(result.ok, false);
+    assert.equal(result.code, 'E02');
+  });
+
+  test('applyPatchOntoCurrent rejects patch type/index mismatch', () => {
+    const state = makeCleanState();
+    const patch = makePatch({
+      patchType: PATCH_TYPE.SLOT_REPLACE,
+      parentStateRoot: merkleizeState(state),
+      indices: [384],
+      newWords: [1n],
+    });
+    const result = applyPatchOntoCurrent(state, patch);
+    assert.equal(result.ok, false);
+    assert.equal(result.code, 'E02');
+  });
+
   test('E04: resulting state with reserved bit rejected', () => {
     // Word 0 bits 191:0 are reserved — setting bit 0 should fail
     const state = makeCleanState();
     const root = merkleizeState(state);
     const patch = makePatch({
+      patchType: PATCH_TYPE.HEADER_UPDATE,
       parentStateRoot: root,
       indices: [0],
       newWords: [1n], // sets bit 0 which is reserved in word 0

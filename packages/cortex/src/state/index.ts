@@ -57,6 +57,7 @@ export {
   decodeLEB128,
   encodePatch,
   decodePatch,
+  validatePatchType,
   applyPatch,
   applyPatchOntoCurrent,
   patchMatchesEpochParent,
