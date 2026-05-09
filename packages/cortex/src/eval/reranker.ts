@@ -11,6 +11,7 @@
  */
 
 import { createHash } from 'node:crypto';
+import { QWEN3_RERANKER_DEFAULT_REVISION } from '../bundle/index.js';
 
 // ─── Public interface ─────────────────────────────────────────────────────────
 
@@ -348,13 +349,19 @@ export async function createDeterministicReranker(
  *   CORETEX_RERANKER=qwen3         → createQwen3Reranker()
  *   CORETEX_RERANKER=minilm        → createMiniLMReranker()
  *   CORETEX_RERANKER=deterministic → createDeterministicReranker()
- *   (unset / any other value)      → createDeterministicReranker()
+ *   (unset / any other value)      → createDeterministicReranker() unless production mode is enabled.
  */
 export async function rerankerFromEnv(): Promise<CrossEncoderReranker> {
-  const selector = (process.env['CORETEX_RERANKER'] ?? 'deterministic').toLowerCase();
+  const rawSelector = process.env['CORETEX_RERANKER'];
+  const productionMode = process.env['CORTEX_REAL_EVAL'] === '1' || process.env['CORETEX_RERANKER_PRODUCTION'] === '1';
+  if (!rawSelector && productionMode) {
+    throw new Error('CORETEX_RERANKER must be set in production mode (expected qwen3)');
+  }
+  const selector = (rawSelector ?? 'deterministic').toLowerCase();
   switch (selector) {
     case 'qwen3':
       return createQwen3Reranker({
+        revision: process.env['CORETEX_RERANKER_REVISION'] ?? QWEN3_RERANKER_DEFAULT_REVISION,
         cacheDir: process.env['CORTEX_LOCAL_MODEL_CACHE'],
         localOnly: process.env['CORTEX_LOCAL_MODEL_LOCAL_ONLY'] === '1',
       });
@@ -364,7 +371,14 @@ export async function rerankerFromEnv(): Promise<CrossEncoderReranker> {
         localOnly: process.env['CORTEX_LOCAL_MODEL_LOCAL_ONLY'] === '1',
       });
     case 'deterministic':
+      if (productionMode && process.env['CORETEX_ALLOW_DETERMINISTIC_RERANKER'] !== '1') {
+        throw new Error('deterministic reranker is not allowed in production mode');
+      }
+      return createDeterministicReranker();
     default:
+      if (productionMode) {
+        throw new Error(`unsupported CORETEX_RERANKER=${selector} in production mode`);
+      }
       return createDeterministicReranker();
   }
 }

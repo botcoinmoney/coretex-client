@@ -344,6 +344,7 @@ describe('buildCorpusDelta', () => {
     const additions = [makeV4Event({ id: 'added-abc' })];
     const delta = buildCorpusDelta(corpus, additions, [], 2);
     assert.ok(delta.addedIds.includes('added-abc'));
+    assert.equal(delta.addedRecords[0].id, 'added-abc');
   });
 
   test('removedIds are captured', () => {
@@ -381,6 +382,7 @@ describe('applyCorpusDelta', () => {
       previousRoot: '0x' + 'ff'.repeat(32), // wrong root
       nextRoot: '0x' + '00'.repeat(32),
       addedIds: [],
+      addedRecords: [],
       removedIds: [],
       epoch: 1,
       generatedAt: new Date().toISOString(),
@@ -417,5 +419,19 @@ describe('applyCorpusDelta', () => {
       ...updated.events.long_horizon,
     ].map((e) => e.id);
     assert.ok(!allIds.includes('to-remove-test'));
+  });
+
+  test('applies addition payloads from the delta without pre-merging', () => {
+    const corpus = makeMinimalCorpus();
+    const addition = makeV4Event({ id: 'delta-addition' });
+    const delta = buildCorpusDelta(corpus, [addition], [], 7);
+    const updated = applyCorpusDelta(corpus, delta);
+    const allIds = [
+      ...updated.events.near_collision,
+      ...updated.events.temporal,
+      ...updated.events.long_horizon,
+    ].map((e) => e.id);
+    assert.ok(allIds.includes('delta-addition'));
+    assert.equal(updated.corpusRoot, delta.nextRoot);
   });
 });

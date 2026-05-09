@@ -23,4 +23,5 @@ export * from './eval/reranker-eval.js';
 export * from './corpus/v3-bridge.js';
 export * from './corpus/admission.js';
 export * from './corpus/delta.js';
+export * from './corpus/epoch-rotation.js';
 export * from './corpus/dacr-bridge.js';

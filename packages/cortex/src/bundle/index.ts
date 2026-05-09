@@ -104,6 +104,7 @@ const DEFAULT_EVALUATOR_FILES = [
   'packages/cortex/src/corpus/admission.ts',
   'packages/cortex/src/corpus/dacr-bridge.ts',
   'packages/cortex/src/corpus/delta.ts',
+  'packages/cortex/src/corpus/epoch-rotation.ts',
   'packages/cortex/src/corpus/v3-bridge.ts',
   'packages/cortex/src/rewards/difficulty.ts',
   'packages/cortex/src/coordinator/endpoints.ts',

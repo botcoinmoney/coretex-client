@@ -185,12 +185,15 @@ describe('withRerankerCache', () => {
 describe('rerankerFromEnv', () => {
   test('defaults to deterministic reranker when CORETEX_RERANKER is unset', async () => {
     const saved = process.env['CORETEX_RERANKER'];
+    const savedProd = process.env['CORTEX_REAL_EVAL'];
     delete process.env['CORETEX_RERANKER'];
+    delete process.env['CORTEX_REAL_EVAL'];
     try {
       const reranker = await rerankerFromEnv();
       assert.ok(reranker.model.includes('deterministic'));
     } finally {
       if (saved !== undefined) process.env['CORETEX_RERANKER'] = saved;
+      if (savedProd !== undefined) process.env['CORTEX_REAL_EVAL'] = savedProd;
     }
   });
 
@@ -201,6 +204,24 @@ describe('rerankerFromEnv', () => {
       assert.ok(reranker.model.includes('deterministic'));
     } finally {
       delete process.env['CORETEX_RERANKER'];
+    }
+  });
+
+  test('production mode requires an explicit non-deterministic reranker', async () => {
+    const savedSelector = process.env['CORETEX_RERANKER'];
+    const savedReal = process.env['CORTEX_REAL_EVAL'];
+    delete process.env['CORETEX_RERANKER'];
+    process.env['CORTEX_REAL_EVAL'] = '1';
+    try {
+      await assert.rejects(() => rerankerFromEnv(), /CORETEX_RERANKER must be set/);
+      process.env['CORETEX_RERANKER'] = 'deterministic';
+      await assert.rejects(() => rerankerFromEnv(), /deterministic reranker is not allowed/);
+    } finally {
+      if (savedSelector !== undefined) process.env['CORETEX_RERANKER'] = savedSelector;
+      else delete process.env['CORETEX_RERANKER'];
+      if (savedReal !== undefined) process.env['CORTEX_REAL_EVAL'] = savedReal;
+      else delete process.env['CORTEX_REAL_EVAL'];
+      delete process.env['CORETEX_ALLOW_DETERMINISTIC_RERANKER'];
     }
   });
 });
@@ -393,7 +414,7 @@ describe('evaluatePatchWithReranker — noop patch is rejected', () => {
       wordCount: 1,
       scoreDelta: 0n,
       parentStateRoot: root,
-      indices: [32],
+      indices: [384],
       newWords: [0n], // no-op
     };
 

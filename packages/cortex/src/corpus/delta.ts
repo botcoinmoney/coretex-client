@@ -20,6 +20,8 @@ export interface CorpusDelta {
   readonly nextRoot: string;
   /** IDs of records added by this delta. */
   readonly addedIds: readonly string[];
+  /** Full addition payloads, making a delta independently publishable/replayable. */
+  readonly addedRecords: readonly ProductionCorpusEvent[];
   /** IDs of records removed by this delta. */
   readonly removedIds: readonly string[];
   /** Epoch at which this delta was produced. */
@@ -119,6 +121,7 @@ export function buildCorpusDelta(
     previousRoot: previousCorpus.corpusRoot,
     nextRoot,
     addedIds: newEvents.map((e) => e.id),
+    addedRecords: newEvents,
     removedIds: removals.filter((id) => existingIds.has(id) || removalSet.has(id)),
     epoch,
     generatedAt: new Date().toISOString(),
@@ -144,58 +147,29 @@ export function applyCorpusDelta(corpus: ProductionCorpus, delta: CorpusDelta): 
 
   const removalSet = new Set(delta.removedIds);
   const addedSet = new Set(delta.addedIds);
+  const addedRecordsById = new Map(delta.addedRecords.map((event) => [event.id, event]));
 
-  // Collect all existing events minus removals.
-  const kept = flattenEvents(corpus).filter((e) => !removalSet.has(e.id));
+  for (const id of addedSet) {
+    if (!addedRecordsById.has(id)) {
+      throw new Error(`applyCorpusDelta: addedId ${id} is missing from addedRecords`);
+    }
+  }
 
-  // We need to locate the actual addition records from both:
-  //   a) additions supplied when buildCorpusDelta was called (not stored in delta)
-  //   b) the addedIds list in delta
-  //
-  // Since CorpusDelta does not persist the addition payloads (by design —
-  // callers must supply them), applyCorpusDelta cannot reconstruct them from
-  // the delta alone.  To keep the API simple and self-contained we require
-  // the caller to have the additions available via the corpus itself: if the
-  // additions are already in corpus.events (e.g. a pre-applied state), we
-  // just filter.  For the normal use-case we need additions passed separately.
-  //
-  // However, since this function is `applyCorpusDelta(corpus, delta)` without
-  // an additions parameter, we treat the delta as a forward patch: we use
-  // the addedIds to verify root continuity but cannot re-add records that are
-  // not already in `corpus`.  The design contract is:
-  //
-  //   Call `buildCorpusDelta` → store the delta + the addition records.
-  //   Call `applyCorpusDelta` only after merging addition records into corpus.
-  //
-  // For the test/delta pipeline, additions will already be in corpus.events
-  // (they were merged before buildCorpusDelta was called), so this works:
-  // we just remove the removals and keep everything else (including additions
-  // that are already present).
+  // Collect all existing events minus removals, then append addition payloads.
+  const kept = flattenEvents(corpus).filter((e) => !removalSet.has(e.id) && !addedSet.has(e.id));
+  const nextEvents = [...kept, ...delta.addedRecords];
 
-  const nextRawItems = kept.map(eventToRawItem);
+  const nextRawItems = nextEvents.map(eventToRawItem);
   const computedNextRoot = computeProductionCorpusRoot(nextRawItems);
   if (computedNextRoot !== delta.nextRoot) {
     throw new Error(
       `applyCorpusDelta: computed nextRoot=${computedNextRoot} does not match delta.nextRoot=${delta.nextRoot}. `
-      + `Ensure additions are pre-merged into corpus before calling applyCorpusDelta, `
-      + `or that removedIds are correct.`,
+      + `Ensure addedRecords and removedIds match the signed delta.`,
     );
   }
 
-  // Validate that all addedIds are present in the kept set (or were added
-  // before this call).
-  const keptIds = new Set(kept.map((e) => e.id));
-  for (const id of addedSet) {
-    if (!keptIds.has(id)) {
-      throw new Error(
-        `applyCorpusDelta: addedId ${id} not found in corpus after applying removals. `
-        + `Merge additions into corpus before calling applyCorpusDelta.`,
-      );
-    }
-  }
-
   return {
-    events: bucketByFamily(kept),
+    events: bucketByFamily(nextEvents),
     corpusRoot: delta.nextRoot,
     sources: corpus.sources,
   };
