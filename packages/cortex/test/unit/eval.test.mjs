@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import { evalPatch, StubCorpusLoader, canonicalJson } from '../../dist/eval/index.js';
 import { ProductionCorpusLoader, eventIdToKey128, eventIdToMem128, loadProductionCorpus, scoreProductionState } from '../../dist/eval/corpus.js';
 import { buildMerkleCache, merkleizeState, bytesToHex, hexToBytes } from '../../dist/state/merkle.js';
-import { applyPatch, encodePatch, decodePatch } from '../../dist/state/patch.js';
+import { applyPatch, encodePatch, decodePatch, encodeLEB128 } from '../../dist/state/patch.js';
 import { PATCH_TYPE } from '../../dist/state/types.js';
 import { fileURLToPath } from 'node:url';
 
@@ -142,15 +142,22 @@ describe('evalPatch — rejected patch', () => {
     const state = makeCleanState();
     const root = merkleizeState(state);
     const patch = {
-      patchType: PATCH_TYPE.SLOT_REPLACE,
+      patchType: PATCH_TYPE.KEY_UPDATE,
       wordCount: 1,
       scoreDelta: 0n,
       parentStateRoot: root,
       indices: [992], // reserved range
       newWords: [1n],
     };
-    const patchWireBytes = encodePatch(patch);
-    const report = evalPatch(state, patch, { patchWireBytes });
+    assert.throws(() => encodePatch(patch), /reserved/);
+
+    const validPatch = { ...patch, indices: [384] };
+    const patchWireBytes = encodePatch(validPatch);
+    patchWireBytes.set(encodeLEB128(992), 42);
+    const decoded = decodePatch(patchWireBytes);
+    assert.deepEqual(decoded.indices, [992]);
+
+    const report = evalPatch(state, decoded, { patchWireBytes });
     assert.equal(report.accepted, false);
     assert.equal(report.errorCode, 'E02');
   });

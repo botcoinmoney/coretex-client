@@ -108,6 +108,7 @@ const DEFAULT_EVALUATOR_FILES = [
   'packages/cortex/src/corpus/v3-bridge.ts',
   'packages/cortex/src/rewards/difficulty.ts',
   'packages/cortex/src/coordinator/endpoints.ts',
+  'packages/cortex/src/substrate/slot-policy.ts',
   'packages/cortex/src/replay/v4.ts',
   'packages/cortex/src/replay-cli.ts',
 ] as const;

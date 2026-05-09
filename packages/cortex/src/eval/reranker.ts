@@ -11,6 +11,7 @@
  */
 
 import { createHash } from 'node:crypto';
+import { spawn } from 'node:child_process';
 import { QWEN3_RERANKER_DEFAULT_REVISION } from '../bundle/index.js';
 
 // ─── Public interface ─────────────────────────────────────────────────────────
@@ -36,6 +37,8 @@ export interface Qwen3RerankerOptions {
   revision?: string | undefined;
   /** Local cache directory for model weights. */
   cacheDir?: string | undefined;
+  /** Python executable for the production Hugging Face runner. Default: python3. */
+  pythonBin?: string | undefined;
   /**
    * When true, disable remote model fetching — require the model to be
    * pre-cached locally.  Useful in air-gapped / CI environments where the
@@ -67,114 +70,30 @@ export async function createQwen3Reranker(
   opts?: Qwen3RerankerOptions,
 ): Promise<CrossEncoderReranker> {
   const modelId = opts?.model ?? 'Qwen/Qwen3-Reranker-0.6B';
+  const revision = opts?.revision ?? QWEN3_RERANKER_DEFAULT_REVISION;
   const batchSize = opts?.batchSize ?? 4;
-
-  // Dynamic import: @huggingface/transformers is an optional peer dependency.
-  let transformers: typeof import('@huggingface/transformers');
-  try {
-    transformers = await import('@huggingface/transformers');
-  } catch (err) {
-    throw new Error(
-      'Qwen3 reranker requires optional dependency @huggingface/transformers. ' +
-        'Install it or use createDeterministicReranker() for offline tests. ' +
-        `Original error: ${(err as Error)?.message ?? String(err)}`,
-    );
-  }
-
-  const { AutoTokenizer, AutoModelForCausalLM, env } = transformers as unknown as {
-    AutoTokenizer: { from_pretrained(id: string, opts: Record<string, unknown>): Promise<Tokenizer> };
-    AutoModelForCausalLM: { from_pretrained(id: string, opts: Record<string, unknown>): Promise<CausalLM> };
-    env: { cacheDir?: string; allowLocalModels?: boolean; allowRemoteModels?: boolean } | undefined;
-  };
-
-  if (env) {
-    if (opts?.cacheDir) env.cacheDir = opts.cacheDir;
-    if (opts?.localOnly) {
-      env.allowLocalModels = true;
-      env.allowRemoteModels = false;
-    }
-  }
-
-  const loadOpts: Record<string, unknown> = {};
-  if (opts?.revision) loadOpts['revision'] = opts.revision;
-
-  const [tokenizer, model] = await Promise.all([
-    AutoTokenizer.from_pretrained(modelId, loadOpts),
-    AutoModelForCausalLM.from_pretrained(modelId, loadOpts),
-  ]);
-
-  // Resolve the yes/no token ids for the final logit probe.
-  const yesTokenId = await resolveTokenId(tokenizer, 'yes');
-  const noTokenId = await resolveTokenId(tokenizer, 'no');
+  const pythonBin = opts?.pythonBin ?? process.env['CORETEX_RERANKER_PYTHON'] ?? 'python3';
+  const cacheDir = opts?.cacheDir;
+  const localOnly = opts?.localOnly === true;
 
   return withRerankerCache({
-    model: modelId,
+    model: `${modelId}@${revision}`,
     async score(pairs) {
       const scores: number[] = [];
       for (let i = 0; i < pairs.length; i += batchSize) {
         const batch = pairs.slice(i, i + batchSize);
-        const batchScores = await scoreBatchQwen3(
-          batch,
-          tokenizer,
-          model,
-          yesTokenId,
-          noTokenId,
-        );
+        const batchScores = await scoreBatchQwen3Python(batch, {
+          modelId,
+          revision,
+          pythonBin,
+          cacheDir,
+          localOnly,
+        });
         scores.push(...batchScores);
       }
       return scores;
     },
   });
-}
-
-// ─── Minimal shape types for Transformers.js objects ─────────────────────────
-// We avoid importing the full type declarations here because they are not
-// guaranteed to be present in all install configurations.
-
-interface Tokenizer {
-  // Tokenise a text string (or array of strings).
-  // Returns an object with at least an `input_ids` tensor.
-  (
-    text: string | string[],
-    opts?: Record<string, unknown>,
-  ): Promise<Record<string, unknown>> | Record<string, unknown>;
-  // Some models expose convert_tokens_to_ids or encode
-  convert_tokens_to_ids?: (tokens: string[]) => number[];
-  encode?: (text: string) => number[];
-}
-
-interface CausalLM {
-  // Run a forward pass and return logits.
-  ({ input_ids }: { input_ids: unknown }): Promise<{ logits: Tensor }> | { logits: Tensor };
-}
-
-interface Tensor {
-  // Last logit row: shape [batchSize, seqLen, vocabSize]
-  // We use tolist() or data/dims to extract values.
-  tolist?: () => number[][][];
-  data?: Float32Array | number[];
-  dims?: number[];
-}
-
-async function resolveTokenId(tokenizer: Tokenizer, word: string): Promise<number> {
-  if (typeof tokenizer.convert_tokens_to_ids === 'function') {
-    const ids = tokenizer.convert_tokens_to_ids([word]);
-    if (Array.isArray(ids) && typeof ids[0] === 'number' && ids[0] >= 0) return ids[0];
-  }
-  if (typeof tokenizer.encode === 'function') {
-    const ids = tokenizer.encode(word);
-    if (Array.isArray(ids) && ids.length > 0) {
-      // encode usually includes BOS/EOS; take the last real content token
-      return ids[ids.length - 1]!;
-    }
-  }
-  // Fallback: tokenise the word and grab the first token id.
-  const out = await Promise.resolve(tokenizer(word));
-  const input_ids = (out as Record<string, { data?: number[] }>)['input_ids'];
-  if (input_ids?.data && input_ids.data.length > 0) {
-    return input_ids.data[input_ids.data.length - 1]!;
-  }
-  throw new Error(`resolveTokenId: cannot find token id for "${word}"`);
 }
 
 function buildQwen3Prompt(query: string, doc: string): string {
@@ -188,40 +107,105 @@ function buildQwen3Prompt(query: string, doc: string): string {
   );
 }
 
-async function scoreBatchQwen3(
-  batch: ReadonlyArray<{ query: string; document: string }>,
-  tokenizer: Tokenizer,
-  model: CausalLM,
-  yesTokenId: number,
-  noTokenId: number,
-): Promise<number[]> {
-  const scores: number[] = [];
-  for (const pair of batch) {
-    const prompt = buildQwen3Prompt(pair.query, pair.document);
-    const encoded = await Promise.resolve(tokenizer(prompt, { return_tensors: 'pt' }));
-    const output = await Promise.resolve(model({ input_ids: (encoded as Record<string, unknown>)['input_ids'] }));
-    const logits = output.logits;
-    const logitRow = extractLastPositionLogits(logits);
-    const yesLogit = logitRow[yesTokenId] ?? 0;
-    const noLogit = logitRow[noTokenId] ?? 0;
-    scores.push(sigmoid(yesLogit - noLogit));
-  }
-  return scores;
+interface Qwen3PythonOptions {
+  readonly modelId: string;
+  readonly revision: string;
+  readonly pythonBin: string;
+  readonly cacheDir?: string | undefined;
+  readonly localOnly: boolean;
 }
 
-function extractLastPositionLogits(logits: Tensor): number[] {
-  if (typeof logits.tolist === 'function') {
-    const arr = logits.tolist();
-    // shape [batch, seq, vocab] — take batch 0, last seq position
-    return arr[0]![arr[0]!.length - 1]!;
+async function scoreBatchQwen3Python(
+  batch: ReadonlyArray<{ query: string; document: string }>,
+  opts: Qwen3PythonOptions,
+): Promise<number[]> {
+  if (batch.length === 0) return [];
+  const env = { ...process.env };
+  if (opts.cacheDir) env['HF_HOME'] = opts.cacheDir;
+  if (opts.localOnly) env['HF_HUB_OFFLINE'] = '1';
+  const input = JSON.stringify({
+    model: opts.modelId,
+    revision: opts.revision,
+    pairs: batch.map((pair) => ({
+      query: pair.query,
+      document: pair.document,
+      prompt: buildQwen3Prompt(pair.query, pair.document),
+    })),
+  });
+  const script = String.raw`
+import json, math, sys
+try:
+    import torch
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+except Exception as exc:
+    raise SystemExit("missing Python dependencies for Qwen3 reranker: install torch and transformers; " + str(exc))
+
+payload = json.load(sys.stdin)
+model_id = payload["model"]
+revision = payload["revision"]
+tokenizer = AutoTokenizer.from_pretrained(model_id, revision=revision, trust_remote_code=True)
+model = AutoModelForCausalLM.from_pretrained(
+    model_id,
+    revision=revision,
+    trust_remote_code=True,
+    torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+    device_map="auto" if torch.cuda.is_available() else None,
+)
+model.eval()
+yes_ids = tokenizer.encode("yes", add_special_tokens=False)
+no_ids = tokenizer.encode("no", add_special_tokens=False)
+if not yes_ids or not no_ids:
+    raise SystemExit("could not resolve yes/no token ids")
+yes_id = yes_ids[-1]
+no_id = no_ids[-1]
+scores = []
+with torch.no_grad():
+    for pair in payload["pairs"]:
+        encoded = tokenizer(pair["prompt"], return_tensors="pt", truncation=True, max_length=2048)
+        encoded = {k: v.to(model.device) for k, v in encoded.items()}
+        logits = model(**encoded).logits[0, -1]
+        diff = float((logits[yes_id] - logits[no_id]).detach().cpu())
+        scores.append(1.0 / (1.0 + math.exp(-diff)))
+print(json.dumps({"scores": scores}))
+`;
+  const result = await runPythonJson(opts.pythonBin, ['-c', script], input, env);
+  if (!Array.isArray(result['scores']) || result['scores'].length !== batch.length) {
+    throw new Error('Qwen3 reranker returned an invalid scores payload');
   }
-  if (logits.data && logits.dims) {
-    const [_batch, _seq, vocab] = logits.dims as [number, number, number];
-    const data = Array.from(logits.data as Float32Array);
-    // Last position is the last `vocab`-sized chunk
-    return data.slice(data.length - vocab);
-  }
-  throw new Error('extractLastPositionLogits: unsupported Tensor shape');
+  return result['scores'].map((score) => {
+    if (typeof score !== 'number' || !Number.isFinite(score)) throw new Error(`invalid Qwen3 score: ${score}`);
+    return Math.max(0, Math.min(1, score));
+  });
+}
+
+function runPythonJson(
+  pythonBin: string,
+  args: string[],
+  input: string,
+  env: NodeJS.ProcessEnv,
+): Promise<Record<string, unknown>> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(pythonBin, args, { env, stdio: ['pipe', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (chunk) => { stdout += chunk; });
+    child.stderr.on('data', (chunk) => { stderr += chunk; });
+    child.on('error', reject);
+    child.on('close', (code) => {
+      if (code !== 0) {
+        reject(new Error(`Qwen3 Python reranker exited ${code}: ${stderr.trim() || stdout.trim()}`));
+        return;
+      }
+      try {
+        resolve(JSON.parse(stdout) as Record<string, unknown>);
+      } catch (err) {
+        reject(new Error(`Qwen3 Python reranker returned non-JSON output: ${(err as Error).message}; stderr=${stderr.trim()}`));
+      }
+    });
+    child.stdin.end(input);
+  });
 }
 
 function sigmoid(x: number): number {

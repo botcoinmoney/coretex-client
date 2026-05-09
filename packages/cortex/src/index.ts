@@ -25,3 +25,4 @@ export * from './corpus/admission.js';
 export * from './corpus/delta.js';
 export * from './corpus/epoch-rotation.js';
 export * from './corpus/dacr-bridge.js';
+export * from './substrate/slot-policy.js';
