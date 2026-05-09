@@ -75,3 +75,6 @@ __pycache__/
 # Local/generated experiment scratch outputs
 experiments/results/phase7-real-smoke/
 experiments/results/synthetic-dryrun/winner.json
+
+# Generated DACR corpus (regenerated from HF dataset by scripts/build-corpus-from-dacr.mjs)
+benchmark/fixtures/dacr-v0/
