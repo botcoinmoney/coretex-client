@@ -15,6 +15,7 @@ import { applyPatch } from '../state/patch.js';
 import type { CrossEncoderReranker } from './reranker.js';
 import type { ProductionCorpus, ProductionCorpusEvent, ProductionCorpusFamily } from './corpus.js';
 import { eventIdToKey128, eventIdToMem128 } from './corpus.js';
+import type { EvaluatorProfile } from '../bundle/index.js';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -68,8 +69,16 @@ export interface EvaluateStateWithRerankerOptions {
   /**
    * Number of top-ranked candidates to consider a query "hit".
    * Default: 1 (top-1 hit rate).
+   * @deprecated Use profile.rerankerHitThreshold instead. topK is ignored when
+   * profile is provided.
    */
   readonly topK?: number | undefined;
+  /**
+   * F3 fix: evaluator profile providing rerankerHitThreshold.
+   * When provided, profile.rerankerHitThreshold is used as the minimum reranker
+   * score for a hit. When absent, falls back to 1/(topK+1) for backward compat.
+   */
+  readonly profile?: Pick<EvaluatorProfile, 'rerankerHitThreshold'> | undefined;
 }
 
 export interface EvaluatePatchWithRerankerOptions {
@@ -82,6 +91,12 @@ export interface EvaluatePatchWithRerankerOptions {
    * Default: 0.0025 (≈ 2500 ppm).
    */
   readonly threshold?: number | undefined;
+  /**
+   * F3 fix: evaluator profile providing rerankerHitThreshold.
+   * When provided, profile.rerankerHitThreshold is used as the minimum reranker
+   * score for a hit. When absent, falls back to 1/(topK+1) for backward compat.
+   */
+  readonly profile?: Pick<EvaluatorProfile, 'rerankerHitThreshold'> | undefined;
 }
 
 export interface PatchEvalResult {
@@ -264,6 +279,9 @@ export async function evaluateStateWithReranker(
   opts: EvaluateStateWithRerankerOptions,
 ): Promise<RerankerEvalResult> {
   const { reranker, maxTasksPerFamily = 64, topK = 1 } = opts;
+  // F3 fix: use profile.rerankerHitThreshold when available, fall back to
+  // the old 1/(topK+1) formula for backward compat.
+  const hitThreshold = opts.profile?.rerankerHitThreshold ?? (1 / (topK + 1));
 
   const view = readSubstrateView(state);
   const tasks = buildRerankerTasks(corpus, view, maxTasksPerFamily);
@@ -289,11 +307,11 @@ export async function evaluateStateWithReranker(
 
     let hit = false;
     if (task.kind === 'stale_memory_rejection') {
-      // Hit = item is revoked structurally AND model score is low (≤ 0.5)
-      hit = (task.structurallyRevoked === true) && (score <= 0.5);
+      // Hit = item is revoked structurally AND model score is low (below threshold)
+      hit = (task.structurallyRevoked === true) && (score <= hitThreshold);
     } else {
-      // Hit = item is active AND model score is high (in top-k band)
-      hit = task.isPositive && score > (1 / (topK + 1));
+      // Hit = item is active AND model score is high (above calibrated threshold)
+      hit = task.isPositive && score > hitThreshold;
     }
     if (hit) fam.hits++;
   }
@@ -308,8 +326,13 @@ export async function evaluateStateWithReranker(
   const longHorizonCompression = ratio(family['long_horizon']!);
   const relationMultiHop = view.routingAccuracy;
   const codebookCompression = view.codebookActive / 48;
-  const localModelAgreement =
-    (nearCollisionRetrieval + temporalCurrentStale + longHorizonCompression + relationMultiHop + codebookCompression) / 5;
+  // F2 fix: localModelAgreement is no longer the circular arithmetic mean of
+  // the other five components (that was algebraically decorative, zero
+  // independent gradient). It must be supplied externally via
+  // computeRerankerLocalModelAgreement() — this function does not compute it.
+  // The composite still weights this slot at 0.10; the 5 active components
+  // sum to 0.90. Default: 0.
+  const localModelAgreement = 0;
 
   const components: RerankerEvalComponents = {
     nearCollisionRetrieval,
@@ -364,8 +387,10 @@ export async function evaluatePatchWithReranker(
 ): Promise<PatchEvalResult> {
   const { corpus, reranker, threshold = 0.0025 } = opts;
   const patchFn = opts.applyPatch ?? applyPatch;
+  // F3 fix: propagate profile to hit-threshold-aware evaluator
+  const stateOpts: EvaluateStateWithRerankerOptions = { reranker, profile: opts.profile };
 
-  const before = await evaluateStateWithReranker(parentState, corpus, { reranker });
+  const before = await evaluateStateWithReranker(parentState, corpus, stateOpts);
 
   const applied = patchFn(parentState, patch);
   if (!applied.ok) {
@@ -380,7 +405,7 @@ export async function evaluatePatchWithReranker(
     };
   }
 
-  const after = await evaluateStateWithReranker(applied.state, corpus, { reranker });
+  const after = await evaluateStateWithReranker(applied.state, corpus, stateOpts);
 
   const delta = after.composite - before.composite;
   const regressions = componentRegressions(before.components, after.components);
@@ -415,6 +440,76 @@ function componentRegressions(
 
 function clamp01(v: number): number {
   return Math.max(0, Math.min(1, v));
+}
+
+// ─── computeRerankerLocalModelAgreement ──────────────────────────────────────
+
+/**
+ * F2 fix: compute the real localModelAgreement signal via the cross-encoder
+ * reranker on (query, truth) pairs for corpus events whose substrate slot is
+ * active.
+ *
+ * This is the function production wires into `localModelAgreementOverride` in
+ * `scoreProductionState`. It provides an independent gradient for the 0.10
+ * localModelAgreement weight — unlike the removed circular mean formula, this
+ * signal requires genuinely good semantic retrieval to be high.
+ *
+ * Algorithm:
+ *   For each corpus event (all families) whose hash-mapped substrate slot is
+ *   active in the state, score the (queryText, truthText) pair with the
+ *   reranker. Return the mean score across all such active events, clamped
+ *   to [0, 1]. Returns 0 if no events are active.
+ *
+ * @param state   Current CortexState to read active slot membership from.
+ * @param corpus  Production corpus providing query/truth pairs.
+ * @param reranker Cross-encoder reranker instance.
+ * @param opts    Options: epochSeed for salted hashing (must match scoreProductionState opts).
+ */
+export async function computeRerankerLocalModelAgreement(
+  state: CortexState,
+  corpus: ProductionCorpus,
+  reranker: CrossEncoderReranker,
+  opts: { readonly epochSeed?: string } = {},
+): Promise<number> {
+  const view = readSubstrateView(state);
+
+  // Collect active events: those whose mem128 or key128 slot is active.
+  const activePairs: Array<{ query: string; document: string }> = [];
+
+  for (const event of corpus.events.near_collision) {
+    if (event.relevant === false) continue;
+    const keyId = eventIdToKey128(event.id, opts.epochSeed).toString();
+    if (view.activeKeyIds.has(keyId)) {
+      activePairs.push({ query: event.queryText ?? '', document: event.truthText ?? '' });
+    }
+  }
+
+  for (const event of corpus.events.temporal) {
+    const memId = eventIdToMem128(event.id, opts.epochSeed).toString();
+    if (event.isStaleTruth) {
+      // Stale entries: we want them revoked; agreement = model says irrelevant
+      if (view.revokedMemIds.has(memId)) {
+        activePairs.push({ query: event.queryText ?? '', document: event.truthText ?? '' });
+      }
+    } else {
+      if (view.activeMemIds.has(memId)) {
+        activePairs.push({ query: event.queryText ?? '', document: event.truthText ?? '' });
+      }
+    }
+  }
+
+  for (const event of corpus.events.long_horizon) {
+    const memId = eventIdToMem128(event.id, opts.epochSeed).toString();
+    if (view.activeMemIds.has(memId)) {
+      activePairs.push({ query: event.queryText ?? '', document: event.truthText ?? '' });
+    }
+  }
+
+  if (activePairs.length === 0) return 0;
+
+  const scores = await reranker.score(activePairs);
+  const mean = scores.reduce((sum, s) => sum + s, 0) / scores.length;
+  return Math.max(0, Math.min(1, mean));
 }
 
 // Re-export for callers that need the corpus type

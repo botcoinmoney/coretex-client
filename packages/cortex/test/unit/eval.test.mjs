@@ -392,13 +392,24 @@ describe('ProductionCorpusLoader', () => {
       state.words[896 + slot * 2] = (BigInt(slot + 1) << 240n) | (1n << 224n) | (1n << 208n);
     }
 
+    // F2 fix: localModelAgreement defaults to 0 (not circular mean of other 5).
+    // Without localModelAgreementOverride, the 5 active components sum to 0.90.
     const score = scoreProductionState(state, corpus, { shardId: '0x' + '00'.repeat(16), evalItemsPerFamily: 0 });
     assert.equal(score.components.nearCollisionRetrieval, 1);
     assert.equal(score.components.temporalCurrentStale, 1);
     assert.equal(score.components.longHorizonCompression, 1);
     assert.equal(score.components.relationMultiHop, 1);
     assert.equal(score.components.codebookCompression, 1);
-    assert.equal(score.components.localModelAgreement, 1);
-    assert.equal(score.composite, 1);
+    assert.equal(score.components.localModelAgreement, 0);
+    assert.equal(score.composite, 0.90);
+
+    // With localModelAgreementOverride: 1.0, composite reaches 1.0
+    const scoreWithOverride = scoreProductionState(state, corpus, {
+      shardId: '0x' + '00'.repeat(16),
+      evalItemsPerFamily: 0,
+      localModelAgreementOverride: 1.0,
+    });
+    assert.equal(scoreWithOverride.components.localModelAgreement, 1);
+    assert.equal(scoreWithOverride.composite, 1);
   });
 });

@@ -52,6 +52,7 @@ export interface ReplayTransitionError {
   readonly code:
     | 'NO_PATCH_BYTES'
     | 'NO_STATE_ADVANCED'
+    | 'MULTIPLE_ADVANCES'
     | 'NO_MATCHING_PATCH_EVENT_FOR_ADVANCE'
     | 'PATCH_HASH_MISMATCH'
     | 'PATCH_PARENT_MISMATCH'
@@ -61,7 +62,13 @@ export interface ReplayTransitionError {
   readonly message: string;
 }
 
-export type ReplayTransitionResult = ReplayTransitionSuccess | ReplayTransitionError;
+export interface ReplayTransitionErrorMultipleAdvances {
+  readonly ok: false;
+  readonly code: 'MULTIPLE_ADVANCES';
+  readonly message: string;
+}
+
+export type ReplayTransitionResult = ReplayTransitionSuccess | ReplayTransitionError | ReplayTransitionErrorMultipleAdvances;
 
 export interface ReplayBatchSuccess {
   readonly ok: true;
@@ -74,7 +81,7 @@ export interface ReplayBatchError {
   readonly ok: false;
   readonly transitionCount: number;
   readonly results: readonly ReplayTransitionResult[];
-  readonly error: ReplayTransitionError;
+  readonly error: ReplayTransitionError | { readonly ok: false; readonly code: 'OUT_OF_ORDER_LOGS'; readonly message: string };
 }
 
 export type ReplayBatchResult = ReplayBatchSuccess | ReplayBatchError;
@@ -96,8 +103,17 @@ export function replayV4TransitionFromLogs(
   if (advances.length === 0) {
     return { ok: false, code: 'NO_STATE_ADVANCED', message: 'No CortexStateAdvanced event found' };
   }
+  // R2: singular replay must receive exactly one advance event.
+  // A log set containing multiple advances belongs to the batch path.
+  if (advances.length > 1) {
+    return {
+      ok: false,
+      code: 'MULTIPLE_ADVANCES',
+      message: `replayV4TransitionFromLogs received ${advances.length} CortexStateAdvanced events; use replayV4TransitionsFromLogs for multi-transition log sets`,
+    };
+  }
 
-  const advance = advances[advances.length - 1]!;
+  const advance = advances[0]!;
   const patchEvent = patches.find((event) => eqHex(event.patchHash, advance.patchHash));
   if (!patchEvent) {
     return {
@@ -160,8 +176,37 @@ export function replayV4TransitionsFromLogs(
 ): ReplayBatchResult {
   let currentState = parentState;
   const results: ReplayTransitionResult[] = [];
-  const patchLogs = logs.filter((log) => decodeCoretexPatchBytesLog(log) !== null);
-  const advanceLogs = logs.filter((log) => decodeCortexStateAdvancedLog(log) !== null);
+
+  // R1: sort logs by (blockNumber, logIndex) ascending before iterating so
+  // that out-of-order delivery (e.g. from RPC batching) is corrected.
+  const sortedLogs = [...logs].sort((a, b) => {
+    const blockA = a.blockNumber ? BigInt(a.blockNumber) : 0n;
+    const blockB = b.blockNumber ? BigInt(b.blockNumber) : 0n;
+    if (blockA !== blockB) return blockA < blockB ? -1 : 1;
+    const idxA = a.logIndex ? Number(a.logIndex) : 0;
+    const idxB = b.logIndex ? Number(b.logIndex) : 0;
+    return idxA - idxB;
+  });
+
+  const patchLogs = sortedLogs.filter((log) => decodeCoretexPatchBytesLog(log) !== null);
+  const advanceLogs = sortedLogs.filter((log) => decodeCortexStateAdvancedLog(log) !== null);
+
+  // R1: assert strictly monotone transitionIndex across advance events.
+  let lastTransitionIndex: bigint | null = null;
+  for (const advanceLog of advanceLogs) {
+    const advance = decodeCortexStateAdvancedLog(advanceLog);
+    if (advance !== null) {
+      if (lastTransitionIndex !== null && advance.transitionIndex <= lastTransitionIndex) {
+        const err = {
+          ok: false as const,
+          code: 'OUT_OF_ORDER_LOGS' as const,
+          message: `CortexStateAdvanced transitionIndex ${advance.transitionIndex} is not strictly greater than previous ${lastTransitionIndex}`,
+        };
+        return { ok: false, transitionCount: 0, results: [], error: err };
+      }
+      lastTransitionIndex = advance.transitionIndex;
+    }
+  }
 
   for (const advanceLog of advanceLogs) {
     const advance = decodeCortexStateAdvancedLog(advanceLog);
@@ -172,7 +217,7 @@ export function replayV4TransitionsFromLogs(
     const result = replayV4TransitionFromLogs(currentState, patchLog ? [patchLog, advanceLog] : [advanceLog]);
     results.push(result);
     if (!result.ok) {
-      return { ok: false, transitionCount: results.length, results, error: result };
+      return { ok: false, transitionCount: results.length, results, error: result as ReplayTransitionError };
     }
     currentState = unpack(hexToBytes(result.newStatePackedHex));
   }

@@ -32,6 +32,21 @@ export interface EvaluatorProfile {
   readonly primaryMetric: 'ndcg@10' | 'map' | 'composite';
   readonly replayTolerancePpm: number;
   readonly rerankerThresholdPpm: number;
+  /**
+   * F3 fix: minimum reranker score for a (query, document) pair to count as a
+   * "hit" in evaluateStateWithReranker / evaluatePatchWithReranker.
+   *
+   * Calibration from Qwen3-Reranker-0.6B on a representative DACR sample:
+   *   relevant pairs:   mean score ≈ 0.0068
+   *   unrelated pairs:  mean score ≈ 0.00028
+   *   ratio: 24×  →  threshold at 0.002 cleanly separates relevant from unrelated.
+   *
+   * The old threshold of 1/(topK+1) = 0.5 never fires against the real model
+   * because Qwen3 outputs logit-scaled scores ≪ 0.5.
+   *
+   * Default: 0.002 (between relevant 0.0068 and unrelated 0.00028, with margin).
+   */
+  readonly rerankerHitThreshold: number;
   readonly familyWeights: Record<string, number>;
   readonly protectedRegressionVeto: boolean;
 }
@@ -122,6 +137,9 @@ const DEFAULT_PROFILE: EvaluatorProfile = {
   primaryMetric: 'composite',
   replayTolerancePpm: 250,
   rerankerThresholdPpm: 2500,
+  // F3 fix: calibrated threshold for Qwen3-Reranker-0.6B.
+  // relevant ≈ 0.0068 > 0.002 > unrelated ≈ 0.00028 (24× separation on DACR sample).
+  rerankerHitThreshold: 0.002,
   protectedRegressionVeto: true,
   familyWeights: {
     near_collision_retrieval: 20,

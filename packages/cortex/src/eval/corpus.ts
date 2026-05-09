@@ -134,7 +134,27 @@ export function loadProductionCorpus(path: string): ProductionCorpus {
 export function scoreProductionState(
   state: CortexState,
   corpus: ProductionCorpus,
-  opts: { readonly shardId: string; readonly evalItemsPerFamily?: number },
+  opts: {
+    readonly shardId: string;
+    readonly evalItemsPerFamily?: number;
+    /**
+     * Epoch-seed salt (hex, 0x-prefixed bytes32) for substrate hash functions.
+     * When provided, hash functions use sha256("cortex-key128:" + epochSeed + ":" + eventId)
+     * instead of sha256("cortex-key128:" + eventId). This prevents miners from
+     * precomputing which corpus events map to substrate slots — they must use the
+     * reranker to discover which events to commit during an epoch.
+     * Pairs with CortexState.epoch.evalSeedCommit.
+     */
+    readonly epochSeed?: string;
+    /**
+     * Override for the localModelAgreement component.
+     * When provided, this value (clamped to [0,1]) is used directly instead of
+     * computing a circular mean of the other five components.
+     * When absent, defaults to 0 (not the circular mean).
+     * Production wires computeRerankerLocalModelAgreement() into this slot.
+     */
+    readonly localModelAgreementOverride?: number;
+  },
 ): ProductionCorpusScore {
   const selected = selectScoredEvents(corpus.events, opts.shardId, opts.evalItemsPerFamily ?? 256);
   const activeMemIds = new Set<bigint>();
@@ -178,10 +198,18 @@ export function scoreProductionState(
   const current = selected.temporal.filter((event) => !event.isStaleTruth);
   const lh = selected.long_horizon;
 
-  const ncHits = countHits(nc, activeKeyIds, eventIdToKey128);
-  const staleHits = countHits(stale, revokedMemIds, eventIdToMem128);
-  const currentHits = countHits(current, activeMemIds, eventIdToMem128);
-  const longHits = countHits(lh, activeMemIds, eventIdToMem128);
+  // Bind mappers with optional epoch-seed salt (F1 fix)
+  const keyMapper = opts.epochSeed
+    ? (id: string) => eventIdToKey128(id, opts.epochSeed)
+    : eventIdToKey128;
+  const memMapper = opts.epochSeed
+    ? (id: string) => eventIdToMem128(id, opts.epochSeed)
+    : eventIdToMem128;
+
+  const ncHits = countHits(nc, activeKeyIds, keyMapper);
+  const staleHits = countHits(stale, revokedMemIds, memMapper);
+  const currentHits = countHits(current, activeMemIds, memMapper);
+  const longHits = countHits(lh, activeMemIds, memMapper);
 
   const exactRetrieval = ratio(ncHits, nc.length);
   const staleMemoryRejection = ratio(staleHits, stale.length);
@@ -193,13 +221,16 @@ export function scoreProductionState(
   const longHorizonCompression = compressionSurvival;
   const relationMultiHop = routingAccuracy;
   const codebookCompression = activeCodebook / 48;
-  const localModelAgreement = (
-    nearCollisionRetrieval
-    + temporalCurrentStale
-    + longHorizonCompression
-    + relationMultiHop
-    + codebookCompression
-  ) / 5;
+  // F2 fix: localModelAgreement is no longer a circular mean of the other five
+  // components. It defaults to 0 when no override is provided, and is set by
+  // production via computeRerankerLocalModelAgreement() in reranker-eval.ts.
+  // The composite formula retains the full 0.10 weight on this slot so that
+  // providing a real signal (via localModelAgreementOverride) contributes
+  // an independent 10 pp to the composite score.
+  // Formula: 0.20*nearCol + 0.20*temporal + 0.20*longHor + 0.20*relMulti + 0.10*codebook + 0.10*localModel
+  const localModelAgreement = opts.localModelAgreementOverride !== undefined
+    ? clamp01(opts.localModelAgreementOverride)
+    : 0;
   const composite = clamp01(
     0.20 * nearCollisionRetrieval
     + 0.20 * temporalCurrentStale
@@ -239,12 +270,38 @@ export function scoreProductionState(
   };
 }
 
-export function eventIdToKey128(eventId: string): bigint {
-  return lowBytesToBigInt(sha256Bytes(`cortex-key128:${eventId}`), 16);
+/**
+ * Maps a corpus event ID to its 128-bit retrieval-key substrate hash.
+ *
+ * F1 fix: when `epochSeed` is provided (hex, 0x-prefixed bytes32), the hash
+ * input is salted as:
+ *   sha256("cortex-key128:" + epochSeed + ":" + eventId)
+ * This prevents miners from precomputing which corpus events map to substrate
+ * key slots during an epoch — the salt is committed on-chain via
+ * CortexState.epoch.evalSeedCommit and revealed only at epoch close.
+ *
+ * Without epochSeed (backward-compatible default):
+ *   sha256("cortex-key128:" + eventId)
+ */
+export function eventIdToKey128(eventId: string, epochSeed?: string): bigint {
+  const input = epochSeed ? `cortex-key128:${epochSeed}:${eventId}` : `cortex-key128:${eventId}`;
+  return lowBytesToBigInt(sha256Bytes(input), 16);
 }
 
-export function eventIdToMem128(eventId: string): bigint {
-  return lowBytesToBigInt(sha256Bytes(`cortex-mem128:${eventId}`), 16);
+/**
+ * Maps a corpus event ID to its 128-bit memory-index substrate hash.
+ *
+ * F1 fix: when `epochSeed` is provided (hex, 0x-prefixed bytes32), the hash
+ * input is salted as:
+ *   sha256("cortex-mem128:" + epochSeed + ":" + eventId)
+ * See eventIdToKey128 for the full rationale.
+ *
+ * Without epochSeed (backward-compatible default):
+ *   sha256("cortex-mem128:" + eventId)
+ */
+export function eventIdToMem128(eventId: string, epochSeed?: string): bigint {
+  const input = epochSeed ? `cortex-mem128:${epochSeed}:${eventId}` : `cortex-mem128:${eventId}`;
+  return lowBytesToBigInt(sha256Bytes(input), 16);
 }
 
 function normalizeProductionItem(item: unknown): ProductionCorpusEvent {
