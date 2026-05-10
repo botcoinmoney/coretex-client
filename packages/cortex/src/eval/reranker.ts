@@ -28,6 +28,18 @@ export interface CrossEncoderReranker {
   score(pairs: ReadonlyArray<{ query: string; document: string }>): Promise<number[]>;
 }
 
+const GPU_ENV_VARS = ['CORETEX_USE_GPU', 'PYTORCH_USE_MPS'] as const;
+
+function refuseGpuForReranker(): void {
+  for (const envVar of GPU_ENV_VARS) {
+    const v = process.env[envVar];
+    if (v && v !== '0') throw new Error(`reranker refuses to run with ${envVar}=${v} set (CPU-only contract)`);
+  }
+  if (process.env['CUDA_VISIBLE_DEVICES'] && process.env['CUDA_VISIBLE_DEVICES'] !== '') {
+    throw new Error('reranker refuses to run with CUDA_VISIBLE_DEVICES set (CPU-only contract)');
+  }
+}
+
 // ─── Qwen3-Reranker-0.6B (generative logit-difference path) ──────────────────
 
 export interface Qwen3RerankerOptions {
@@ -69,6 +81,7 @@ export interface Qwen3RerankerOptions {
 export async function createQwen3Reranker(
   opts?: Qwen3RerankerOptions,
 ): Promise<CrossEncoderReranker> {
+  refuseGpuForReranker();
   const modelId = opts?.model ?? 'Qwen/Qwen3-Reranker-0.6B';
   const revision = opts?.revision ?? QWEN3_RERANKER_DEFAULT_REVISION;
   const batchSize = opts?.batchSize ?? 4;
@@ -148,9 +161,9 @@ model = AutoModelForCausalLM.from_pretrained(
     model_id,
     revision=revision,
     trust_remote_code=True,
-    torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
-    device_map="auto" if torch.cuda.is_available() else None,
+    torch_dtype=torch.float32,
 )
+model.to("cpu")
 model.eval()
 yes_ids = tokenizer.encode("yes", add_special_tokens=False)
 no_ids = tokenizer.encode("no", add_special_tokens=False)
@@ -162,7 +175,7 @@ scores = []
 with torch.no_grad():
     for pair in payload["pairs"]:
         encoded = tokenizer(pair["prompt"], return_tensors="pt", truncation=True, max_length=2048)
-        encoded = {k: v.to(model.device) for k, v in encoded.items()}
+        encoded = {k: v.to("cpu") for k, v in encoded.items()}
         logits = model(**encoded).logits[0, -1]
         diff = float((logits[yes_id] - logits[no_id]).detach().cpu())
         scores.append(1.0 / (1.0 + math.exp(-diff)))

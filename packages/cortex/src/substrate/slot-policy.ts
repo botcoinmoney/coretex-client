@@ -1,13 +1,24 @@
-import type { ProductionCorpusFamily } from '../eval/corpus.js';
+/**
+ * Deterministic write-cursor for production patch builders.
+ *
+ * Decoupled from any reward law. Slot occupancy is a substrate state, not
+ * a metric. This file provides region-aware ring-rotation so patch builders
+ * can target a stable next-write slot without colliding with protected
+ * memories.
+ *
+ * Used by miner-side patch construction tooling and by the coordinator's
+ * /coretex/coverage-hints endpoint when proposing candidate slots to fill.
+ */
+
 import { RANGES } from '../state/types.js';
 
 export type SubstrateSlotRegion = 'memory_index' | 'retrieval_keys';
 
 export interface SelectSubstrateSlotOptions {
-  readonly family: ProductionCorpusFamily;
+  readonly region: SubstrateSlotRegion;
   /** Zero-based accepted state-advance counter for this region. */
   readonly advanceIndex: number;
-  /** Slots that must not be evicted, usually because they hold protected corpus events. */
+  /** Slots that must not be evicted. */
   readonly protectedSlots?: ReadonlySet<number> | readonly number[] | undefined;
 }
 
@@ -24,25 +35,14 @@ export const SUBSTRATE_SLOT_CAPACITY = Object.freeze({
   retrieval_keys: 36,
 } satisfies Record<SubstrateSlotRegion, number>);
 
-export function substrateRegionForFamily(family: ProductionCorpusFamily): SubstrateSlotRegion {
-  return family === 'near_collision' ? 'retrieval_keys' : 'memory_index';
-}
+export const SUBSTRATE_WORDS_PER_SLOT = 8;
 
-/**
- * Deterministic region-rotation policy for production patch builders.
- *
- * Regions rotate as a ring.  Once the write cursor reaches capacity, it wraps
- * and evicts the slot's previous active value by overwriting that slot.  If the
- * caller marks protected slots, the cursor scans forward and chooses the first
- * non-protected slot.  If every slot is protected, the function fails closed.
- */
 export function selectSubstrateSlot(opts: SelectSubstrateSlotOptions): SelectedSubstrateSlot {
-  const region = substrateRegionForFamily(opts.family);
+  const region = opts.region;
   const capacity = SUBSTRATE_SLOT_CAPACITY[region];
   if (!Number.isSafeInteger(opts.advanceIndex) || opts.advanceIndex < 0) {
     throw new Error(`advanceIndex must be a non-negative safe integer, got ${opts.advanceIndex}`);
   }
-
   const protectedSlots = normalizeProtectedSlots(opts.protectedSlots, capacity);
   let slotIndex = opts.advanceIndex % capacity;
   for (let tries = 0; tries < capacity; tries++) {
@@ -57,7 +57,6 @@ export function selectSubstrateSlot(opts: SelectSubstrateSlotOptions): SelectedS
     }
     slotIndex = (slotIndex + 1) % capacity;
   }
-
   throw new Error(`no writable ${region} slots remain; ${capacity}/${capacity} slots are protected`);
 }
 
@@ -70,11 +69,11 @@ export function wordIndexForSubstrateSlot(
   if (!Number.isSafeInteger(slotIndex) || slotIndex < 0 || slotIndex >= capacity) {
     throw new Error(`${region} slotIndex out of range: ${slotIndex}`);
   }
-  if (!Number.isSafeInteger(wordOffset) || wordOffset < 0 || wordOffset >= 8) {
+  if (!Number.isSafeInteger(wordOffset) || wordOffset < 0 || wordOffset >= SUBSTRATE_WORDS_PER_SLOT) {
     throw new Error(`wordOffset out of range: ${wordOffset}`);
   }
   const start = region === 'memory_index' ? RANGES.MEMORY_INDEX_START : RANGES.RETRIEVAL_KEYS_START;
-  return start + slotIndex * 8 + wordOffset;
+  return start + slotIndex * SUBSTRATE_WORDS_PER_SLOT + wordOffset;
 }
 
 function normalizeProtectedSlots(

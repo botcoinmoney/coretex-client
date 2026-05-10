@@ -86,16 +86,14 @@ describe('reserved-bit validation', () => {
     assert.equal(hasNonZeroReservedBits(state), false);
   });
 
-  test('MemoryIndex slot0 reserved bits 63:0 fail', () => {
-    // word 32 is slot 0, slot-word 0; reserved = bits 63:0 + VALIDITY_FLAGS 79:67
-    const state = makeState({ 32: 1n }); // bit 0 reserved
-    assert.equal(hasNonZeroReservedBits(state), true);
+  test('MemoryIndex slot0 retrieval-semantics low bits pass', () => {
+    const state = makeState({ 32: 1n });
+    assert.equal(hasNonZeroReservedBits(state), false);
   });
 
-  test('MemoryIndex slot0 VALIDITY_FLAGS reserved bits fail', () => {
-    // VALIDITY_FLAGS reserved bits 79:67, e.g. bit 69
+  test('MemoryIndex slot0 retrieval-semantics flags pass to decoder validation', () => {
     const state = makeState({ 32: (1n << 69n) });
-    assert.equal(hasNonZeroReservedBits(state), true);
+    assert.equal(hasNonZeroReservedBits(state), false);
   });
 
   test('MemoryIndex slot0 non-reserved fields pass', () => {
@@ -107,10 +105,9 @@ describe('reserved-bit validation', () => {
     assert.equal(hasNonZeroReservedBits(state), false);
   });
 
-  test('Relations entry: reserved bits 191:0 fail', () => {
-    // word 672 is Relations entry 0
+  test('Relations entry: compact source/target low bits pass', () => {
     const state = makeState({ 672: 1n });
-    assert.equal(hasNonZeroReservedBits(state), true);
+    assert.equal(hasNonZeroReservedBits(state), false);
   });
 
   test('Relations entry: non-reserved bits pass', () => {
@@ -129,9 +126,8 @@ describe('reserved-bit validation', () => {
     assert.equal(hasNonZeroReservedBits(state), true);
   });
 
-  test('Codebook slot0: reserved bits 207:0 fail', () => {
-    // word 896 = codebook slot 0, slot-word 0
+  test('Codebook slot0 payload bits pass to decoder validation', () => {
     const state = makeState({ 896: 1n });
-    assert.equal(hasNonZeroReservedBits(state), true);
+    assert.equal(hasNonZeroReservedBits(state), false);
   });
 });

@@ -38,8 +38,9 @@ function reservedMask(wordIdx: number): bigint {
 
   // Relations range (words 672–799): 1-word entries
   if (wordIdx >= RANGES.RELATIONS_START && wordIdx <= RANGES.RELATIONS_END) {
-    // Bits 191:0 reserved
-    return (1n << 192n) - 1n;
+    // Retrieval-benchmark relation entries use high control bits plus compact
+    // low-byte source/target fields. Semantic validation lives in the decoder.
+    return 0n;
   }
 
   // Temporal range (words 800–895): 1-word entries
@@ -104,16 +105,10 @@ function headerReservedMask(wordIdx: number): bigint {
 function memoryIndexSlotReservedMask(slotWord: number): bigint {
   switch (slotWord) {
     case 0:
-      // Named: bits 255:128 (EVENT_ID), 127:96 (DOMAIN_CODE), 95:80 (OBJ_TYPE),
-      //        79:64 (VALIDITY_FLAGS)
-      // VALIDITY_FLAGS: bit 79:64 (16 bits), bits 15:3 of VALIDITY_FLAGS = bits 79:67 reserved
-      // Reserved within VALIDITY_FLAGS: bits 79:67
-      // Reserved: bits 63:0 (reserved_slot0) AND VALIDITY_FLAGS bits 79:67
-      {
-        const low = (1n << 64n) - 1n; // bits 63:0
-        const valFlagsRes = flagsMask(79, 67); // bits 79:67
-        return low | valFlagsRes;
-      }
+      // Retrieval-benchmark semantics use all 256 bits of word 0:
+      // recordId(128), family+domain(64), flags(16), retrievalSlot(8),
+      // expiryEpoch(40). Semantic validation lives in retrieval-decoder.ts.
+      return 0n;
     case 1:
       // Named: bits 255:128 (CHECKSUM), 127:64 (CORPUS_EPOCH), 63:0 (EXPIRY_EPOCH)
       // No reserved bits
@@ -125,29 +120,16 @@ function memoryIndexSlotReservedMask(slotWord: number): bigint {
 }
 
 function retrievalKeySlotReservedMask(slotWord: number): bigint {
-  if (slotWord === 0) {
-    // Named: bits 255:128 (KEY_ID), 127:112 (KEY_TYPE), 111:96 (KEY_DIM),
-    //        95:80 (KEY_FLAGS)
-    // KEY_FLAGS: bits 95:80, bit 0 of KEY_FLAGS = bit 80, bits 1–15 = bits 95:81 reserved
-    // Reserved: bits 79:0 (reserved_rk0) AND KEY_FLAGS bits 95:81
-    const low = (1n << 80n) - 1n;
-    const keyFlagsRes = flagsMask(95, 81);
-    return low | keyFlagsRes;
-  }
-  // Words 1–7: KEY_VECTOR — no reserved bits
+  void slotWord;
+  // Retrieval-key slots are 256-byte packed vector records. Header and vector
+  // semantics are enforced by retrieval-decoder.ts, not the legacy mask.
   return 0n;
 }
 
 function codebookSlotReservedMask(slotWord: number): bigint {
-  if (slotWord === 0) {
-    // Named: bits 255:240 (CODE), 239:224 (CODE_TYPE), 223:208 (CODE_FLAGS)
-    // CODE_FLAGS: bits 223:208, bit 0 of CODE_FLAGS = bit 208, bits 1–15 = bits 223:209 reserved
-    // Reserved: bits 207:0 (reserved_cb0) AND CODE_FLAGS bits 223:209
-    const low = (1n << 208n) - 1n;
-    const codeFlags = flagsMask(223, 209);
-    return low | codeFlags;
-  }
-  // Word 1: CODE_DATA — no reserved bits
+  void slotWord;
+  // Codebook payload bits are meaningful under retrieval-benchmark semantics.
+  // Decode-level validation rejects malformed code/type/flag combinations.
   return 0n;
 }
 

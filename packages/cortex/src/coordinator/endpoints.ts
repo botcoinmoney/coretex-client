@@ -8,6 +8,10 @@ export type CoreTexEndpointName =
   | 'challenge-book-by-epoch'
   | 'corpus-delta-by-epoch'
   | 'client-bundle-by-hash'
+  | 'corpus-record'
+  | 'corpus-record-embedding'
+  | 'coverage-hints'
+  | 'bundle-by-hash'
   | 'health';
 
 export interface CoreTexEndpoint {
@@ -26,6 +30,10 @@ export const CORETEX_ENDPOINTS: readonly CoreTexEndpoint[] = [
   { name: 'challenge-book-by-epoch', method: 'GET', path: '/coretex/challenge-book/:epoch' },
   { name: 'corpus-delta-by-epoch', method: 'GET', path: '/coretex/corpus-delta/:epoch' },
   { name: 'client-bundle-by-hash', method: 'GET', path: '/coretex/client-bundle/:coreVersionHash' },
+  { name: 'bundle-by-hash', method: 'GET', path: '/coretex/bundle/:bundleHash' },
+  { name: 'corpus-record', method: 'GET', path: '/coretex/corpus/:recordId' },
+  { name: 'corpus-record-embedding', method: 'GET', path: '/coretex/corpus/:recordId/embedding' },
+  { name: 'coverage-hints', method: 'GET', path: '/coretex/coverage-hints' },
   { name: 'health', method: 'GET', path: '/coretex/health' },
 ] as const;
 
@@ -73,6 +81,10 @@ export interface CoreTexCoordinatorDataSource {
   readonly getChallengeBook?: (epoch: bigint) => Promise<unknown> | unknown;
   readonly getCorpusDelta?: (epoch: bigint) => Promise<unknown> | unknown;
   readonly getClientBundle?: (coreVersionHash: string) => Promise<unknown> | unknown;
+  readonly getBundle?: (bundleHash: string) => Promise<unknown> | unknown;
+  readonly getCorpusRecord?: (recordId: string) => Promise<unknown> | unknown;
+  readonly getCorpusRecordEmbedding?: (recordId: string) => Promise<unknown> | unknown;
+  readonly getCoverageHints?: () => Promise<unknown> | unknown;
   readonly health?: () => Promise<unknown> | unknown;
 }
 
@@ -158,6 +170,37 @@ export async function handleCoreTexCoordinatorRoute(
     return handled(200, await source.getClientBundle(bundle));
   }
 
+  const bundleByHash = matchBytes32(path, /^\/coretex\/bundle\/(0x[0-9a-fA-F]{64})$/);
+  if (method === 'GET' && bundleByHash) {
+    const denied = await guardRoute(req, source, 'bundle-by-hash');
+    if (denied) return denied;
+    if (!source.getBundle) return notConfigured('bundle-by-hash');
+    return handled(200, await source.getBundle(bundleByHash));
+  }
+
+  if (method === 'GET' && path === '/coretex/coverage-hints') {
+    const denied = await guardRoute(req, source, 'coverage-hints');
+    if (denied) return denied;
+    if (!source.getCoverageHints) return notConfigured('coverage-hints');
+    return handled(200, await source.getCoverageHints());
+  }
+
+  const corpusEmbed = matchRecordId(path, /^\/coretex\/corpus\/([A-Za-z0-9_:.-]+)\/embedding$/);
+  if (method === 'GET' && corpusEmbed) {
+    const denied = await guardRoute(req, source, 'corpus-record-embedding');
+    if (denied) return denied;
+    if (!source.getCorpusRecordEmbedding) return notConfigured('corpus-record-embedding');
+    return handled(200, await source.getCorpusRecordEmbedding(corpusEmbed));
+  }
+
+  const corpusRec = matchRecordId(path, /^\/coretex\/corpus\/([A-Za-z0-9_:.-]+)$/);
+  if (method === 'GET' && corpusRec) {
+    const denied = await guardRoute(req, source, 'corpus-record');
+    if (denied) return denied;
+    if (!source.getCorpusRecord) return notConfigured('corpus-record');
+    return handled(200, await source.getCorpusRecord(corpusRec));
+  }
+
   if (path.startsWith('/coretex/')) {
     return handled(404, { error: 'coretex-not-found' });
   }
@@ -219,4 +262,9 @@ function matchEpoch(path: string, pattern: RegExp): bigint | null {
   const match = pattern.exec(path);
   if (!match?.[1]) return null;
   return BigInt(match[1]);
+}
+
+function matchRecordId(path: string, pattern: RegExp): string | null {
+  const match = pattern.exec(path);
+  return match?.[1] ?? null;
 }

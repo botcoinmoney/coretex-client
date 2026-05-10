@@ -23,7 +23,6 @@ import { merkleizeState, bytesToHex, hexToBytes } from './state/merkle.js';
 import { applyPatch, decodePatch, encodePatch } from './state/patch.js';
 import { decodeCortexState } from './decoder/index.js';
 import { evalPatch, StubCorpusLoader } from './eval/index.js';
-import { ProductionCorpusLoader } from './eval/corpus.js';
 import { verifyEpoch } from './verify-epoch/index.js';
 import type {
   PatchAcceptedEvent,
@@ -39,7 +38,8 @@ import {
 import {
   buildBundleManifest,
   verifyBundleManifest,
-  type ModelFetchManifest,
+  type BiEncoderManifest,
+  type RerankerManifest,
   type CoreTexBundleManifest,
 } from './bundle/index.js';
 
@@ -157,12 +157,10 @@ switch (cmd) {
     const patch = decodePatch(patchWire);
     const corpusRootArg = args.indexOf('--corpus-root');
     const corpusRoot = corpusRootArg >= 0 ? (args[corpusRootArg + 1] ?? '0x' + '00'.repeat(32)) : '0x' + '00'.repeat(32);
-    const corpusFile = flagValue(args, '--corpus-file');
-    const evalItemsArg = flagValue(args, '--eval-items-per-family');
-    const evalItemsPerFamily = evalItemsArg ? Number(evalItemsArg) : undefined;
-    const loader = corpusFile
-      ? ProductionCorpusLoader.fromFile(corpusFile, evalItemsPerFamily === undefined ? {} : { evalItemsPerFamily })
-      : new StubCorpusLoader(corpusRoot);
+    // The synchronous CLI eval uses StubCorpusLoader; production scoring is
+    // async (bi-encoder + cross-encoder) and runs through the coordinator's
+    // /coretex/evaluate endpoint, not this CLI. See evaluateRetrievalBenchmarkPatch.
+    const loader = new StubCorpusLoader(corpusRoot);
     const report = evalPatch(state, patch, { loader, patchWireBytes: patchWire });
     process.stdout.write(toJsonOutput(report) + '\n');
     break;
@@ -338,10 +336,16 @@ switch (cmd) {
       const repoRoot = flagValue(args, '--repo-root') ?? process.cwd();
       const corpusRoot = requireFlag(args, '--corpus-root');
       const corpusFiles = requireFlag(args, '--corpus-files').split(',').map((s) => s.trim()).filter(Boolean);
-      const modelFile = requireFlag(args, '--model-manifest');
+      const biEncoderFile = requireFlag(args, '--bi-encoder-manifest');
+      const rerankerFile = requireFlag(args, '--reranker-manifest');
+      const labelingFile = requireFlag(args, '--labeling-reranker-manifest');
       const snapshotFiles = (flagValue(args, '--snapshot-files') ?? '').split(',').map((s) => s.trim()).filter(Boolean);
-      const model = JSON.parse(fs.readFileSync(modelFile, 'utf8')) as ModelFetchManifest;
-      const manifest = buildBundleManifest({ repoRoot, corpusRoot, corpusFiles, model, snapshotFiles });
+      const biEncoder = JSON.parse(fs.readFileSync(biEncoderFile, 'utf8')) as BiEncoderManifest;
+      const reranker = JSON.parse(fs.readFileSync(rerankerFile, 'utf8')) as RerankerManifest;
+      const labelingReranker = JSON.parse(fs.readFileSync(labelingFile, 'utf8')) as RerankerManifest;
+      const manifest = buildBundleManifest({
+        repoRoot, corpusRoot, corpusFiles, biEncoder, reranker, labelingReranker, snapshotFiles,
+      });
       process.stdout.write(toJsonOutput(manifest) + '\n');
       break;
     }

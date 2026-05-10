@@ -18,6 +18,10 @@ describe('CoreTex coordinator endpoint contract', () => {
       'GET /coretex/challenge-book/:epoch',
       'GET /coretex/corpus-delta/:epoch',
       'GET /coretex/client-bundle/:coreVersionHash',
+      'GET /coretex/bundle/:bundleHash',
+      'GET /coretex/corpus/:recordId',
+      'GET /coretex/corpus/:recordId/embedding',
+      'GET /coretex/coverage-hints',
       'GET /coretex/health',
     ]);
   });

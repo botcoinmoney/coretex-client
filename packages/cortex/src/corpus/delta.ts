@@ -4,150 +4,123 @@
  * `corpusRoot[N+1] = root(corpusRecords[N] + corpus_delta[N])`
  * `parentCorpusRoot[N+1] = corpusRoot[N]`
  *
- * Root computation reuses `computeProductionCorpusRoot` from eval/corpus so
- * roots are bit-for-bit identical to those produced by the loader.
+ * Spec: specs/corpus_retrieval_v0.md §"CorpusDelta carrying embeddings".
+ *
+ * The delta carries embedding bytes inline; replay watchers depend on them
+ * to recompute scores deterministically.
  */
 
-import type { ProductionCorpus, ProductionCorpusEvent, ProductionCorpusFamily } from '../eval/corpus.js';
-import { computeProductionCorpusRoot } from '../eval/corpus.js';
+import { createHash, createSign, createVerify } from 'node:crypto';
+
+import type {
+  ProductionCorpus,
+  ProductionCorpusEvent,
+  ProductionCorpusEventOnDisk,
+  RetrievalKeyLayout,
+} from '../eval/retrieval-corpus.js';
+import { computeCorpusRoot, splitForRecord } from '../eval/retrieval-corpus.js';
 
 // ── Delta shape ───────────────────────────────────────────────────────────────
 
+export interface LabelingProvenance {
+  readonly modelId: string;
+  readonly revision: string;
+  readonly runtime: string;            // serialized runtimePin label
+  readonly batchHash: string;          // sha256 of serialized labeling batch
+}
+
 export interface CorpusDelta {
-  /** Corpus root before this delta was applied. */
+  readonly schemaVersion: 'coretex.corpus-delta.v1';
   readonly previousRoot: string;
-  /** Corpus root after this delta has been applied. */
   readonly nextRoot: string;
-  /** IDs of records added by this delta. */
   readonly addedIds: readonly string[];
-  /** Full addition payloads, making a delta independently publishable/replayable. */
   readonly addedRecords: readonly ProductionCorpusEvent[];
-  /** IDs of records removed by this delta. */
   readonly removedIds: readonly string[];
-  /** Epoch at which this delta was produced. */
+  readonly labelingProvenance: LabelingProvenance;
+  readonly biEncoder: { readonly modelId: string; readonly revision: string; readonly layout: RetrievalKeyLayout };
   readonly epoch: number;
-  /** ISO-8601 timestamp string when this delta was generated. */
+  readonly corpusEpoch: number;
   readonly generatedAt: string;
+  readonly signature?: string;         // 0x-prefixed signature bytes
+  readonly signerKeyId?: string;
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-const FAMILIES: ReadonlyArray<ProductionCorpusFamily> = ['near_collision', 'temporal', 'long_horizon'];
-
-/** Flatten all events from a ProductionCorpus into a single ordered array. */
-function flattenEvents(corpus: ProductionCorpus): ProductionCorpusEvent[] {
-  const out: ProductionCorpusEvent[] = [];
-  for (const family of FAMILIES) {
-    const evs = corpus.events[family];
-    for (const e of evs) out.push(e);
-  }
-  return out;
-}
-
-/**
- * Re-bucket an array of ProductionCorpusEvent records into the family groups
- * expected by ProductionCorpus.
- */
-function bucketByFamily(events: ProductionCorpusEvent[]): Record<ProductionCorpusFamily, ProductionCorpusEvent[]> {
-  const result: Record<ProductionCorpusFamily, ProductionCorpusEvent[]> = {
-    near_collision: [],
-    temporal: [],
-    long_horizon: [],
-  };
-  for (const e of events) {
-    result[e.family].push(e);
-  }
-  return result;
-}
-
-/**
- * Serialize a ProductionCorpusEvent back into the plain object shape that
- * `computeProductionCorpusRoot` expects (it reads raw item objects, not the
- * normalised TS interface).
- */
-function eventToRawItem(e: ProductionCorpusEvent): Record<string, unknown> {
-  return {
-    id: e.id,
-    family: e.family,
-    task: e.taskType,
-    protected: e.isProtected,
-    epoch_committed: e.epochCommitted,
-    source_ref: e.sourceRef,
-    query: e.queryText,
-    truth: e.truthText,
-    is_stale: e.isStaleTruth,
-    relevant: e.relevant,
-    distractors: e.distractors,
-    relations: e.relations,
-    expected_state_regions: e.expectedStateRegions,
-    valid_from_epoch: e.validFromEpoch,
-    expires_at_epoch: e.expiresAtEpoch,
-    novelty_bucket: e.noveltyBucket,
-    hardness_signal: e.hardnessSignal,
-  };
+export interface CorpusDeltaFileShape extends Omit<CorpusDelta, 'addedRecords'> {
+  readonly addedRecords: readonly ProductionCorpusEventOnDisk[];
 }
 
 // ── Build delta ───────────────────────────────────────────────────────────────
 
-/**
- * Build a CorpusDelta from:
- * - `previousCorpus`: the current in-memory corpus
- * - `additions`: new records to add
- * - `removals`: IDs of records to remove
- * - `epoch`: epoch number for the delta
- *
- * The `previousRoot` is taken from `previousCorpus.corpusRoot`.
- * The `nextRoot` is computed deterministically using the same Merkle algorithm
- * as `computeProductionCorpusRoot`.
- */
-export function buildCorpusDelta(
-  previousCorpus: ProductionCorpus,
-  additions: readonly ProductionCorpusEvent[],
-  removals: readonly string[],
-  epoch: number,
-): CorpusDelta {
+export interface BuildCorpusDeltaOptions {
+  readonly previousCorpus: ProductionCorpus;
+  readonly additions: readonly ProductionCorpusEvent[];
+  readonly removals: readonly string[];
+  readonly epoch: number;
+  readonly labelingProvenance: LabelingProvenance;
+  readonly generatedAt?: string;
+}
+
+export function buildCorpusDelta(opts: BuildCorpusDeltaOptions): CorpusDelta {
+  const { previousCorpus, additions, removals, epoch, labelingProvenance } = opts;
   const removalSet = new Set(removals);
-  const existing = flattenEvents(previousCorpus).filter((e) => !removalSet.has(e.id));
+  const remaining = previousCorpus.events.filter((e) => !removalSet.has(e.id));
+  const remainingIds = new Set(remaining.map((e) => e.id));
+  const newAdditions = additions.filter((e) => !remainingIds.has(e.id));
 
-  // Deduplicate additions (skip ids already present after removals).
-  const existingIds = new Set(existing.map((e) => e.id));
-  const newEvents = additions.filter((e) => !existingIds.has(e.id));
+  // Validate per-record: split assignment must be deterministic, embeddings must
+  // reference the bundle's bi-encoder.
+  for (const e of newAdditions) {
+    const expectedSplit = splitForRecord(e.id, previousCorpus.corpusEpoch);
+    if (e.split !== expectedSplit) {
+      throw new Error(`buildCorpusDelta: record ${e.id} declared split ${e.split}, expected ${expectedSplit}`);
+    }
+    if (e.embeddings.modelId !== previousCorpus.biEncoderModelId
+     || e.embeddings.revision !== previousCorpus.biEncoderRevision) {
+      throw new Error(`buildCorpusDelta: record ${e.id} embeddings model id/revision do not match corpus bi-encoder`);
+    }
+  }
 
-  const merged = [...existing, ...newEvents];
-  const rawItems = merged.map(eventToRawItem);
-  const nextRoot = computeProductionCorpusRoot(rawItems);
+  const merged = [...remaining, ...newAdditions];
+  const nextRoot = computeCorpusRoot(merged);
 
   return {
+    schemaVersion: 'coretex.corpus-delta.v1',
     previousRoot: previousCorpus.corpusRoot,
     nextRoot,
-    addedIds: newEvents.map((e) => e.id),
-    addedRecords: newEvents,
-    removedIds: removals.filter((id) => existingIds.has(id) || removalSet.has(id)),
+    addedIds: newAdditions.map((e) => e.id),
+    addedRecords: newAdditions,
+    removedIds: removals.filter((id) => previousCorpus.byId.has(id)),
+    labelingProvenance,
+    biEncoder: {
+      modelId: previousCorpus.biEncoderModelId,
+      revision: previousCorpus.biEncoderRevision,
+      layout: previousCorpus.biEncoderRetrievalKeyLayout,
+    },
     epoch,
-    generatedAt: new Date().toISOString(),
+    corpusEpoch: previousCorpus.corpusEpoch,
+    generatedAt: opts.generatedAt ?? new Date().toISOString(),
   };
 }
 
 // ── Apply delta ───────────────────────────────────────────────────────────────
 
-/**
- * Apply a CorpusDelta to a ProductionCorpus.
- *
- * Throws if `delta.previousRoot !== corpus.corpusRoot` (hash continuity check).
- * Returns a new ProductionCorpus with the delta applied.  The `corpusRoot` of
- * the returned corpus equals `delta.nextRoot`.
- */
 export function applyCorpusDelta(corpus: ProductionCorpus, delta: CorpusDelta): ProductionCorpus {
-  if (delta.previousRoot !== corpus.corpusRoot) {
+  if (delta.schemaVersion !== 'coretex.corpus-delta.v1') {
+    throw new Error(`applyCorpusDelta: unsupported schemaVersion ${delta.schemaVersion}`);
+  }
+  if (delta.previousRoot.toLowerCase() !== corpus.corpusRoot.toLowerCase()) {
     throw new Error(
-      `applyCorpusDelta: hash continuity check failed — `
-      + `delta.previousRoot=${delta.previousRoot} but corpus.corpusRoot=${corpus.corpusRoot}`,
+      `applyCorpusDelta: hash continuity check failed — delta.previousRoot=${delta.previousRoot} but corpus.corpusRoot=${corpus.corpusRoot}`,
     );
+  }
+  if (delta.biEncoder.modelId !== corpus.biEncoderModelId
+   || delta.biEncoder.revision !== corpus.biEncoderRevision) {
+    throw new Error('applyCorpusDelta: bi-encoder pinning mismatch');
   }
 
   const removalSet = new Set(delta.removedIds);
   const addedSet = new Set(delta.addedIds);
-  const addedRecordsById = new Map(delta.addedRecords.map((event) => [event.id, event]));
+  const addedRecordsById = new Map(delta.addedRecords.map((e) => [e.id, e]));
 
   for (const id of addedSet) {
     if (!addedRecordsById.has(id)) {
@@ -155,22 +128,161 @@ export function applyCorpusDelta(corpus: ProductionCorpus, delta: CorpusDelta): 
     }
   }
 
-  // Collect all existing events minus removals, then append addition payloads.
-  const kept = flattenEvents(corpus).filter((e) => !removalSet.has(e.id) && !addedSet.has(e.id));
-  const nextEvents = [...kept, ...delta.addedRecords];
+  const kept = corpus.events.filter((e) => !removalSet.has(e.id) && !addedSet.has(e.id));
+  const next = [...kept, ...delta.addedRecords];
 
-  const nextRawItems = nextEvents.map(eventToRawItem);
-  const computedNextRoot = computeProductionCorpusRoot(nextRawItems);
-  if (computedNextRoot !== delta.nextRoot) {
+  // Verify embeddings model id/revision per added record.
+  for (const e of delta.addedRecords) {
+    if (e.embeddings.modelId !== corpus.biEncoderModelId
+     || e.embeddings.revision !== corpus.biEncoderRevision) {
+      throw new Error(`applyCorpusDelta: record ${e.id} embeddings bi-encoder mismatch`);
+    }
+    if (splitForRecord(e.id, corpus.corpusEpoch) !== e.split) {
+      throw new Error(`applyCorpusDelta: record ${e.id} split assignment mismatch`);
+    }
+  }
+
+  const computed = computeCorpusRoot(next);
+  if (computed.toLowerCase() !== delta.nextRoot.toLowerCase()) {
     throw new Error(
-      `applyCorpusDelta: computed nextRoot=${computedNextRoot} does not match delta.nextRoot=${delta.nextRoot}. `
-      + `Ensure addedRecords and removedIds match the signed delta.`,
+      `applyCorpusDelta: computed nextRoot=${computed} does not match delta.nextRoot=${delta.nextRoot}`,
     );
   }
 
   return {
-    events: bucketByFamily(nextEvents),
+    events: next,
+    byId: new Map(next.map((e) => [e.id, e])),
     corpusRoot: delta.nextRoot,
-    sources: corpus.sources,
+    corpusEpoch: corpus.corpusEpoch,
+    biEncoderModelId: corpus.biEncoderModelId,
+    biEncoderRevision: corpus.biEncoderRevision,
+    biEncoderRetrievalKeyLayout: corpus.biEncoderRetrievalKeyLayout,
+    labelingModelId: delta.labelingProvenance.modelId,
+    labelingModelRevision: delta.labelingProvenance.revision,
   };
+}
+
+// ── Signing ───────────────────────────────────────────────────────────────────
+
+export function deltaCanonicalBytes(delta: Omit<CorpusDelta, 'signature'>): Uint8Array {
+  return new TextEncoder().encode(canonicalJson(delta));
+}
+
+export function signCorpusDelta(
+  delta: Omit<CorpusDelta, 'signature' | 'signerKeyId'>,
+  privateKeyPem: string,
+  signerKeyId: string,
+  algorithm: 'RSA-SHA256' | 'sha256' = 'RSA-SHA256',
+): CorpusDelta {
+  const sign = createSign(algorithm);
+  sign.update(deltaCanonicalBytes(delta));
+  const sig = sign.sign(privateKeyPem);
+  return { ...delta, signature: '0x' + sig.toString('hex'), signerKeyId };
+}
+
+export function verifyCorpusDeltaSignature(
+  delta: CorpusDelta,
+  publicKeyPem: string,
+  algorithm: 'RSA-SHA256' | 'sha256' = 'RSA-SHA256',
+): boolean {
+  if (!delta.signature) return false;
+  const verify = createVerify(algorithm);
+  const { signature: _sig, signerKeyId: _sk, ...rest } = delta;
+  verify.update(deltaCanonicalBytes(rest));
+  return verify.verify(publicKeyPem, Buffer.from(delta.signature.slice(2), 'hex'));
+}
+
+export function corpusDeltaSha256(delta: CorpusDelta): string {
+  const hash = createHash('sha256');
+  hash.update(deltaCanonicalBytes(delta));
+  return hash.digest('hex');
+}
+
+export function serializeCorpusDelta(delta: CorpusDelta): CorpusDeltaFileShape {
+  return {
+    ...delta,
+    addedRecords: delta.addedRecords.map(eventToDisk),
+  };
+}
+
+export function parseCorpusDelta(raw: CorpusDeltaFileShape): CorpusDelta {
+  return {
+    ...raw,
+    addedRecords: raw.addedRecords.map(eventFromDisk),
+  };
+}
+
+function eventToDisk(e: ProductionCorpusEvent): ProductionCorpusEventOnDisk {
+  return {
+    id: e.id,
+    family: e.family,
+    domain: e.domain,
+    split: e.split,
+    queryText: e.queryText,
+    truthDocuments: e.truthDocuments,
+    hardNegatives: e.hardNegatives,
+    qrels: e.qrels,
+    protected: e.protected,
+    ...(e.temporal !== undefined ? { temporal: e.temporal } : {}),
+    ...(e.relations !== undefined ? { relations: e.relations } : {}),
+    provenance: e.provenance,
+    embeddings: {
+      modelId: e.embeddings.modelId,
+      revision: e.embeddings.revision,
+      layout: e.embeddings.layout,
+      query: uint8ToHex(e.embeddings.query),
+      perTruth: Object.fromEntries(Array.from(e.embeddings.perTruth.entries()).map(([k, v]) => [k, uint8ToHex(v)])),
+      perNegative: Object.fromEntries(Array.from(e.embeddings.perNegative.entries()).map(([k, v]) => [k, uint8ToHex(v)])),
+    },
+  };
+}
+
+function eventFromDisk(e: ProductionCorpusEventOnDisk): ProductionCorpusEvent {
+  return {
+    ...e,
+    embeddings: {
+      modelId: e.embeddings.modelId,
+      revision: e.embeddings.revision,
+      layout: e.embeddings.layout,
+      query: hexToUint8(e.embeddings.query),
+      perTruth: new Map(Object.entries(e.embeddings.perTruth).map(([k, v]) => [k, hexToUint8(v)])),
+      perNegative: new Map(Object.entries(e.embeddings.perNegative).map(([k, v]) => [k, hexToUint8(v)])),
+    },
+  };
+}
+
+function canonicalJson(value: unknown): string {
+  if (value === null) return 'null';
+  if (typeof value === 'undefined') return 'null';
+  if (typeof value === 'boolean') return value ? 'true' : 'false';
+  if (typeof value === 'number') return JSON.stringify(value);
+  if (typeof value === 'string') return JSON.stringify(value);
+  if (typeof value === 'bigint') return JSON.stringify(value.toString());
+  if (value instanceof Uint8Array) return JSON.stringify(uint8ToHex(value));
+  if (value instanceof Map) {
+    const obj: Record<string, unknown> = {};
+    for (const [k, v] of value) obj[String(k)] = v;
+    return canonicalJson(obj);
+  }
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  if (typeof value === 'object') {
+    const obj = value as Record<string, unknown>;
+    const keys = Object.keys(obj).sort();
+    return `{${keys.map((k) => `${JSON.stringify(k)}:${canonicalJson(obj[k])}`).join(',')}}`;
+  }
+  throw new TypeError(`canonicalJson: unsupported ${typeof value}`);
+}
+
+function uint8ToHex(bytes: Uint8Array): string {
+  let hex = '';
+  for (const b of bytes) hex += b.toString(16).padStart(2, '0');
+  return hex;
+}
+
+function hexToUint8(hex: string): Uint8Array {
+  const clean = hex.startsWith('0x') ? hex.slice(2) : hex;
+  if (clean.length % 2 !== 0) throw new Error('hexToUint8: odd length');
+  const out = new Uint8Array(clean.length / 2);
+  for (let i = 0; i < out.length; i++) out[i] = parseInt(clean.slice(i * 2, i * 2 + 2), 16);
+  return out;
 }

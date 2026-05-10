@@ -2,20 +2,12 @@ import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   selectSubstrateSlot,
-  substrateRegionForFamily,
   wordIndexForSubstrateSlot,
 } from '../../dist/substrate/slot-policy.js';
 
 describe('substrate slot rotation policy', () => {
-  test('routes near-collision to retrieval keys and other families to memory index', () => {
-    assert.equal(substrateRegionForFamily('near_collision'), 'retrieval_keys');
-    assert.equal(substrateRegionForFamily('temporal'), 'memory_index');
-    assert.equal(substrateRegionForFamily('long_horizon'), 'memory_index');
-  });
-
-  test('wraps retrieval-key writes after 36 advances', () => {
-    const first = selectSubstrateSlot({ family: 'near_collision', advanceIndex: 0 });
-    const wrapped = selectSubstrateSlot({ family: 'near_collision', advanceIndex: 36 });
+  test('selects retrieval_keys slot 0 on first advance', () => {
+    const first = selectSubstrateSlot({ region: 'retrieval_keys', advanceIndex: 0 });
     assert.deepEqual(first, {
       region: 'retrieval_keys',
       slotIndex: 0,
@@ -23,6 +15,10 @@ describe('substrate slot rotation policy', () => {
       capacity: 36,
       wrapped: false,
     });
+  });
+
+  test('wraps retrieval-key writes after 36 advances', () => {
+    const wrapped = selectSubstrateSlot({ region: 'retrieval_keys', advanceIndex: 36 });
     assert.deepEqual(wrapped, {
       region: 'retrieval_keys',
       slotIndex: 0,
@@ -34,7 +30,7 @@ describe('substrate slot rotation policy', () => {
 
   test('skips protected slots when wrapping or landing directly on one', () => {
     const selected = selectSubstrateSlot({
-      family: 'near_collision',
+      region: 'retrieval_keys',
       advanceIndex: 36,
       protectedSlots: new Set([0, 1]),
     });
@@ -46,7 +42,7 @@ describe('substrate slot rotation policy', () => {
   test('fails closed when every slot in a region is protected', () => {
     assert.throws(
       () => selectSubstrateSlot({
-        family: 'near_collision',
+        region: 'retrieval_keys',
         advanceIndex: 36,
         protectedSlots: Array.from({ length: 36 }, (_v, i) => i),
       }),

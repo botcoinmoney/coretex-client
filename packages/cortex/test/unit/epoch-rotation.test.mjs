@@ -8,38 +8,79 @@ import {
   hashCorpusDelta,
   signEpochRotationManifest,
   verifyEpochRotationManifestSignature,
+  splitForRecord,
+  computeCorpusRoot,
 } from '../../dist/index.js';
 
-function event(id) {
+const BI_ENCODER = { modelId: 'BAAI/bge-m3', revision: 'a'.repeat(40) };
+const LAYOUT = { dim: 32, quantization: 'int8', headerBytes: 9 };
+
+function event(id, corpusEpoch = 0) {
+  const split = splitForRecord(id, corpusEpoch);
   return {
     id,
     family: 'long_horizon',
-    taskType: 'test:session',
-    isProtected: false,
-    epochCommitted: 1,
-    sourceRef: `test:${id}`,
+    domain: 'companies',
+    split,
     queryText: `query ${id}`,
-    truthText: `truth ${id}`,
-    isStaleTruth: false,
-    relevant: true,
-    distractors: ['wrong-a', 'wrong-b'],
-    relations: ['session:test'],
-    expectedStateRegions: ['memory_index', 'relations'],
-    validFromEpoch: 1,
-    expiresAtEpoch: 0,
-    noveltyBucket: 'medium',
-    hardnessSignal: 0.5,
+    truthDocuments: [{ id: `${id}::truth`, text: `truth ${id}`, isCurrent: true }],
+    hardNegatives: [
+      { id: `${id}::neg0`, text: `wrong-a ${id}` },
+      { id: `${id}::neg1`, text: `wrong-b ${id}` },
+    ],
+    qrels: [
+      { documentId: `${id}::truth`, relevance: 1.0 },
+      { documentId: `${id}::neg0`, relevance: 0.0 },
+      { documentId: `${id}::neg1`, relevance: 0.2 },
+    ],
+    protected: false,
+    provenance: { source: 'synthetic_challenge', sourceHash: '0x' + 'aa'.repeat(32) },
+    embeddings: {
+      modelId: BI_ENCODER.modelId,
+      revision: BI_ENCODER.revision,
+      layout: LAYOUT,
+      query: new Uint8Array(LAYOUT.dim + 4),
+      perTruth: new Map([[`${id}::truth`, new Uint8Array(LAYOUT.dim + 4)]]),
+      perNegative: new Map([
+        [`${id}::neg0`, new Uint8Array(LAYOUT.dim + 4)],
+        [`${id}::neg1`, new Uint8Array(LAYOUT.dim + 4)],
+      ]),
+    },
   };
 }
 
+function emptyCorpus(corpusEpoch = 0) {
+  return {
+    events: [],
+    byId: new Map(),
+    corpusRoot: computeCorpusRoot([]),
+    corpusEpoch,
+    biEncoderModelId: BI_ENCODER.modelId,
+    biEncoderRevision: BI_ENCODER.revision,
+    biEncoderRetrievalKeyLayout: LAYOUT,
+    labelingModelId: 'memreranker/4B',
+    labelingModelRevision: 'b'.repeat(40),
+  };
+}
+
+const labelingProvenance = {
+  modelId: 'memreranker/4B',
+  revision: 'b'.repeat(40),
+  runtime: 'torch-transformers@2.4.* / 4.46.* (cpu)',
+  batchHash: 'c'.repeat(64),
+};
+
 describe('epoch rotation manifest', () => {
   test('binds corpus delta, challenge book, bundle hash, and difficulty', () => {
-    const corpus = {
-      events: { near_collision: [], temporal: [], long_horizon: [] },
-      sources: {},
-      corpusRoot: '0x' + '00'.repeat(32),
-    };
-    const delta = buildCorpusDelta(corpus, [event('a')], [], 8);
+    const corpus = emptyCorpus(0);
+    const delta = buildCorpusDelta({
+      previousCorpus: corpus,
+      additions: [event('a', 0)],
+      removals: [],
+      epoch: 8,
+      labelingProvenance,
+      generatedAt: '2026-05-09T00:00:00.000Z',
+    });
     const manifest = buildEpochRotationManifest({
       epoch: 8,
       delta,
@@ -60,12 +101,15 @@ describe('epoch rotation manifest', () => {
 
   test('signs and verifies the manifest', () => {
     const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
-    const corpus = {
-      events: { near_collision: [], temporal: [], long_horizon: [] },
-      sources: {},
-      corpusRoot: '0x' + '00'.repeat(32),
-    };
-    const delta = buildCorpusDelta(corpus, [event('signed')], [], 9);
+    const corpus = emptyCorpus(0);
+    const delta = buildCorpusDelta({
+      previousCorpus: corpus,
+      additions: [event('signed', 0)],
+      removals: [],
+      epoch: 9,
+      labelingProvenance,
+      generatedAt: '2026-05-09T00:00:00.000Z',
+    });
     const manifest = buildEpochRotationManifest({
       epoch: 9,
       delta,

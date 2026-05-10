@@ -1,6 +1,7 @@
 import { createHash, createSign, createVerify } from 'node:crypto';
 
 import type { CorpusDelta } from './delta.js';
+import { corpusDeltaSha256 } from './delta.js';
 
 export interface EpochRotationManifestSigner {
   readonly keyId: string;
@@ -82,7 +83,9 @@ export function verifyEpochRotationManifestSignature(
 }
 
 export function hashCorpusDelta(delta: CorpusDelta): string {
-  return hashJson(delta);
+  // Delta can carry binary embedding bytes; defer to delta.ts canonical-JSON
+  // which knows how to hex-encode Uint8Array fields.
+  return `0x${corpusDeltaSha256(delta)}`;
 }
 
 export function hashJson(value: unknown): string {
