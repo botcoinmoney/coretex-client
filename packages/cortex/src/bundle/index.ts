@@ -337,13 +337,25 @@ const DEFAULT_EVALUATOR_FILES = [
   'packages/cortex/src/replay-cli.ts',
 ] as const;
 
+// runtimePin is the floor of installed Python runtime versions a coordinator
+// host must satisfy to run the canonical scoring path. Bumped from
+// torch 2.4 / transformers 4.46 to 2.6 / 4.55 because:
+//   - transformers ≥ 4.51 is required to load Qwen3 architectures
+//     (`model_type='qwen3'` was added in that release; 4.46 raised
+//     ValueError on AutoConfig.from_pretrained for Qwen/Qwen3-Reranker-0.6B
+//     and IAAR-Shanghai/MemReranker-4B);
+//   - transformers ≥ 4.55 raises a torch-version guard requiring torch ≥ 2.6
+//     when loading any pickle-encoded checkpoint (CVE-2025-32434 in
+//     `torch.load`); BGE-M3 still ships pytorch_model.bin (pickle), so
+//     torch 2.6 is the minimum that loads the bundle's pinned bi-encoder.
+// Major.minor pin allows patch upgrades but still refuses unrelated majors.
 export const DEFAULT_RUNTIME_PIN: RuntimePin = {
   flavor: 'torch-transformers',
   versions: {
-    torch: '2.4.*',
-    transformers: '4.46.*',
-    'huggingface_hub': '0.26.*',
-    tokenizers: '0.20.*',
+    torch: '2.6.*',
+    transformers: '4.55.*',
+    'huggingface_hub': '0.36.*',
+    tokenizers: '0.21.*',
   },
   buildFlags: ['cpu-only'],
 };
@@ -689,19 +701,25 @@ export function assertBundleBindingAtStartup(opts: {
 
 function matchSemverRange(installed: string, range: string): boolean {
   if (range === installed) return true;
-  // Match X.Y.* against installed X.Y.Z
+  // PEP-440 / pip wheels frequently append build metadata after the patch
+  // version (e.g. torch reports "2.6.0+cpu" for the CPU wheel). The pin's
+  // major.minor[.patch] semantics should accept these so a "2.6.*" pin
+  // matches the "+cpu" build that the bundle authors actually mean to ship.
+  // Strip any trailing "+<build>" / "-<pre>" suffix before matching.
+  const core = installed.split(/[+\-]/, 1)[0]!;
+  // Match X.Y.* against installed X.Y.Z (and X.Y.Z+build)
   const m = range.match(/^(\d+)\.(\d+)\.\*$/);
   if (m) {
     const [, maj, min] = m;
     const re = new RegExp(`^${maj}\\.${min}\\.\\d+$`);
-    return re.test(installed);
+    return re.test(core);
   }
   // Match X.* against installed X.Y.Z
   const major = range.match(/^(\d+)\.\*$/);
   if (major) {
     const [, maj] = major;
     const re = new RegExp(`^${maj}\\.\\d+\\.\\d+$`);
-    return re.test(installed);
+    return re.test(core);
   }
   return false;
 }
