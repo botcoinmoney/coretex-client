@@ -11,7 +11,8 @@
  */
 
 import { createHash } from 'node:crypto';
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { createInterface } from 'node:readline';
 import { QWEN3_RERANKER_DEFAULT_REVISION } from '../bundle/index.js';
 
 // ─── Public interface ─────────────────────────────────────────────────────────
@@ -223,6 +224,160 @@ function runPythonJson(
 
 function sigmoid(x: number): number {
   return 1 / (1 + Math.exp(-x));
+}
+
+// ─── Streaming Qwen3 / chat-template reranker (persistent subprocess) ────────
+
+export interface StreamingQwen3RerankerOptions {
+  readonly model: string;
+  readonly revision: string;
+  readonly pythonBin?: string;
+  readonly scriptPath?: string;
+  readonly cacheDir?: string;
+  readonly localOnly?: boolean;
+  readonly batchSize?: number;
+  readonly numThreads?: number;
+}
+
+/**
+ * Persistent-subprocess reranker. Spawns one Python child that loads the
+ * pinned chat-template reranker (Qwen3 family — including MemReranker-4B,
+ * which uses the same logit(yes)-logit(no) scoring path) exactly once and
+ * services NDJSON requests over stdin/stdout. This is the only reranker
+ * implementation that can sustain launch-scale corpus labeling; the per-batch
+ * spawn variant pays the multi-gigabyte model-load cost on every score()
+ * call and is unusable past a few hundred pairs on a CPU host.
+ */
+export function createStreamingQwen3Reranker(
+  opts: StreamingQwen3RerankerOptions,
+): CrossEncoderReranker & { close: () => Promise<void> } {
+  refuseGpuForReranker();
+  const pythonBin = opts.pythonBin ?? process.env['CORETEX_RERANKER_PYTHON'] ?? 'python3';
+  const scriptPath =
+    opts.scriptPath ??
+    process.env['CORETEX_RERANKER_SCRIPT'] ??
+    new URL('../../../../scripts/reranker_runner.py', import.meta.url).pathname;
+  const batchSize = opts.batchSize ?? 4;
+
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    CORETEX_RERANKER_STREAM_MODEL_ID: opts.model,
+    CORETEX_RERANKER_STREAM_REVISION: opts.revision,
+  };
+  if (opts.cacheDir) env['HF_HOME'] = opts.cacheDir;
+  if (opts.localOnly) env['HF_HUB_OFFLINE'] = '1';
+  if (opts.numThreads) env['RERANKER_NUM_THREADS'] = String(opts.numThreads);
+
+  const child: ChildProcessWithoutNullStreams = spawn(pythonBin, [scriptPath, '--stream'], {
+    stdio: ['pipe', 'pipe', 'pipe'],
+    env,
+  });
+
+  const stderrChunks: string[] = [];
+  child.stderr.setEncoding('utf8');
+  child.stderr.on('data', (chunk: string) => stderrChunks.push(chunk));
+
+  const responses = new Map<number, { resolve: (scores: number[]) => void; reject: (err: Error) => void }>();
+  let nextId = 1;
+  let readyResolve: () => void = () => {};
+  let readyReject: (err: Error) => void = () => {};
+  const ready = new Promise<void>((resolve, reject) => {
+    readyResolve = resolve;
+    readyReject = reject;
+  });
+  let exited = false;
+
+  const rl = createInterface({ input: child.stdout });
+  rl.on('line', (line) => {
+    const trimmed = line.trim();
+    if (!trimmed) return;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(trimmed);
+    } catch {
+      return;
+    }
+    if (parsed && typeof parsed === 'object' && 'ready' in parsed) {
+      readyResolve();
+      return;
+    }
+    if (parsed && typeof parsed === 'object' && 'id' in parsed) {
+      const id = (parsed as { id: number }).id;
+      const pending = responses.get(id);
+      if (!pending) return;
+      responses.delete(id);
+      if ('error' in parsed) {
+        pending.reject(new Error(`reranker stream error: ${(parsed as { error: string }).error}`));
+        return;
+      }
+      const scores = (parsed as { scores?: number[] }).scores ?? [];
+      pending.resolve(scores);
+    }
+  });
+
+  child.on('exit', (code, signal) => {
+    exited = true;
+    const stderr = stderrChunks.join('');
+    const err = new Error(
+      `reranker stream child exited (code=${code}, signal=${signal}): ${stderr.slice(-500)}`,
+    );
+    readyReject(err);
+    for (const pending of responses.values()) pending.reject(err);
+    responses.clear();
+  });
+
+  child.on('error', (e) => {
+    exited = true;
+    readyReject(e);
+    for (const pending of responses.values()) pending.reject(e);
+    responses.clear();
+  });
+
+  async function scoreBatch(batch: ReadonlyArray<{ query: string; document: string }>): Promise<number[]> {
+    if (exited) throw new Error('reranker stream child is no longer running');
+    await ready;
+    if (batch.length === 0) return [];
+    const id = nextId++;
+    const payload = JSON.stringify({
+      id,
+      pairs: batch.map((p) => ({ query: p.query, document: p.document })),
+    }) + '\n';
+    return new Promise<number[]>((resolve, reject) => {
+      responses.set(id, { resolve, reject });
+      child.stdin.write(payload, (writeErr) => {
+        if (writeErr) {
+          responses.delete(id);
+          reject(writeErr);
+        }
+      });
+    });
+  }
+
+  async function score(pairs: ReadonlyArray<{ query: string; document: string }>): Promise<number[]> {
+    if (pairs.length === 0) return [];
+    const out: number[] = [];
+    for (let i = 0; i < pairs.length; i += batchSize) {
+      const batch = pairs.slice(i, i + batchSize);
+      const batchScores = await scoreBatch(batch);
+      out.push(...batchScores.map((s) => Math.max(0, Math.min(1, s))));
+    }
+    return out;
+  }
+
+  async function close(): Promise<void> {
+    if (exited) return;
+    try {
+      child.stdin.end();
+    } catch {
+      /* noop */
+    }
+    await new Promise<void>((resolve) => {
+      if (exited) return resolve();
+      child.once('exit', () => resolve());
+    });
+  }
+
+  return { model: `${opts.model}@${opts.revision}`, score, close };
 }
 
 // ─── MiniLM cross-encoder (text-classification pipeline) ─────────────────────

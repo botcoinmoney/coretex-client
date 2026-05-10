@@ -13,8 +13,9 @@
  *     CORTEX_REAL_EVAL=1.
  */
 
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { createInterface } from 'node:readline';
 
 import type { RetrievalKeyLayout } from './retrieval-corpus.js';
 
@@ -69,7 +70,7 @@ export function createPinnedBiEncoder(opts: PinnedBiEncoderOptions): BiEncoder {
   const scriptPath =
     opts.scriptPath ??
     process.env['CORETEX_BIENCODER_SCRIPT'] ??
-    new URL('../../scripts/bi_encoder_runner.py', import.meta.url).pathname;
+    new URL('../../../../scripts/bi_encoder_runner.py', import.meta.url).pathname;
   const batchSize = opts.batchSize ?? 32;
 
   return {
@@ -172,7 +173,132 @@ export function biEncoderFromEnv(layout: RetrievalKeyLayout, opts?: Partial<Pinn
   if (mode === 'deterministic') {
     return createDeterministicBiEncoder({ modelId, revision, layout });
   }
+  if (process.env['CORETEX_BIENCODER_MODE'] === 'streaming') {
+    return createStreamingBiEncoder({ modelId, revision, layout, ...opts });
+  }
   return createPinnedBiEncoder({ modelId, revision, layout, ...opts });
+}
+
+/**
+ * Persistent-subprocess bi-encoder. Spawns one Python child that loads the
+ * pinned model exactly once and then services request/response NDJSON over
+ * stdin/stdout. This is the only bi-encoder implementation that can sustain
+ * launch-scale corpus generation; the per-call spawnSync variant pays the
+ * model-load cost on every encode() and is unusable past a few hundred
+ * texts on a CPU host. Returns a BiEncoder with the same external API as
+ * createPinnedBiEncoder; clean shutdown is via close().
+ */
+export function createStreamingBiEncoder(
+  opts: PinnedBiEncoderOptions,
+): BiEncoder & { close: () => Promise<void> } {
+  refuseGpu();
+  const pythonBin = opts.pythonBin ?? process.env['CORETEX_BIENCODER_PYTHON'] ?? 'python3';
+  const scriptPath =
+    opts.scriptPath ??
+    process.env['CORETEX_BIENCODER_SCRIPT'] ??
+    new URL('../../../../scripts/bi_encoder_runner.py', import.meta.url).pathname;
+  const child: ChildProcessWithoutNullStreams = spawn(pythonBin, [scriptPath, '--stream'], {
+    stdio: ['pipe', 'pipe', 'pipe'],
+    env: {
+      ...process.env,
+      CORETEX_BIENCODER_STREAM_MODEL_ID: opts.modelId,
+      CORETEX_BIENCODER_STREAM_REVISION: opts.revision,
+      CORETEX_BIENCODER_STREAM_LAYOUT_JSON: JSON.stringify(opts.layout),
+    },
+  });
+
+  const stderrChunks: string[] = [];
+  child.stderr.setEncoding('utf8');
+  child.stderr.on('data', (chunk: string) => stderrChunks.push(chunk));
+
+  const responses = new Map<number, { resolve: (hexes: string[]) => void; reject: (err: Error) => void }>();
+  let nextId = 1;
+  let readyResolve: () => void = () => {};
+  let readyReject: (err: Error) => void = () => {};
+  const ready = new Promise<void>((resolve, reject) => {
+    readyResolve = resolve;
+    readyReject = reject;
+  });
+  let exited = false;
+
+  const rl = createInterface({ input: child.stdout });
+  rl.on('line', (line) => {
+    const trimmed = line.trim();
+    if (!trimmed) return;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(trimmed);
+    } catch {
+      return;
+    }
+    if (parsed && typeof parsed === 'object' && 'ready' in parsed) {
+      readyResolve();
+      return;
+    }
+    if (parsed && typeof parsed === 'object' && 'id' in parsed) {
+      const id = (parsed as { id: number }).id;
+      const pending = responses.get(id);
+      if (!pending) return;
+      responses.delete(id);
+      if ('error' in parsed) {
+        pending.reject(new Error(`bi-encoder stream error: ${(parsed as { error: string }).error}`));
+        return;
+      }
+      const embeddings = (parsed as { embeddings?: string[] }).embeddings ?? [];
+      pending.resolve(embeddings);
+    }
+  });
+
+  child.on('exit', (code, signal) => {
+    exited = true;
+    const stderr = stderrChunks.join('');
+    const err = new Error(`bi-encoder stream child exited (code=${code}, signal=${signal}): ${stderr.slice(-500)}`);
+    readyReject(err);
+    for (const pending of responses.values()) pending.reject(err);
+    responses.clear();
+  });
+
+  child.on('error', (e) => {
+    exited = true;
+    readyReject(e);
+    for (const pending of responses.values()) pending.reject(e);
+    responses.clear();
+  });
+
+  async function encode(inputs: readonly BiEncoderInput[]): Promise<Uint8Array[]> {
+    if (exited) throw new Error('bi-encoder stream child is no longer running');
+    await ready;
+    if (inputs.length === 0) return [];
+    const id = nextId++;
+    const payload = JSON.stringify({ id, inputs: inputs.map((b) => ({ text: b.text, id: b.id ?? '' })) }) + '\n';
+    return new Promise<Uint8Array[]>((resolve, reject) => {
+      responses.set(id, {
+        resolve: (hexes) => resolve(hexes.map(hexToUint8)),
+        reject,
+      });
+      child.stdin.write(payload, (writeErr) => {
+        if (writeErr) {
+          responses.delete(id);
+          reject(writeErr);
+        }
+      });
+    });
+  }
+
+  async function close(): Promise<void> {
+    if (exited) return;
+    try {
+      child.stdin.end();
+    } catch {
+      /* noop */
+    }
+    await new Promise<void>((resolve) => {
+      if (exited) return resolve();
+      child.once('exit', () => resolve());
+    });
+  }
+
+  return { modelId: opts.modelId, revision: opts.revision, mode: 'dense', layout: opts.layout, encode, close };
 }
 
 /**

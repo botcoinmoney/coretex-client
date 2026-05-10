@@ -75,6 +75,9 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 *.tsbuildinfo
+.venv/
+venv/
+.python-version
 
 # Local/generated experiment scratch outputs
 experiments/results/phase7-real-smoke/
