@@ -510,10 +510,26 @@ export async function rerankerFromEnv(): Promise<CrossEncoderReranker> {
     throw new Error('CORETEX_RERANKER must be set in production mode (expected qwen3)');
   }
   const selector = (rawSelector ?? 'deterministic').toLowerCase();
+  // Streaming mode keeps a single Python child for the entire process lifetime;
+  // required for any caller that scores more than a few dozen pairs (e.g. the
+  // determinism harness, calibration sweep, Phase 13 e2e on real corpus).
+  const streaming = process.env['CORETEX_RERANKER_MODE'] === 'streaming';
+  const revision = process.env['CORETEX_RERANKER_REVISION'] ?? QWEN3_RERANKER_DEFAULT_REVISION;
+  const modelId = process.env['CORETEX_RERANKER_MODEL_ID'] ?? 'Qwen/Qwen3-Reranker-0.6B';
   switch (selector) {
     case 'qwen3':
+      if (streaming) {
+        return createStreamingQwen3Reranker({
+          model: modelId,
+          revision,
+          cacheDir: process.env['CORTEX_LOCAL_MODEL_CACHE'],
+          localOnly: process.env['CORTEX_LOCAL_MODEL_LOCAL_ONLY'] === '1',
+          batchSize: Number(process.env['CORETEX_RERANKER_BATCH_SIZE'] ?? '8'),
+          numThreads: Number(process.env['RERANKER_NUM_THREADS'] ?? '0') || undefined,
+        });
+      }
       return createQwen3Reranker({
-        revision: process.env['CORETEX_RERANKER_REVISION'] ?? QWEN3_RERANKER_DEFAULT_REVISION,
+        revision,
         cacheDir: process.env['CORTEX_LOCAL_MODEL_CACHE'],
         localOnly: process.env['CORTEX_LOCAL_MODEL_LOCAL_ONLY'] === '1',
       });
