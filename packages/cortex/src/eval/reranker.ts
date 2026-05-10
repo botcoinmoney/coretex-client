@@ -519,13 +519,15 @@ export async function rerankerFromEnv(): Promise<CrossEncoderReranker> {
   switch (selector) {
     case 'qwen3':
       if (streaming) {
+        const cacheDir = process.env['CORTEX_LOCAL_MODEL_CACHE'];
+        const numThreads = Number(process.env['RERANKER_NUM_THREADS'] ?? '0') || undefined;
         return createStreamingQwen3Reranker({
           model: modelId,
           revision,
-          cacheDir: process.env['CORTEX_LOCAL_MODEL_CACHE'],
+          ...(cacheDir ? { cacheDir } : {}),
           localOnly: process.env['CORTEX_LOCAL_MODEL_LOCAL_ONLY'] === '1',
           batchSize: Number(process.env['CORETEX_RERANKER_BATCH_SIZE'] ?? '8'),
-          numThreads: Number(process.env['RERANKER_NUM_THREADS'] ?? '0') || undefined,
+          ...(numThreads ? { numThreads } : {}),
         });
       }
       return createQwen3Reranker({
