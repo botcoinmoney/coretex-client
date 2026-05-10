@@ -93,6 +93,28 @@ export interface EmbeddingPayload {
   readonly perNegative: ReadonlyMap<string, Uint8Array>;
 }
 
+/**
+ * Hard-negative category emitted by the corpus generator at construction
+ * time. Optional for backwards compatibility with pre-category corpora
+ * (the legacy MemReranker-4B-labeled corpus shape does not carry this
+ * field). When present, `qrels` relevance for the hard negative is
+ * derived from the bundle's `negCategoryRelevanceMap[category]`.
+ */
+export type HardNegativeCategory =
+  | 'near_collision_entity'
+  | 'near_collision_attribute'
+  | 'temporal_stale'
+  | 'trap'
+  | 'lexical_distractor'
+  | 'relation_neighbor'
+  | 'unrelated';
+
+export interface HardNegativeRecord {
+  readonly id: string;
+  readonly text: string;
+  readonly category?: HardNegativeCategory;
+}
+
 export interface ProductionCorpusEvent {
   readonly id: string;
   readonly family: ProductionCorpusFamily;
@@ -100,7 +122,7 @@ export interface ProductionCorpusEvent {
   readonly split: CorpusSplit;
   readonly queryText: string;
   readonly truthDocuments: readonly TruthDocument[];
-  readonly hardNegatives: readonly { readonly id: string; readonly text: string }[];
+  readonly hardNegatives: readonly HardNegativeRecord[];
   readonly qrels: readonly QrelEntry[];
   readonly protected: boolean;
   readonly temporal?: TemporalAnnotation;
@@ -247,7 +269,7 @@ export interface CorpusFileShape {
 export interface ProductionCorpusEventOnDisk
   extends Omit<ProductionCorpusEvent, 'embeddings' | 'hardNegatives' | 'qrels' | 'truthDocuments' | 'relations'> {
   readonly truthDocuments: readonly TruthDocument[];
-  readonly hardNegatives: readonly { readonly id: string; readonly text: string }[];
+  readonly hardNegatives: readonly HardNegativeRecord[];
   readonly qrels: readonly QrelEntry[];
   readonly relations?: readonly RelationAnnotation[];
   readonly embeddings: {

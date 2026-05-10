@@ -108,6 +108,35 @@ export interface SplitRatiosPin {
   readonly canaryPct: number;
 }
 
+/**
+ * Hard-negative categories the corpus generator emits by construction.
+ *
+ * Each category corresponds to a specific synthesis site in
+ * scripts/generate-coretex-retrieval-corpus.mjs:
+ *
+ *   near_collision_entity   — different entity, same domain (nearestEntityDocs)
+ *   near_collision_attribute — same entity, wrong attribute value (legacy synth path)
+ *   temporal_stale          — explicitly stale prior value (modifier/trap-temporal staleText)
+ *   trap                    — designed adversarial trap (challenge.silentTraps / trapTextsForQuestion)
+ *   lexical_distractor      — surface overlap, weak semantic relevance
+ *   relation_neighbor       — multi-hop neighbor (relation-target text)
+ *   unrelated               — true negative / padding filler
+ *
+ * The mapping from category to qrel relevance is pinned by the bundle
+ * via `negCategoryRelevanceMap` and validated against the production
+ * reranker's score distribution before launch.
+ */
+export type NegCategory =
+  | 'near_collision_entity'
+  | 'near_collision_attribute'
+  | 'temporal_stale'
+  | 'trap'
+  | 'lexical_distractor'
+  | 'relation_neighbor'
+  | 'unrelated';
+
+export type NegCategoryRelevanceMap = Readonly<Record<NegCategory, number>>;
+
 export interface EvaluatorProfile {
   readonly name: string;
   readonly version: string;
@@ -128,6 +157,18 @@ export interface EvaluatorProfile {
   readonly retrievalKeyTopK: number;
   readonly relationEdgeTypes: readonly string[];
   readonly revealGracePeriodSeconds: number;
+  /**
+   * Maps each hard-negative category emitted by the corpus generator to
+   * its graded qrel relevance. Replaces the per-event 4B-reranker labeling
+   * call: the synthesizer already knows the structural category at
+   * construction time, and this map turns that into a relevance bucket
+   * deterministically.
+   *
+   * Pinned by the bundle so replay is deterministic and the map is
+   * part of the signed bundle hash — any change requires a new
+   * `bundleHash` and re-validation.
+   */
+  readonly negCategoryRelevanceMap: NegCategoryRelevanceMap;
 }
 
 export interface CoreTexBundleManifest {
@@ -401,6 +442,39 @@ export const DEFAULT_RELATION_EDGE_TYPES = [
   'co_occurs_with',
 ] as const;
 
+/**
+ * Default category→relevance mapping. Validated against the production
+ * reranker (Qwen3-Reranker-0.6B) before launch — the launch checklist
+ * requires the median Qwen3 score per category to be monotonic in this
+ * map's relevance bucket and to lie within an envelope around the
+ * assigned value (no inverted buckets, no "unrelated" with high score).
+ *
+ * The map is part of the signed bundle so replay is deterministic and
+ * verifiable by anyone who can rerun the corpus generator + the pinned
+ * reranker against the same challenge-library inputs.
+ */
+export const DEFAULT_NEG_CATEGORY_RELEVANCE_MAP: NegCategoryRelevanceMap = {
+  // Same entity, wrong attribute value — high lexical+semantic overlap,
+  // strong partial-credit signal because the substrate "knows about the
+  // right entity" even if it picks the wrong attribute.
+  near_collision_attribute: 0.4,
+  // Different entity, same domain — moderate overlap, weaker partial credit.
+  near_collision_entity:    0.2,
+  // Explicitly stale prior value — was correct, no longer is. Partial credit
+  // because the temporal substrate must distinguish "was" from "is".
+  temporal_stale:           0.4,
+  // Designed adversarial trap — must reject; no credit.
+  trap:                     0.0,
+  // High lexical overlap, low semantic relevance — small credit for
+  // surface match but punishes substrates that rely on lexical alone.
+  lexical_distractor:       0.2,
+  // Multi-hop neighbor (relation target) — partial credit because the
+  // substrate reaching it via relations is the v4 design intent.
+  relation_neighbor:        0.4,
+  // True negative / synthetic padding — no credit.
+  unrelated:                0.0,
+};
+
 export const DEFAULT_PROFILE: EvaluatorProfile = {
   name: 'coretex-v4-launch',
   version: 'v2',
@@ -421,6 +495,7 @@ export const DEFAULT_PROFILE: EvaluatorProfile = {
   retrievalKeyTopK: 50,
   relationEdgeTypes: DEFAULT_RELATION_EDGE_TYPES,
   revealGracePeriodSeconds: 60 * 60 * 6,  // 6h pre-calibration; calibrate replaces
+  negCategoryRelevanceMap: DEFAULT_NEG_CATEGORY_RELEVANCE_MAP,
 };
 
 // ─── Build / verify ──────────────────────────────────────────────────────────
@@ -631,6 +706,32 @@ function validateProfile(profile: EvaluatorProfile, errors?: string[]): void {
     out.push('relationHopBudget must be in [1,6]');
   if (profile.replayTolerancePpm > profile.patchAcceptanceFloors.minImprovementPpm)
     out.push('replayTolerancePpm must be <= patchAcceptanceFloors.minImprovementPpm');
+
+  // negCategoryRelevanceMap: every NegCategory must have a relevance in
+  // [0, 1] and the mapping must be present for every category the corpus
+  // generator can emit. Empty / partial maps would silently degrade qrels
+  // to zero (default-on-miss) and ship a broken benchmark.
+  const requiredNegCategories: readonly NegCategory[] = [
+    'near_collision_entity',
+    'near_collision_attribute',
+    'temporal_stale',
+    'trap',
+    'lexical_distractor',
+    'relation_neighbor',
+    'unrelated',
+  ];
+  const m = profile.negCategoryRelevanceMap;
+  if (!m || typeof m !== 'object') {
+    out.push('negCategoryRelevanceMap is required');
+  } else {
+    for (const cat of requiredNegCategories) {
+      const v = (m as Record<string, number>)[cat];
+      if (typeof v !== 'number' || Number.isNaN(v) || v < 0 || v > 1) {
+        out.push(`negCategoryRelevanceMap.${cat} must be a number in [0, 1] (got ${String(v)})`);
+      }
+    }
+  }
+
   if (!errors && out.length) throw new Error(out.join('; '));
 }
 
