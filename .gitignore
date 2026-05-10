@@ -58,6 +58,10 @@ pnpm-debug.log*
 broadcast/*/dry-run/
 cache/forge/
 cache/foundry/
+# foundry.lock — submodule revs are pinned in .gitmodules; the lock file is a
+# per-host build artifact and must not enter the canonical CoreTex tree.
+contracts/foundry.lock
+foundry.lock
 
 # pnpm / npm
 .pnpm-store/
