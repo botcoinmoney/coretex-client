@@ -33,6 +33,15 @@ export interface RetrievalDataSourceOptions {
   readonly bundleHash: string;
   readonly screen: (body: unknown) => Promise<unknown> | unknown;
   readonly evaluate: (body: unknown) => Promise<unknown> | unknown;
+  /**
+   * Optional async variant of `evaluate`. When wired, POST
+   * /coretex/evaluate-async returns `{status:'pending', patchHash,
+   * targetBlock}` immediately; GET /coretex/result/:patchHash polls
+   * until the in-background eval completes. Hosts that don't need
+   * the async path leave both undefined.
+   */
+  readonly evaluateAsync?: (body: unknown) => Promise<unknown> | unknown;
+  readonly getResult?: (patchHash: string) => Promise<unknown> | unknown;
   readonly getCurrentSubstrate?: () => Promise<unknown> | unknown;
   readonly getSubstrate?: (stateRoot: string) => Promise<unknown> | unknown;
   readonly getPatch?: (hash: string) => Promise<unknown> | unknown;
@@ -116,6 +125,8 @@ export function createRetrievalDataSource(opts: RetrievalDataSourceOptions): Cor
   if (opts.getClientBundle) (ds as Mutable).getClientBundle = opts.getClientBundle;
   if (opts.rateLimit) (ds as Mutable).rateLimit = opts.rateLimit;
   if (opts.health) (ds as Mutable).health = opts.health;
+  if (opts.evaluateAsync) (ds as Mutable).evaluateAsync = opts.evaluateAsync;
+  if (opts.getResult) (ds as Mutable).getResult = opts.getResult;
 
   // POST /coretex/evaluate is live. The eval seed for each patch is
   // bound to a future Base blockhash via the per-patch on-chain

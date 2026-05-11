@@ -1,6 +1,18 @@
 /**
  * Phase 3 — verify-epoch: reproduce newStateRoot from chain alone.
  *
+ * ⚠ Per-patch on-chain randomness scope note:
+ * This module verifies state-root continuity at the end-of-epoch
+ * checkpoint — i.e. "did the sum of accepted patches reproduce the
+ * finalized newStateRoot?". It does NOT verify the per-patch eval
+ * decision (which seeds, which packs, which scores). That's the
+ * domain of `replay/per-patch.ts` (verifyPerPatchReceipt), which
+ * checks the dual-pack eval reproduces from public chain data +
+ * the post-epoch epochSecret reveal.
+ *
+ * Production replay watchers run both: this module for substrate
+ * continuity, replay/per-patch.ts for per-receipt eval verification.
+ *
  * Reconstructs epoch state from:
  *   1. A snapshot (CortexStateSnapshot event) or genesis state.
  *   2. All CortexPatchAccepted events for the target epoch.

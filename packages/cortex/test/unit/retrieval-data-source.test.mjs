@@ -96,6 +96,26 @@ describe('createRetrievalDataSource', () => {
     ]);
   });
 
+  test('passes async evaluate + getResult through when wired', async () => {
+    const seen = [];
+    const ds = createRetrievalDataSource(makeFactoryOpts({
+      evaluateAsync: (body) => { seen.push(['async', body]); return { status: 'pending', patchHash: '0xab' }; },
+      getResult: (patchHash) => { seen.push(['result', patchHash]); return { status: 'complete', score: 42 }; },
+    }));
+    assert.deepEqual(await ds.evaluateAsync({ patch: '0xfeed' }), { status: 'pending', patchHash: '0xab' });
+    assert.deepEqual(await ds.getResult(`0x${'cd'.repeat(32)}`), { status: 'complete', score: 42 });
+    assert.deepEqual(seen, [
+      ['async', { patch: '0xfeed' }],
+      ['result', `0x${'cd'.repeat(32)}`],
+    ]);
+  });
+
+  test('omits async callbacks from data source when host does not wire them', () => {
+    const ds = createRetrievalDataSource(makeFactoryOpts());
+    assert.equal(ds.evaluateAsync, undefined);
+    assert.equal(ds.getResult, undefined);
+  });
+
   test('serves train_visible corpus records and masks hidden / canary / calibration', async () => {
     const ds = createRetrievalDataSource(makeFactoryOpts());
     const visible = await ds.getCorpusRecord('rec-visible');
