@@ -210,7 +210,36 @@ export interface EvaluatorProfile {
    * state involved.
    */
   readonly baselineEvalSeedHex?: string;
+  /**
+   * Per-patch on-chain randomness binding
+   * (docs/CORETEX_V4_ONCHAIN_RANDOMNESS_PLAN.md).
+   *
+   * `chainId` + `blockTimeSeconds` pin the chain a verifier queries
+   * for blockhashes; `targetBlockOffset` is the number of blocks past
+   * `receivedAtBlock` that a patch's eval seed binds to (default 30 ≈
+   * 60 s on Base — aligned with the per-miner challenge rate limit).
+   *
+   * `replayBlockhashLookbackBlocks` is the minimum blockhash-history
+   * depth the configured Base RPC must retain; verifiers fail closed
+   * if the RPC can't reach back to the targetBlock of an in-grace
+   * receipt.
+   */
+  readonly baseRpcConfig: BaseRpcConfigPin;
 }
+
+export interface BaseRpcConfigPin {
+  readonly chainId: number;
+  readonly blockTimeSeconds: number;
+  readonly targetBlockOffset: number;
+  readonly replayBlockhashLookbackBlocks: number;
+}
+
+export const DEFAULT_BASE_RPC_CONFIG: BaseRpcConfigPin = {
+  chainId: 8453,                          // Base mainnet
+  blockTimeSeconds: 2,
+  targetBlockOffset: 30,                  // ≈ 60 s on Base
+  replayBlockhashLookbackBlocks: 50_000,  // ≈ 28 h coverage
+};
 
 export interface CoreTexBundleManifest {
   readonly schemaVersion: 'coretex.client-bundle.v2';
@@ -537,6 +566,7 @@ export const DEFAULT_PROFILE: EvaluatorProfile = {
   relationEdgeTypes: DEFAULT_RELATION_EDGE_TYPES,
   revealGracePeriodSeconds: 60 * 60 * 6,  // 6h pre-calibration; calibrate replaces
   negCategoryRelevanceMap: DEFAULT_NEG_CATEGORY_RELEVANCE_MAP,
+  baseRpcConfig: DEFAULT_BASE_RPC_CONFIG,
 };
 
 // ─── Build / verify ──────────────────────────────────────────────────────────
@@ -794,6 +824,28 @@ function validateProfile(profile: EvaluatorProfile, errors?: string[]): void {
   if (profile.majorDeltaThreshold !== undefined) {
     if (!Number.isInteger(profile.majorDeltaThreshold) || profile.majorDeltaThreshold < 0)
       out.push('majorDeltaThreshold must be a non-negative integer when present');
+  }
+
+  // baseRpcConfig is required at launch — per-patch eval seeds bind to
+  // a future Base blockhash, so the chain config has to be pinned and
+  // signed alongside the bundle.
+  const rpc = profile.baseRpcConfig;
+  if (!rpc || typeof rpc !== 'object') {
+    out.push('baseRpcConfig is required');
+  } else {
+    if (!Number.isInteger(rpc.chainId) || rpc.chainId < 1) out.push('baseRpcConfig.chainId must be a positive integer');
+    if (!Number.isFinite(rpc.blockTimeSeconds) || rpc.blockTimeSeconds <= 0) out.push('baseRpcConfig.blockTimeSeconds must be > 0');
+    if (!Number.isInteger(rpc.targetBlockOffset) || rpc.targetBlockOffset < 1) out.push('baseRpcConfig.targetBlockOffset must be a positive integer');
+    if (!Number.isInteger(rpc.replayBlockhashLookbackBlocks) || rpc.replayBlockhashLookbackBlocks < 1)
+      out.push('baseRpcConfig.replayBlockhashLookbackBlocks must be a positive integer');
+    // Sanity floor: lookback must cover at least one full epoch (24 h)
+    // plus the targetBlockOffset, otherwise replay watchers can't
+    // reach back to verify the receipt's blockhash.
+    const epochSeconds = 24 * 3600;
+    const minLookback = Math.ceil(epochSeconds / rpc.blockTimeSeconds) + rpc.targetBlockOffset;
+    if (rpc.replayBlockhashLookbackBlocks < minLookback) {
+      out.push(`baseRpcConfig.replayBlockhashLookbackBlocks (${rpc.replayBlockhashLookbackBlocks}) must cover one full epoch + targetBlockOffset (>= ${minLookback})`);
+    }
   }
 
   if (!errors && out.length) throw new Error(out.join('; '));
