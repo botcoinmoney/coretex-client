@@ -317,12 +317,22 @@ export function decodeRetrievalKeys(
       slots.push(null);
       continue;
     }
+    // Reserved bytes between byte 9 and the start of quantized data
+    // MUST be zero. The inner `continue` only skipped the next
+    // byte index — it did not skip the outer slot, so a malformed
+    // header used to push null AND then fall through to push the
+    // real slot below, corrupting slot indexing.
+    let badHeader = false;
     for (let i = 9; i < headerBytes; i++) {
       if (slotBytes[i] !== 0) {
-        failures++;
-        slots.push(null);
-        continue;
+        badHeader = true;
+        break;
       }
+    }
+    if (badHeader) {
+      failures++;
+      slots.push(null);
+      continue;
     }
     const quantizedBytes = slotBytes.subarray(headerBytes);
     void w0;

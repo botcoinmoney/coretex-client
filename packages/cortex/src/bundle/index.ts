@@ -225,6 +225,23 @@ export interface EvaluatorProfile {
    * receipt.
    */
   readonly baseRpcConfig: BaseRpcConfigPin;
+  /**
+   * Staged-active-root corpus policy (per
+   * `docs/CORETEX_V4_ONCHAIN_RANDOMNESS_PLAN.md` §"Staged Active Root").
+   *
+   * The full launch corpus is generated up-front as a deterministic
+   * RESERVE (seeds [0..seedsPerDomain) per domain). At launch the
+   * active root is a deterministic prefix `seeds[0..S)` where S =
+   * `initialActiveSeedsPerDomain`; subsequent daily corpus deltas
+   * advance the active root forward by ≤ `routineDeltaMaxMajorFraction`
+   * of the major-delta-grace threshold so growth stays in the normal
+   * difficulty-ramp regime.
+   *
+   * Optional for backward compat with pre-staging bundles. When
+   * omitted, the entire corpus is the active root (legacy
+   * single-source-of-truth behavior).
+   */
+  readonly corpusStagingPolicy?: CorpusStagingPolicyPin;
 }
 
 export interface BaseRpcConfigPin {
@@ -239,6 +256,26 @@ export const DEFAULT_BASE_RPC_CONFIG: BaseRpcConfigPin = {
   blockTimeSeconds: 2,
   targetBlockOffset: 30,                  // ≈ 60 s on Base
   replayBlockhashLookbackBlocks: 50_000,  // ≈ 28 h coverage
+};
+
+export interface CorpusStagingPolicyPin {
+  /** Number of seeds per domain in the active root at launch. Must
+   *  be ≤ the reserve's `seedsPerDomain`. */
+  readonly initialActiveSeedsPerDomain: number;
+  /** Fraction of `majorDeltaThreshold` a routine daily delta may
+   *  consume. Cap so routine growth stays in the normal-delta regime
+   *  (no grace-period trigger). Recommend 0.50. */
+  readonly routineDeltaMaxMajorFraction: number;
+  /** Minimum hidden-pack runway in days the active root must cover
+   *  against the calibrated `epochsPerDay`. Used as the capacity
+   *  gate during initial-active-size selection. Recommend 45–60. */
+  readonly initialActiveRunwayDays: number;
+}
+
+export const DEFAULT_CORPUS_STAGING_POLICY: CorpusStagingPolicyPin = {
+  initialActiveSeedsPerDomain: 128,       // ≈ 25% of a 512-seed reserve
+  routineDeltaMaxMajorFraction: 0.50,
+  initialActiveRunwayDays: 60,
 };
 
 export interface CoreTexBundleManifest {
@@ -856,6 +893,20 @@ function validateProfile(profile: EvaluatorProfile, errors?: string[]): void {
     if (rpc.replayBlockhashLookbackBlocks < minLookback) {
       out.push(`baseRpcConfig.replayBlockhashLookbackBlocks (${rpc.replayBlockhashLookbackBlocks}) must cover one full epoch + targetBlockOffset (>= ${minLookback})`);
     }
+  }
+
+  // corpusStagingPolicy is optional (legacy bundles ship without it),
+  // but if pinned every field must be present and well-formed.
+  if (profile.corpusStagingPolicy !== undefined) {
+    const sp = profile.corpusStagingPolicy;
+    if (!Number.isInteger(sp.initialActiveSeedsPerDomain) || sp.initialActiveSeedsPerDomain < 1)
+      out.push('corpusStagingPolicy.initialActiveSeedsPerDomain must be a positive integer');
+    if (!Number.isFinite(sp.routineDeltaMaxMajorFraction)
+        || sp.routineDeltaMaxMajorFraction <= 0
+        || sp.routineDeltaMaxMajorFraction > 1)
+      out.push('corpusStagingPolicy.routineDeltaMaxMajorFraction must be in (0, 1]');
+    if (!Number.isInteger(sp.initialActiveRunwayDays) || sp.initialActiveRunwayDays < 1)
+      out.push('corpusStagingPolicy.initialActiveRunwayDays must be a positive integer');
   }
 
   if (!errors && out.length) throw new Error(out.join('; '));
