@@ -498,3 +498,127 @@ export function deriveConfirmSeed(coretexEvalSeed: string): string {
     enc.encode(CONFIRM_SEED_DOMAIN_TAG),
   )));
 }
+
+// ─── Phase S5 — screener admission decision ──────────────────────────────────
+//
+// The hardening plan redefines screener credit semantics:
+//   1. No credit for pre-commit structural validity
+//   2. Screener-pass credit is post-commit admission credit
+//   3. At most M screener-credit-eligible candidates per miner per epoch
+//   4. Duplicate key collapse — two patches with the same duplicateKey
+//      earn at most ONE candidate-admission credit
+//   5. Existing stake/account requirements + flat rate limits stay the
+//      Sybil boundary (this helper does not touch them)
+//
+// This module supplies a PURE decision function. The host maintains the
+// epoch-scoped bookkeeping (which miners and which dup keys have
+// already been credited this epoch) and passes those sets in. The
+// function returns yes/no + a coarse reason code that the host logs in
+// epoch metadata; the host does the actual credit accounting.
+
+export interface ScreenerAdmissionInput {
+  /** Miner address — checksum-insensitive, normalized to lowercase 0x. */
+  readonly minerAddress: string;
+  /** Commitment hash being admitted (must already be revealed + structurally valid). */
+  readonly commitmentHash: string;
+  /**
+   * Duplicate key for the patch result. Computed via
+   * `computeDuplicateKey` over (epochParentRoot, sorted touched word
+   * indices, normalized patch bytes, resulting state root). Two patches
+   * with the same duplicate key collapse to a single screener admission.
+   */
+  readonly duplicateKey: string;
+  /**
+   * Set of duplicate keys already credited THIS EPOCH (across all
+   * miners). Host owns this state. New duplicateKey not in this set
+   * → admissible; duplicateKey already in this set → collapsed.
+   */
+  readonly admittedDuplicateKeysThisEpoch: ReadonlySet<string>;
+  /**
+   * Count of screener-credit-eligible candidates this miner has
+   * already had admitted THIS EPOCH. The cap is enforced here, not
+   * by stake or rate limits.
+   */
+  readonly minerAdmissionsThisEpoch: number;
+  /**
+   * Per-miner per-epoch admission cap M. Pinned by the bundle profile
+   * (calibrator output) or coordinator config; passed in explicitly
+   * so this helper stays pure.
+   */
+  readonly perMinerCap: number;
+  /**
+   * Whether the reveal has already passed post-commit admission
+   * (structural, visible-split non-regression, etc.). The host runs
+   * the admission check separately; this helper assumes a true input
+   * is already cleared. If false, admission is refused as
+   * `pre-commit-structural-only`.
+   */
+  readonly postCommitAdmissionPassed: boolean;
+}
+
+export type ScreenerAdmissionDecision =
+  | { readonly admit: true; readonly reason: 'OK' }
+  | { readonly admit: false; readonly reason: ScreenerAdmissionRejectReason };
+
+export type ScreenerAdmissionRejectReason =
+  /** Reveal has not yet passed post-commit admission. */
+  | 'pre-commit-structural-only'
+  /** This miner has already hit the per-epoch cap. */
+  | 'per-miner-cap-reached'
+  /** Another commitment with the same duplicateKey was already admitted. */
+  | 'duplicate-key-collapsed'
+  /** Caller passed an obviously malformed input. */
+  | 'malformed-input';
+
+/**
+ * Decide whether a revealed commitment qualifies for screener credit.
+ * Pure; the host does the bookkeeping side-effects on `admit: true`.
+ *
+ * Reason codes are written to epoch metadata so independent verifiers
+ * can audit the screener-credit ledger after retirement.
+ */
+export function screenerAdmissionDecision(input: ScreenerAdmissionInput): ScreenerAdmissionDecision {
+  // Fail-closed shape checks — these would indicate a coordinator-side
+  // bug, not a miner-attack vector; reject with a stable reason code so
+  // the audit log can flag it.
+  try {
+    assertBytes32Hex(input.commitmentHash, 'commitmentHash');
+    assertBytes32Hex(input.duplicateKey, 'duplicateKey');
+    assertAddressHex(input.minerAddress, 'minerAddress');
+  } catch {
+    return { admit: false, reason: 'malformed-input' };
+  }
+  if (!Number.isInteger(input.minerAdmissionsThisEpoch) || input.minerAdmissionsThisEpoch < 0) {
+    return { admit: false, reason: 'malformed-input' };
+  }
+  if (!Number.isInteger(input.perMinerCap) || input.perMinerCap <= 0) {
+    return { admit: false, reason: 'malformed-input' };
+  }
+  if (typeof input.postCommitAdmissionPassed !== 'boolean') {
+    return { admit: false, reason: 'malformed-input' };
+  }
+
+  // Rule 2: post-commit admission only. A revealed-but-structurally-invalid
+  // patch earns no screener credit, no matter what.
+  if (!input.postCommitAdmissionPassed) {
+    return { admit: false, reason: 'pre-commit-structural-only' };
+  }
+
+  // Rule 4: duplicate-key collapse. If another commitment with the same
+  // duplicateKey was already credited this epoch (could be a different
+  // miner's identical patch, or the same miner re-submitting), refuse.
+  const dupKeyLower = '0x' + input.duplicateKey.replace(/^0x/i, '').toLowerCase();
+  if (input.admittedDuplicateKeysThisEpoch.has(dupKeyLower)) {
+    return { admit: false, reason: 'duplicate-key-collapsed' };
+  }
+
+  // Rule 3: per-miner cap. Once a miner hits M admissions in this
+  // epoch, further admissions don't earn credit (the reveal still
+  // happens, the patch can still flow into gate/confirm eval, but no
+  // additional screener credit is awarded).
+  if (input.minerAdmissionsThisEpoch >= input.perMinerCap) {
+    return { admit: false, reason: 'per-miner-cap-reached' };
+  }
+
+  return { admit: true, reason: 'OK' };
+}
