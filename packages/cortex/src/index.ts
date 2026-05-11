@@ -22,6 +22,7 @@ export * from './replay/v4.js';
 export * from './coordinator/endpoints.js';
 export * from './coordinator/retrieval-data-source.js';
 export * from './coordinator/base-blockhash.js';
+export * from './coordinator/per-patch-evaluator.js';
 export * from './eval/seed-derivation.js';
 export * from './eval/live-eval-admission.js';
 export * from './eval/reranker.js';
