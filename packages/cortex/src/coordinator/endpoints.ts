@@ -13,14 +13,12 @@ export type CoreTexEndpointName =
   | 'coverage-hints'
   | 'bundle-by-hash'
   | 'health'
-  // Sealed-eval flow (Phase S1 of CORETEX_SEALED_EPOCH_EVAL_HARDENING_PLAN.md).
-  // Miner-facing commit/reveal endpoints replace the legacy interactive
-  // hidden oracle. /coretex/evaluate stays sealed (Phase S0) during the
-  // active mining window.
-  | 'commit'
-  | 'reveal'
-  | 'commit-by-hash'
-  | 'epoch-status';
+  // Per-patch on-chain randomness flow (docs/CORETEX_V4_ONCHAIN_RANDOMNESS_PLAN.md).
+  // /coretex/evaluate is the sync endpoint; the two below back the
+  // async variant for hosts that don't want to hold the HTTP socket
+  // for ~1 minute.
+  | 'evaluate-async'
+  | 'result-by-hash';
 
 export interface CoreTexEndpoint {
   readonly name: CoreTexEndpointName;
@@ -43,11 +41,10 @@ export const CORETEX_ENDPOINTS: readonly CoreTexEndpoint[] = [
   { name: 'corpus-record-embedding', method: 'GET', path: '/coretex/corpus/:recordId/embedding' },
   { name: 'coverage-hints', method: 'GET', path: '/coretex/coverage-hints' },
   { name: 'health', method: 'GET', path: '/coretex/health' },
-  // Sealed-eval flow (Phase S1).
-  { name: 'commit', method: 'POST', path: '/coretex/commit' },
-  { name: 'reveal', method: 'POST', path: '/coretex/reveal' },
-  { name: 'commit-by-hash', method: 'GET', path: '/coretex/commit/:commitmentHash' },
-  { name: 'epoch-status', method: 'GET', path: '/coretex/epoch/:epochId/status' },
+  // Per-patch on-chain randomness flow. POST /coretex/evaluate is the
+  // sync path; async + result polling are listed below.
+  { name: 'evaluate-async', method: 'POST', path: '/coretex/evaluate-async' },
+  { name: 'result-by-hash', method: 'GET', path: '/coretex/result/:patchHash' },
 ] as const;
 
 export interface CoreTexHttpRequest {
@@ -99,12 +96,11 @@ export interface CoreTexCoordinatorDataSource {
   readonly getCorpusRecordEmbedding?: (recordId: string) => Promise<unknown> | unknown;
   readonly getCoverageHints?: () => Promise<unknown> | unknown;
   readonly health?: () => Promise<unknown> | unknown;
-  // Sealed-eval flow (Phase S1). Hosts wire persistence + on-chain
-  // anchoring under these callbacks; the shim only does routing.
-  readonly submitCommit?: (body: unknown) => Promise<unknown> | unknown;
-  readonly submitReveal?: (body: unknown) => Promise<unknown> | unknown;
-  readonly getCommit?: (commitmentHash: string) => Promise<unknown> | unknown;
-  readonly getEpochStatus?: (epochId: bigint) => Promise<unknown> | unknown;
+  // Per-patch on-chain randomness flow. The host's `evaluate` callback
+  // implements the sync path; the two below back the async variant
+  // (POST returns pending immediately, GET polls).
+  readonly evaluateAsync?: (body: unknown) => Promise<unknown> | unknown;
+  readonly getResult?: (patchHash: string) => Promise<unknown> | unknown;
 }
 
 export async function handleCoreTexCoordinatorRoute(
@@ -204,35 +200,20 @@ export async function handleCoreTexCoordinatorRoute(
     return handled(200, await source.getCoverageHints());
   }
 
-  // Sealed-eval flow (Phase S1).
-  if (method === 'POST' && path === '/coretex/commit') {
-    const denied = await guardRoute(req, source, 'commit');
+  // Per-patch on-chain randomness flow (async variant).
+  if (method === 'POST' && path === '/coretex/evaluate-async') {
+    const denied = await guardRoute(req, source, 'evaluate-async');
     if (denied) return denied;
-    if (!source.submitCommit) return notConfigured('commit');
-    return handled(200, await source.submitCommit(req.body ?? null));
+    if (!source.evaluateAsync) return notConfigured('evaluate-async');
+    return handled(200, await source.evaluateAsync(req.body ?? null));
   }
 
-  if (method === 'POST' && path === '/coretex/reveal') {
-    const denied = await guardRoute(req, source, 'reveal');
+  const resultByHash = matchBytes32(path, /^\/coretex\/result\/(0x[0-9a-fA-F]{64})$/);
+  if (method === 'GET' && resultByHash) {
+    const denied = await guardRoute(req, source, 'result-by-hash');
     if (denied) return denied;
-    if (!source.submitReveal) return notConfigured('reveal');
-    return handled(200, await source.submitReveal(req.body ?? null));
-  }
-
-  const commitHash = matchBytes32(path, /^\/coretex\/commit\/(0x[0-9a-fA-F]{64})$/);
-  if (method === 'GET' && commitHash) {
-    const denied = await guardRoute(req, source, 'commit-by-hash');
-    if (denied) return denied;
-    if (!source.getCommit) return notConfigured('commit-by-hash');
-    return handled(200, await source.getCommit(commitHash));
-  }
-
-  const epochStatusMatch = matchEpoch(path, /^\/coretex\/epoch\/([0-9]+)\/status$/);
-  if (method === 'GET' && epochStatusMatch !== null) {
-    const denied = await guardRoute(req, source, 'epoch-status');
-    if (denied) return denied;
-    if (!source.getEpochStatus) return notConfigured('epoch-status');
-    return handled(200, await source.getEpochStatus(epochStatusMatch));
+    if (!source.getResult) return notConfigured('result-by-hash');
+    return handled(200, await source.getResult(resultByHash));
   }
 
   const corpusEmbed = matchRecordId(path, /^\/coretex\/corpus\/([A-Za-z0-9_:.-]+)\/embedding$/);
