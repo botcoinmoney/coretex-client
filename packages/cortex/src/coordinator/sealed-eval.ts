@@ -63,6 +63,12 @@ export const GATE_SEED_DOMAIN_TAG = 'gate';
 /** Domain-separation tag for the confirm-pack sub-seed. */
 export const CONFIRM_SEED_DOMAIN_TAG = 'confirm';
 
+/** Domain-separation prefix for the gate-pack retirement ID (S6). */
+export const GATE_PACK_ID_DOMAIN_PREFIX = 'botcoin-coretex-gate-pack-id-v1';
+
+/** Domain-separation prefix for the confirm-pack retirement ID (S6). */
+export const CONFIRM_PACK_ID_DOMAIN_PREFIX = 'botcoin-coretex-confirm-pack-id-v1';
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export interface PatchCommitmentInput {
@@ -621,4 +627,50 @@ export function screenerAdmissionDecision(input: ScreenerAdmissionInput): Screen
   }
 
   return { admit: true, reason: 'OK' };
+}
+
+// ─── S6: Corpus retirement ────────────────────────────────────────────────────
+//
+// After settlement, the host marks the gate and confirm packs used in
+// this epoch as "spent" so future hidden-pack derivation excludes them
+// (plan §S6: "Mark gate/confirm packs spent after reveal"). These
+// helpers are pure — the host owns the retired-set storage and
+// canonical-form insertion.
+
+/**
+ * Derive a stable, domain-separated 32-byte identifier for the gate
+ * pack of a sealed epoch. The host stores this ID forever once the
+ * gate seed is revealed; future hidden-pack derivation refuses to
+ * reuse a retired ID. Different domain prefix from the gate sub-seed
+ * itself so callers can't accidentally substitute one for the other.
+ */
+export function computeGatePackId(gateSeedHex: string): string {
+  assertBytes32Hex(gateSeedHex, 'gateSeedHex');
+  const buf = concatU8(enc.encode(GATE_PACK_ID_DOMAIN_PREFIX), hexToBytes(gateSeedHex));
+  return bytesToHex(keccak256(buf));
+}
+
+/**
+ * Confirm-pack analog of computeGatePackId. Distinct domain prefix
+ * guarantees gate-pack-ID and confirm-pack-ID never collide even if a
+ * caller somehow reuses the same seed bytes for both packs.
+ */
+export function computeConfirmPackId(confirmSeedHex: string): string {
+  assertBytes32Hex(confirmSeedHex, 'confirmSeedHex');
+  const buf = concatU8(enc.encode(CONFIRM_PACK_ID_DOMAIN_PREFIX), hexToBytes(confirmSeedHex));
+  return bytesToHex(keccak256(buf));
+}
+
+/**
+ * Returns true iff `packId` (bytes32 hex) is already present in the
+ * host's retired-set. Case-insensitive lookup — host canonicalizes
+ * with `.toLowerCase()` on insertion (mirroring the duplicate-key
+ * collapse rule).
+ *
+ * Pure predicate. The host owns the set storage and is responsible
+ * for adding pack IDs after settlement completes.
+ */
+export function isPackRetired(packId: string, retired: ReadonlySet<string>): boolean {
+  assertBytes32Hex(packId, 'packId');
+  return retired.has('0x' + packId.replace(/^0x/i, '').toLowerCase());
 }
