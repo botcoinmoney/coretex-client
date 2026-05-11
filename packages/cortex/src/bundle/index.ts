@@ -773,6 +773,29 @@ function validateProfile(profile: EvaluatorProfile, errors?: string[]): void {
     }
   }
 
+  // Phase H1/H2 fields are optional, but if any baseline-* field is
+  // present the full set must be present and internally consistent —
+  // a half-populated baseline would silently invalidate the grace rule.
+  const anyBaseline =
+    profile.baselineParentScorePpm !== undefined ||
+    profile.baselineVariancePpm !== undefined ||
+    profile.baselineSamples !== undefined ||
+    profile.baselineEvalSeedHex !== undefined;
+  if (anyBaseline) {
+    if (typeof profile.baselineParentScorePpm !== 'number' || profile.baselineParentScorePpm < 0)
+      out.push('baselineParentScorePpm must be a non-negative number when baseline is pinned');
+    if (typeof profile.baselineVariancePpm !== 'number' || profile.baselineVariancePpm < 0)
+      out.push('baselineVariancePpm must be a non-negative number when baseline is pinned');
+    if (!Number.isInteger(profile.baselineSamples) || (profile.baselineSamples ?? 0) < 1)
+      out.push('baselineSamples must be a positive integer when baseline is pinned');
+    if (typeof profile.baselineEvalSeedHex !== 'string' || !/^0x[0-9a-f]{64}$/i.test(profile.baselineEvalSeedHex))
+      out.push('baselineEvalSeedHex must be 0x + 64 hex chars when baseline is pinned');
+  }
+  if (profile.majorDeltaThreshold !== undefined) {
+    if (!Number.isInteger(profile.majorDeltaThreshold) || profile.majorDeltaThreshold < 0)
+      out.push('majorDeltaThreshold must be a non-negative integer when present');
+  }
+
   if (!errors && out.length) throw new Error(out.join('; '));
 }
 
