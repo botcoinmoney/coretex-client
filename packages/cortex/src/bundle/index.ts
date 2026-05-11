@@ -436,6 +436,16 @@ const DEFAULT_EVALUATOR_FILES = [
   'packages/cortex/src/eval/hidden-query-pack.ts',
   'packages/cortex/src/eval/bi-encoder.ts',
   'packages/cortex/src/eval/reranker.ts',
+  // Per-patch on-chain randomness stack — pinned so the bundleHash
+  // catches any drift in the acceptance/replay logic. See
+  // docs/CORETEX_V4_ONCHAIN_RANDOMNESS_PLAN.md.
+  'packages/cortex/src/eval/seed-derivation.ts',
+  'packages/cortex/src/eval/live-eval-admission.ts',
+  'packages/cortex/src/coordinator/base-blockhash.ts',
+  'packages/cortex/src/coordinator/patch-received-notice.ts',
+  'packages/cortex/src/coordinator/per-patch-evaluator.ts',
+  'packages/cortex/src/coordinator/retrieval-data-source.ts',
+  'packages/cortex/src/replay/per-patch.ts',
   'packages/cortex/src/substrate/retrieval-decoder.ts',
   'packages/cortex/src/substrate/structural-validity.ts',
   'packages/cortex/src/substrate/slot-policy.ts',
