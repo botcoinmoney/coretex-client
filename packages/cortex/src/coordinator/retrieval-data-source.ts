@@ -49,6 +49,24 @@ export interface RetrievalDataSourceOptions {
    * payloads. Default false. Hidden + canary are always masked.
    */
   readonly allowCalibrationReads?: boolean;
+  /**
+   * Sealed-evaluation mode. **Default true** for production safety.
+   *
+   * When true, `POST /coretex/evaluate` is refused at the route shim with
+   * `403 coretex-hidden-eval-sealed`. This is the launch invariant from
+   * `docs/CORETEX_SEALED_EPOCH_EVAL_HARDENING_PLAN.md`: a public live
+   * scorer over the active hidden pack would become an adaptive
+   * leaderboard, so the route stays sealed during the active mining
+   * window. Admin / settlement scoring runs out-of-band by calling
+   * `evaluateRetrievalBenchmarkPatch` directly after commit close +
+   * patch reveal — it is not exposed via this route.
+   *
+   * Set false ONLY for legacy / staging contexts where an interactive
+   * scorer is intentional (e.g. local dev with a non-hidden corpus).
+   * Setting false in production with a live hidden pack is a launch
+   * blocker.
+   */
+  readonly sealedHiddenEval?: boolean;
 }
 
 const HIDDEN_SPLITS: ReadonlySet<string> = new Set(['eval_hidden', 'canary']);
@@ -114,9 +132,36 @@ export function createRetrievalDataSource(opts: RetrievalDataSourceOptions): Cor
   if (opts.getChallengeBook) (ds as Mutable).getChallengeBook = opts.getChallengeBook;
   if (opts.getCorpusDelta) (ds as Mutable).getCorpusDelta = opts.getCorpusDelta;
   if (opts.getClientBundle) (ds as Mutable).getClientBundle = opts.getClientBundle;
-  if (opts.authorize) (ds as Mutable).authorize = opts.authorize;
   if (opts.rateLimit) (ds as Mutable).rateLimit = opts.rateLimit;
   if (opts.health) (ds as Mutable).health = opts.health;
+
+  // Sealed-eval guard (Phase S0 of CORETEX_SEALED_EPOCH_EVAL_HARDENING_PLAN.md).
+  // The launch invariant: POST /coretex/evaluate must not return active
+  // hidden-pack scores to public callers. The route layer's authorize hook
+  // is the chokepoint — we wrap any host-provided authorize so that for
+  // endpoint='evaluate' we short-circuit to 403 in sealed mode, before
+  // the host's miner-auth check runs and before source.evaluate ever
+  // touches the hidden pack.
+  //
+  // Admin / settlement scoring runs out of band by importing
+  // evaluateRetrievalBenchmarkPatch directly after commit close + reveal;
+  // it does not flow through this route.
+  const sealedHiddenEval = opts.sealedHiddenEval !== false;
+  const hostAuthorize = opts.authorize;
+  if (sealedHiddenEval) {
+    (ds as Mutable).authorize = async (ctx) => {
+      if (ctx.endpoint === 'evaluate') {
+        return {
+          ok: false,
+          status: 403,
+          body: { error: 'coretex-hidden-eval-sealed', endpoint: ctx.endpoint },
+        };
+      }
+      return hostAuthorize ? hostAuthorize(ctx) : undefined;
+    };
+  } else if (hostAuthorize) {
+    (ds as Mutable).authorize = hostAuthorize;
+  }
   return ds;
 }
 
