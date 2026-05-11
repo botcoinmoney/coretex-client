@@ -42,13 +42,41 @@ export interface DifficultyInputs {
    * Default: 1.05.
    */
   readonly smallDriftRatio?: number;
+  /**
+   * Major-delta grace flag. Set true by the calibration / epoch-rotation
+   * tooling for exactly one epoch after a corpus delta whose new
+   * `eval_hidden` event count exceeded the bundle-pinned
+   * `majorDeltaThreshold`. While active:
+   *   - threshold is FROZEN at `current` (no ramp-up, no decay, no drift)
+   *   - reason is reported as 'major_delta_grace' for replay clarity
+   *   - the coordinator must re-run `evaluateBaseline` and publish the
+   *     new (parentScorePpm, variancePpm) in the signed epoch rotation
+   *     manifest before the next `initializeEpoch`
+   *
+   * Default: false. When false the existing ramp/decay/drift logic
+   * applies exactly as before — backward compatible.
+   *
+   * Rationale: large corpus deltas can shift the parent substrate's
+   * score distribution. Without grace the threshold may move on stale
+   * signal (decay when the task got harder, or freeze when baselines
+   * dropped). Grace is one epoch only — long enough for the calibration
+   * host to recompute the baseline, not so long that it stalls
+   * difficulty progression.
+   */
+  readonly majorDeltaActive?: boolean;
 }
 
 export interface DifficultyOutput {
   /** Resulting minImprovementPpm, clamped to [MIN_IMPROVEMENT_PPM, MAX_IMPROVEMENT_PPM]. */
   readonly next: bigint;
   /** Reason code explaining which branch was taken. */
-  readonly reason: 'ramp_up' | 'decay' | 'no_change' | 'small_drift_up' | 'small_drift_down';
+  readonly reason:
+    | 'ramp_up'
+    | 'decay'
+    | 'no_change'
+    | 'small_drift_up'
+    | 'small_drift_down'
+    | 'major_delta_grace';
   /** The ratio that was applied (1.0 = no change). */
   readonly ratioApplied: number;
   /** True if the unclamped next value was outside [MIN, MAX] and was clamped. */
@@ -70,6 +98,21 @@ export function nextMinImprovementPpm(inputs: DifficultyInputs): DifficultyOutpu
   const decayRatio = inputs.decayRatio ?? 0.85;
   const smallDriftRatio = inputs.smallDriftRatio ?? 1.05;
   const qualityHighThreshold = inputs.qualityHighThreshold ?? 4 * targetAdvances;
+
+  // Major-delta grace: short-circuit before any ramp/decay/drift logic.
+  // The just-applied corpus delta moved the benchmark distribution
+  // enough that miner-output signals from the prior epoch are no longer
+  // a reliable estimate of "is the threshold right." Freeze for one
+  // epoch while the calibration host recomputes the baseline; the next
+  // epoch will resume normal adjustment using the new baseline.
+  if (inputs.majorDeltaActive === true) {
+    return {
+      next: clampPpm(inputs.current),
+      reason: 'major_delta_grace',
+      ratioApplied: 1.0,
+      clamped: false,
+    };
+  }
 
   let ratio: number;
   let reason: DifficultyOutput['reason'];

@@ -55,6 +55,68 @@ export function stratumOf(event: ProductionCorpusEvent): string {
   return `family=${event.family},bucket=${hardnessBucketFor(event)}`;
 }
 
+/**
+ * Multi-strata membership for an event. Replaces the single-string
+ * `stratumOf` for predicate-style quotas — an event can satisfy the
+ * "family=temporal" stratum AND the "depth>=3" stratum AND the combined
+ * "family=multi_hop_relation,depth>=3" stratum simultaneously, so deep
+ * causal/temporal events count toward all relevant quotas.
+ *
+ * Returns at minimum the family/bucket strata (legacy `stratumOf`).
+ * When the event carries synthesis-time `causalDepth` or
+ * `relationHopDepth`, additional `depth>=N` and combined predicates are
+ * emitted. Old corpora that predate these fields default to depth 1
+ * and emit only the legacy strata.
+ *
+ * The predicate-quota matcher in `eventSatisfiesStratum` accepts both
+ * exact strings (legacy) and predicates (`depth>=N`,
+ * `family=X,depth>=N`).
+ */
+export function strataOf(event: ProductionCorpusEvent): string[] {
+  const bucket = hardnessBucketFor(event);
+  const family = event.family;
+  const causalDepth = event.causalDepth ?? 1;
+  const relationHopDepth = event.relationHopDepth ?? 1;
+  const out: string[] = [
+    `family=${family}`,
+    `bucket=${bucket}`,
+    `family=${family},bucket=${bucket}`,
+  ];
+  // Emit depth strata only when the synthesizer set a non-trivial
+  // depth — keeps legacy corpora's strata list short and avoids
+  // misleading "depth>=1" quota matches that always pass.
+  if (causalDepth > 1) {
+    for (let d = 2; d <= causalDepth; d++) out.push(`depth>=${d}`);
+    for (let d = 2; d <= causalDepth; d++) out.push(`family=${family},depth>=${d}`);
+  }
+  if (relationHopDepth > 1) {
+    for (let d = 2; d <= relationHopDepth; d++) out.push(`relationHop>=${d}`);
+    for (let d = 2; d <= relationHopDepth; d++) out.push(`family=${family},relationHop>=${d}`);
+  }
+  return out;
+}
+
+/**
+ * Predicate quota matcher.
+ *
+ * Accepts:
+ *   - exact strings: matches a literal stratum name from `strataOf(event)`
+ *   - predicates: `depth>=N`, `relationHop>=N`, `family=X,depth>=N`, ...
+ *
+ * Returns true iff the event satisfies the quota's stratum string.
+ */
+export function eventSatisfiesStratum(event: ProductionCorpusEvent, stratum: string): boolean {
+  const strata = strataOf(event);
+  if (strata.includes(stratum)) return true;
+  // Exact-match miss: treat as predicate. Currently the only predicates
+  // we accept are `depth>=N`, `relationHop>=N`, and combined-with-family
+  // forms — all of which are emitted by strataOf, so the includes() above
+  // already matched if the predicate holds. Fall through to false for
+  // unknown predicates, which is the conservative choice (an unsatisfied
+  // quota will fail closed in `deriveQueryPack`).
+  return false;
+}
+
 function evalSeedBytes(evalSeedHex: string): Uint8Array {
   const clean = evalSeedHex.startsWith('0x') ? evalSeedHex.slice(2) : evalSeedHex;
   if (clean.length !== 64) throw new Error(`evalSeed must be 32 bytes (got ${clean.length / 2})`);
@@ -119,17 +181,21 @@ export function deriveQueryPack(
     ids.add(cand.id);
   }
 
-  // Stratification fill.
+  // Stratification fill. Uses the predicate matcher so quotas may be
+  // exact strings (legacy: `'family=temporal,bucket=hard'`) or predicates
+  // (`'depth>=3'`, `'family=multi_hop_relation,depth>=3'`). Both forms
+  // are matched by `eventSatisfiesStratum` which evaluates the quota
+  // string against the event's full strata list.
   const enc = new TextEncoder();
   for (const quota of profile.quotas) {
-    let present = pack.filter((e) => stratumOf(e) === quota.stratum).length;
+    let present = pack.filter((e) => eventSatisfiesStratum(e, quota.stratum)).length;
     let j = 0;
     while (present < quota.minCount && j < sorted.length * 4) {
       const idx = digestU256([seed, epochBE, enc.encode(quota.stratum), u64BE(j)]) % BigInt(sorted.length);
       const cand = sorted[Number(idx)]!;
       j++;
       if (ids.has(cand.id)) continue;
-      if (stratumOf(cand) !== quota.stratum) continue;
+      if (!eventSatisfiesStratum(cand, quota.stratum)) continue;
       // Replace lowest-priority pack member: pack member from a stratum that is
       // already over-quota (or with the lex-largest stratum hash if none).
       let evictIdx = -1;
@@ -214,7 +280,7 @@ export function packQuotaCoverage(
   profile: HiddenPackProfile,
 ): readonly { readonly stratum: string; readonly count: number; readonly minCount: number; readonly satisfied: boolean }[] {
   return profile.quotas.map((q) => {
-    const count = pack.events.filter((e) => stratumOf(e) === q.stratum).length;
+    const count = pack.events.filter((e) => eventSatisfiesStratum(e, q.stratum)).length;
     return { stratum: q.stratum, count, minCount: q.minCount, satisfied: count >= q.minCount };
   });
 }

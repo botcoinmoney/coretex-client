@@ -20,3 +20,4 @@ export type {
   CoreTexWorkQualification,
 } from './work-units.js';
 export * from './difficulty.js';
+export * from './baseline.js';
