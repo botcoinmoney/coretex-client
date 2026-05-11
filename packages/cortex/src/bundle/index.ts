@@ -169,6 +169,47 @@ export interface EvaluatorProfile {
    * `bundleHash` and re-validation.
    */
   readonly negCategoryRelevanceMap: NegCategoryRelevanceMap;
+  /**
+   * Phase H1/H2 hardening. The new `eval_hidden` event count above
+   * which the next epoch enters one-cycle major-delta grace
+   * (`nextMinImprovementPpm({ majorDeltaActive: true })`). Pinned by
+   * the calibrator from the launch corpus's eval_hidden population
+   * (default ~5%). Optional for backward compatibility with bundles
+   * that predate the hardening; coordinators reading a bundle without
+   * this field MUST fall back to the pre-grace difficulty rule.
+   */
+  readonly majorDeltaThreshold?: number;
+  /**
+   * Phase H1/H2 hardening. The parent substrate's composite score on
+   * the genesis hidden query pack, in ppm (composite × 1_000_000).
+   * Pinned by `scripts/pin-baseline-into-bundle.mjs` running on the
+   * calibration host after bundle build. Optional because pre-baseline
+   * bundles (the initial output of `build-coretex-bundle.mjs`) don't
+   * have it yet; the orchestrator chain populates it as step 7/9.
+   *
+   * The acceptance rule should normalize against this score +
+   * `baselineVariancePpm` + `replayTolerancePpm` so substrate changes
+   * cleanly beat the parent rather than chasing absolute thresholds
+   * that drift as the corpus grows.
+   */
+  readonly baselineParentScorePpm?: number;
+  /**
+   * Standard deviation of the parent score across `baselineSamples`
+   * repeated runs, in ppm. On a byte-deterministic single host this
+   * is exactly 0; on heterogeneous calibration hardware it captures
+   * real reranker-side noise so acceptance doesn't oscillate.
+   */
+  readonly baselineVariancePpm?: number;
+  /** Number of samples used to compute `baselineVariancePpm`. */
+  readonly baselineSamples?: number;
+  /**
+   * The eval seed used to derive the genesis hidden query pack that
+   * the baseline was computed against. Any independent verifier can
+   * reproduce the same pack + baseline score from
+   * (bundle, corpus, baselineEvalSeedHex) — no coordinator-private
+   * state involved.
+   */
+  readonly baselineEvalSeedHex?: string;
 }
 
 export interface CoreTexBundleManifest {
