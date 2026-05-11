@@ -54,6 +54,15 @@ export const PATCH_DUPLICATE_KEY_DOMAIN_PREFIX = 'botcoin-coretex-patch-duplicat
 /** Domain-separation prefix for the commitment Merkle leaf. */
 export const COMMITMENT_LEAF_DOMAIN_PREFIX = 'botcoin-coretex-commitment-leaf-v1';
 
+/** Domain-separation prefix for the sealed eval seed. */
+export const SEALED_EVAL_SEED_DOMAIN_PREFIX = 'botcoin-coretex-sealed-eval-v1';
+
+/** Domain-separation tag for the gate-pack sub-seed. */
+export const GATE_SEED_DOMAIN_TAG = 'gate';
+
+/** Domain-separation tag for the confirm-pack sub-seed. */
+export const CONFIRM_SEED_DOMAIN_TAG = 'confirm';
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export interface PatchCommitmentInput {
@@ -346,4 +355,146 @@ export function computeCommitmentRoot(commitmentHashes: readonly string[]): stri
     leaves = next;
   }
   return bytesToHex(leaves[0]!);
+}
+
+// ─── Phase S2 — eval-seed randomness binding ──────────────────────────────────
+//
+// `coretexEvalSeed` is the per-epoch randomness that derives gate and
+// confirm hidden packs. Binding rules from the hardening plan:
+//
+//   1. `epochSecret` is committed before the epoch starts
+//   2. `futureBlockHash` is the hash of a Base block chosen BEFORE
+//      commitments are known and produced AFTER the commit window closes
+//   3. `commitmentRoot` is anchored before `epochSecret` is revealed
+//   4. `optionalDrandRoundHash` adds coordinator/sequencer independence
+//   5. NEVER use a coordinator-only seed as the sole eval seed
+//
+// `deriveCoretexEvalSeed` enforces rule 5 by REQUIRING `futureBlockHash`
+// (the only external-to-coordinator binding the launch flow has). Drand
+// is recommended but optional; if both external sources are missing it
+// fails closed.
+//
+// The derivation hashes every binding (epochId, parentRoot, corpusRoot,
+// bundleHash, commitmentRoot, epochSecret, futureBlockHash,
+// optionalDrandRoundHash) so changing ANY of them produces a different
+// seed — adversaries cannot grind preimages of just the epoch secret.
+
+export interface CoretexEvalSeedInput {
+  /** Epoch id (uint64). */
+  readonly epochId: bigint | number;
+  /** Substrate parent root the eval pack is sampled against (bytes32 hex). */
+  readonly epochParentRoot: string;
+  /** Corpus root the hidden pack is sampled from (bytes32 hex). */
+  readonly corpusRoot: string;
+  /** Bundle hash that pins the scorer + map (bytes32 hex). */
+  readonly bundleHash: string;
+  /**
+   * Merkle root of accepted commitments, output of `computeCommitmentRoot`.
+   * Must be anchored on chain before `epochSecret` is revealed.
+   */
+  readonly commitmentRoot: string;
+  /**
+   * Coordinator-committed epoch secret (bytes32 hex). Revealed after
+   * commitmentRoot is anchored, never before.
+   */
+  readonly epochSecret: string;
+  /**
+   * Hash of a Base block chosen BEFORE commitments are known and
+   * produced AFTER the commit window closes (bytes32 hex). The
+   * external-to-coordinator binding that makes the seed unpredictable
+   * to coordinator-affiliated actors. Required — fail closed if absent.
+   */
+  readonly futureBlockHash: string;
+  /**
+   * Drand round hash for additional coordinator/sequencer independence
+   * (bytes32 hex). Optional; pass undefined to use the bonus-epoch
+   * blockhash pattern alone. Recommended for production once a stable
+   * drand round source is wired up.
+   */
+  readonly optionalDrandRoundHash?: string;
+}
+
+/**
+ * Compute the canonical coretexEvalSeed. Pure function of public + just-
+ * revealed inputs. Any verifier with the same bindings reproduces the
+ * same seed; adversaries cannot precompute it because at least one
+ * binding (`futureBlockHash`) is unknown until after commit close.
+ *
+ * Throws if `futureBlockHash` is missing or zero — that's a
+ * coordinator-only-randomness scenario which the plan explicitly
+ * forbids ("Never use a coordinator-only seed as the sole eval seed").
+ */
+export function deriveCoretexEvalSeed(input: CoretexEvalSeedInput): string {
+  assertBytes32Hex(input.epochParentRoot, 'epochParentRoot');
+  assertBytes32Hex(input.corpusRoot, 'corpusRoot');
+  assertBytes32Hex(input.bundleHash, 'bundleHash');
+  assertBytes32Hex(input.commitmentRoot, 'commitmentRoot');
+  assertBytes32Hex(input.epochSecret, 'epochSecret');
+  assertBytes32Hex(input.futureBlockHash, 'futureBlockHash');
+
+  // Refuse a zero blockhash — it would let an adversary precompute the
+  // seed using only coordinator-known material (the plan's rule 5).
+  // The runtime expectation is that the coordinator pre-pins a Base
+  // block height and reads the actual hash from chain after that block
+  // is finalized; a zero hash means "not yet observed" and the seed
+  // derivation must wait.
+  if (/^0x0+$/i.test(input.futureBlockHash)) {
+    throw new Error('futureBlockHash: cannot be zero (would collapse to coordinator-only randomness)');
+  }
+  // Same refusal on a zero epochSecret — a coordinator that "committed"
+  // to zero is signalling no commitment at all.
+  if (/^0x0+$/i.test(input.epochSecret)) {
+    throw new Error('epochSecret: cannot be zero');
+  }
+
+  let drandPart: Uint8Array;
+  if (input.optionalDrandRoundHash !== undefined) {
+    assertBytes32Hex(input.optionalDrandRoundHash, 'optionalDrandRoundHash');
+    drandPart = hexToBytes(input.optionalDrandRoundHash);
+  } else {
+    drandPart = new Uint8Array(32); // 32-byte zero sentinel when drand isn't mixed in
+  }
+
+  const body = concatU8(
+    enc.encode(SEALED_EVAL_SEED_DOMAIN_PREFIX),
+    u64BE(input.epochId),
+    hexToBytes(input.epochParentRoot),
+    hexToBytes(input.corpusRoot),
+    hexToBytes(input.bundleHash),
+    hexToBytes(input.commitmentRoot),
+    hexToBytes(input.epochSecret),
+    hexToBytes(input.futureBlockHash),
+    drandPart,
+  );
+  return bytesToHex(keccak256(body));
+}
+
+/**
+ * Derive the gate-pack sub-seed from the canonical eval seed.
+ *
+ *   gateSeed = keccak256(coretexEvalSeed || "gate")
+ */
+export function deriveGateSeed(coretexEvalSeed: string): string {
+  assertBytes32Hex(coretexEvalSeed, 'coretexEvalSeed');
+  return bytesToHex(keccak256(concatU8(
+    hexToBytes(coretexEvalSeed),
+    enc.encode(GATE_SEED_DOMAIN_TAG),
+  )));
+}
+
+/**
+ * Derive the confirm-pack sub-seed from the canonical eval seed.
+ *
+ *   confirmSeed = keccak256(coretexEvalSeed || "confirm")
+ *
+ * Distinct from gateSeed so the confirm pack is a fresh draw — only
+ * finalists pay the expensive second pass and pack-luck advances are
+ * filtered out.
+ */
+export function deriveConfirmSeed(coretexEvalSeed: string): string {
+  assertBytes32Hex(coretexEvalSeed, 'coretexEvalSeed');
+  return bytesToHex(keccak256(concatU8(
+    hexToBytes(coretexEvalSeed),
+    enc.encode(CONFIRM_SEED_DOMAIN_TAG),
+  )));
 }
