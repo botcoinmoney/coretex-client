@@ -12,7 +12,15 @@ export type CoreTexEndpointName =
   | 'corpus-record-embedding'
   | 'coverage-hints'
   | 'bundle-by-hash'
-  | 'health';
+  | 'health'
+  // Sealed-eval flow (Phase S1 of CORETEX_SEALED_EPOCH_EVAL_HARDENING_PLAN.md).
+  // Miner-facing commit/reveal endpoints replace the legacy interactive
+  // hidden oracle. /coretex/evaluate stays sealed (Phase S0) during the
+  // active mining window.
+  | 'commit'
+  | 'reveal'
+  | 'commit-by-hash'
+  | 'epoch-status';
 
 export interface CoreTexEndpoint {
   readonly name: CoreTexEndpointName;
@@ -35,6 +43,11 @@ export const CORETEX_ENDPOINTS: readonly CoreTexEndpoint[] = [
   { name: 'corpus-record-embedding', method: 'GET', path: '/coretex/corpus/:recordId/embedding' },
   { name: 'coverage-hints', method: 'GET', path: '/coretex/coverage-hints' },
   { name: 'health', method: 'GET', path: '/coretex/health' },
+  // Sealed-eval flow (Phase S1).
+  { name: 'commit', method: 'POST', path: '/coretex/commit' },
+  { name: 'reveal', method: 'POST', path: '/coretex/reveal' },
+  { name: 'commit-by-hash', method: 'GET', path: '/coretex/commit/:commitmentHash' },
+  { name: 'epoch-status', method: 'GET', path: '/coretex/epoch/:epochId/status' },
 ] as const;
 
 export interface CoreTexHttpRequest {
@@ -86,6 +99,12 @@ export interface CoreTexCoordinatorDataSource {
   readonly getCorpusRecordEmbedding?: (recordId: string) => Promise<unknown> | unknown;
   readonly getCoverageHints?: () => Promise<unknown> | unknown;
   readonly health?: () => Promise<unknown> | unknown;
+  // Sealed-eval flow (Phase S1). Hosts wire persistence + on-chain
+  // anchoring under these callbacks; the shim only does routing.
+  readonly submitCommit?: (body: unknown) => Promise<unknown> | unknown;
+  readonly submitReveal?: (body: unknown) => Promise<unknown> | unknown;
+  readonly getCommit?: (commitmentHash: string) => Promise<unknown> | unknown;
+  readonly getEpochStatus?: (epochId: bigint) => Promise<unknown> | unknown;
 }
 
 export async function handleCoreTexCoordinatorRoute(
@@ -183,6 +202,37 @@ export async function handleCoreTexCoordinatorRoute(
     if (denied) return denied;
     if (!source.getCoverageHints) return notConfigured('coverage-hints');
     return handled(200, await source.getCoverageHints());
+  }
+
+  // Sealed-eval flow (Phase S1).
+  if (method === 'POST' && path === '/coretex/commit') {
+    const denied = await guardRoute(req, source, 'commit');
+    if (denied) return denied;
+    if (!source.submitCommit) return notConfigured('commit');
+    return handled(200, await source.submitCommit(req.body ?? null));
+  }
+
+  if (method === 'POST' && path === '/coretex/reveal') {
+    const denied = await guardRoute(req, source, 'reveal');
+    if (denied) return denied;
+    if (!source.submitReveal) return notConfigured('reveal');
+    return handled(200, await source.submitReveal(req.body ?? null));
+  }
+
+  const commitHash = matchBytes32(path, /^\/coretex\/commit\/(0x[0-9a-fA-F]{64})$/);
+  if (method === 'GET' && commitHash) {
+    const denied = await guardRoute(req, source, 'commit-by-hash');
+    if (denied) return denied;
+    if (!source.getCommit) return notConfigured('commit-by-hash');
+    return handled(200, await source.getCommit(commitHash));
+  }
+
+  const epochStatusMatch = matchEpoch(path, /^\/coretex\/epoch\/([0-9]+)\/status$/);
+  if (method === 'GET' && epochStatusMatch !== null) {
+    const denied = await guardRoute(req, source, 'epoch-status');
+    if (denied) return denied;
+    if (!source.getEpochStatus) return notConfigured('epoch-status');
+    return handled(200, await source.getEpochStatus(epochStatusMatch));
   }
 
   const corpusEmbed = matchRecordId(path, /^\/coretex\/corpus\/([A-Za-z0-9_:.-]+)\/embedding$/);

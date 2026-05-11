@@ -21,6 +21,7 @@ export * from './bundle/index.js';
 export * from './replay/v4.js';
 export * from './coordinator/endpoints.js';
 export * from './coordinator/retrieval-data-source.js';
+export * from './coordinator/sealed-eval.js';
 export * from './eval/reranker.js';
 export * from './eval/bi-encoder.js';
 export * from './eval/retrieval-corpus.js';

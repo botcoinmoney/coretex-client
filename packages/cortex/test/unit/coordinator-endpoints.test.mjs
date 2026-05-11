@@ -23,6 +23,11 @@ describe('CoreTex coordinator endpoint contract', () => {
       'GET /coretex/corpus/:recordId/embedding',
       'GET /coretex/coverage-hints',
       'GET /coretex/health',
+      // Sealed-eval flow (Phase S1).
+      'POST /coretex/commit',
+      'POST /coretex/reveal',
+      'GET /coretex/commit/:commitmentHash',
+      'GET /coretex/epoch/:epochId/status',
     ]);
   });
 
