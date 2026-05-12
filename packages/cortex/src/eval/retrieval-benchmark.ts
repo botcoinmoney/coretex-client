@@ -62,6 +62,28 @@ export function assertValidWeights(w: CompositeWeights): void {
   }
 }
 
+/**
+ * Canonical acceptance threshold in ppm. Combines the three bundle-
+ * pinned terms that callers previously had to fold in manually:
+ *
+ *   threshold = minImprovementPpm + replayTolerancePpm + baselineVariancePpm
+ *
+ * Hosts wiring the per-patch evaluator pass the result here as
+ * `thresholdPpm`. Centralizing this prevents call sites from forgetting
+ * a term (replay tolerance + baseline variance must BOTH be on top of
+ * minImprovement so that pack-luck advances within reranker-noise
+ * range don't qualify).
+ */
+export function computeAcceptanceThresholdPpm(profile: {
+  readonly patchAcceptanceFloors: { readonly minImprovementPpm: number };
+  readonly replayTolerancePpm: number;
+  readonly baselineVariancePpm?: number;
+}): number {
+  return profile.patchAcceptanceFloors.minImprovementPpm
+       + profile.replayTolerancePpm
+       + (profile.baselineVariancePpm ?? 0);
+}
+
 export interface ScoringOptions {
   readonly weights: CompositeWeights;
   readonly biEncoder: BiEncoder;
@@ -168,12 +190,26 @@ export async function scoreSubstrateAgainstQuery(
   // 3) Rerank with the cross-encoder.
   const pairs = allDocs.map((d) => ({ query: query.queryText, document: d.text }));
   const scores = pairs.length === 0 ? [] : await opts.reranker.score(pairs);
+  // Fail-closed on shape mismatch or non-finite scores. Silent zeros
+  // (`scores[i] ?? 0`) would let a malformed reranker subprocess
+  // change rankings under the radar; we reject the eval so the
+  // operator sees a hard error instead of corrupted state.
+  if (scores.length !== pairs.length) {
+    throw new Error(
+      `retrieval-benchmark: reranker returned ${scores.length} scores for ${pairs.length} pairs`,
+    );
+  }
+  for (let i = 0; i < scores.length; i++) {
+    if (!Number.isFinite(scores[i])) {
+      throw new Error(`retrieval-benchmark: reranker score[${i}] is non-finite (${scores[i]})`);
+    }
+  }
   const qrelById = new Map(query.qrels.map((q) => [q.documentId, q.relevance]));
   const ranked = allDocs
     .map((d, i) => ({
       documentId: d.documentId,
       memorySlot: d.memorySlot >= 0 ? d.memorySlot : null,
-      rerankerScore: scores[i] ?? 0,
+      rerankerScore: scores[i]!,
       relevance: qrelById.get(d.documentId) ?? 0,
     }))
     .sort((a, b) => b.rerankerScore - a.rerankerScore);
@@ -415,10 +451,6 @@ export async function evaluateRetrievalBenchmarkPatch(
 
   // Per-family catastrophic regression.
   const familyDelta = perFamilyDelta(before, after);
-  for (const [family, deltaInfo] of Object.entries(familyDelta)) {
-    void family;
-    void deltaInfo;
-  }
   const familyBefore = perFamilyMean(before);
   const familyAfter = perFamilyMean(after);
   for (const fam of Object.keys(familyBefore)) {

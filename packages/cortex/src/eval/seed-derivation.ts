@@ -9,8 +9,14 @@
  * Anti-pre-testing property: blockhash(receivedAtBlock + targetBlockOffset)
  * does not exist when the patch arrives at the coordinator. The
  * coordinator cannot compute any patch's eval seed at submission time.
- * The miner cannot compute any other patch's eval seed because the seed
- * depends on `patchHash` + `minerAddress`.
+ *
+ * Miner identity is intentionally NOT part of the seed. Two miners
+ * submitting the same `(parentRoot, patchBytes)` resolve to the same
+ * dedup key and the same eval seed; first-submitter wins on the
+ * shared cached verdict. Including minerAddress in the seed would
+ * create ambiguity (different "true" seeds, single cached verdict)
+ * without preventing sybil rerolls — the dedup cache already does
+ * that.
  *
  * Replay verification: given the post-epoch `epochSecret` reveal + any
  * Base RPC, a third party recomputes every accepted patch's seeds
@@ -53,8 +59,6 @@ export interface EvalSeedInput {
   readonly patchHash: string;
   /** Parent state root the patch was constructed against. bytes32 hex. */
   readonly parentRoot: string;
-  /** Miner address. bytes20 hex (lowercased). */
-  readonly minerAddress: string;
   /** Corpus root pinned in the bundle. bytes32 hex. */
   readonly corpusRoot: string;
   /** Bundle hash. bytes32 hex. */
@@ -103,13 +107,6 @@ function assertBytes32Hex(value: string, field: string): void {
   if (!/^[0-9a-fA-F]{64}$/.test(clean)) throw new Error(`${field}: non-hex characters`);
 }
 
-function assertAddressHex(value: string, field: string): void {
-  if (typeof value !== 'string') throw new Error(`${field}: not a string`);
-  const clean = value.startsWith('0x') || value.startsWith('0X') ? value.slice(2) : value;
-  if (clean.length !== 40) throw new Error(`${field}: must be 20 bytes hex (got ${clean.length / 2})`);
-  if (!/^[0-9a-fA-F]{40}$/.test(clean)) throw new Error(`${field}: non-hex characters`);
-}
-
 // ─── Seed derivation ──────────────────────────────────────────────────────────
 
 function deriveEvalSeedWithPrefix(prefix: string, input: EvalSeedInput): string {
@@ -117,7 +114,6 @@ function deriveEvalSeedWithPrefix(prefix: string, input: EvalSeedInput): string 
   assertBytes32Hex(input.blockhash, 'blockhash');
   assertBytes32Hex(input.patchHash, 'patchHash');
   assertBytes32Hex(input.parentRoot, 'parentRoot');
-  assertAddressHex(input.minerAddress, 'minerAddress');
   assertBytes32Hex(input.corpusRoot, 'corpusRoot');
   assertBytes32Hex(input.bundleHash, 'bundleHash');
   // Zero blockhash means "block not observed yet" — refuse rather than
@@ -132,7 +128,6 @@ function deriveEvalSeedWithPrefix(prefix: string, input: EvalSeedInput): string 
     u64BE(input.epochId),
     hexToBytes(input.patchHash),
     hexToBytes(input.parentRoot),
-    hexToBytes(input.minerAddress),
     hexToBytes(input.corpusRoot),
     hexToBytes(input.bundleHash),
   );

@@ -189,7 +189,12 @@ describe('runPerPatchEvaluation — anti-pre-testing properties', () => {
     assert.notEqual(a.patchHash, b.patchHash);
   });
 
-  test('two miners submitting the same patch get DIFFERENT seeds (minerAddress differs)', async () => {
+  test('two miners submitting the same patch get the SAME seed (dedup-cache contract)', async () => {
+    // First-submitter wins on the (parentRoot, patchBytes) dedup
+    // cache, so the eval seed MUST NOT depend on minerAddress —
+    // otherwise the two miners would compute different seeds but
+    // share a cached verdict, creating ambiguity. Sybil rerolls are
+    // prevented by the dedup cache, not by per-miner seed entropy.
     const a = await runPerPatchEvaluation(
       makeRequest({ minerAddress: `0x${'10'.repeat(20)}` }),
       makeDeps(),
@@ -198,11 +203,10 @@ describe('runPerPatchEvaluation — anti-pre-testing properties', () => {
       makeRequest({ minerAddress: `0x${'20'.repeat(20)}` }),
       makeDeps(),
     );
-    assert.notEqual(a.gateSeed, b.gateSeed);
-    assert.notEqual(a.confirmSeed, b.confirmSeed);
-    // patchHash is the same (same patch bytes), but the SEED uses
-    // minerAddress so the pack draws are still different per miner.
+    assert.equal(a.gateSeed, b.gateSeed);
+    assert.equal(a.confirmSeed, b.confirmSeed);
     assert.equal(a.patchHash, b.patchHash);
+    assert.equal(a.dedupKey, b.dedupKey);
   });
 
   test('different blockhash → different seeds (replay-watcher must agree byte-for-byte)', async () => {

@@ -32,7 +32,6 @@ const BASE_INPUT = {
   epochId:     42,
   patchHash:   `0x${'33'.repeat(32)}`,
   parentRoot:  `0x${'44'.repeat(32)}`,
-  minerAddress: `0x${'55'.repeat(20)}`,
   corpusRoot:  `0x${'66'.repeat(32)}`,
   bundleHash:  `0x${'77'.repeat(32)}`,
 };
@@ -64,13 +63,25 @@ describe('deriveGateEvalSeed / deriveConfirmEvalSeed', () => {
       { ...BASE_INPUT, epochId: 43 },
       { ...BASE_INPUT, patchHash:   `0x${'aa'.repeat(32)}` },
       { ...BASE_INPUT, parentRoot:  `0x${'aa'.repeat(32)}` },
-      { ...BASE_INPUT, minerAddress: `0x${'aa'.repeat(20)}` },
       { ...BASE_INPUT, corpusRoot:  `0x${'aa'.repeat(32)}` },
       { ...BASE_INPUT, bundleHash:  `0x${'aa'.repeat(32)}` },
     ];
     for (const v of variants) {
       assert.notEqual(deriveGateEvalSeed(v), baseG, `flipping a field should change the seed`);
     }
+  });
+
+  test('miner identity is NOT part of the seed (first-submitter-wins dedup contract)', () => {
+    // Two miners submitting the same (parentRoot, patchBytes) hash to
+    // the same dedupKey and resolve to the same cached verdict. The
+    // seed therefore MUST NOT depend on minerAddress — otherwise the
+    // two miners would compute different "true" seeds but share a
+    // single cached verdict, creating ambiguity. Including
+    // minerAddress would not prevent sybil rerolls (the dedup cache
+    // already does that) — it would only break replay reproducibility.
+    const seedA = deriveGateEvalSeed(BASE_INPUT);
+    const seedB = deriveGateEvalSeed({ ...BASE_INPUT });
+    assert.equal(seedA, seedB);
   });
 
   test('refuses zero blockhash — anti-pre-testing invariant', () => {
@@ -84,7 +95,6 @@ describe('deriveGateEvalSeed / deriveConfirmEvalSeed', () => {
 
   test('rejects malformed input', () => {
     assert.throws(() => deriveGateEvalSeed({ ...BASE_INPUT, epochSecret: '0x1234' }), /epochSecret/);
-    assert.throws(() => deriveGateEvalSeed({ ...BASE_INPUT, minerAddress: 'not-an-address' }), /minerAddress/);
     assert.throws(() => deriveGateEvalSeed({ ...BASE_INPUT, patchHash: '0xnope' }), /patchHash/);
     assert.throws(() => deriveGateEvalSeed({ ...BASE_INPUT, bundleHash: '' }), /bundleHash/);
   });

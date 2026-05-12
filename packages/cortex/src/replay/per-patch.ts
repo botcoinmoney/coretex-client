@@ -142,7 +142,6 @@ export async function verifyPerPatchReceipt(
     epochId: receipt.epochId,
     patchHash: receipt.patchHash,
     parentRoot: receipt.parentRoot,
-    minerAddress: receipt.minerAddress,
     corpusRoot: deps.corpusRoot,
     bundleHash: deps.bundleHash,
   };

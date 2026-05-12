@@ -70,7 +70,7 @@ export function createRetrievalDataSource(opts: RetrievalDataSourceOptions): Cor
   }
 
   const ds: CoreTexCoordinatorDataSource = {
-    async screen(body) { return opts.screen(body); },
+    async screen(body) { return sanitizeScreenResponse(await opts.screen(body)); },
     async evaluate(body) { return opts.evaluate(body); },
     async getCorpusRecord(recordId: string) {
       const event = corpus.byId.get(recordId);
@@ -177,4 +177,31 @@ function bytesToHex(bytes: Uint8Array): string {
   let hex = '';
   for (const b of bytes) hex += b.toString(16).padStart(2, '0');
   return hex;
+}
+
+/**
+ * Strip the screen response to the structural-only shape declared in
+ * the route docs: `{ pass: boolean, reasonCode?: string, receipt?: object }`.
+ *
+ * A miner-facing screen route MUST NOT leak retrieval-correlated
+ * numbers — abstention rate, structural-floor margins, per-family
+ * deltas, anything that lets a probe oracle reconstruct hidden-pack
+ * distribution. The structural decision is binary; the reason code is
+ * a fixed enum string. Anything else from the host callback is dropped.
+ */
+function sanitizeScreenResponse(raw: unknown): { pass: boolean; reasonCode?: string; receipt?: Record<string, unknown> } {
+  if (!raw || typeof raw !== 'object') {
+    return { pass: false, reasonCode: 'screen-malformed-response' };
+  }
+  const r = raw as Record<string, unknown>;
+  const out: { pass: boolean; reasonCode?: string; receipt?: Record<string, unknown> } = {
+    pass: r.pass === true,
+  };
+  if (typeof r.reasonCode === 'string') out.reasonCode = r.reasonCode;
+  // The receipt sub-object is allowed but ONLY the structural signature
+  // envelope — never per-query scores or family deltas. Hosts that
+  // want to attach an EIP-712 receipt put it here; cortex never
+  // synthesizes or inspects its contents beyond the type check.
+  if (r.receipt && typeof r.receipt === 'object') out.receipt = r.receipt as Record<string, unknown>;
+  return out;
 }

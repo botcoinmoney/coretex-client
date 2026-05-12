@@ -195,14 +195,17 @@ export async function runPerPatchEvaluation(
   );
 
   // 6: derive both seeds from the same blockhash via different domain
-  // prefixes. Same anti-pre-testing property holds for both.
+  // prefixes. Same anti-pre-testing property holds for both. Miner
+  // identity is NOT part of the seed — first-submitter wins on the
+  // shared (parentRoot, patchBytes) dedup cache, so including
+  // minerAddress in the seed would create ambiguity without
+  // preventing sybil rerolls.
   const seedInput = {
     epochSecret: deps.epochSecret,
     blockhash,
     epochId: request.epochId,
     patchHash,
     parentRoot: request.parentRoot,
-    minerAddress,
     corpusRoot: deps.corpusRoot,
     bundleHash: deps.bundleHash,
   };
