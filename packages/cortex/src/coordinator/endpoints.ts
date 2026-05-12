@@ -10,7 +10,6 @@ export type CoreTexEndpointName =
   | 'client-bundle-by-hash'
   | 'corpus-record'
   | 'corpus-record-embedding'
-  | 'coverage-hints'
   | 'bundle-by-hash'
   | 'health'
   // Per-patch on-chain randomness flow (docs/CORETEX_V4_ONCHAIN_RANDOMNESS_PLAN.md).
@@ -39,7 +38,6 @@ export const CORETEX_ENDPOINTS: readonly CoreTexEndpoint[] = [
   { name: 'bundle-by-hash', method: 'GET', path: '/coretex/bundle/:bundleHash' },
   { name: 'corpus-record', method: 'GET', path: '/coretex/corpus/:recordId' },
   { name: 'corpus-record-embedding', method: 'GET', path: '/coretex/corpus/:recordId/embedding' },
-  { name: 'coverage-hints', method: 'GET', path: '/coretex/coverage-hints' },
   { name: 'health', method: 'GET', path: '/coretex/health' },
   // Per-patch on-chain randomness flow. POST /coretex/evaluate is the
   // sync path; async + result polling are listed below.
@@ -94,7 +92,6 @@ export interface CoreTexCoordinatorDataSource {
   readonly getBundle?: (bundleHash: string) => Promise<unknown> | unknown;
   readonly getCorpusRecord?: (recordId: string) => Promise<unknown> | unknown;
   readonly getCorpusRecordEmbedding?: (recordId: string) => Promise<unknown> | unknown;
-  readonly getCoverageHints?: () => Promise<unknown> | unknown;
   readonly health?: () => Promise<unknown> | unknown;
   // Per-patch on-chain randomness flow. The host's `evaluate` callback
   // implements the sync path; the two below back the async variant
@@ -191,13 +188,6 @@ export async function handleCoreTexCoordinatorRoute(
     if (denied) return denied;
     if (!source.getBundle) return notConfigured('bundle-by-hash');
     return handled(200, await source.getBundle(bundleByHash));
-  }
-
-  if (method === 'GET' && path === '/coretex/coverage-hints') {
-    const denied = await guardRoute(req, source, 'coverage-hints');
-    if (denied) return denied;
-    if (!source.getCoverageHints) return notConfigured('coverage-hints');
-    return handled(200, await source.getCoverageHints());
   }
 
   // Per-patch on-chain randomness flow (async variant).

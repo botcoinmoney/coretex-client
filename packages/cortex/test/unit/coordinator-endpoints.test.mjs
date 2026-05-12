@@ -21,7 +21,6 @@ describe('CoreTex coordinator endpoint contract', () => {
       'GET /coretex/bundle/:bundleHash',
       'GET /coretex/corpus/:recordId',
       'GET /coretex/corpus/:recordId/embedding',
-      'GET /coretex/coverage-hints',
       'GET /coretex/health',
       // Per-patch on-chain randomness flow (async variant).
       'POST /coretex/evaluate-async',

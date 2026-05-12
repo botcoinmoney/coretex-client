@@ -6,7 +6,6 @@
  * Wires:
  *   - GET /coretex/corpus/:id            (masks eval_hidden + canary)
  *   - GET /coretex/corpus/:id/embedding  (masks hidden until reveal)
- *   - GET /coretex/coverage-hints        (per train_visible nDCG breakdown)
  *   - GET /coretex/bundle/:bundleHash    (read-only)
  *   - POST /coretex/screen               (structural only)
  *   - POST /coretex/evaluate             (full retrieval scoring)
@@ -49,7 +48,6 @@ export interface RetrievalDataSourceOptions {
   readonly getChallengeBook?: (epoch: bigint) => Promise<unknown> | unknown;
   readonly getCorpusDelta?: (epoch: bigint) => Promise<unknown> | unknown;
   readonly getClientBundle?: (coreVersionHash: string) => Promise<unknown> | unknown;
-  readonly getCoverageHintsForCurrent?: () => Promise<unknown> | unknown;
   readonly authorize?: (context: CoreTexRouteGuardContext) => Promise<CoreTexRouteGuardResult> | CoreTexRouteGuardResult;
   readonly rateLimit?: (context: CoreTexRouteGuardContext) => Promise<CoreTexRouteGuardResult> | CoreTexRouteGuardResult;
   readonly health?: () => Promise<unknown> | unknown;
@@ -96,24 +94,6 @@ export function createRetrievalDataSource(opts: RetrievalDataSourceOptions): Cor
         return { error: 'coretex-bundle-not-found', bundleHash };
       }
       return manifest;
-    },
-    async getCoverageHints() {
-      if (opts.getCoverageHintsForCurrent) return opts.getCoverageHintsForCurrent();
-      // Default: list train_visible records with stub per-record nDCG breakdown.
-      // Real production overrides with current-substrate nDCG measurements.
-      const trainVisible = corpus.events.filter((e) => e.split === 'train_visible');
-      return {
-        corpusRoot: corpus.corpusRoot,
-        recordCount: trainVisible.length,
-        records: trainVisible.slice(0, 256).map((e) => ({
-          id: e.id,
-          family: e.family,
-          domain: e.domain,
-          // Heuristic note: production replaces this with a measured score
-          // from running evaluateRetrievalBenchmarkState on each visible query.
-          measured: null,
-        })),
-      };
     },
   };
   if (opts.getCurrentSubstrate) (ds as Mutable).getCurrentSubstrate = opts.getCurrentSubstrate;

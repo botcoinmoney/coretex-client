@@ -201,23 +201,6 @@ describe('createRetrievalDataSource', () => {
     assert.deepEqual(wrong, { error: 'coretex-bundle-not-found', bundleHash: ALT_BUNDLE_HASH });
   });
 
-  test('default coverage hints summarize train_visible records only', async () => {
-    const ds = createRetrievalDataSource(makeFactoryOpts());
-    const hints = await ds.getCoverageHints();
-    assert.equal(hints.corpusRoot, CORPUS_ROOT);
-    assert.equal(hints.recordCount, 1);
-    assert.equal(hints.records.length, 1);
-    assert.equal(hints.records[0].id, 'rec-visible');
-  });
-
-  test('uses a host coverage-hints override when provided', async () => {
-    const ds = createRetrievalDataSource(makeFactoryOpts({
-      getCoverageHintsForCurrent: () => ({ override: true }),
-    }));
-    const hints = await ds.getCoverageHints();
-    assert.deepEqual(hints, { override: true });
-  });
-
   test('forwards optional substrate and bundle hooks when configured', async () => {
     const ds = createRetrievalDataSource(makeFactoryOpts({
       getCurrentSubstrate: () => ({ stateRoot: 'current' }),

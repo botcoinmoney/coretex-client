@@ -6,8 +6,8 @@
  * can target a stable next-write slot without colliding with protected
  * memories.
  *
- * Used by miner-side patch construction tooling and by the coordinator's
- * /coretex/coverage-hints endpoint when proposing candidate slots to fill.
+ * Used by miner-side patch construction tooling when proposing candidate
+ * slots to fill.
  */
 
 import { RANGES } from '../state/types.js';
