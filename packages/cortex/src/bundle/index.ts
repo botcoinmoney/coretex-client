@@ -53,6 +53,23 @@ export interface RuntimePin {
   readonly buildFlags: readonly string[];
 }
 
+export interface ClientVersionPolicy {
+  /**
+   * Minimum CoreTex client version required for canonical replay.
+   * Clients below this version are considered outdated.
+   */
+  readonly minimumVersion: string;
+  /**
+   * Optional operator-visible target version for upgrades.
+   */
+  readonly recommendedVersion?: string;
+  /**
+   * When true, outdated clients must fail closed unless an explicit
+   * override is provided by the caller.
+   */
+  readonly hardFailOutdated: boolean;
+}
+
 export type Quantization =
   | { readonly weights: 'int8'; readonly activations: 'fp32'; readonly accumulation: 'fp32'; readonly scheme: 'symmetric_per_channel' | 'asymmetric_per_tensor' }
   | { readonly weights: 'bf16'; readonly activations: 'bf16'; readonly accumulation: 'fp32'; readonly flushDenormals: true };
@@ -146,6 +163,7 @@ export interface EvaluatorProfile {
   readonly primaryMetric: 'ndcg@10';
   readonly acceleratorPolicy: 'cpu_only';
   readonly runtimePin: RuntimePin;
+  readonly clientVersionPolicy?: ClientVersionPolicy;
   readonly replayTolerancePpm: number;
   readonly compositeWeights: CompositeWeightPin;
   readonly patchAcceptanceFloors: PatchAcceptanceFloorsPin;
@@ -307,6 +325,12 @@ export interface CoreTexBundleManifest {
     readonly snapshots: readonly BundleFile[];
   };
   readonly bundleHash: string;
+}
+
+export interface ClientVersionPolicyResult {
+  readonly ok: boolean;
+  readonly code: 'ok' | 'client-version-missing' | 'client-version-invalid' | 'client-version-outdated';
+  readonly message: string;
 }
 
 // ─── BGE-M3 bi-encoder manifest factory ──────────────────────────────────────
@@ -722,6 +746,54 @@ export function verifyBundleManifest(manifest: CoreTexBundleManifest, repoRoot: 
   return errors;
 }
 
+export function computeBundleHashFromManifest(manifestWithoutHash: Omit<CoreTexBundleManifest, 'bundleHash'>): string {
+  return hashJson(manifestWithoutHash);
+}
+
+export function withRecomputedBundleHash(manifest: CoreTexBundleManifest): CoreTexBundleManifest {
+  const { bundleHash: _bundleHash, ...withoutHash } = manifest;
+  return {
+    ...withoutHash,
+    bundleHash: computeBundleHashFromManifest(withoutHash),
+  };
+}
+
+export function evaluateClientVersionPolicy(
+  policy: ClientVersionPolicy | undefined,
+  clientVersion: string | undefined,
+): ClientVersionPolicyResult {
+  if (!policy) {
+    return { ok: true, code: 'ok', message: 'no client version policy pinned in bundle' };
+  }
+  if (!clientVersion) {
+    return {
+      ok: false,
+      code: 'client-version-missing',
+      message: `bundle requires client >= ${policy.minimumVersion}, but no client version was provided`,
+    };
+  }
+  if (!isSemver(clientVersion)) {
+    return {
+      ok: false,
+      code: 'client-version-invalid',
+      message: `client version must be semver x.y.z (got ${clientVersion})`,
+    };
+  }
+  if (compareSemver(clientVersion, policy.minimumVersion) < 0) {
+    const recommended = policy.recommendedVersion ? ` recommended=${policy.recommendedVersion}` : '';
+    return {
+      ok: false,
+      code: 'client-version-outdated',
+      message: `client ${clientVersion} is below bundle minimum ${policy.minimumVersion}.${recommended}`,
+    };
+  }
+  return { ok: true, code: 'ok', message: `client ${clientVersion} satisfies bundle minimum ${policy.minimumVersion}` };
+}
+
+export function compareSemverVersions(a: string, b: string): number {
+  return compareSemver(a, b);
+}
+
 function canonicalJson(value: unknown): string {
   if (value === null) return 'null';
   if (typeof value === 'undefined') return 'null';
@@ -810,6 +882,18 @@ function validateProfile(profile: EvaluatorProfile, errors?: string[]): void {
   const out = errors ?? [];
   if (profile.acceleratorPolicy !== 'cpu_only') out.push("acceleratorPolicy must be 'cpu_only'");
   if (profile.primaryMetric !== 'ndcg@10') out.push("primaryMetric must be 'ndcg@10'");
+  if (profile.clientVersionPolicy !== undefined) {
+    const policy = profile.clientVersionPolicy;
+    if (!isSemver(policy.minimumVersion)) {
+      out.push(`clientVersionPolicy.minimumVersion must be semver x.y.z (got ${policy.minimumVersion})`);
+    }
+    if (policy.recommendedVersion !== undefined && !isSemver(policy.recommendedVersion)) {
+      out.push(`clientVersionPolicy.recommendedVersion must be semver x.y.z (got ${policy.recommendedVersion})`);
+    }
+    if (typeof policy.hardFailOutdated !== 'boolean') {
+      out.push('clientVersionPolicy.hardFailOutdated must be a boolean');
+    }
+  }
   const w = profile.compositeWeights;
   const sum = w.w_retrieval + w.w_temporal + w.w_relation_recall + w.w_abstention + w.w_structural_sanity;
   if (Math.abs(sum - 1) > 1e-6) out.push(`compositeWeights must sum to 1.0 (got ${sum})`);
@@ -946,6 +1030,8 @@ export function assertBundleBindingAtStartup(opts: {
   readonly manifest: CoreTexBundleManifest;
   readonly onChainCoreVersionHash: string;
   readonly installedRuntimeVersions: Readonly<Record<string, string>>;
+  readonly clientVersion?: string;
+  readonly allowOutdatedClient?: boolean;
 }): void {
   if (opts.manifest.bundleHash.toLowerCase() !== opts.onChainCoreVersionHash.toLowerCase()) {
     throw new Error(
@@ -975,6 +1061,27 @@ export function assertBundleBindingAtStartup(opts: {
       throw new Error(`runtime mismatch: ${pkg} ${installed} does not match ${range}`);
     }
   }
+  const clientCheck = evaluateClientVersionPolicy(
+    opts.manifest.evaluator.profile.clientVersionPolicy,
+    opts.clientVersion,
+  );
+  // Do not hard-fail solely because version was not supplied by the host:
+  // that would brick validators during rollout. We fail closed only when
+  // the supplied version is explicitly invalid or below the minimum.
+  const shouldRefuseForClientVersion = clientCheck.code === 'client-version-outdated'
+    || clientCheck.code === 'client-version-invalid';
+  if (clientCheck.code === 'client-version-missing' && opts.manifest.evaluator.profile.clientVersionPolicy) {
+    process.stderr.write(
+      `warning: client version policy is pinned but no client version was provided; soft-pass applied (${clientCheck.message})\n`,
+    );
+  }
+  if (
+    shouldRefuseForClientVersion
+    && opts.manifest.evaluator.profile.clientVersionPolicy?.hardFailOutdated
+    && opts.allowOutdatedClient !== true
+  ) {
+    throw new Error(`outdated client refused: ${clientCheck.message}`);
+  }
 }
 
 function matchSemverRange(installed: string, range: string): boolean {
@@ -1000,4 +1107,20 @@ function matchSemverRange(installed: string, range: string): boolean {
     return re.test(core);
   }
   return false;
+}
+
+function isSemver(value: string): boolean {
+  return /^\d+\.\d+\.\d+$/.test(value.trim());
+}
+
+function compareSemver(a: string, b: string): number {
+  const ap = a.split('.').map((part) => Number(part));
+  const bp = b.split('.').map((part) => Number(part));
+  for (let i = 0; i < 3; i += 1) {
+    const av = ap[i] ?? 0;
+    const bv = bp[i] ?? 0;
+    if (av > bv) return 1;
+    if (av < bv) return -1;
+  }
+  return 0;
 }

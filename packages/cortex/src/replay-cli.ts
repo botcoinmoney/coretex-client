@@ -12,7 +12,13 @@ import {
 } from './replay/v4.js';
 import { unpack } from './state/codec.js';
 import { hexToBytes } from './state/merkle.js';
-import { verifyBundleManifest, type CoreTexBundleManifest } from './bundle/index.js';
+import {
+  compareSemverVersions,
+  evaluateClientVersionPolicy,
+  verifyBundleManifest,
+  type CoreTexBundleManifest,
+} from './bundle/index.js';
+import { CORTEX_CLIENT_VERSION } from './version.js';
 
 function die(message: string): never {
   process.stderr.write(message + '\n');
@@ -60,7 +66,7 @@ async function main() {
     process.stderr.write(
       'usage: coretex-replay {tx|current|watch} --parent-state state.bin [--logs logs.json | --rpc url --tx hash]\n'
       + '       coretex-replay watch --rpc url --parent-state state.bin --bundle-manifest manifest.json --core-version-hash 0x... [--v4 addr] [--cortex-state addr] [--from-block n] [--once]\n'
-      + '       canonical replay: --bundle-manifest manifest.json --expected-bundle-hash 0x... (or --core-version-hash 0x...)\n',
+      + '       canonical replay: --bundle-manifest manifest.json --expected-bundle-hash 0x... (or --core-version-hash 0x...) [--client-version x.y.z] [--allow-outdated-client]\n',
     );
     process.exit(cmd ? 0 : 1);
   }
@@ -126,6 +132,26 @@ function verifyBundleIfRequested(args: readonly string[]): void {
   const errors = verifyBundleManifest(manifest, repoRoot);
   if (expectedHash && manifest.bundleHash.toLowerCase() !== expectedHash.toLowerCase()) {
     errors.push(`bundleHash mismatch: expected ${expectedHash} got ${manifest.bundleHash}`);
+  }
+  const suppliedClientVersion = opt(args, '--client-version');
+  const clientVersion = suppliedClientVersion ?? process.env['CORETEX_CLIENT_VERSION'] ?? CORTEX_CLIENT_VERSION;
+  const clientCheck = evaluateClientVersionPolicy(
+    manifest.evaluator.profile.clientVersionPolicy,
+    clientVersion,
+  );
+  if (!clientCheck.ok) {
+    if (manifest.evaluator.profile.clientVersionPolicy?.hardFailOutdated && !args.includes('--allow-outdated-client')) {
+      errors.push(`OUTDATED_CLIENT: ${clientCheck.message}`);
+    } else {
+      process.stderr.write(`warning: OUTDATED_CLIENT: ${clientCheck.message}\n`);
+    }
+  } else if (manifest.evaluator.profile.clientVersionPolicy?.recommendedVersion) {
+    const recommended = manifest.evaluator.profile.clientVersionPolicy.recommendedVersion;
+    if (recommended && compareSemverVersions(clientVersion, recommended) < 0) {
+      process.stderr.write(`warning: bundle recommends client ${recommended}; running ${clientVersion}\n`);
+    }
+  } else if (!manifest.evaluator.profile.clientVersionPolicy) {
+    process.stderr.write('warning: bundle has no clientVersionPolicy pinned; compatibility gating is disabled\n');
   }
   if (errors.length) {
     die(`bundle manifest verification failed: ${errors.join('; ')}`);

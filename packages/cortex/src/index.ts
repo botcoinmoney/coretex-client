@@ -5,7 +5,8 @@
 // V4 production hardening: retrieval-benchmark scorer, deterministic CPU-only
 // inference, graded-qrel corpus, hidden query pack, signed corpus deltas with
 // embedding payloads.
-export const VERSION = '0.7.0';
+export { CORTEX_CLIENT_VERSION as VERSION } from './version.js';
+export { CORTEX_CLIENT_VERSION } from './version.js';
 
 export * from './state/index.js';
 export * from './decoder/index.js';
