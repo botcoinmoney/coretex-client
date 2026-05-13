@@ -96,14 +96,14 @@ describe('createRetrievalDataSource', () => {
     ]);
   });
 
-  test('screen response is sanitized to {pass,reasonCode,receipt} — anti-probe', async () => {
+  test('screen response is sanitized to opaque {pass,reasonCode,receipt} — anti-probe', async () => {
     // The screen response MUST NOT leak retrieval-correlated numbers.
     // Hosts that return scores, family deltas, or any other numeric
     // metric have those fields stripped before the wire response.
     const ds = createRetrievalDataSource(makeFactoryOpts({
       screen: () => ({
         pass: true,
-        reasonCode: 'OK',
+        reasonCode: 'duplicate-key-collapsed',
         receipt: { sig: '0xabc' },
         // Hostile / lazy-host fields that would leak hidden-pack info:
         score: 0.8732,
@@ -113,14 +113,14 @@ describe('createRetrievalDataSource', () => {
       }),
     }));
     const out = await ds.screen({ miner: '0xabc' });
-    assert.deepEqual(out, { pass: true, reasonCode: 'OK', receipt: { sig: '0xabc' } });
+    assert.deepEqual(out, { pass: true, reasonCode: 'accepted', receipt: { sig: '0xabc' } });
   });
 
   test('screen response with non-object host return fails closed', async () => {
     const ds = createRetrievalDataSource(makeFactoryOpts({
       screen: () => null,
     }));
-    assert.deepEqual(await ds.screen({}), { pass: false, reasonCode: 'screen-malformed-response' });
+    assert.deepEqual(await ds.screen({}), { pass: false, reasonCode: 'rejected' });
   });
 
   test('screen response with pass != true defaults pass=false', async () => {
@@ -129,6 +129,7 @@ describe('createRetrievalDataSource', () => {
     }));
     const out = await ds.screen({});
     assert.equal(out.pass, false);
+    assert.equal(out.reasonCode, 'rejected');
     assert.equal(out.score, undefined);
   });
 

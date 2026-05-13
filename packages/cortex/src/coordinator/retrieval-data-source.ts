@@ -169,15 +169,20 @@ function bytesToHex(bytes: Uint8Array): string {
  * distribution. The structural decision is binary; the reason code is
  * a fixed enum string. Anything else from the host callback is dropped.
  */
-function sanitizeScreenResponse(raw: unknown): { pass: boolean; reasonCode?: string; receipt?: Record<string, unknown> } {
+function sanitizeScreenResponse(raw: unknown): {
+  pass: boolean;
+  reasonCode: 'accepted' | 'rejected';
+  receipt?: Record<string, unknown>;
+} {
   if (!raw || typeof raw !== 'object') {
-    return { pass: false, reasonCode: 'screen-malformed-response' };
+    return { pass: false, reasonCode: 'rejected' };
   }
   const r = raw as Record<string, unknown>;
-  const out: { pass: boolean; reasonCode?: string; receipt?: Record<string, unknown> } = {
-    pass: r.pass === true,
+  const pass = r.pass === true;
+  const out: { pass: boolean; reasonCode: 'accepted' | 'rejected'; receipt?: Record<string, unknown> } = {
+    pass,
+    reasonCode: pass ? 'accepted' : 'rejected',
   };
-  if (typeof r.reasonCode === 'string') out.reasonCode = r.reasonCode;
   // The receipt sub-object is allowed but ONLY the structural signature
   // envelope — never per-query scores or family deltas. Hosts that
   // want to attach an EIP-712 receipt put it here; cortex never
