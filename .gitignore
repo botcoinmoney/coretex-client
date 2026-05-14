@@ -25,6 +25,8 @@ dataset/
 .env.local
 .env.*.local
 ops/secrets/
+.ssh-keys/
+id_ed25519
 *.pem
 *.key
 *.seed
