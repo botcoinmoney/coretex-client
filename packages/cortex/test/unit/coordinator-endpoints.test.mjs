@@ -3,36 +3,52 @@ import assert from 'node:assert/strict';
 
 import {
   CORETEX_ENDPOINTS,
+  createCoreTexCoordinatorRouteHandler,
   handleCoreTexCoordinatorRoute,
 } from '../../dist/index.js';
 
 describe('CoreTex coordinator endpoint contract', () => {
   test('declares the production /coretex surface', () => {
     assert.deepEqual(CORETEX_ENDPOINTS.map((route) => `${route.method} ${route.path}`), [
-      'POST /coretex/screen',
-      'POST /coretex/evaluate',
-      'GET /coretex/substrate/current',
+      'GET /coretex/challenge',
+      'POST /coretex/submit',
+      'GET /coretex/status',
       'GET /coretex/substrate/:stateRoot',
       'GET /coretex/patch/:hash',
+      'GET /coretex/patch-received/:hash',
       'GET /coretex/eval-report/:hash',
-      'GET /coretex/challenge-book/:epoch',
       'GET /coretex/corpus-delta/:epoch',
-      'GET /coretex/client-bundle/:coreVersionHash',
+      'GET /coretex/bundle/by-core-version/:coreVersionHash',
       'GET /coretex/bundle/:bundleHash',
-      'GET /coretex/corpus/:recordId',
-      'GET /coretex/corpus/:recordId/embedding',
       'GET /coretex/health',
-      // Per-patch on-chain randomness flow (async variant).
-      'POST /coretex/evaluate-async',
-      'GET /coretex/result/:patchHash',
     ]);
   });
 
-  test('routes current substrate and bytes32 lookups additively', async () => {
+  test('routes challenge/submit/status', async () => {
+    const source = {
+      getChallenge: () => ({ lane: 'coretex', challengeId: '0xabc' }),
+      submit: (body) => ({ submitted: true, body }),
+      getStatus: () => ({ lane: 'coretex', epochId: 7 }),
+    };
+    assert.deepEqual(await handleCoreTexCoordinatorRoute({
+      method: 'GET',
+      path: '/coretex/challenge',
+    }, source), { handled: true, status: 200, body: { lane: 'coretex', challengeId: '0xabc' } });
+    assert.deepEqual(await handleCoreTexCoordinatorRoute({
+      method: 'POST',
+      path: '/coretex/submit',
+      body: { patch: '0x1234' },
+    }, source), { handled: true, status: 200, body: { submitted: true, body: { patch: '0x1234' } } });
+    assert.deepEqual(await handleCoreTexCoordinatorRoute({
+      method: 'GET',
+      path: '/coretex/status',
+    }, source), { handled: true, status: 200, body: { lane: 'coretex', epochId: 7 } });
+  });
+
+  test('routes bytes32 and epoch lookups', async () => {
     const hash = `0x${'ab'.repeat(32)}`;
     const calls = [];
     const source = {
-      getCurrentSubstrate: () => ({ stateRoot: hash }),
       getSubstrate: (stateRoot) => {
         calls.push(['substrate', stateRoot]);
         return { stateRoot };
@@ -41,12 +57,27 @@ describe('CoreTex coordinator endpoint contract', () => {
         calls.push(['patch', patchHash]);
         return { patchHash };
       },
+      getPatchReceivedNotice: (patchHash) => {
+        calls.push(['patch-received', patchHash]);
+        return { patchHash, receivedAtBlock: 123 };
+      },
+      getEvalReport: (evalReportHash) => {
+        calls.push(['eval-report', evalReportHash]);
+        return { evalReportHash };
+      },
+      getCorpusDelta: (epoch) => {
+        calls.push(['corpus-delta', epoch.toString()]);
+        return { epoch: epoch.toString() };
+      },
+      getBundle: (bundleHash) => {
+        calls.push(['bundle', bundleHash]);
+        return { bundleHash };
+      },
+      getBundleByCoreVersionHash: (coreVersionHash) => {
+        calls.push(['bundle-by-core-version', coreVersionHash]);
+        return { coreVersionHash };
+      },
     };
-
-    assert.deepEqual(await handleCoreTexCoordinatorRoute({
-      method: 'GET',
-      path: '/coretex/substrate/current',
-    }, source), { handled: true, status: 200, body: { stateRoot: hash } });
 
     assert.deepEqual(await handleCoreTexCoordinatorRoute({
       method: 'GET',
@@ -54,31 +85,37 @@ describe('CoreTex coordinator endpoint contract', () => {
     }, source), { handled: true, status: 200, body: { stateRoot: hash } });
 
     await handleCoreTexCoordinatorRoute({ method: 'GET', path: `/coretex/patch/${hash}` }, source);
-    assert.deepEqual(calls, [['substrate', hash], ['patch', hash]]);
+    await handleCoreTexCoordinatorRoute({ method: 'GET', path: `/coretex/patch-received/${hash}` }, source);
+    await handleCoreTexCoordinatorRoute({ method: 'GET', path: `/coretex/eval-report/${hash}` }, source);
+    await handleCoreTexCoordinatorRoute({ method: 'GET', path: '/coretex/corpus-delta/9' }, source);
+    await handleCoreTexCoordinatorRoute({ method: 'GET', path: `/coretex/bundle/by-core-version/${hash}` }, source);
+    await handleCoreTexCoordinatorRoute({ method: 'GET', path: `/coretex/bundle/${hash}` }, source);
+    assert.deepEqual(calls, [
+      ['substrate', hash],
+      ['patch', hash],
+      ['patch-received', hash],
+      ['eval-report', hash],
+      ['corpus-delta', '9'],
+      ['bundle-by-core-version', hash],
+      ['bundle', hash],
+    ]);
   });
 
-  test('routes screen and evaluate POST bodies', async () => {
-    const source = {
-      screen: (body) => ({ lane: 'screen', body }),
-      evaluate: (body) => ({ lane: 'evaluate', body }),
-    };
-    assert.deepEqual(await handleCoreTexCoordinatorRoute({
-      method: 'POST',
-      path: '/coretex/screen',
-      body: { miner: '0xabc' },
-    }, source), { handled: true, status: 200, body: { lane: 'screen', body: { miner: '0xabc' } } });
-    assert.deepEqual(await handleCoreTexCoordinatorRoute({
-      method: 'POST',
-      path: '/coretex/evaluate',
-      body: { patch: '0x1234' },
-    }, source), { handled: true, status: 200, body: { lane: 'evaluate', body: { patch: '0x1234' } } });
+  test('createCoreTexCoordinatorRouteHandler binds a single async handler', async () => {
+    const handle = createCoreTexCoordinatorRouteHandler({
+      getChallenge: () => ({ lane: 'coretex', challengeId: '0xfeed' }),
+    });
+    const r = await handle({ method: 'GET', path: '/coretex/challenge' });
+    assert.equal(r.handled, true);
+    assert.equal(r.status, 200);
+    assert.deepEqual(r.body, { lane: 'coretex', challengeId: '0xfeed' });
   });
 
   test('rate-limit hook denial returns 429 and does not invoke route handler', async () => {
     let invoked = false;
     const response = await handleCoreTexCoordinatorRoute({
       method: 'POST',
-      path: '/coretex/screen',
+      path: '/coretex/submit',
       body: { miner: '0xabc' },
       remoteAddress: '203.0.113.10',
     }, {
@@ -87,7 +124,7 @@ describe('CoreTex coordinator endpoint contract', () => {
         status: 429,
         body: { error: 'too-many-coretex-requests', endpoint: context.endpoint },
       }),
-      screen: () => {
+      submit: () => {
         invoked = true;
         return { ok: true };
       },
@@ -97,7 +134,7 @@ describe('CoreTex coordinator endpoint contract', () => {
     assert.deepEqual(response, {
       handled: true,
       status: 429,
-      body: { error: 'too-many-coretex-requests', endpoint: 'screen' },
+      body: { error: 'too-many-coretex-requests', endpoint: 'submit' },
     });
   });
 
@@ -141,6 +178,16 @@ describe('CoreTex coordinator endpoint contract', () => {
       handled: true,
       status: 503,
       body: { error: 'coretex-route-not-configured', route: 'eval-report-by-hash' },
+    });
+
+    assert.deepEqual(await handleCoreTexCoordinatorRoute({
+      method: 'POST',
+      path: '/coretex/screen',
+      body: {},
+    }, {}), {
+      handled: true,
+      status: 404,
+      body: { error: 'coretex-not-found' },
     });
   });
 });

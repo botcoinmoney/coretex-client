@@ -4,90 +4,71 @@
  * Spec: plan §Phase F.
  *
  * Wires:
- *   - GET /coretex/corpus/:id            (masks eval_hidden + canary)
- *   - GET /coretex/corpus/:id/embedding  (masks hidden until reveal)
- *   - GET /coretex/bundle/:bundleHash    (read-only)
- *   - POST /coretex/screen               (structural only)
- *   - POST /coretex/evaluate             (full retrieval scoring)
+ *   - GET /coretex/challenge
+ *   - POST /coretex/submit
+ *   - GET /coretex/status
+ *   - GET /coretex/bundle/by-core-version/:coreVersionHash
+ *   - GET /coretex/bundle/:bundleHash
+ *   - immutable artifact reads (substrate/patch/patch-received/eval-report/corpus-delta)
  *
  * Production wiring expects:
- *   - the loaded ProductionCorpus
  *   - the loaded CoreTexBundleManifest
- *   - the live evalSeed (only after reveal)
- *   - an evaluate callback that runs evaluateRetrievalBenchmarkPatch
- *   - a screen callback that runs structural validation only
+ *   - a challenge callback (dynamic packet)
+ *   - a submit callback (single write-path)
+ *   - a status callback (non-secret dynamic context)
  */
+
+import { createHash } from 'node:crypto';
 
 import type {
   CoreTexCoordinatorDataSource,
   CoreTexRouteGuardContext,
   CoreTexRouteGuardResult,
 } from './endpoints.js';
-import type { ProductionCorpus, ProductionCorpusEvent } from '../eval/retrieval-corpus.js';
 import type { CoreTexBundleManifest } from '../bundle/index.js';
 
 export interface RetrievalDataSourceOptions {
-  readonly corpus: ProductionCorpus;
   readonly bundleManifest: CoreTexBundleManifest;
   readonly bundleHash: string;
-  readonly screen: (body: unknown) => Promise<unknown> | unknown;
-  readonly evaluate: (body: unknown) => Promise<unknown> | unknown;
-  /**
-   * Optional async variant of `evaluate`. When wired, POST
-   * /coretex/evaluate-async returns `{status:'pending', patchHash,
-   * targetBlock}` immediately; GET /coretex/result/:patchHash polls
-   * until the in-background eval completes. Hosts that don't need
-   * the async path leave both undefined.
-   */
-  readonly evaluateAsync?: (body: unknown) => Promise<unknown> | unknown;
-  readonly getResult?: (patchHash: string) => Promise<unknown> | unknown;
-  readonly getCurrentSubstrate?: () => Promise<unknown> | unknown;
+  readonly getChallenge: () => Promise<unknown> | unknown;
+  readonly submit: (body: unknown) => Promise<unknown> | unknown;
+  readonly getStatus: () => Promise<unknown> | unknown;
   readonly getSubstrate?: (stateRoot: string) => Promise<unknown> | unknown;
   readonly getPatch?: (hash: string) => Promise<unknown> | unknown;
+  readonly getPatchReceivedNotice?: (hash: string) => Promise<unknown> | unknown;
   readonly getEvalReport?: (hash: string) => Promise<unknown> | unknown;
-  readonly getChallengeBook?: (epoch: bigint) => Promise<unknown> | unknown;
   readonly getCorpusDelta?: (epoch: bigint) => Promise<unknown> | unknown;
-  readonly getClientBundle?: (coreVersionHash: string) => Promise<unknown> | unknown;
+  readonly getBundleByCoreVersionHash?: (coreVersionHash: string) => Promise<unknown> | unknown;
   readonly authorize?: (context: CoreTexRouteGuardContext) => Promise<CoreTexRouteGuardResult> | CoreTexRouteGuardResult;
   readonly rateLimit?: (context: CoreTexRouteGuardContext) => Promise<CoreTexRouteGuardResult> | CoreTexRouteGuardResult;
   readonly health?: () => Promise<unknown> | unknown;
-  /**
-   * When true, calibration consumers (admin) can read the calibration split
-   * payloads. Default false. Hidden + canary are always masked.
-   */
-  readonly allowCalibrationReads?: boolean;
 }
 
-const HIDDEN_SPLITS: ReadonlySet<string> = new Set(['eval_hidden', 'canary']);
-
 export function createRetrievalDataSource(opts: RetrievalDataSourceOptions): CoreTexCoordinatorDataSource {
-  const corpus = opts.corpus;
   const manifest = opts.bundleManifest;
   if (manifest.bundleHash.toLowerCase() !== opts.bundleHash.toLowerCase()) {
     throw new Error(`createRetrievalDataSource: bundle manifest hash ${manifest.bundleHash} != provided ${opts.bundleHash}`);
   }
 
   const ds: CoreTexCoordinatorDataSource = {
-    async screen(body) { return sanitizeScreenResponse(await opts.screen(body)); },
-    async evaluate(body) { return opts.evaluate(body); },
-    async getCorpusRecord(recordId: string) {
-      const event = corpus.byId.get(recordId);
-      if (!event) return { error: 'coretex-corpus-not-found', recordId };
-      if (HIDDEN_SPLITS.has(event.split)) {
-        return { error: 'coretex-corpus-hidden', recordId, split: event.split };
-      }
-      if (event.split === 'calibration' && !opts.allowCalibrationReads) {
-        return { error: 'coretex-corpus-calibration-restricted', recordId };
-      }
-      return serializePublicEvent(event);
+    async getChallenge() {
+      return sanitizeChallengeResponse(await opts.getChallenge(), manifest.bundleHash);
     },
-    async getCorpusRecordEmbedding(recordId: string) {
-      const event = corpus.byId.get(recordId);
-      if (!event) return { error: 'coretex-corpus-not-found', recordId };
-      if (HIDDEN_SPLITS.has(event.split)) {
-        return { error: 'coretex-embedding-hidden', recordId, split: event.split };
+    async submit(body) {
+      return sanitizeSubmitResponse(await opts.submit(body));
+    },
+    async getStatus() {
+      return sanitizeStatusResponse(await opts.getStatus(), manifest.bundleHash);
+    },
+    async getBundleByCoreVersionHash(coreVersionHash: string) {
+      if (opts.getBundleByCoreVersionHash) return opts.getBundleByCoreVersionHash(coreVersionHash);
+      // Default coreVersionHash -> bundleHash mapping in v2 bundles:
+      // assertBundleBindingAtStartup enforces on-chain coreVersionHash equals
+      // bundleHash; expose this direct alias for watcher/miner compatibility.
+      if (coreVersionHash.toLowerCase() !== manifest.bundleHash.toLowerCase()) {
+        return { error: 'coretex-bundle-not-found', coreVersionHash };
       }
-      return serializeEmbeddings(event);
+      return manifest;
     },
     async getBundle(bundleHash: string) {
       if (bundleHash.toLowerCase() !== manifest.bundleHash.toLowerCase()) {
@@ -95,98 +76,242 @@ export function createRetrievalDataSource(opts: RetrievalDataSourceOptions): Cor
       }
       return manifest;
     },
+    async health() {
+      if (opts.health) return opts.health();
+      return {
+        ok: true,
+        service: 'coretex',
+        bundleHash: manifest.bundleHash.toLowerCase(),
+        serverTime: new Date().toISOString(),
+      };
+    },
   };
-  if (opts.getCurrentSubstrate) (ds as Mutable).getCurrentSubstrate = opts.getCurrentSubstrate;
   if (opts.getSubstrate) (ds as Mutable).getSubstrate = opts.getSubstrate;
   if (opts.getPatch) (ds as Mutable).getPatch = opts.getPatch;
+  if (opts.getPatchReceivedNotice) {
+    const inner = opts.getPatchReceivedNotice;
+    (ds as Mutable).getPatchReceivedNotice = async (hash: string) => sanitizePatchReceivedNotice(await inner(hash));
+  }
   if (opts.getEvalReport) (ds as Mutable).getEvalReport = opts.getEvalReport;
-  if (opts.getChallengeBook) (ds as Mutable).getChallengeBook = opts.getChallengeBook;
   if (opts.getCorpusDelta) (ds as Mutable).getCorpusDelta = opts.getCorpusDelta;
-  if (opts.getClientBundle) (ds as Mutable).getClientBundle = opts.getClientBundle;
+  if (opts.getBundleByCoreVersionHash) (ds as Mutable).getBundleByCoreVersionHash = opts.getBundleByCoreVersionHash;
   if (opts.rateLimit) (ds as Mutable).rateLimit = opts.rateLimit;
-  if (opts.health) (ds as Mutable).health = opts.health;
-  if (opts.evaluateAsync) (ds as Mutable).evaluateAsync = opts.evaluateAsync;
-  if (opts.getResult) (ds as Mutable).getResult = opts.getResult;
-
-  // POST /coretex/evaluate is live. The eval seed for each patch is
-  // bound to a future Base blockhash via the per-patch on-chain
-  // randomness design (docs/CORETEX_V4_ONCHAIN_RANDOMNESS_PLAN.md), so
-  // coordinator pre-testing is structurally impossible. Anti-probing
-  // is enforced by the dedup cache + per-miner cap inside the host's
-  // evaluate callback (see real-evaluator.ts + live-eval-admission.ts).
   if (opts.authorize) (ds as Mutable).authorize = opts.authorize;
   return ds;
 }
 
 type Mutable = { -readonly [K in keyof CoreTexCoordinatorDataSource]: CoreTexCoordinatorDataSource[K] };
 
-function serializePublicEvent(event: ProductionCorpusEvent): Record<string, unknown> {
+function sanitizeChallengeResponse(raw: unknown, manifestBundleHash: string): Record<string, unknown> {
+  if (!raw || typeof raw !== 'object') {
+    return { error: 'coretex-challenge-malformed' };
+  }
+  const r = raw as Record<string, unknown>;
+  const lane = r.lane === 'coretex' ? 'coretex' : null;
+  const challengeId = asBytes32Hex(r.challengeId);
+  const expiresAt = asPosInt(r.expiresAt);
+  const parentStateRoot = asBytes32Hex(r.parentStateRoot);
+  const epochId = asNonNegativeInt(r.epochId);
+  const substrate = sanitizeSubstrateEnvelope(r.substrate);
+  const coreVersionHash = asBytes32Hex(r.coreVersionHash) ?? manifestBundleHash.toLowerCase();
+  const bundleHash = asBytes32Hex(r.bundleHash) ?? manifestBundleHash.toLowerCase();
+  if (!lane || !challengeId || expiresAt === null || !parentStateRoot || epochId === null || !substrate) {
+    return { error: 'coretex-challenge-malformed' };
+  }
   return {
-    id: event.id,
-    family: event.family,
-    domain: event.domain,
-    split: event.split,
-    queryText: event.queryText,
-    truthDocuments: event.truthDocuments,
-    hardNegatives: event.hardNegatives,
-    qrels: event.qrels,
-    protected: event.protected,
-    temporal: event.temporal,
-    relations: event.relations,
-    provenance: event.provenance,
+    lane,
+    challengeId,
+    expiresAt,
+    epochId,
+    parentStateRoot,
+    coreVersionHash,
+    bundleHash,
+    substrate,
   };
 }
 
-function serializeEmbeddings(event: ProductionCorpusEvent): Record<string, unknown> {
+function sanitizeSubmitResponse(raw: unknown): Record<string, unknown> {
+  if (!raw || typeof raw !== 'object') {
+    return { status: 'rejected', code: 'rejected' };
+  }
+  const r = raw as Record<string, unknown>;
+  const accepted = r.status === 'accepted' || r.accepted === true;
+  const patchHash = asBytes32Hex(r.patchHash);
+  if (!accepted) {
+    // Opaque rejection surface: do not leak retrieval-correlated details.
+    return patchHash ? { status: 'rejected', code: 'rejected', patchHash } : { status: 'rejected', code: 'rejected' };
+  }
+  const evalReportHash = asBytes32Hex(r.evalReportHash);
+  const receipt = sanitizeReceiptEnvelope(r.receipt);
   return {
-    id: event.id,
-    modelId: event.embeddings.modelId,
-    revision: event.embeddings.revision,
-    layout: event.embeddings.layout,
-    queryHex: bytesToHex(event.embeddings.query),
-    perTruth: Object.fromEntries(
-      Array.from(event.embeddings.perTruth.entries()).map(([k, v]) => [k, bytesToHex(v)]),
-    ),
-    perNegative: Object.fromEntries(
-      Array.from(event.embeddings.perNegative.entries()).map(([k, v]) => [k, bytesToHex(v)]),
-    ),
+    status: 'accepted',
+    ...(patchHash ? { patchHash } : {}),
+    ...(evalReportHash ? { evalReportHash } : {}),
+    ...(receipt ? { receipt } : {}),
   };
-}
-
-function bytesToHex(bytes: Uint8Array): string {
-  let hex = '';
-  for (const b of bytes) hex += b.toString(16).padStart(2, '0');
-  return hex;
 }
 
 /**
- * Strip the screen response to the structural-only shape declared in
- * the route docs: `{ pass: boolean, reasonCode?: string, receipt?: object }`.
- *
- * A miner-facing screen route MUST NOT leak retrieval-correlated
- * numbers — abstention rate, structural-floor margins, per-family
- * deltas, anything that lets a probe oracle reconstruct hidden-pack
- * distribution. The structural decision is binary; the reason code is
- * a fixed enum string. Anything else from the host callback is dropped.
+ * Receipt envelope must only carry signature-shaped fields. Anything that
+ * could expose retrieval correlations (per-family deltas, scoreAfterPpm,
+ * recency hints) MUST NOT pass this boundary, even if the host put it in
+ * the receipt. Allow-list:
+ *   keyId, algorithm, signature, signedFields, sig
  */
-function sanitizeScreenResponse(raw: unknown): {
-  pass: boolean;
-  reasonCode: 'accepted' | 'rejected';
-  receipt?: Record<string, unknown>;
-} {
+function sanitizeReceiptEnvelope(raw: unknown): Record<string, unknown> | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const r = raw as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  if (typeof r.keyId === 'string' && r.keyId.length <= 128) out.keyId = r.keyId;
+  if (r.algorithm === 'RSA-SHA256' || r.algorithm === 'ECDSA-SHA256') out.algorithm = r.algorithm;
+  if (typeof r.signature === 'string' && /^0x[0-9a-fA-F]+$/.test(r.signature)) out.signature = r.signature.toLowerCase();
+  // 'sig' is a common shortcut for {signature}; keep for backward-compat
+  // but only when it looks like a hex signature.
+  if (typeof r.sig === 'string' && /^0x[0-9a-fA-F]+$/.test(r.sig)) out.sig = r.sig.toLowerCase();
+  if (Array.isArray(r.signedFields) && r.signedFields.every((f) => typeof f === 'string')) {
+    out.signedFields = r.signedFields.slice();
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+/**
+ * Strict-shape projection of a PatchReceivedNotice (see
+ * `packages/cortex/src/coordinator/patch-received-notice.ts`). The notice
+ * is the only seed-input artifact the coordinator publishes off-chain;
+ * replay watchers depend on the exact field set. Refuse to pass through
+ * anything else.
+ */
+function sanitizePatchReceivedNotice(raw: unknown): Record<string, unknown> {
   if (!raw || typeof raw !== 'object') {
-    return { pass: false, reasonCode: 'rejected' };
+    return { error: 'coretex-patch-received-notice-malformed' };
   }
   const r = raw as Record<string, unknown>;
-  const pass = r.pass === true;
-  const out: { pass: boolean; reasonCode: 'accepted' | 'rejected'; receipt?: Record<string, unknown> } = {
-    pass,
-    reasonCode: pass ? 'accepted' : 'rejected',
+  const patchHash = asBytes32Hex(r.patchHash);
+  const receivedAtBlock = asNonNegativeInt(r.receivedAtBlock);
+  const receivedAtTimestamp = asNonNegativeInt(r.receivedAtTimestamp);
+  const coordinatorAddress =
+    typeof r.coordinatorAddress === 'string' && /^0x[0-9a-f]{40}$/.test(r.coordinatorAddress.toLowerCase())
+      ? r.coordinatorAddress.toLowerCase()
+      : null;
+  const signer = sanitizeReceiptEnvelope(r.signer);
+  if (!patchHash || receivedAtBlock === null || receivedAtTimestamp === null || !coordinatorAddress) {
+    return { error: 'coretex-patch-received-notice-malformed' };
+  }
+  return {
+    patchHash,
+    receivedAtBlock,
+    receivedAtTimestamp,
+    coordinatorAddress,
+    ...(signer ? { signer } : {}),
   };
-  // The receipt sub-object is allowed but ONLY the structural signature
-  // envelope — never per-query scores or family deltas. Hosts that
-  // want to attach an EIP-712 receipt put it here; cortex never
-  // synthesizes or inspects its contents beyond the type check.
-  if (r.receipt && typeof r.receipt === 'object') out.receipt = r.receipt as Record<string, unknown>;
-  return out;
+}
+
+function sanitizeStatusResponse(raw: unknown, manifestBundleHash: string): Record<string, unknown> {
+  if (!raw || typeof raw !== 'object') {
+    return { error: 'coretex-status-malformed' };
+  }
+  const r = raw as Record<string, unknown>;
+  const lane = r.lane === 'coretex' ? 'coretex' : null;
+  const epochId = asNonNegativeInt(r.epochId);
+  const stateRoot = asBytes32Hex(r.stateRoot);
+  const wordCount = asPosInt(r.wordCount);
+  const transitionCount = asNonNegativeInt(r.transitionCount);
+  const rulesVersion = asNonNegativeInt(r.rulesVersion);
+  const workPolicyHash = asBytes32Hex(r.workPolicyHash);
+  const corpusRoot = asBytes32Hex(r.corpusRoot);
+  const coreVersionHash = asBytes32Hex(r.coreVersionHash) ?? manifestBundleHash.toLowerCase();
+  const bundleHash = asBytes32Hex(r.bundleHash) ?? manifestBundleHash.toLowerCase();
+  const minImprovementPpm = asNonNegativeInt(r.minImprovementPpm);
+  const evalSeedCommit = asBytes32Hex(r.evalSeedCommit);
+  const substrate = sanitizeUriEnvelope(r.substrate);
+  const bundle = sanitizeUriEnvelope(r.bundle);
+  if (
+    !lane
+    || epochId === null
+    || !stateRoot
+    || wordCount === null
+    || transitionCount === null
+    || rulesVersion === null
+    || !workPolicyHash
+    || !corpusRoot
+    || minImprovementPpm === null
+    || !evalSeedCommit
+    || !substrate
+    || !bundle
+  ) {
+    return { error: 'coretex-status-malformed' };
+  }
+  const out = {
+    lane,
+    epochId,
+    stateRoot,
+    wordCount,
+    transitionCount,
+    rulesVersion,
+    workPolicyHash,
+    corpusRoot,
+    coreVersionHash,
+    bundleHash,
+    minImprovementPpm,
+    evalSeedCommit,
+    substrate,
+    bundle,
+  };
+  return {
+    ...out,
+    // Lightweight poll-friendly change token for clients that can't use ETag.
+    statusVersion: stableHashHex(out),
+  };
+}
+
+function sanitizeSubstrateEnvelope(raw: unknown): { encoding: 'coretex-packed-substrate-v1'; bytes?: string; uri?: string } | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+  if (r.encoding !== 'coretex-packed-substrate-v1') return null;
+  const bytes = typeof r.bytes === 'string' && /^0x[0-9a-fA-F]*$/.test(r.bytes) ? r.bytes.toLowerCase() : null;
+  const uri = typeof r.uri === 'string' && r.uri.startsWith('/coretex/substrate/') ? r.uri : null;
+  if (!bytes && !uri) return null;
+  return {
+    encoding: 'coretex-packed-substrate-v1',
+    ...(bytes ? { bytes } : {}),
+    ...(uri ? { uri } : {}),
+  };
+}
+
+function sanitizeUriEnvelope(raw: unknown): { uri: string } | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+  if (typeof r.uri !== 'string') return null;
+  // Restrict to the immutable artifact endpoint shapes. A misbehaving host
+  // can't redirect clients at arbitrary /coretex/* paths (e.g. dashboards).
+  const allowed = /^\/coretex\/(substrate|bundle|patch|eval-report|corpus-delta)\/[0-9a-fA-Fx]+$/;
+  return allowed.test(r.uri) ? { uri: r.uri } : null;
+}
+
+function asBytes32Hex(v: unknown): string | null {
+  if (typeof v !== 'string') return null;
+  const s = v.toLowerCase();
+  return /^0x[0-9a-f]{64}$/.test(s) ? s : null;
+}
+
+function asPosInt(v: unknown): number | null {
+  if (!Number.isSafeInteger(v) || Number(v) <= 0) return null;
+  return Number(v);
+}
+
+function asNonNegativeInt(v: unknown): number | null {
+  if (!Number.isSafeInteger(v) || Number(v) < 0) return null;
+  return Number(v);
+}
+
+function stableHashHex(v: unknown): string {
+  return `0x${createHash('sha256').update(stableStringify(v)).digest('hex')}`;
+}
+
+function stableStringify(value: unknown): string {
+  if (value === null) return 'null';
+  if (typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
+  const obj = value as Record<string, unknown>;
+  return `{${Object.keys(obj).sort().map((k) => `${JSON.stringify(k)}:${stableStringify(obj[k])}`).join(',')}}`;
 }

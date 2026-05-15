@@ -6,67 +6,46 @@ import { createRetrievalDataSource } from '../../dist/index.js';
 const BUNDLE_HASH = `0x${'ab'.repeat(32)}`;
 const ALT_BUNDLE_HASH = `0x${'cd'.repeat(32)}`;
 
-const CORPUS_ROOT = `0x${'11'.repeat(32)}`;
-const RETRIEVAL_KEY_LAYOUT = { dim: 243, quantization: 'int8', headerBytes: 9 };
-
-function emptyEmbedding() {
-  return {
-    modelId: 'BAAI/bge-m3',
-    revision: '0123456789abcdef0123456789abcdef01234567',
-    layout: RETRIEVAL_KEY_LAYOUT,
-    query: new Uint8Array([1, 2, 3]),
-    perTruth: new Map([['truth-1', new Uint8Array([4, 5, 6])]]),
-    perNegative: new Map([['neg-1', new Uint8Array([7, 8, 9])]]),
-  };
-}
-
-function fixtureEvent(id, split, opts = {}) {
-  return {
-    id,
-    family: opts.family ?? 'near_collision',
-    domain: opts.domain ?? 'companies',
-    split,
-    queryText: opts.queryText ?? `query for ${id}`,
-    truthDocuments: [{ id: 'truth-1', text: 'truth doc', isCurrent: true }],
-    hardNegatives: [{ id: 'neg-1', text: 'distractor doc' }],
-    qrels: [{ documentId: 'truth-1', relevance: 1.0 }],
-    protected: split !== 'train_visible',
-    provenance: { source: 'synthetic_challenge', sourceHash: `0x${'ee'.repeat(32)}` },
-    embeddings: emptyEmbedding(),
-  };
-}
-
-function fixtureCorpus() {
-  const events = [
-    fixtureEvent('rec-visible', 'train_visible'),
-    fixtureEvent('rec-calibration', 'calibration'),
-    fixtureEvent('rec-hidden', 'eval_hidden'),
-    fixtureEvent('rec-canary', 'canary'),
-  ];
-  return {
-    events,
-    byId: new Map(events.map((e) => [e.id, e])),
-    corpusRoot: CORPUS_ROOT,
-    corpusEpoch: 0,
-    biEncoderRevision: '0123456789abcdef0123456789abcdef01234567',
-    biEncoderModelId: 'BAAI/bge-m3',
-    biEncoderRetrievalKeyLayout: RETRIEVAL_KEY_LAYOUT,
-    labelingModelRevision: 'fedcba9876543210fedcba9876543210fedcba98',
-    labelingModelId: 'memreranker/4B',
-  };
-}
-
 function fixtureManifest(bundleHash = BUNDLE_HASH) {
   return { bundleHash };
 }
 
 function makeFactoryOpts(overrides = {}) {
   return {
-    corpus: fixtureCorpus(),
     bundleManifest: fixtureManifest(),
     bundleHash: BUNDLE_HASH,
-    screen: () => ({ ok: 'screen' }),
-    evaluate: () => ({ ok: 'evaluate' }),
+    getChallenge: () => ({
+      lane: 'coretex',
+      challengeId: `0x${'11'.repeat(32)}`,
+      expiresAt: 1_760_000_000,
+      epochId: 7,
+      parentStateRoot: `0x${'22'.repeat(32)}`,
+      substrate: {
+        encoding: 'coretex-packed-substrate-v1',
+        uri: `/coretex/substrate/0x${'22'.repeat(32)}`,
+      },
+    }),
+    submit: () => ({
+      status: 'accepted',
+      patchHash: `0x${'33'.repeat(32)}`,
+      evalReportHash: `0x${'44'.repeat(32)}`,
+      receipt: { sig: '0xabc' },
+      scoreAfterPpm: 999_999, // must be stripped by sanitizer
+    }),
+    getStatus: () => ({
+      lane: 'coretex',
+      epochId: 7,
+      stateRoot: `0x${'55'.repeat(32)}`,
+      wordCount: 1024,
+      transitionCount: 12,
+      rulesVersion: 192,
+      workPolicyHash: `0x${'66'.repeat(32)}`,
+      corpusRoot: `0x${'77'.repeat(32)}`,
+      minImprovementPpm: 2500,
+      evalSeedCommit: `0x${'88'.repeat(32)}`,
+      substrate: { uri: `/coretex/substrate/0x${'55'.repeat(32)}` },
+      bundle: { uri: `/coretex/bundle/${BUNDLE_HASH}` },
+    }),
     ...overrides,
   };
 }
@@ -82,113 +61,196 @@ describe('createRetrievalDataSource', () => {
     );
   });
 
-  test('passes screen and evaluate bodies through to host callbacks', async () => {
+  test('passes challenge/submit/status through to host callbacks', async () => {
     const seen = [];
     const ds = createRetrievalDataSource(makeFactoryOpts({
-      screen: (body) => { seen.push(['screen', body]); return { ok: 'screen' }; },
-      evaluate: (body) => { seen.push(['evaluate', body]); return { ok: 'evaluate' }; },
+      getChallenge: () => {
+        seen.push(['challenge']);
+        return {
+          lane: 'coretex',
+          challengeId: `0x${'aa'.repeat(32)}`,
+          expiresAt: 1_760_000_000,
+          epochId: 8,
+          parentStateRoot: `0x${'bb'.repeat(32)}`,
+          coreVersionHash: BUNDLE_HASH,
+          substrate: {
+            encoding: 'coretex-packed-substrate-v1',
+            bytes: '0x1234',
+          },
+        };
+      },
+      submit: (body) => { seen.push(['submit', body]); return { accepted: false, patchHash: `0x${'cc'.repeat(32)}`, score: 42 }; },
+      getStatus: () => {
+        seen.push(['status']);
+        return {
+          lane: 'coretex',
+          epochId: 8,
+          stateRoot: `0x${'dd'.repeat(32)}`,
+          wordCount: 1024,
+          transitionCount: 13,
+          rulesVersion: 192,
+          workPolicyHash: `0x${'ee'.repeat(32)}`,
+          corpusRoot: `0x${'ff'.repeat(32)}`,
+          coreVersionHash: BUNDLE_HASH,
+          minImprovementPpm: 2500,
+          evalSeedCommit: `0x${'01'.repeat(32)}`,
+          substrate: { uri: `/coretex/substrate/0x${'dd'.repeat(32)}` },
+          bundle: { uri: `/coretex/bundle/${BUNDLE_HASH}` },
+        };
+      },
     }));
-    await ds.screen({ miner: '0xabc' });
-    await ds.evaluate({ patch: '0x1234' });
+    const c = await ds.getChallenge();
+    const s = await ds.submit({ patch: '0x1234' });
+    const st = await ds.getStatus();
     assert.deepEqual(seen, [
-      ['screen', { miner: '0xabc' }],
-      ['evaluate', { patch: '0x1234' }],
+      ['challenge'],
+      ['submit', { patch: '0x1234' }],
+      ['status'],
     ]);
+    assert.equal(c.bundleHash, BUNDLE_HASH);
+    assert.equal(c.coreVersionHash, BUNDLE_HASH);
+    assert.deepEqual(s, { status: 'rejected', code: 'rejected', patchHash: `0x${'cc'.repeat(32)}` });
+    assert.equal(st.bundleHash, BUNDLE_HASH);
+    assert.equal(st.coreVersionHash, BUNDLE_HASH);
+    assert.ok(typeof st.statusVersion === 'string' && st.statusVersion.startsWith('0x'));
   });
 
-  test('screen response is sanitized to opaque {pass,reasonCode,receipt} — anti-probe', async () => {
-    // The screen response MUST NOT leak retrieval-correlated numbers.
-    // Hosts that return scores, family deltas, or any other numeric
-    // metric have those fields stripped before the wire response.
+  test('fails closed on malformed challenge/status responses', async () => {
     const ds = createRetrievalDataSource(makeFactoryOpts({
-      screen: () => ({
-        pass: true,
-        reasonCode: 'duplicate-key-collapsed',
-        receipt: { sig: '0xabc' },
-        // Hostile / lazy-host fields that would leak hidden-pack info:
-        score: 0.8732,
-        abstentionRate: 0.12,
-        perFamilyDelta: { temporal: -0.05 },
-        rerankerCandidates: ['doc-1', 'doc-2'],
+      getChallenge: () => ({ lane: 'coretex' }),
+      getStatus: () => ({ lane: 'coretex' }),
+    }));
+    assert.deepEqual(await ds.getChallenge(), { error: 'coretex-challenge-malformed' });
+    assert.deepEqual(await ds.getStatus(), { error: 'coretex-status-malformed' });
+  });
+
+  test('submit response collapses to opaque rejection/accepted envelope', async () => {
+    const rejected = createRetrievalDataSource(makeFactoryOpts({
+      submit: () => ({ status: 'rejected', reason: 'too-low', perFamilyDelta: { temporal: -0.9 } }),
+    }));
+    assert.deepEqual(await rejected.submit({}), { status: 'rejected', code: 'rejected' });
+
+    const accepted = createRetrievalDataSource(makeFactoryOpts({
+      submit: () => ({
+        status: 'accepted',
+        patchHash: `0x${'99'.repeat(32)}`,
+        evalReportHash: `0x${'aa'.repeat(32)}`,
+        receipt: { sig: '0xdeadbeef' },
+        scoreBeforePpm: 10,
+        scoreAfterPpm: 999999,
       }),
     }));
-    const out = await ds.screen({ miner: '0xabc' });
-    assert.deepEqual(out, { pass: true, reasonCode: 'accepted', receipt: { sig: '0xabc' } });
+    assert.deepEqual(await accepted.submit({}), {
+      status: 'accepted',
+      patchHash: `0x${'99'.repeat(32)}`,
+      evalReportHash: `0x${'aa'.repeat(32)}`,
+      receipt: { sig: '0xdeadbeef' },
+    });
   });
 
-  test('screen response with non-object host return fails closed', async () => {
+  test('receipt envelope strips non-signature fields (anti-leak)', async () => {
     const ds = createRetrievalDataSource(makeFactoryOpts({
-      screen: () => null,
+      submit: () => ({
+        status: 'accepted',
+        patchHash: `0x${'99'.repeat(32)}`,
+        receipt: {
+          // legitimate signature envelope
+          keyId: 'coordinator-mainnet-v1',
+          algorithm: 'ECDSA-SHA256',
+          signature: '0xdeadbeefcafe',
+          signedFields: ['patchHash', 'receivedAtBlock'],
+          // ALL of these must be stripped — they leak retrieval signals
+          scoreAfterPpm: 999_999,
+          perFamilyDelta: { temporal: -0.9 },
+          rawScore: 0.8732,
+          retrievalConfidence: 0.42,
+        },
+      }),
     }));
-    assert.deepEqual(await ds.screen({}), { pass: false, reasonCode: 'rejected' });
+    const out = await ds.submit({});
+    assert.equal(out.status, 'accepted');
+    assert.deepEqual(out.receipt, {
+      keyId: 'coordinator-mainnet-v1',
+      algorithm: 'ECDSA-SHA256',
+      signature: '0xdeadbeefcafe',
+      signedFields: ['patchHash', 'receivedAtBlock'],
+    });
   });
 
-  test('screen response with pass != true defaults pass=false', async () => {
+  test('receipt with invalid algorithm/signature is dropped (not raw-passthrough)', async () => {
     const ds = createRetrievalDataSource(makeFactoryOpts({
-      screen: () => ({ pass: 'yes', score: 0.9 }),
+      submit: () => ({
+        status: 'accepted',
+        patchHash: `0x${'99'.repeat(32)}`,
+        receipt: {
+          algorithm: 'MD5', // not in allow-list
+          signature: 'not-hex',
+        },
+      }),
     }));
-    const out = await ds.screen({});
-    assert.equal(out.pass, false);
-    assert.equal(out.reasonCode, 'rejected');
-    assert.equal(out.score, undefined);
+    const out = await ds.submit({});
+    assert.equal(out.status, 'accepted');
+    assert.equal(out.receipt, undefined);
   });
 
-  test('passes async evaluate + getResult through when wired', async () => {
-    const seen = [];
+  test('getPatchReceivedNotice enforces strict field shape (replay-watcher safety)', async () => {
+    const goodNotice = {
+      patchHash: `0x${'aa'.repeat(32)}`,
+      receivedAtBlock: 12345,
+      receivedAtTimestamp: 1_760_000_000,
+      coordinatorAddress: `0x${'bb'.repeat(20)}`,
+      // host may attach signer envelope; allowed but limited to sig fields
+      signer: { keyId: 'k1', algorithm: 'ECDSA-SHA256', signature: '0xdead' },
+      // any other field stripped (e.g. score-leaking detail)
+      perFamilyDelta: { temporal: -0.1 },
+    };
     const ds = createRetrievalDataSource(makeFactoryOpts({
-      evaluateAsync: (body) => { seen.push(['async', body]); return { status: 'pending', patchHash: '0xab' }; },
-      getResult: (patchHash) => { seen.push(['result', patchHash]); return { status: 'complete', score: 42 }; },
+      getPatchReceivedNotice: () => goodNotice,
     }));
-    assert.deepEqual(await ds.evaluateAsync({ patch: '0xfeed' }), { status: 'pending', patchHash: '0xab' });
-    assert.deepEqual(await ds.getResult(`0x${'cd'.repeat(32)}`), { status: 'complete', score: 42 });
-    assert.deepEqual(seen, [
-      ['async', { patch: '0xfeed' }],
-      ['result', `0x${'cd'.repeat(32)}`],
-    ]);
+    const out = await ds.getPatchReceivedNotice('0x' + '11'.repeat(32));
+    assert.deepEqual(out, {
+      patchHash: `0x${'aa'.repeat(32)}`,
+      receivedAtBlock: 12345,
+      receivedAtTimestamp: 1_760_000_000,
+      coordinatorAddress: `0x${'bb'.repeat(20)}`,
+      signer: { keyId: 'k1', algorithm: 'ECDSA-SHA256', signature: '0xdead' },
+    });
+
+    const dsMalformed = createRetrievalDataSource(makeFactoryOpts({
+      getPatchReceivedNotice: () => ({ patchHash: '0xbad' }),
+    }));
+    const out2 = await dsMalformed.getPatchReceivedNotice('0x' + '11'.repeat(32));
+    assert.deepEqual(out2, { error: 'coretex-patch-received-notice-malformed' });
   });
 
-  test('omits async callbacks from data source when host does not wire them', () => {
+  test('status URI envelope rejects arbitrary /coretex/* paths (no host-side redirects)', async () => {
+    const ds = createRetrievalDataSource(makeFactoryOpts({
+      getStatus: () => ({
+        lane: 'coretex',
+        epochId: 9,
+        stateRoot: `0x${'55'.repeat(32)}`,
+        wordCount: 1024,
+        transitionCount: 1,
+        rulesVersion: 192,
+        workPolicyHash: `0x${'66'.repeat(32)}`,
+        corpusRoot: `0x${'77'.repeat(32)}`,
+        minImprovementPpm: 2500,
+        evalSeedCommit: `0x${'88'.repeat(32)}`,
+        substrate: { uri: `/coretex/admin-dashboard` }, // not an immutable artifact
+        bundle: { uri: `/coretex/bundle/${BUNDLE_HASH}` },
+      }),
+    }));
+    const out = await ds.getStatus();
+    assert.deepEqual(out, { error: 'coretex-status-malformed' });
+  });
+
+  test('default health response carries bundleHash + serverTime', async () => {
     const ds = createRetrievalDataSource(makeFactoryOpts());
-    assert.equal(ds.evaluateAsync, undefined);
-    assert.equal(ds.getResult, undefined);
-  });
-
-  test('serves train_visible corpus records and masks hidden / canary / calibration', async () => {
-    const ds = createRetrievalDataSource(makeFactoryOpts());
-    const visible = await ds.getCorpusRecord('rec-visible');
-    assert.equal(visible.id, 'rec-visible');
-    assert.equal(visible.split, 'train_visible');
-
-    const hidden = await ds.getCorpusRecord('rec-hidden');
-    assert.deepEqual(hidden, { error: 'coretex-corpus-hidden', recordId: 'rec-hidden', split: 'eval_hidden' });
-
-    const canary = await ds.getCorpusRecord('rec-canary');
-    assert.deepEqual(canary, { error: 'coretex-corpus-hidden', recordId: 'rec-canary', split: 'canary' });
-
-    const calibration = await ds.getCorpusRecord('rec-calibration');
-    assert.deepEqual(calibration, { error: 'coretex-corpus-calibration-restricted', recordId: 'rec-calibration' });
-
-    const missing = await ds.getCorpusRecord('not-real');
-    assert.deepEqual(missing, { error: 'coretex-corpus-not-found', recordId: 'not-real' });
-  });
-
-  test('opens calibration access when allowCalibrationReads=true', async () => {
-    const ds = createRetrievalDataSource(makeFactoryOpts({ allowCalibrationReads: true }));
-    const calibration = await ds.getCorpusRecord('rec-calibration');
-    assert.equal(calibration.id, 'rec-calibration');
-    assert.equal(calibration.split, 'calibration');
-  });
-
-  test('serves embeddings only for non-hidden records', async () => {
-    const ds = createRetrievalDataSource(makeFactoryOpts());
-    const visible = await ds.getCorpusRecordEmbedding('rec-visible');
-    assert.equal(visible.modelId, 'BAAI/bge-m3');
-    assert.equal(visible.queryHex, '010203');
-    assert.equal(visible.perTruth['truth-1'], '040506');
-    assert.equal(visible.perNegative['neg-1'], '070809');
-
-    const hidden = await ds.getCorpusRecordEmbedding('rec-hidden');
-    assert.deepEqual(hidden, { error: 'coretex-embedding-hidden', recordId: 'rec-hidden', split: 'eval_hidden' });
+    const out = await ds.health();
+    assert.equal(out.ok, true);
+    assert.equal(out.service, 'coretex');
+    assert.equal(out.bundleHash, BUNDLE_HASH);
+    assert.ok(typeof out.serverTime === 'string' && out.serverTime.includes('T'));
   });
 
   test('returns the bundle manifest only for the matching hash', async () => {
@@ -202,24 +264,41 @@ describe('createRetrievalDataSource', () => {
     assert.deepEqual(wrong, { error: 'coretex-bundle-not-found', bundleHash: ALT_BUNDLE_HASH });
   });
 
-  test('forwards optional substrate and bundle hooks when configured', async () => {
+  test('resolves bundle by coreVersionHash with default alias', async () => {
+    const ds = createRetrievalDataSource(makeFactoryOpts());
+    const ok = await ds.getBundleByCoreVersionHash(BUNDLE_HASH);
+    assert.equal(ok.bundleHash, BUNDLE_HASH);
+    const miss = await ds.getBundleByCoreVersionHash(ALT_BUNDLE_HASH);
+    assert.deepEqual(miss, { error: 'coretex-bundle-not-found', coreVersionHash: ALT_BUNDLE_HASH });
+  });
+
+  test('forwards optional immutable artifact hooks when configured', async () => {
+    const validNoticePatch = `0x${'cc'.repeat(32)}`;
     const ds = createRetrievalDataSource(makeFactoryOpts({
-      getCurrentSubstrate: () => ({ stateRoot: 'current' }),
       getSubstrate: (root) => ({ stateRoot: root }),
       getPatch: (h) => ({ patch: h }),
+      getPatchReceivedNotice: (h) => ({
+        patchHash: h,
+        receivedAtBlock: 123,
+        receivedAtTimestamp: 1_760_000_000,
+        coordinatorAddress: `0x${'dd'.repeat(20)}`,
+      }),
       getEvalReport: (h) => ({ report: h }),
-      getChallengeBook: (epoch) => ({ epoch: epoch.toString() }),
       getCorpusDelta: (epoch) => ({ delta: epoch.toString() }),
-      getClientBundle: (hash) => ({ clientBundle: hash }),
+      getBundleByCoreVersionHash: (h) => ({ bundleByCoreVersion: h }),
       health: () => ({ ok: true }),
     }));
-    assert.deepEqual(await ds.getCurrentSubstrate(), { stateRoot: 'current' });
     assert.deepEqual(await ds.getSubstrate('0xabc'), { stateRoot: '0xabc' });
     assert.deepEqual(await ds.getPatch('0x111'), { patch: '0x111' });
+    assert.deepEqual(await ds.getPatchReceivedNotice(validNoticePatch), {
+      patchHash: validNoticePatch,
+      receivedAtBlock: 123,
+      receivedAtTimestamp: 1_760_000_000,
+      coordinatorAddress: `0x${'dd'.repeat(20)}`,
+    });
     assert.deepEqual(await ds.getEvalReport('0x222'), { report: '0x222' });
-    assert.deepEqual(await ds.getChallengeBook(7n), { epoch: '7' });
     assert.deepEqual(await ds.getCorpusDelta(8n), { delta: '8' });
-    assert.deepEqual(await ds.getClientBundle('0xc0re'), { clientBundle: '0xc0re' });
+    assert.deepEqual(await ds.getBundleByCoreVersionHash('0xc0re'), { bundleByCoreVersion: '0xc0re' });
     assert.deepEqual(await ds.health(), { ok: true });
   });
 });
