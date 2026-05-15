@@ -12,7 +12,7 @@
 import type { CortexState, Patch } from '../state/index.js';
 import { applyPatch } from '../state/patch.js';
 import { keccak256 } from '../state/keccak256.js';
-import { decodeSubstrate, type DecodedSubstrate } from '../substrate/retrieval-decoder.js';
+import { decodeSubstrate, type DecodedSubstrate, type RelationCategoryLens } from '../substrate/retrieval-decoder.js';
 import { biEncoderModelIdHash } from '../substrate/retrieval-decoder.js';
 import { structuralValidity } from '../substrate/structural-validity.js';
 import type { CrossEncoderReranker } from './reranker.js';
@@ -296,6 +296,95 @@ export async function scoreSubstrateAgainstQuery(
     }
   }
 
+  // ─── Phase B: stage-1 BFS expansion via corpus-native event.relations ─────
+  // For each stage-1 candidate doc, find its source event; follow the event's
+  // corpus-native relations whose edgeType matches one of the substrate's
+  // category-lens entries; add the related event's truth docs to the pool.
+  // Cap by the same `relationExpansionBudget` so anchor BFS + category-lens
+  // expansion share the candidate-pool growth budget.
+  //
+  // This is the substrate's corpus-scale retrieval lever that scales past the
+  // 44-anchor cap. Stage-1 surfacing ANY question with the same answer-entity
+  // reaches that entity's truth doc via category-lens; the reranker scores it.
+  // Anti-cheat invariant intact: the substrate only chooses WHICH edgeTypes to
+  // follow; it cannot manufacture new edges — they come from the corpus.
+  const lensesByEdgeType = new Map<string, RelationCategoryLens>();
+  for (const lens of decoded.categoryLenses) {
+    // If multiple lenses share an edgeType, keep the highest-weight one.
+    const existing = lensesByEdgeType.get(lens.edgeType);
+    if (!existing || lens.weight > existing.weight) lensesByEdgeType.set(lens.edgeType, lens);
+  }
+  const eventByCorpusId = corpusByCorpusId(corpus);
+  /** Per-doc category-lens weight (max across applicable lenses), normalised to [0,1). */
+  const categoryLensWeightByDocId = new Map<string, number>();
+  if (lensesByEdgeType.size > 0) {
+    // Per-event semantic cluster: BFS follows category-lens-matching edges
+    // BIDIRECTIONALLY. Stage-1 finds similar question events; forward edges
+    // (question → answer-entity) plus inverse edges (entity ← all questions
+    // pointing at it) close the cluster around the query's answer entity.
+    // This is the lever that lets multi-hop / long-horizon families reach
+    // their own truth docs via stage-1 docs that share the same answer
+    // entity. Without bidirectional, the cluster is one-hop only and recall
+    // remains at the stage-1 ceiling.
+    const inverseIndex = getOrBuildInverseRelationIndex(corpus);
+    const visitedEventIds = new Set<string>();
+    // Seed BFS with the stage-1 candidate events.
+    for (const d of stage1Docs) visitedEventIds.add(d.eventId);
+    let frontierEventIds: string[] = Array.from(visitedEventIds);
+
+    for (let hop = 0; hop < opts.relationHopBudget && expansionAdded < opts.relationExpansionBudget; hop++) {
+      const next: string[] = [];
+      for (const eventId of frontierEventIds) {
+        if (expansionAdded >= opts.relationExpansionBudget) break;
+        const sourceEvent = eventByCorpusId.get(eventId);
+        if (!sourceEvent) continue;
+
+        // Forward edges: event.relations[*]
+        if (sourceEvent.relations) {
+          for (const rel of sourceEvent.relations) {
+            const lens = lensesByEdgeType.get(rel.edgeType);
+            if (!lens) continue;
+            const tgtId = rel.other_id;
+            if (visitedEventIds.has(tgtId)) continue;
+            visitedEventIds.add(tgtId);
+            const targetEvent = eventByCorpusId.get(tgtId);
+            if (!targetEvent) continue;
+            expansionAdded += addEventTruthsToPool(
+              targetEvent, pool, categoryLensWeightByDocId, lens.weight / 0xFFFF,
+              opts.relationExpansionBudget - expansionAdded,
+            );
+            next.push(tgtId);
+            if (expansionAdded >= opts.relationExpansionBudget) break;
+          }
+        }
+
+        // Inverse edges: events that have a relation pointing AT this event.
+        // For category-lens semantics, the edgeType filter still applies —
+        // we only traverse inverse edges whose forward edgeType matches a
+        // substrate lens. Cross-reference via the precomputed inverse index.
+        const inverseRels = inverseIndex.get(eventId);
+        if (inverseRels) {
+          for (const inv of inverseRels) {
+            const lens = lensesByEdgeType.get(inv.edgeType);
+            if (!lens) continue;
+            const srcId = inv.fromEventId;
+            if (visitedEventIds.has(srcId)) continue;
+            visitedEventIds.add(srcId);
+            const sourceFromInverse = eventByCorpusId.get(srcId);
+            if (!sourceFromInverse) continue;
+            expansionAdded += addEventTruthsToPool(
+              sourceFromInverse, pool, categoryLensWeightByDocId, lens.weight / 0xFFFF,
+              opts.relationExpansionBudget - expansionAdded,
+            );
+            next.push(srcId);
+            if (expansionAdded >= opts.relationExpansionBudget) break;
+          }
+        }
+      }
+      frontierEventIds = next;
+    }
+  }
+
   // ─── Stage 2 bonuses: lens, anchor, temporal ─────────────────────────────
   const activeLensVecs: Float32Array[] = [];
   for (let s = 0; s < decoded.retrievalKeys.length; s++) {
@@ -344,7 +433,18 @@ export async function scoreSubstrateAgainstQuery(
       else if (record.isStaleTruth) temporalBonus = -opts.temporalStaleSuppression;
     }
 
-    candidates.push({ record, substrateBonus: lensBonus + anchorBonus + temporalBonus, docVec });
+    // Phase B: docs that entered the pool via a category-lens carry the
+    // (max-over-applicable) lens weight as an additive bonus. The substrate
+    // expresses preference for the edge-types whose expansion brought
+    // useful answers; the reranker still has final say.
+    const categoryLensNormWeight = categoryLensWeightByDocId.get(record.docId) ?? 0;
+    const categoryLensBonus = opts.lensWeight * categoryLensNormWeight;
+
+    candidates.push({
+      record,
+      substrateBonus: lensBonus + anchorBonus + temporalBonus + categoryLensBonus,
+      docVec,
+    });
   }
 
   if (candidates.length === 0) {
@@ -425,6 +525,79 @@ function getOrBuildRecordIdIndex(corpus: ProductionCorpus): Map<bigint, Producti
   for (const e of corpus.events) built.set(stableRecordIdFor(e.id), e);
   recordIdIndexCacheV2.set(corpus, built);
   return built;
+}
+
+/** Phase B: lookup by corpus event id (string) for follow-the-relation BFS
+ *  from stage-1 candidates. Mirrors `corpus.byId` (already on the loaded
+ *  ProductionCorpus object) but exposed as a typed accessor for clarity. */
+function corpusByCorpusId(corpus: ProductionCorpus): ReadonlyMap<string, ProductionCorpusEvent> {
+  return corpus.byId;
+}
+
+/** Phase B inverse-relation index. For each target event id, list of
+ *  (fromEventId, edgeType) pairs. Lets BFS traverse edges backward —
+ *  "this entity is referenced by these N questions." Cached on corpus. */
+interface InverseRelationEntry { readonly fromEventId: string; readonly edgeType: string; }
+const inverseRelCacheV2 = new WeakMap<ProductionCorpus, Map<string, InverseRelationEntry[]>>();
+function getOrBuildInverseRelationIndex(corpus: ProductionCorpus): Map<string, InverseRelationEntry[]> {
+  const cached = inverseRelCacheV2.get(corpus);
+  if (cached) return cached;
+  const inverse = new Map<string, InverseRelationEntry[]>();
+  for (const ev of corpus.events) {
+    if (!ev.relations) continue;
+    for (const rel of ev.relations) {
+      const list = inverse.get(rel.other_id) ?? [];
+      list.push({ fromEventId: ev.id, edgeType: rel.edgeType });
+      inverse.set(rel.other_id, list);
+    }
+  }
+  inverseRelCacheV2.set(corpus, inverse);
+  return inverse;
+}
+
+/** Phase B: add `event`'s truth docs to the candidate pool with a given
+ *  category-lens weight. Returns the number of docs actually added (new
+ *  to the pool). Skips docs already present but updates their lens
+ *  weight to the max of the previous and new value. */
+function addEventTruthsToPool(
+  event: ProductionCorpusEvent,
+  pool: Map<string, {
+    docId: string;
+    embedding: Uint8Array;
+    text: string;
+    eventId: string;
+    memorySlot: number | null;
+    isCurrentTruth: boolean;
+    isStaleTruth: boolean;
+  }>,
+  categoryLensWeightByDocId: Map<string, number>,
+  normWeight: number,
+  cap: number,
+): number {
+  let added = 0;
+  for (const td of event.truthDocuments) {
+    if (added >= cap) break;
+    const existing = pool.get(td.id);
+    if (existing) {
+      const prev = categoryLensWeightByDocId.get(td.id) ?? 0;
+      if (normWeight > prev) categoryLensWeightByDocId.set(td.id, normWeight);
+      continue;
+    }
+    const emb = event.embeddings.perTruth.get(td.id);
+    if (!emb) continue;
+    pool.set(td.id, {
+      docId: td.id,
+      embedding: emb,
+      text: td.text,
+      eventId: event.id,
+      memorySlot: null,
+      isCurrentTruth: td.isCurrent,
+      isStaleTruth: !td.isCurrent,
+    });
+    categoryLensWeightByDocId.set(td.id, normWeight);
+    added++;
+  }
+  return added;
 }
 
 /**

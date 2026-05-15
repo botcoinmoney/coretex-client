@@ -58,6 +58,25 @@ export interface RelationEdge {
   readonly targetSlot: number;        // 0..43
 }
 
+/**
+ * Phase B category-lens entry. The substrate's Relations region (128 entries)
+ * shares its budget with legacy anchor-to-anchor edges. A category-lens entry
+ * tells the scorer: "for any stage-1 candidate doc, follow its corpus-native
+ * event.relations whose edgeType matches this lens's edgeType, and add the
+ * related event's truth docs to the candidate pool." This gives the substrate
+ * a corpus-scale retrieval policy beyond the 44-anchor cap.
+ *
+ * Wire encoding lives in the same 256-bit word as legacy edges; the high bit
+ * of the bits 223..208 reserved field (bit 223) is the mode flag. When set,
+ * bits 191..0 must be zero — the entry is not pointing at any specific
+ * MemoryIndex slot. See `decodeRelations` for full validation.
+ */
+export interface RelationCategoryLens {
+  readonly entryIndex: number;
+  readonly weight: number;
+  readonly edgeType: RelationEdgeType;
+}
+
 export interface TemporalRecord {
   readonly recordIndex: number;
   readonly memorySlot: number;
@@ -85,7 +104,8 @@ export interface LensDiversityCheck {
 export interface DecodedSubstrate {
   readonly memoryIndex: ReadonlyArray<MemoryIndexSlot | null>;     // length 44
   readonly retrievalKeys: ReadonlyArray<RetrievalKeySlot | null>;  // length 36
-  readonly relations: ReadonlyArray<RelationEdge>;                 // sparse (only populated entries)
+  readonly relations: ReadonlyArray<RelationEdge>;                 // anchor-to-anchor (Phase A)
+  readonly categoryLenses: ReadonlyArray<RelationCategoryLens>;    // corpus-native edge-type filters (Phase B)
   readonly temporal: ReadonlyArray<TemporalRecord>;                // sparse
   readonly codebook: ReadonlyArray<CodebookEntry | null>;          // length 48
   readonly decodedSlots: number;
@@ -392,10 +412,12 @@ export function decodeRetrievalKeys(
 
 export function decodeRelations(state: CortexState): {
   edges: ReadonlyArray<RelationEdge>;
+  categoryLenses: ReadonlyArray<RelationCategoryLens>;
   attempts: number;
   failures: number;
 } {
   const edges: RelationEdge[] = [];
+  const categoryLenses: RelationCategoryLens[] = [];
   let attempts = 0;
   let failures = 0;
 
@@ -416,8 +438,16 @@ export function decodeRelations(state: CortexState): {
       failures++;
       continue;
     }
-    // Two reserved 16-bit slots at 223..208 and 207..192 must be zero.
-    if (field(word, 208, MASK_16) !== 0n) {
+
+    // Phase B: bit 223 = category-lens mode flag (high bit of the 223..208
+    // reserved field). When set, the entry encodes a category-lens (no
+    // source/target slot, follows corpus-native edges of `edgeType`). When
+    // clear, the entry is a legacy anchor-to-anchor edge and the remaining
+    // 15 reserved bits + bits 207..192 must be zero.
+    const reservedField208 = field(word, 208, MASK_16);
+    const isCategoryLens = (reservedField208 >> 15n) === 1n;
+    const remainingReserved208 = reservedField208 & 0x7FFFn;
+    if (remainingReserved208 !== 0n) {
       failures++;
       continue;
     }
@@ -425,6 +455,20 @@ export function decodeRelations(state: CortexState): {
       failures++;
       continue;
     }
+
+    if (isCategoryLens) {
+      // Category-lens mode: bits 191..0 must be entirely zero — the lens
+      // does not point at any MemoryIndex slot. It expands stage-1
+      // candidates by corpus-native edge type.
+      if (field(word, 96, MASK_96) !== 0n || field(word, 0, MASK_96) !== 0n) {
+        failures++;
+        continue;
+      }
+      categoryLenses.push({ entryIndex: i, weight, edgeType });
+      continue;
+    }
+
+    // Legacy anchor-to-anchor edge.
     const sourceField = field(word, 96, MASK_96);
     const targetField = field(word, 0, MASK_96);
     if (sourceField >> 8n !== 0n) {
@@ -443,7 +487,7 @@ export function decodeRelations(state: CortexState): {
     }
     edges.push({ entryIndex: i, weight, edgeType, sourceSlot, targetSlot });
   }
-  return { edges, attempts, failures };
+  return { edges, categoryLenses, attempts, failures };
 }
 
 export function decodeTemporal(state: CortexState): {
@@ -743,6 +787,7 @@ export function decodeSubstrate(state: CortexState, opts: DecoderOptions = {}): 
     memoryIndex: memory.slots,
     retrievalKeys: keys.slots,
     relations: filteredRelations,
+    categoryLenses: relations.categoryLenses,
     temporal: filteredTemporal,
     codebook: codebook.entries,
     decodedSlots,
@@ -826,6 +871,24 @@ export function encodeRelationEdge(edge: RelationEdge): bigint {
     (BigInt(edgeBits) << 224n) |
     (BigInt(edge.sourceSlot) << 96n) |
     BigInt(edge.targetSlot)
+  );
+}
+
+/**
+ * Encode a Phase B category-lens entry. Same Relations region, different
+ * mode (bit 223 = 1). Bits 191..0 are zero — the lens does not target any
+ * MemoryIndex slot; instead the scorer follows corpus-native event.relations
+ * matching `edgeType` from each stage-1 candidate, expanding the pool by
+ * the lens weight.
+ */
+export function encodeRelationCategoryLens(lens: RelationCategoryLens): bigint {
+  if (lens.weight <= 0 || lens.weight > 0xffff) throw new Error('encodeRelationCategoryLens: weight out of range');
+  const edgeBits = relationTypeToBits(lens.edgeType);
+  const modeBit = 1n << 223n;
+  return (
+    (BigInt(lens.weight) << 240n) |
+    (BigInt(edgeBits) << 224n) |
+    modeBit
   );
 }
 
