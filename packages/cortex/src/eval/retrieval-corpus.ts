@@ -12,7 +12,7 @@
  */
 
 import { createHash } from 'node:crypto';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, openSync, readSync, closeSync, fstatSync } from 'node:fs';
 
 import { keccak256 } from '../state/keccak256.js';
 import { bytesToHex } from '../state/merkle.js';
@@ -246,6 +246,123 @@ function hexToUint8(hex: string): Uint8Array {
 }
 
 /**
+ * Read corpus-level metadata from a v1 corpus JSON without loading the whole
+ * file. The generator's writeCorpusOutputStreaming splits metadata across the
+ * file: fields written BEFORE the `events` array (`schemaVersion`,
+ * `corpusEpoch`, `source`, `challengeLibrary`, `biEncoder`, `labelingModel`)
+ * live in the head; fields written AFTER the events-array close (`corpusRoot`,
+ * any future trailing metadata) live in the trailer. Read both windows.
+ */
+function readCorpusJsonHeader(path: string): Record<string, unknown> {
+  const HEAD_BYTES = 64 * 1024;
+  const TAIL_BYTES = 32 * 1024;
+  const fd = openSync(path, 'r');
+  let head: string;
+  let tail: string;
+  let fileSize: number;
+  try {
+    const headBuf = Buffer.alloc(HEAD_BYTES);
+    const headN = readSync(fd, headBuf, 0, headBuf.length, 0);
+    head = headBuf.toString('utf8', 0, headN);
+    // fstatSync via the fd to avoid an extra syscall.
+    fileSize = fstatSync(fd).size;
+    const tailLen = Math.min(TAIL_BYTES, fileSize);
+    const tailStart = fileSize - tailLen;
+    const tailBuf = Buffer.alloc(tailLen);
+    const tailN = readSync(fd, tailBuf, 0, tailBuf.length, tailStart);
+    tail = tailBuf.toString('utf8', 0, tailN);
+  } finally {
+    closeSync(fd);
+  }
+
+  const eventsIdx = head.indexOf('"events"');
+  if (eventsIdx < 0) {
+    throw new Error(
+      `readCorpusJsonHeader: "events" key not found in first ${HEAD_BYTES} bytes of ${path}; ` +
+      `not a streaming-shape v1 corpus`,
+    );
+  }
+  const preTrimmed = head.slice(0, eventsIdx).replace(/,\s*$/, '');
+  const preMeta = JSON.parse(`${preTrimmed},"events":[]}`) as Record<string, unknown>;
+
+  // Parse post-events trailing metadata. Find `],` (events-array close + comma
+  // before the next top-level key). Take the substring after `,`, wrap in `{}`,
+  // parse. The trailer string ends with `\n}` of the outer object; preserve it.
+  const closeIdx = tail.lastIndexOf('],');
+  if (closeIdx < 0) return preMeta; // no trailing metadata
+  const trailerInner = tail.slice(closeIdx + 2).trim().replace(/,?\s*$/, '');
+  // trailerInner now looks like: `\n  "corpusRoot": "0x...",\n  ...,\n}` or
+  // similar; strip the closing `}` so we can wrap into a fresh object.
+  const stripped = trailerInner.endsWith('}') ? trailerInner.slice(0, -1).replace(/,?\s*$/, '') : trailerInner;
+  let postMeta: Record<string, unknown> = {};
+  try {
+    postMeta = JSON.parse(`{${stripped}}`) as Record<string, unknown>;
+  } catch (err) {
+    throw new Error(
+      `readCorpusJsonHeader: failed to parse trailing metadata window: ${(err as Error).message}; ` +
+      `trailer snippet: ${stripped.slice(0, 200)}...`,
+    );
+  }
+  return { ...preMeta, ...postMeta };
+}
+
+/**
+ * Stream-read a corpus events NDJSON into the in-memory event array. Uses
+ * chunked sync reads to stay well under V8's 512 MB single-string cap; the
+ * resulting JS objects can fit in any reasonable heap because the
+ * embeddings convert from hex to compact Uint8Array per line.
+ */
+function streamProductionCorpusEvents(ndjsonPath: string): ProductionCorpusEvent[] {
+  const fd = openSync(ndjsonPath, 'r');
+  const events: ProductionCorpusEvent[] = [];
+  try {
+    const bufSize = 64 * 1024 * 1024; // 64 MB chunks
+    const buf = Buffer.alloc(bufSize);
+    let pending = '';
+    while (true) {
+      const bytesRead = readSync(fd, buf, 0, bufSize, null);
+      if (bytesRead <= 0) break;
+      pending += buf.toString('utf8', 0, bytesRead);
+      let nl: number;
+      while ((nl = pending.indexOf('\n')) >= 0) {
+        const line = pending.slice(0, nl);
+        pending = pending.slice(nl + 1);
+        if (!line) continue;
+        events.push(parseEventLine(line));
+      }
+    }
+    if (pending.length > 0) events.push(parseEventLine(pending));
+  } finally {
+    closeSync(fd);
+  }
+  return events;
+}
+
+function parseEventLine(line: string): ProductionCorpusEvent {
+  const e = JSON.parse(line) as {
+    embeddings: {
+      modelId: string;
+      revision: string;
+      layout: RetrievalKeyLayout;
+      query: string;
+      perTruth: Record<string, string>;
+      perNegative: Record<string, string>;
+    };
+  } & Omit<ProductionCorpusEvent, 'embeddings'>;
+  return {
+    ...e,
+    embeddings: {
+      modelId: e.embeddings.modelId,
+      revision: e.embeddings.revision,
+      layout: e.embeddings.layout,
+      query: hexToUint8(e.embeddings.query),
+      perTruth: new Map(Object.entries(e.embeddings.perTruth).map(([k, v]) => [k, hexToUint8(v)])),
+      perNegative: new Map(Object.entries(e.embeddings.perNegative).map(([k, v]) => [k, hexToUint8(v)])),
+    },
+  };
+}
+
+/**
  * Compute the canonical corpus root by Merkleizing per-record canonical-JSON
  * leaves under keccak256.
  */
@@ -301,35 +418,85 @@ export interface ProductionCorpusEventOnDisk
   };
 }
 
-export function loadProductionCorpus(path: string): ProductionCorpus {
+export interface LoadProductionCorpusOptions {
+  /**
+   * Skip the on-load Merkle re-verification (`computeCorpusRoot`). At launch
+   * scale (≈679 k events) this is a ~20 minute compute that the generator
+   * has already performed once at finalize time. Post-corpus scripts that
+   * load the same file multiple times across separate processes set this
+   * to `false` to avoid paying the cost on every load. Default `true`
+   * preserves the existing invariant check.
+   */
+  readonly verifyCorpusRoot?: boolean;
+  /**
+   * Skip the per-event `splitForRecord` cross-check. Same rationale as
+   * `verifyCorpusRoot` — the generator already enforced this. Default `true`.
+   */
+  readonly verifySplits?: boolean;
+}
+
+export function loadProductionCorpus(path: string, options: LoadProductionCorpusOptions = {}): ProductionCorpus {
   if (!existsSync(path)) throw new Error(`production corpus file not found: ${path}`);
-  const raw = JSON.parse(readFileSync(path, 'utf8')) as CorpusFileShape;
-  if (raw.schemaVersion !== 'coretex.production-corpus.v1') {
-    throw new Error(`production corpus has unsupported schemaVersion: ${raw.schemaVersion}`);
+  const verifyCorpusRoot = options.verifyCorpusRoot ?? true;
+  const verifySplits = options.verifySplits ?? true;
+
+  // Launch-scale corpora exceed V8's 512 MB single-string cap, so
+  // JSON.parse(readFileSync(...)) is unusable on the full file. Two paths:
+  //
+  //   1) Sidecar NDJSON present  →  read metadata from the JSON header
+  //      (first 32 KB is plenty; "events" key always comes after metadata
+  //      in writeCorpusOutputStreaming output), then stream the NDJSON
+  //      one event per line. Memory cost: one event at a time during
+  //      parsing, then the assembled events array.
+  //
+  //   2) No sidecar               →  fall back to whole-file JSON.parse.
+  //      Works for small/legacy corpora (< ~400 MB) only.
+  const ndjsonPath = `${path}.events.ndjson`;
+  let raw: CorpusFileShape;
+  let events: ProductionCorpusEvent[];
+
+  if (existsSync(ndjsonPath)) {
+    const meta = readCorpusJsonHeader(path) as Omit<CorpusFileShape, 'events'>;
+    raw = { ...meta, events: [] } as CorpusFileShape;
+    if (raw.schemaVersion !== 'coretex.production-corpus.v1') {
+      throw new Error(`production corpus has unsupported schemaVersion: ${raw.schemaVersion}`);
+    }
+    events = streamProductionCorpusEvents(ndjsonPath);
+  } else {
+    raw = JSON.parse(readFileSync(path, 'utf8')) as CorpusFileShape;
+    if (raw.schemaVersion !== 'coretex.production-corpus.v1') {
+      throw new Error(`production corpus has unsupported schemaVersion: ${raw.schemaVersion}`);
+    }
+    events = raw.events.map((e) => ({
+      ...e,
+      embeddings: {
+        modelId: e.embeddings.modelId,
+        revision: e.embeddings.revision,
+        layout: e.embeddings.layout,
+        query: hexToUint8(e.embeddings.query),
+        perTruth: new Map(Object.entries(e.embeddings.perTruth).map(([k, v]) => [k, hexToUint8(v)])),
+        perNegative: new Map(Object.entries(e.embeddings.perNegative).map(([k, v]) => [k, hexToUint8(v)])),
+      },
+    }));
   }
-  const events: ProductionCorpusEvent[] = raw.events.map((e) => ({
-    ...e,
-    embeddings: {
-      modelId: e.embeddings.modelId,
-      revision: e.embeddings.revision,
-      layout: e.embeddings.layout,
-      query: hexToUint8(e.embeddings.query),
-      perTruth: new Map(Object.entries(e.embeddings.perTruth).map(([k, v]) => [k, hexToUint8(v)])),
-      perNegative: new Map(Object.entries(e.embeddings.perNegative).map(([k, v]) => [k, hexToUint8(v)])),
-    },
-  }));
-  const computed = computeCorpusRoot(events);
-  if (computed.toLowerCase() !== raw.corpusRoot.toLowerCase()) {
-    throw new Error(`production corpus root mismatch: expected ${raw.corpusRoot} got ${computed}`);
+  if (verifyCorpusRoot) {
+    const computed = computeCorpusRoot(events);
+    if (computed.toLowerCase() !== raw.corpusRoot.toLowerCase()) {
+      throw new Error(`production corpus root mismatch: expected ${raw.corpusRoot} got ${computed}`);
+    }
   }
-  // Verify per-event split assignment is stable.
-  for (const e of events) {
-    const expected = splitForRecord(e.id, raw.corpusEpoch);
-    if (e.split !== expected) {
-      throw new Error(`production corpus event ${e.id} declared split ${e.split} but splitForRecord returned ${expected}`);
+  if (verifySplits) {
+    // Verify per-event split assignment is stable.
+    for (const e of events) {
+      const expected = splitForRecord(e.id, raw.corpusEpoch);
+      if (e.split !== expected) {
+        throw new Error(`production corpus event ${e.id} declared split ${e.split} but splitForRecord returned ${expected}`);
+      }
     }
   }
   // Verify embeddings model id/revision matches the bundle bi-encoder.
+  // This is a fast O(n) loop, kept unconditional — protects against silent
+  // bundle/corpus mismatch which is a launch-blocking class of bug.
   for (const e of events) {
     if (e.embeddings.modelId !== raw.biEncoder.modelId || e.embeddings.revision !== raw.biEncoder.revision) {
       throw new Error(`production corpus event ${e.id} embeddings model mismatch`);
