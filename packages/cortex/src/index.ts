@@ -57,11 +57,14 @@ export {
   encodeTemporalRecord,
   encodeCodebookEntry,
   biEncoderModelIdHash,
+  checkLensDiversity,
+  relationEdgeValid,
 } from './substrate/retrieval-decoder.js';
 export type {
   MemoryIndexSlot as RetrievalMemoryIndexSlot,
   RetrievalKeySlot as RetrievalKeySlotV2,
   CodebookEntry as RetrievalCodebookEntry,
   RelationEdgeType as SubstrateRelationEdgeType,
+  LensDiversityCheck,
 } from './substrate/retrieval-decoder.js';
 export * from './substrate/structural-validity.js';

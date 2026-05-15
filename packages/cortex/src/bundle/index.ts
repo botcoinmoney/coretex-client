@@ -174,6 +174,28 @@ export interface EvaluatorProfile {
   readonly rerankerTopK: number;
   readonly retrievalKeyTopK: number;
   readonly relationEdgeTypes: readonly string[];
+
+  // ─── v2-lens pipeline pins (substrate-hardening §6.3) ─────────────────────
+  /** Pinned scorer pipeline. v2-lens is the two-stage corpus-retrieval + substrate-bias pipeline. */
+  readonly pipelineVersion?: 'coretex-retrieval-v2-lens';
+  /** Stage-1 BGE-M3 first-stage retrieval cap (Run 1; per-stratum worst-case ≥0.90). */
+  readonly firstStageTopK?: number;
+  /** Stage-2 lens-bonus contributing vectors per query. Capped by RetrievalKey slot count. */
+  readonly lensTopK?: number;
+  /** Stage-2 lens bonus scale (Run 0). */
+  readonly lensWeight?: number;
+  /** Stage-2 anchor bonus scale (Run 0). */
+  readonly anchorWeight?: number;
+  /** Stage-2 relation BFS doc cap per query (Run 0). */
+  readonly relationExpansionBudget?: number;
+  /** Stage-2 temporal modulation: bonus for current truth docs on temporal queries. */
+  readonly temporalCurrentBoost?: number;
+  /** Stage-2 temporal modulation: penalty for stale truth docs on temporal queries. */
+  readonly temporalStaleSuppression?: number;
+  /** §6.4 lens-diversity floor — mean pairwise cosine among active lenses must be ≤ this. */
+  readonly lensDiversityFloor?: number;
+  /** §6.1 pinned dedupe algorithm for PublicCorpusIndex. */
+  readonly corpusDocDedupe?: 'canonical-doc-id';
   readonly revealGracePeriodSeconds: number;
   /**
    * Maps each hard-negative category emitted by the corpus generator to
@@ -638,6 +660,21 @@ export const DEFAULT_PROFILE: EvaluatorProfile = {
   revealGracePeriodSeconds: 60 * 60 * 6,  // 6h pre-calibration; calibrate replaces
   negCategoryRelevanceMap: DEFAULT_NEG_CATEGORY_RELEVANCE_MAP,
   baseRpcConfig: DEFAULT_BASE_RPC_CONFIG,
+
+  // ─── v2-lens pipeline defaults (substrate-hardening §6.3). Calibration
+  //     Runs 0+1 produce the real pinned values; these are pre-calibration
+  //     placeholders. The hardening doc pins these via Run 0 (sensitivity
+  //     sweep) and Run 1 (firstStageTopK per-stratum). ───────────────────
+  pipelineVersion: 'coretex-retrieval-v2-lens',
+  firstStageTopK: 200,             // calibration Run 1 will tune per-stratum
+  lensTopK: 36,                    // == retrievalKeys slot count
+  lensWeight: 0.10,                // calibration Run 0 will tune
+  anchorWeight: 0.15,              // calibration Run 0 will tune
+  relationExpansionBudget: 50,     // calibration Run 0 will tune
+  temporalCurrentBoost: 0.10,      // calibration Run 0 will tune
+  temporalStaleSuppression: 0.10,  // calibration Run 0 will tune
+  lensDiversityFloor: 0.70,        // §6.4; calibration Run 0 confirms
+  corpusDocDedupe: 'canonical-doc-id',
 };
 
 // ─── Build / verify ──────────────────────────────────────────────────────────

@@ -23,6 +23,11 @@ import type {
   ProductionCorpusEvent,
   RetrievalKeyLayout,
 } from './retrieval-corpus.js';
+import {
+  buildPublicCorpusIndex,
+  firstStageCandidates,
+  type PublicCorpusIndex,
+} from './public-corpus-index.js';
 import type { QueryPack } from './hidden-query-pack.js';
 import {
   ndcgAtK,
@@ -93,7 +98,15 @@ export interface ScoringOptions {
   readonly relationHopBudget: number;      // calibrated, typ. 2-3
   readonly abstentionThreshold: number;    // calibrated
   readonly rerankerTopK: number;           // calibrated, e.g. 10
-  readonly retrievalKeyTopK: number;       // calibrated, e.g. 50 from BGE-M3
+
+  // ─── v2-lens pipeline params (substrate-hardening Phase A) ───
+  readonly firstStageTopK: number;             // calibrated per-stratum (Run 1)
+  readonly lensTopK: number;                   // how many lens vectors contribute to stage-2 reweighting
+  readonly lensWeight: number;                 // stage-2 lens bonus scale (Run 0)
+  readonly anchorWeight: number;               // stage-2 anchor bonus scale (Run 0)
+  readonly relationExpansionBudget: number;    // stage-2 relation BFS doc cap (Run 0)
+  readonly temporalCurrentBoost: number;       // stage-2 temporal bonus (current truth)
+  readonly temporalStaleSuppression: number;   // stage-2 temporal penalty (stale truth)
 }
 
 export interface PerQueryBreakdown {
@@ -132,10 +145,34 @@ export interface PatchEvalResult {
 // ─── Scoring ─────────────────────────────────────────────────────────────────
 
 /**
- * Score a single query against the substrate. The substrate provides
- * candidate retrieval-key vectors (top-k by cosine to the query embedding),
- * which are then reranked by the cross-encoder over (query, candidate-doc)
- * pairs from the corpus.
+ * Score a single query against the substrate using the v2-lens pipeline.
+ *
+ * Spec: docs/CORETEX_SUBSTRATE_EXPANSION_HARDENING.md §3.
+ *
+ * Two-stage retrieval, substrate is the bias not the gate:
+ *   Stage 1: blind BGE-M3 cosine over the full public corpus index →
+ *            Top-`firstStageTopK` docs. Substrate-agnostic; same answer
+ *            for every miner against a given query, including a miner
+ *            with no submitted patch.
+ *   Stage 2: substrate-driven bias. Lens vectors (RetrievalKeys), anchor
+ *            exemplars (MemoryIndex), relation BFS expansion, temporal
+ *            modulation. Adds bonuses to rerank scores; bonuses cannot
+ *            manufacture docs from thin air — relation expansion only
+ *            adds docs already in the public corpus, reachable via the
+ *            decoder's domain-share-validated relation edges.
+ *
+ * Anti-cheat invariant: empty substrate → score = stage1 baseline. No
+ * free oracle credit. The labeled corpus is never read by stage-1 (the
+ * `firstStageCandidates` signature accepts only `PublicCorpusIndex`,
+ * which contains no qrels or truth-as-answer-set).
+ *
+ * Pinned formula:
+ *   substrateBonus(d)         = lensBonus(d) + anchorBonus(d) + temporalBonus(d)
+ *   finalReorderingScore(d)   = rerankerScore(d) + substrateBonus(d)
+ *
+ * `max` over active lenses/anchors prevents miners from gaming by
+ * stacking N colinear vectors. The decoder's lens-diversity floor
+ * (substrate-hardening §6.4) closes the residual collapse case.
  */
 export async function scoreSubstrateAgainstQuery(
   decoded: DecodedSubstrate,
@@ -146,54 +183,170 @@ export async function scoreSubstrateAgainstQuery(
   ranked: readonly { documentId: string; relevance: number; rerankerScore: number; memorySlot: number | null }[];
   top1Score: number;
 }> {
-  // 1) Decode candidate retrieval keys → cosine similarity to query embedding.
   const queryVec = dequantize(query.embeddings.query, opts.retrievalKeyLayout);
-  const candidates: { slotIndex: number; cosine: number; recordId: bigint; memorySlotIndex: number }[] = [];
+  const publicIndex = getOrBuildPublicIndex(corpus);
+
+  // ─── Stage 1: substrate-agnostic BGE-M3 first-stage retrieval ────────────
+  const stage1Docs = firstStageCandidates(queryVec, publicIndex, opts.firstStageTopK);
+
+  // Resolve doc text for the reranker pairs (text lives in the labeled corpus).
+  const docTextById = getOrBuildDocTextIndex(corpus);
+
+  // Map: docId → { embedding, text, eventId, memorySlot, provenance }
+  type CandidateRecord = {
+    docId: string;
+    embedding: Uint8Array;
+    text: string;
+    eventId: string;
+    memorySlot: number | null; // anchor slot that brought it via stage-2 (if any)
+    isCurrentTruth: boolean;
+    isStaleTruth: boolean;
+  };
+  const pool = new Map<string, CandidateRecord>();
+
+  for (const d of stage1Docs) {
+    const text = docTextById.get(d.id);
+    if (!text) continue; // skip if text is missing (shouldn't happen with a built index)
+    pool.set(d.id, {
+      docId: d.id,
+      embedding: d.embedding,
+      text,
+      eventId: d.eventId,
+      memorySlot: null,
+      isCurrentTruth: false,
+      isStaleTruth: false,
+    });
+  }
+
+  // ─── Stage 2: substrate-driven candidate expansion via relations BFS ─────
+  // Build an anchor-slot → corpus-event map once per scoring call.
+  const corpusByRecordId = getOrBuildRecordIdIndex(corpus);
+  const anchorSlotToEvent = new Map<number, ProductionCorpusEvent>();
+  for (let m = 0; m < decoded.memoryIndex.length; m++) {
+    const slot = decoded.memoryIndex[m];
+    if (!slot || slot.revoked) continue;
+    const ev = corpusByRecordId.get(slot.recordId);
+    if (ev) anchorSlotToEvent.set(m, ev);
+  }
+
+  // Relation adjacency (sourceSlot → [targetSlot]). Decoder has already
+  // dropped domain-share-failing edges (substrate-hardening §6.4).
+  const relAdj = new Map<number, number[]>();
+  for (const e of decoded.relations) {
+    const arr = relAdj.get(e.sourceSlot) ?? [];
+    arr.push(e.targetSlot);
+    relAdj.set(e.sourceSlot, arr);
+  }
+
+  // BFS from active anchors up to `relationHopBudget` hops; add truth docs of
+  // visited anchors to the pool until `relationExpansionBudget` is reached.
+  let expansionAdded = 0;
+  const visited = new Set<number>(anchorSlotToEvent.keys());
+  let frontier: number[] = Array.from(visited);
+  for (let hop = 0; hop < opts.relationHopBudget && expansionAdded < opts.relationExpansionBudget; hop++) {
+    const next: number[] = [];
+    for (const slot of frontier) {
+      const neighbors = relAdj.get(slot) ?? [];
+      for (const nbr of neighbors) {
+        if (visited.has(nbr)) continue;
+        visited.add(nbr);
+        const ev = anchorSlotToEvent.get(nbr);
+        if (!ev) continue;
+        // Add this neighbor's truth docs to the pool.
+        for (const td of ev.truthDocuments) {
+          if (pool.has(td.id)) continue;
+          const emb = ev.embeddings.perTruth.get(td.id);
+          if (!emb) continue;
+          pool.set(td.id, {
+            docId: td.id,
+            embedding: emb,
+            text: td.text,
+            eventId: ev.id,
+            memorySlot: nbr,
+            isCurrentTruth: td.isCurrent,
+            isStaleTruth: !td.isCurrent,
+          });
+          expansionAdded++;
+          if (expansionAdded >= opts.relationExpansionBudget) break;
+        }
+        next.push(nbr);
+        if (expansionAdded >= opts.relationExpansionBudget) break;
+      }
+      if (expansionAdded >= opts.relationExpansionBudget) break;
+    }
+    frontier = next;
+  }
+
+  // Tag pool entries that match an active anchor directly with the anchor's slot.
+  for (const [slot, ev] of anchorSlotToEvent) {
+    for (const td of ev.truthDocuments) {
+      const entry = pool.get(td.id);
+      if (entry && entry.memorySlot === null) {
+        entry.memorySlot = slot;
+        entry.isCurrentTruth = td.isCurrent;
+        entry.isStaleTruth = !td.isCurrent;
+      }
+    }
+  }
+
+  // ─── Stage 2 bonuses: lens, anchor, temporal ─────────────────────────────
+  const activeLensVecs: Float32Array[] = [];
   for (let s = 0; s < decoded.retrievalKeys.length; s++) {
     const key = decoded.retrievalKeys[s];
     if (!key) continue;
     if (key.modelIdHash.toLowerCase() !== opts.biEncoderHash.toLowerCase()) continue;
-    const candVec = dequantize(key.quantizedBytes, opts.retrievalKeyLayout);
-    const cos = cosineSimilarity(queryVec, candVec);
-    // Find which memory slot points at this retrieval slot.
-    let memSlotIdx = -1;
-    let recordId = 0n;
-    for (let m = 0; m < decoded.memoryIndex.length; m++) {
-      const mem = decoded.memoryIndex[m];
-      if (mem && mem.retrievalSlot === s && !mem.revoked) {
-        memSlotIdx = m;
-        recordId = mem.recordId;
-        break;
-      }
-    }
-    if (memSlotIdx < 0) continue;
-    candidates.push({ slotIndex: s, cosine: cos, recordId, memorySlotIndex: memSlotIdx });
+    activeLensVecs.push(dequantize(key.quantizedBytes, opts.retrievalKeyLayout));
+    if (activeLensVecs.length >= opts.lensTopK) break;
   }
-  candidates.sort((a, b) => b.cosine - a.cosine);
-  const topRetrieval = candidates.slice(0, opts.retrievalKeyTopK);
 
-  // 2) Map each retrieval candidate's memory-slot record id back to a corpus
-  //    record. We have to find any corpus record whose 128-bit truncated id
-  //    matches the substrate's recordId. Production corpora carry this
-  //    mapping in a per-record index; for the v1 scorer we accept any record
-  //    whose stable id keccak256(id) low-128 matches.
-  const allDocs: { documentId: string; recordId: bigint; text: string; memorySlot: number }[] = [];
-  for (const c of topRetrieval) {
-    for (const doc of resolveCorpusDocsForRecordId(c.recordId, corpus)) {
-      allDocs.push({ documentId: doc.id, recordId: c.recordId, text: doc.text, memorySlot: c.memorySlotIndex });
-    }
+  // Anchor truth embeddings (one per active anchor that has a current/sole truth).
+  const anchorTruthVecs: Float32Array[] = [];
+  for (const [, ev] of anchorSlotToEvent) {
+    // Pick the current truth if any, else the first truth.
+    const truth = ev.truthDocuments.find((t) => t.isCurrent) ?? ev.truthDocuments[0];
+    if (!truth) continue;
+    const emb = ev.embeddings.perTruth.get(truth.id);
+    if (!emb) continue;
+    anchorTruthVecs.push(dequantize(emb, opts.retrievalKeyLayout));
   }
-  // Do not inject the query's own truth documents here. The ranked list must be
-  // composed only of documents reachable through substrate retrieval keys;
-  // otherwise an empty or wrong substrate can receive oracle-fed nDCG credit.
 
-  // 3) Rerank with the cross-encoder.
-  const pairs = allDocs.map((d) => ({ query: query.queryText, document: d.text }));
-  const scores = pairs.length === 0 ? [] : await opts.reranker.score(pairs);
-  // Fail-closed on shape mismatch or non-finite scores. Silent zeros
-  // (`scores[i] ?? 0`) would let a malformed reranker subprocess
-  // change rankings under the radar; we reject the eval so the
-  // operator sees a hard error instead of corrupted state.
+  const isTemporalQuery = query.family === 'temporal';
+
+  // Compute substrateBonus per pool entry.
+  const candidates: { record: CandidateRecord; substrateBonus: number; docVec: Float32Array }[] = [];
+  for (const record of pool.values()) {
+    const docVec = dequantize(record.embedding, opts.retrievalKeyLayout);
+
+    let lensMaxCos = 0;
+    for (const lens of activeLensVecs) {
+      const c = cosineSimilarity(docVec, lens);
+      if (c > lensMaxCos) lensMaxCos = c;
+    }
+    const lensBonus = activeLensVecs.length > 0 ? opts.lensWeight * lensMaxCos : 0;
+
+    let anchorMaxCos = 0;
+    for (const av of anchorTruthVecs) {
+      const c = cosineSimilarity(docVec, av);
+      if (c > anchorMaxCos) anchorMaxCos = c;
+    }
+    const anchorBonus = anchorTruthVecs.length > 0 ? opts.anchorWeight * anchorMaxCos : 0;
+
+    let temporalBonus = 0;
+    if (isTemporalQuery) {
+      if (record.isCurrentTruth) temporalBonus = opts.temporalCurrentBoost;
+      else if (record.isStaleTruth) temporalBonus = -opts.temporalStaleSuppression;
+    }
+
+    candidates.push({ record, substrateBonus: lensBonus + anchorBonus + temporalBonus, docVec });
+  }
+
+  if (candidates.length === 0) {
+    return { ranked: [], top1Score: 0 };
+  }
+
+  // ─── Reranker: cross-encoder over (query, candidate-text) pairs ──────────
+  const pairs = candidates.map((c) => ({ query: query.queryText, document: c.record.text }));
+  const scores = await opts.reranker.score(pairs);
   if (scores.length !== pairs.length) {
     throw new Error(
       `retrieval-benchmark: reranker returned ${scores.length} scores for ${pairs.length} pairs`,
@@ -204,18 +357,67 @@ export async function scoreSubstrateAgainstQuery(
       throw new Error(`retrieval-benchmark: reranker score[${i}] is non-finite (${scores[i]})`);
     }
   }
+
+  // ─── Pinned final ranking formula ────────────────────────────────────────
   const qrelById = new Map(query.qrels.map((q) => [q.documentId, q.relevance]));
-  const ranked = allDocs
-    .map((d, i) => ({
-      documentId: d.documentId,
-      memorySlot: d.memorySlot >= 0 ? d.memorySlot : null,
+  const ranked = candidates
+    .map((c, i) => ({
+      documentId: c.record.docId,
+      memorySlot: c.record.memorySlot,
       rerankerScore: scores[i]!,
-      relevance: qrelById.get(d.documentId) ?? 0,
+      finalReorderingScore: scores[i]! + c.substrateBonus,
+      relevance: qrelById.get(c.record.docId) ?? 0,
     }))
-    .sort((a, b) => b.rerankerScore - a.rerankerScore);
+    .sort((a, b) => {
+      if (b.finalReorderingScore !== a.finalReorderingScore) {
+        return b.finalReorderingScore - a.finalReorderingScore;
+      }
+      if (b.rerankerScore !== a.rerankerScore) return b.rerankerScore - a.rerankerScore;
+      return a.documentId < b.documentId ? -1 : a.documentId > b.documentId ? 1 : 0;
+    })
+    .map((r) => ({
+      documentId: r.documentId,
+      memorySlot: r.memorySlot,
+      rerankerScore: r.rerankerScore,
+      relevance: r.relevance,
+    }));
 
   const top1Score = ranked.length > 0 ? ranked[0]!.rerankerScore : 0;
   return { ranked, top1Score };
+}
+
+// ─── Per-call corpus-side index caches ──────────────────────────────────────
+
+const publicIndexCache = new WeakMap<ProductionCorpus, PublicCorpusIndex>();
+function getOrBuildPublicIndex(corpus: ProductionCorpus): PublicCorpusIndex {
+  const cached = publicIndexCache.get(corpus);
+  if (cached) return cached;
+  const idx = buildPublicCorpusIndex(corpus);
+  publicIndexCache.set(corpus, idx);
+  return idx;
+}
+
+const docTextCache = new WeakMap<ProductionCorpus, Map<string, string>>();
+function getOrBuildDocTextIndex(corpus: ProductionCorpus): Map<string, string> {
+  const cached = docTextCache.get(corpus);
+  if (cached) return cached;
+  const map = new Map<string, string>();
+  for (const event of corpus.events) {
+    for (const t of event.truthDocuments) if (!map.has(t.id)) map.set(t.id, t.text);
+    for (const n of event.hardNegatives) if (!map.has(n.id)) map.set(n.id, n.text);
+  }
+  docTextCache.set(corpus, map);
+  return map;
+}
+
+const recordIdIndexCacheV2 = new WeakMap<ProductionCorpus, Map<bigint, ProductionCorpusEvent>>();
+function getOrBuildRecordIdIndex(corpus: ProductionCorpus): Map<bigint, ProductionCorpusEvent> {
+  const cached = recordIdIndexCacheV2.get(corpus);
+  if (cached) return cached;
+  const built = new Map<bigint, ProductionCorpusEvent>();
+  for (const e of corpus.events) built.set(stableRecordIdFor(e.id), e);
+  recordIdIndexCacheV2.set(corpus, built);
+  return built;
 }
 
 function resolveCorpusDocsForRecordId(

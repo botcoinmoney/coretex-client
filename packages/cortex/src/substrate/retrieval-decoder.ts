@@ -76,6 +76,12 @@ export interface CodebookEntry {
   readonly payloadCont: bigint;       // word 1
 }
 
+export interface LensDiversityCheck {
+  readonly ok: boolean;
+  readonly reason?: 'lens-diversity-collapse';
+  readonly meanPairwiseCosine?: number;
+}
+
 export interface DecodedSubstrate {
   readonly memoryIndex: ReadonlyArray<MemoryIndexSlot | null>;     // length 44
   readonly retrievalKeys: ReadonlyArray<RetrievalKeySlot | null>;  // length 36
@@ -85,6 +91,20 @@ export interface DecodedSubstrate {
   readonly decodedSlots: number;
   readonly decodeFailures: number;
   readonly decodeAttempts: number;
+  /**
+   * §6.4 lens-diversity floor result. Present only when `lensDiversityFloor`
+   * and `retrievalKeyLayout` are supplied via DecoderOptions; otherwise the
+   * check is skipped and this field is absent. When `ok: false`, the
+   * substrate fails structural-validity (see `structuralValidity()`).
+   */
+  readonly lensDiversityCheck?: LensDiversityCheck;
+  /**
+   * §6.4 relation-edge domain-share predicate: count of relation edges
+   * dropped during decode because their source/target MemoryIndex slots
+   * did not share at least one domain bit (or had no domain set). Telemetry
+   * only; not a failure (the substrate remains structurally valid).
+   */
+  readonly relationsDroppedByDomainPredicate: number;
 }
 
 export interface DecoderOptions {
@@ -100,6 +120,28 @@ export interface DecoderOptions {
    * vector payload starts.
    */
   readonly retrievalKeyHeaderBytes?: number;
+  /**
+   * §6.4 lens-diversity floor: maximum allowed mean pairwise cosine across
+   * active retrieval-key (lens) vectors. When supplied alongside
+   * `retrievalKeyLayout`, `decodeSubstrate` runs `checkLensDiversity` and
+   * populates `lensDiversityCheck` on the result. When the measured mean
+   * pairwise cosine exceeds the floor (strict >), the substrate fails
+   * structural-validity (per §6.4 the substrate is rejected). Mean cosine
+   * exactly equal to the floor passes (the floor is the upper bound the
+   * miner is allowed to operate at).
+   */
+  readonly lensDiversityFloor?: number;
+  /**
+   * Full retrieval-key layout (dim + headerBytes + quantization). Required
+   * for the lens-diversity check to dequantize active lens vectors. When
+   * omitted, the diversity check is skipped even if `lensDiversityFloor`
+   * is provided.
+   */
+  readonly retrievalKeyLayout?: {
+    readonly dim: number;
+    readonly headerBytes: number;
+    readonly quantization: 'int8' | 'bf16';
+  };
 }
 
 // ─── Family enum ──────────────────────────────────────────────────────────────
@@ -510,6 +552,133 @@ export function decodeCodebook(state: CortexState): {
   return { entries, attempts, failures };
 }
 
+// ─── §6.4 lens-diversity floor ────────────────────────────────────────────────
+
+/**
+ * Dequantize a retrieval-key slot's payload bytes into a unit-scaled Float32
+ * vector. Mirrors the int8/bf16 decoders used by `eval/bi-encoder.ts` and
+ * `eval/public-corpus-index.ts`; kept inline here so the substrate decoder
+ * has no upward dependency on the eval layer.
+ *
+ * For int8: assumes a leading float32 BE scale (4 bytes) immediately before
+ * the per-dim int8 codes, matching the per-vector layout used by the public
+ * corpus index. The `headerBytes` value pins where the int8 codes start in
+ * the *slot*-relative byte stream — but the scale lives at the front of the
+ * post-header payload, not at slot byte 0.
+ */
+function dequantizeKeyVector(
+  bytes: Uint8Array,
+  layout: { readonly dim: number; readonly quantization: 'int8' | 'bf16' },
+): Float32Array {
+  const dim = layout.dim;
+  const out = new Float32Array(dim);
+  if (layout.quantization === 'int8') {
+    if (bytes.length < 4 + dim) return out; // structurally short → zero vector
+    const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const scale = dv.getFloat32(0, false);
+    for (let i = 0; i < dim; i++) {
+      const raw = bytes[4 + i]!;
+      const signed = raw < 128 ? raw : raw - 256;
+      out[i] = signed * scale;
+    }
+    return out;
+  }
+  // bf16
+  if (bytes.length < dim * 2) return out;
+  const tmp = new ArrayBuffer(4);
+  const tmpDv = new DataView(tmp);
+  for (let i = 0; i < dim; i++) {
+    const hi = bytes[i * 2]!;
+    const lo = bytes[i * 2 + 1]!;
+    tmpDv.setUint32(0, (hi << 24) | (lo << 16), false);
+    out[i] = tmpDv.getFloat32(0, false);
+  }
+  return out;
+}
+
+function cosineSim(a: Float32Array, b: Float32Array): number {
+  let dot = 0;
+  let na = 0;
+  let nb = 0;
+  const n = Math.min(a.length, b.length);
+  for (let i = 0; i < n; i++) {
+    const x = a[i]!;
+    const y = b[i]!;
+    dot += x * y;
+    na += x * x;
+    nb += y * y;
+  }
+  if (na <= 0 || nb <= 0) return 0;
+  return dot / (Math.sqrt(na) * Math.sqrt(nb));
+}
+
+/**
+ * §6.4 lens-diversity floor.
+ *
+ * Computes the mean pairwise cosine across active retrieval-key (lens)
+ * vectors. Returns `ok: false` with `reason: 'lens-diversity-collapse'`
+ * when the mean exceeds the supplied floor (strict greater-than). A mean
+ * equal to the floor is admitted — the floor is the upper bound the miner
+ * is allowed to operate at.
+ *
+ * If fewer than two active keys are present, the check is a no-op
+ * (`{ ok: true }`) — there is no pairwise mean to compute. The
+ * `meanPairwiseCosine` field is always populated when there is at least
+ * one pair, regardless of pass/fail, for telemetry.
+ *
+ * Spec: docs/CORETEX_SUBSTRATE_EXPANSION_HARDENING.md §6.4.
+ */
+export function checkLensDiversity(
+  retrievalKeys: ReadonlyArray<RetrievalKeySlot | null>,
+  lensDiversityFloor: number,
+  layout: { readonly dim: number; readonly headerBytes: number; readonly quantization: 'int8' | 'bf16' },
+): LensDiversityCheck {
+  const active: RetrievalKeySlot[] = [];
+  for (const k of retrievalKeys) {
+    if (k) active.push(k);
+  }
+  if (active.length < 2) return { ok: true };
+
+  const vecs: Float32Array[] = active.map((k) => dequantizeKeyVector(k.quantizedBytes, layout));
+
+  let sum = 0;
+  let pairs = 0;
+  for (let i = 0; i < vecs.length; i++) {
+    for (let j = i + 1; j < vecs.length; j++) {
+      sum += cosineSim(vecs[i]!, vecs[j]!);
+      pairs++;
+    }
+  }
+  const meanPairwiseCosine = pairs > 0 ? sum / pairs : 0;
+  if (meanPairwiseCosine > lensDiversityFloor) {
+    return { ok: false, reason: 'lens-diversity-collapse', meanPairwiseCosine };
+  }
+  return { ok: true, meanPairwiseCosine };
+}
+
+// ─── §6.4 relation-edge domain-share predicate ────────────────────────────────
+
+/**
+ * Returns true when both endpoints of `edge` resolve to active MemoryIndex
+ * slots that share at least one domain bit. Edges that fail this predicate
+ * are dropped silently by `decodeSubstrate` (the substrate as a whole stays
+ * structurally valid; the offending edge simply does not contribute to BFS
+ * expansion downstream).
+ *
+ * Spec: docs/CORETEX_SUBSTRATE_EXPANSION_HARDENING.md §6.4.
+ */
+export function relationEdgeValid(
+  edge: RelationEdge,
+  memoryIndex: ReadonlyArray<MemoryIndexSlot | null>,
+): boolean {
+  const src = memoryIndex[edge.sourceSlot];
+  const tgt = memoryIndex[edge.targetSlot];
+  if (!src || !tgt) return false;
+  if (!src.valid || !tgt.valid) return false;
+  if (src.domainBits === 0n || tgt.domainBits === 0n) return false;
+  return (src.domainBits & tgt.domainBits) !== 0n;
+}
+
 // ─── Composite ────────────────────────────────────────────────────────────────
 
 export function decodeSubstrate(state: CortexState, opts: DecoderOptions = {}): DecodedSubstrate {
@@ -540,21 +709,47 @@ export function decodeSubstrate(state: CortexState, opts: DecoderOptions = {}): 
     filteredTemporal.push(t);
   }
 
+  // §6.4 relation-edge domain-share predicate. Drop edges where the two
+  // endpoints do not share at least one domainBits bit. This is *not* a
+  // decode failure — the substrate remains structurally valid; the edge
+  // is simply not part of the decoded graph.
+  const filteredRelations: RelationEdge[] = [];
+  let relationsDroppedByDomainPredicate = 0;
+  for (const e of relations.edges) {
+    if (relationEdgeValid(e, memory.slots)) {
+      filteredRelations.push(e);
+    } else {
+      relationsDroppedByDomainPredicate++;
+    }
+  }
+
   const decodeAttempts =
     memory.attempts + keys.attempts + relations.attempts + temporal.attempts + codebook.attempts + crossAttempts;
   const decodeFailures =
     memory.failures + keys.failures + relations.failures + temporal.failures + codebook.failures + crossFailures;
   const decodedSlots = decodeAttempts - decodeFailures;
 
+  // §6.4 lens-diversity floor. Only runs when both floor and layout are
+  // supplied (otherwise we cannot dequantize the lens vectors). When the
+  // check fails, the result lives on `decoded.lensDiversityCheck` and the
+  // existing `structuralValidity()` helper drives it to 0 — that is the
+  // single wire-level diagnostic miners see (per spec §6.4).
+  let lensDiversityCheck: LensDiversityCheck | undefined;
+  if (typeof opts.lensDiversityFloor === 'number' && opts.retrievalKeyLayout) {
+    lensDiversityCheck = checkLensDiversity(keys.slots, opts.lensDiversityFloor, opts.retrievalKeyLayout);
+  }
+
   return {
     memoryIndex: memory.slots,
     retrievalKeys: keys.slots,
-    relations: relations.edges,
+    relations: filteredRelations,
     temporal: filteredTemporal,
     codebook: codebook.entries,
     decodedSlots,
     decodeFailures,
     decodeAttempts,
+    ...(lensDiversityCheck ? { lensDiversityCheck } : {}),
+    relationsDroppedByDomainPredicate,
   };
 }
 
