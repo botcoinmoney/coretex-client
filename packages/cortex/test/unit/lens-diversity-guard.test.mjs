@@ -334,14 +334,29 @@ describe('§6.6 pipelineVersion pin enforcement', () => {
     );
   });
 
-  test('CORETEX_PIPELINE_VERSION_OVERRIDE env var bypasses the mismatch', () => {
+  test('no env-var escape hatch — mismatch always fails closed', () => {
+    // Setting any plausible "override" env var must NOT bypass the check.
+    // Strict integrity: cross-version replay is never silently allowed.
     const original = process.env.CORETEX_PIPELINE_VERSION_OVERRIDE;
     try {
       process.env.CORETEX_PIPELINE_VERSION_OVERRIDE = 'coretex-retrieval-v3-future';
-      assert.doesNotThrow(() => assertPipelineVersionMatches('coretex-retrieval-v3-future'));
+      assert.throws(
+        () => assertPipelineVersionMatches('coretex-retrieval-v3-future'),
+        /pipelineVersion mismatch/,
+      );
     } finally {
       if (original === undefined) delete process.env.CORETEX_PIPELINE_VERSION_OVERRIDE;
       else process.env.CORETEX_PIPELINE_VERSION_OVERRIDE = original;
     }
+  });
+
+  test('error message does not advertise any bypass env var', () => {
+    let captured;
+    try { assertPipelineVersionMatches('coretex-retrieval-v3-future'); }
+    catch (err) { captured = err; }
+    assert.ok(captured, 'expected throw');
+    // No env-var name (legacy CORETEX_PIPELINE_VERSION_OVERRIDE, anything *_OVERRIDE)
+    // and no "set X to bypass" instruction — message must not advertise a workaround.
+    assert.doesNotMatch(captured.message, /_OVERRIDE|set\s+\S+\s+to\s+bypass/i);
   });
 });

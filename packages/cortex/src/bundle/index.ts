@@ -196,6 +196,14 @@ export interface EvaluatorProfile {
   readonly lensDiversityFloor?: number;
   /** §6.1 pinned dedupe algorithm for PublicCorpusIndex. */
   readonly corpusDocDedupe?: 'canonical-doc-id';
+  /**
+   * §5 Run 1 selection-policy attestation. When `firstStageTopK` is pinned via
+   * the per-stratum recall@K rule WITHOUT meeting the target on all strata,
+   * this field records the operator-override decision in the signed bundle so
+   * replay validators see that the override is explicit (not a silent threshold
+   * violation). Hashed into `bundleHash` — any change requires a new bundle.
+   */
+  readonly firstStageTopKSelection?: FirstStageTopKSelection;
   readonly revealGracePeriodSeconds: number;
   /**
    * Maps each hard-negative category emitted by the corpus generator to
@@ -282,6 +290,26 @@ export interface EvaluatorProfile {
    * single-source-of-truth behavior).
    */
   readonly corpusStagingPolicy?: CorpusStagingPolicyPin;
+}
+
+/**
+ * §5 attestation of how `firstStageTopK` was chosen. Embedded in
+ * `EvaluatorProfile` and therefore in the canonical bundle JSON that
+ * `bundleHash` is computed over — every override claim is signed.
+ *
+ * - `worst-stratum-target` — K met the per-stratum recall@K floor on
+ *   every family; `calibrationReport` MUST reference the Run 1 artifact.
+ * - `operator-override` — at least one family failed the floor and the
+ *   operator deliberately accepted that, expecting substrate-level BFS
+ *   to bridge those families; `substrateBridgedFamilies` MUST list
+ *   them, and `reason` MUST explain why (free-form, ≥ 16 chars).
+ */
+export interface FirstStageTopKSelection {
+  readonly method: 'worst-stratum-target' | 'operator-override';
+  readonly reason: string;
+  readonly servedFamilyRecallAtPinnedK?: Readonly<Record<string, number>>;
+  readonly substrateBridgedFamilies?: readonly string[];
+  readonly calibrationReport?: string;
 }
 
 export interface BaseRpcConfigPin {
@@ -675,6 +703,15 @@ export const DEFAULT_PROFILE: EvaluatorProfile = {
   temporalStaleSuppression: 0.10,  // calibration Run 0 will tune
   lensDiversityFloor: 0.70,        // §6.4; calibration Run 0 confirms
   corpusDocDedupe: 'canonical-doc-id',
+  // §5 selection-policy attestation. The DEFAULT_PROFILE's K=200 is a
+  // pre-calibration placeholder; calibration Run 1 replaces this with
+  // the production-pinned value AND its method (worst-stratum-target
+  // when the floor is met, operator-override otherwise).
+  firstStageTopKSelection: {
+    method: 'worst-stratum-target',
+    reason: 'DEFAULT_PROFILE placeholder; calibration Run 1 replaces this with the production-pinned method and evidence.',
+    calibrationReport: 'release/calibration/first-stage-topk-sweep.json',
+  },
 };
 
 // ─── Build / verify ──────────────────────────────────────────────────────────
@@ -1046,6 +1083,51 @@ function validateProfile(profile: EvaluatorProfile, errors?: string[]): void {
       out.push('corpusStagingPolicy.routineDeltaMaxMajorFraction must be in (0, 1]');
     if (!Number.isInteger(sp.initialActiveRunwayDays) || sp.initialActiveRunwayDays < 1)
       out.push('corpusStagingPolicy.initialActiveRunwayDays must be a positive integer');
+  }
+
+  // §5 Run 1 selection-policy attestation. Required whenever firstStageTopK
+  // is pinned — otherwise a bundle can claim a K that didn't meet the
+  // per-stratum recall@K target without leaving any signed evidence.
+  if (profile.firstStageTopK && profile.firstStageTopK > 0) {
+    const sel = profile.firstStageTopKSelection;
+    if (!sel || typeof sel !== 'object') {
+      out.push('firstStageTopKSelection is required when firstStageTopK > 0');
+    } else {
+      if (sel.method !== 'worst-stratum-target' && sel.method !== 'operator-override') {
+        out.push("firstStageTopKSelection.method must be 'worst-stratum-target' or 'operator-override'");
+      }
+      if (typeof sel.reason !== 'string' || sel.reason.trim().length < 16) {
+        out.push('firstStageTopKSelection.reason must be a descriptive string (>= 16 chars)');
+      }
+      if (sel.method === 'worst-stratum-target') {
+        if (typeof sel.calibrationReport !== 'string' || sel.calibrationReport.trim().length === 0) {
+          out.push("firstStageTopKSelection.calibrationReport is required when method='worst-stratum-target'");
+        }
+      } else if (sel.method === 'operator-override') {
+        if (!Array.isArray(sel.substrateBridgedFamilies) || sel.substrateBridgedFamilies.length === 0) {
+          out.push("firstStageTopKSelection.substrateBridgedFamilies must be a non-empty array when method='operator-override'");
+        } else {
+          for (const fam of sel.substrateBridgedFamilies) {
+            if (typeof fam !== 'string' || fam.length === 0) {
+              out.push('firstStageTopKSelection.substrateBridgedFamilies entries must be non-empty strings');
+              break;
+            }
+          }
+        }
+        if (sel.servedFamilyRecallAtPinnedK !== undefined) {
+          const r = sel.servedFamilyRecallAtPinnedK;
+          if (typeof r !== 'object' || r === null) {
+            out.push('firstStageTopKSelection.servedFamilyRecallAtPinnedK must be an object when present');
+          } else {
+            for (const [fam, val] of Object.entries(r)) {
+              if (typeof val !== 'number' || Number.isNaN(val) || val < 0 || val > 1) {
+                out.push(`firstStageTopKSelection.servedFamilyRecallAtPinnedK.${fam} must be a number in [0, 1] (got ${String(val)})`);
+              }
+            }
+          }
+        }
+      }
+    }
   }
 
   if (!errors && out.length) throw new Error(out.join('; '));

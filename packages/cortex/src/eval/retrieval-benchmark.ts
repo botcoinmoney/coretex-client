@@ -59,22 +59,19 @@ export const DEFAULT_COMPOSITE_WEIGHTS: CompositeWeights = {
 /**
  * §6.6 pipeline-version pin enforcement. The bundle profile pins
  * `pipelineVersion` so a replay validator routes to the matching code
- * path. When a binary scoring against a bundle that pins a different
+ * path. When a binary scores against a bundle that pins a different
  * version (future migration, downgrade attempt), throw fail-closed so
- * scoring doesn't silently produce wrong numbers. An explicit
- * CORETEX_PIPELINE_VERSION_OVERRIDE env var skips the check for
- * emergency rollback windows — leaves an audit trail in the env.
+ * scoring doesn't silently produce wrong numbers. No env-var bypass:
+ * a mismatch ALWAYS fails closed — operators upgrade the binary or
+ * downgrade the bundle, but never silently cross versions.
  */
 export function assertPipelineVersionMatches(bundlePin?: string): void {
   if (!bundlePin) return; // older bundles without the pin: caller decides
   if (bundlePin === CORETEX_PIPELINE_VERSION_THIS_BINARY) return;
-  const override = (globalThis as { process?: { env?: Record<string, string | undefined> } })
-    .process?.env?.CORETEX_PIPELINE_VERSION_OVERRIDE;
-  if (override === bundlePin) return;
   throw new Error(
     `pipelineVersion mismatch: bundle pins '${bundlePin}', this binary implements ` +
-    `'${CORETEX_PIPELINE_VERSION_THIS_BINARY}'. Set CORETEX_PIPELINE_VERSION_OVERRIDE='${bundlePin}' ` +
-    `to bypass for emergency rollback.`,
+    `'${CORETEX_PIPELINE_VERSION_THIS_BINARY}'. Run a binary whose pipeline matches the ` +
+    `bundle (or rebuild the bundle against this binary's pipeline) — no override exists.`,
   );
 }
 
@@ -150,9 +147,8 @@ export interface ScoringOptions {
 }
 
 /** The pipeline version this codebase implements. Bundles that pin a
- *  different value cannot be replayed by this binary; an explicit
- *  CORETEX_PIPELINE_VERSION_OVERRIDE env var skips the check for
- *  emergency rollback windows. */
+ *  different value cannot be replayed by this binary — there is no
+ *  override; operators upgrade the binary or rebuild the bundle. */
 export const CORETEX_PIPELINE_VERSION_THIS_BINARY = 'coretex-retrieval-v2-lens';
 
 export interface PerQueryBreakdown {
