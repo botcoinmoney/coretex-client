@@ -56,6 +56,28 @@ export const DEFAULT_COMPOSITE_WEIGHTS: CompositeWeights = {
   w_structural_sanity: 0.05,
 };
 
+/**
+ * §6.6 pipeline-version pin enforcement. The bundle profile pins
+ * `pipelineVersion` so a replay validator routes to the matching code
+ * path. When a binary scoring against a bundle that pins a different
+ * version (future migration, downgrade attempt), throw fail-closed so
+ * scoring doesn't silently produce wrong numbers. An explicit
+ * CORETEX_PIPELINE_VERSION_OVERRIDE env var skips the check for
+ * emergency rollback windows — leaves an audit trail in the env.
+ */
+export function assertPipelineVersionMatches(bundlePin?: string): void {
+  if (!bundlePin) return; // older bundles without the pin: caller decides
+  if (bundlePin === CORETEX_PIPELINE_VERSION_THIS_BINARY) return;
+  const override = (globalThis as { process?: { env?: Record<string, string | undefined> } })
+    .process?.env?.CORETEX_PIPELINE_VERSION_OVERRIDE;
+  if (override === bundlePin) return;
+  throw new Error(
+    `pipelineVersion mismatch: bundle pins '${bundlePin}', this binary implements ` +
+    `'${CORETEX_PIPELINE_VERSION_THIS_BINARY}'. Set CORETEX_PIPELINE_VERSION_OVERRIDE='${bundlePin}' ` +
+    `to bypass for emergency rollback.`,
+  );
+}
+
 export function assertValidWeights(w: CompositeWeights): void {
   const sum = w.w_retrieval + w.w_temporal + w.w_relation_recall + w.w_abstention + w.w_structural_sanity;
   if (Math.abs(sum - 1) > 1e-6) throw new Error(`composite weights must sum to 1.0 (got ${sum})`);
@@ -107,7 +129,31 @@ export interface ScoringOptions {
   readonly relationExpansionBudget: number;    // stage-2 relation BFS doc cap (Run 0)
   readonly temporalCurrentBoost: number;       // stage-2 temporal bonus (current truth)
   readonly temporalStaleSuppression: number;   // stage-2 temporal penalty (stale truth)
+
+  /**
+   * §6.4 lens-diversity floor — wired into `decodeSubstrate` so a substrate
+   * whose active lens vectors collapse onto one direction fails structural
+   * validity and the scorer composite floors to zero. Mandatory: when
+   * omitted, the floor check is skipped and a collapsed substrate scores
+   * normally. Hosts pass `profile.lensDiversityFloor` here.
+   */
+  readonly lensDiversityFloor?: number;
+
+  /**
+   * §6.6 pipeline-version pin. When set, the scorer asserts the bundle's
+   * pinned pipeline matches what this code implements (currently
+   * `'coretex-retrieval-v2-lens'`). Replay validators consume the pin to
+   * route to the matching code path; a bundle that pins a future version
+   * cannot be replayed by an older binary without an explicit override.
+   */
+  readonly pipelineVersion?: string;
 }
+
+/** The pipeline version this codebase implements. Bundles that pin a
+ *  different value cannot be replayed by this binary; an explicit
+ *  CORETEX_PIPELINE_VERSION_OVERRIDE env var skips the check for
+ *  emergency rollback windows. */
+export const CORETEX_PIPELINE_VERSION_THIS_BINARY = 'coretex-retrieval-v2-lens';
 
 export interface PerQueryBreakdown {
   readonly recordId: string;
@@ -693,9 +739,17 @@ export async function evaluateRetrievalBenchmarkState(
   opts: ScoringOptions,
 ): Promise<CompositeScore> {
   assertValidWeights(opts.weights);
+  assertPipelineVersionMatches(opts.pipelineVersion);
+  // §6.4 lens-diversity floor — only effective when the bundle pins the
+  // floor AND we pass the full retrievalKeyLayout (decoder needs `dim`
+  // and quantization to dequantize lens vectors). Without these, the
+  // floor check is skipped and a collapsed substrate scores normally.
   const decoded = decodeSubstrate(state, {
     biEncoderModelIdHash: opts.biEncoderHash,
     retrievalKeyHeaderBytes: opts.retrievalKeyLayout.headerBytes,
+    ...(typeof opts.lensDiversityFloor === 'number'
+      ? { lensDiversityFloor: opts.lensDiversityFloor, retrievalKeyLayout: opts.retrievalKeyLayout }
+      : {}),
   });
   const sv = structuralValidity(decoded);
 

@@ -13,6 +13,15 @@ import {
   decodeSubstrate,
   encodeRetrievalKeySlot,
   structuralValidity,
+  evaluateRetrievalBenchmarkState,
+  CORETEX_PIPELINE_VERSION_THIS_BINARY,
+  assertPipelineVersionMatches,
+  createDeterministicReranker,
+  createDeterministicBiEncoder,
+  biEncoderModelIdHash,
+  computeCorpusRoot,
+  splitForRecord,
+  DEFAULT_PROFILE,
 } from '../../dist/index.js';
 import { RANGES } from '../../dist/state/types.js';
 
@@ -191,5 +200,148 @@ describe('§6.4 lens-diversity floor — checkLensDiversity', () => {
     );
     assert.equal(res.ok, true);
     assert.ok(Math.abs(res.meanPairwiseCosine - 0.5) < 5e-2);
+  });
+});
+
+// ─── Live-scorer wire-up: the guard must trigger via evaluateRetrievalBenchmarkState ─
+
+describe('§6.4 lens-diversity floor — wired into live scorer', () => {
+  // Build a tiny corpus + pack so we can score in-process.
+  const BI = { modelId: 'BAAI/bge-m3', revision: 'a'.repeat(40), mode: 'dense' };
+  const LAYOUT_SMALL = { dim: 8, quantization: 'int8', headerBytes: 9 };
+
+  function makeEvent(id, family, corpusEpoch = 0) {
+    const split = splitForRecord(id, corpusEpoch);
+    return {
+      id, family, domain: 'companies', split,
+      queryText: `q-${id}`,
+      truthDocuments: [{ id: `${id}::truth`, text: `truth-${id}`, isCurrent: true }],
+      hardNegatives: [{ id: `${id}::neg0`, text: `wrong-${id}-0` }],
+      qrels: [{ documentId: `${id}::truth`, relevance: 1.0 }, { documentId: `${id}::neg0`, relevance: 0.0 }],
+      protected: false,
+      provenance: { source: 'synthetic_challenge', sourceHash: '0x' + 'aa'.repeat(32) },
+      embeddings: {
+        modelId: BI.modelId, revision: BI.revision, layout: LAYOUT_SMALL,
+        query: new Uint8Array(LAYOUT_SMALL.dim + 4),
+        perTruth: new Map([[`${id}::truth`, new Uint8Array(LAYOUT_SMALL.dim + 4)]]),
+        perNegative: new Map([[`${id}::neg0`, new Uint8Array(LAYOUT_SMALL.dim + 4)]]),
+      },
+    };
+  }
+
+  test('collapsed-lens substrate fails structural validity via live scorer (not just decode)', async () => {
+    const events = Array.from({ length: 8 }, (_, i) => makeEvent(`r${i}`, 'near_collision'));
+    const corpus = {
+      events,
+      byId: new Map(events.map((e) => [e.id, e])),
+      corpusRoot: computeCorpusRoot(events),
+      corpusEpoch: 0,
+      biEncoderModelId: BI.modelId, biEncoderRevision: BI.revision,
+      biEncoderRetrievalKeyLayout: LAYOUT_SMALL,
+      labelingModelId: 'memreranker/4B', labelingModelRevision: 'b'.repeat(40),
+    };
+
+    // Build a substrate with 4 active retrieval keys ALL colinear (identical bytes).
+    const RANGES_LOCAL = { RETRIEVAL_KEYS_START: 384 };
+    const collapsedBytes = new Uint8Array(LAYOUT_SMALL.dim + 4);
+    // Scale = small fp32 BE; body = constant int8 in one direction
+    const dv = new DataView(collapsedBytes.buffer);
+    dv.setFloat32(0, 0.01, false);
+    for (let i = 4; i < collapsedBytes.length; i++) collapsedBytes[i] = 127;
+    const biEncoderHash = biEncoderModelIdHash(BI.modelId, BI.revision, BI.mode);
+    const words = new Array(1024).fill(0n);
+    for (let s = 0; s < 4; s++) {
+      const key = {
+        slotIndex: s, modelIdHash: biEncoderHash, l2Norm: 1, versionTag: 1,
+        quantizedBytes: collapsedBytes,
+      };
+      const w = encodeRetrievalKeySlot(key, { retrievalKeyHeaderBytes: LAYOUT_SMALL.headerBytes });
+      const base = RANGES_LOCAL.RETRIEVAL_KEYS_START + s * 8;
+      for (let j = 0; j < 8; j++) words[base + j] = w[j];
+    }
+    const collapsedState = { words };
+
+    const reranker = await createDeterministicReranker();
+    const biEncoder = createDeterministicBiEncoder({ modelId: BI.modelId, revision: BI.revision, layout: LAYOUT_SMALL });
+    const pack = { epochId: 0, evalSeedCommit: '0x' + '11'.repeat(32), events: events.slice(0, 2) };
+    const opts = {
+      weights: DEFAULT_PROFILE.compositeWeights,
+      biEncoder, reranker,
+      retrievalKeyLayout: LAYOUT_SMALL,
+      biEncoderHash,
+      relationHopBudget: 2, abstentionThreshold: 0.001, rerankerTopK: 10, retrievalKeyTopK: 50,
+      firstStageTopK: 50, lensTopK: 36, lensWeight: 0.1, anchorWeight: 0.15,
+      relationExpansionBudget: 50, temporalCurrentBoost: 0.1, temporalStaleSuppression: 0.1,
+      lensDiversityFloor: 0.70,                                    // pinned in profile
+      pipelineVersion: CORETEX_PIPELINE_VERSION_THIS_BINARY,
+    };
+
+    const score = await evaluateRetrievalBenchmarkState(collapsedState, corpus, pack, opts);
+    // Collapsed lenses → structuralValidity = 0; composite includes the
+    // w_structural_sanity weight (0.05) but it gets multiplied by sv=0.
+    assert.equal(score.structuralValidity, 0, 'structural validity must drop to 0 on lens collapse via live scorer');
+  });
+
+  test('non-collapsed substrate passes structural validity via live scorer', async () => {
+    const events = Array.from({ length: 8 }, (_, i) => makeEvent(`r${i}`, 'near_collision'));
+    const corpus = {
+      events,
+      byId: new Map(events.map((e) => [e.id, e])),
+      corpusRoot: computeCorpusRoot(events),
+      corpusEpoch: 0,
+      biEncoderModelId: BI.modelId, biEncoderRevision: BI.revision,
+      biEncoderRetrievalKeyLayout: LAYOUT_SMALL,
+      labelingModelId: 'memreranker/4B', labelingModelRevision: 'b'.repeat(40),
+    };
+
+    const reranker = await createDeterministicReranker();
+    const biEncoder = createDeterministicBiEncoder({ modelId: BI.modelId, revision: BI.revision, layout: LAYOUT_SMALL });
+    const pack = { epochId: 0, evalSeedCommit: '0x' + '11'.repeat(32), events: events.slice(0, 2) };
+    const opts = {
+      weights: DEFAULT_PROFILE.compositeWeights,
+      biEncoder, reranker, retrievalKeyLayout: LAYOUT_SMALL,
+      biEncoderHash: biEncoderModelIdHash(BI.modelId, BI.revision, BI.mode),
+      relationHopBudget: 2, abstentionThreshold: 0.001, rerankerTopK: 10, retrievalKeyTopK: 50,
+      firstStageTopK: 50, lensTopK: 36, lensWeight: 0.1, anchorWeight: 0.15,
+      relationExpansionBudget: 50, temporalCurrentBoost: 0.1, temporalStaleSuppression: 0.1,
+      lensDiversityFloor: 0.70,
+      pipelineVersion: CORETEX_PIPELINE_VERSION_THIS_BINARY,
+    };
+
+    // Empty substrate — no active lenses → diversity check returns ok=true (nothing to collapse).
+    const ZERO = { words: new Array(1024).fill(0n) };
+    const score = await evaluateRetrievalBenchmarkState(ZERO, corpus, pack, opts);
+    assert.equal(score.structuralValidity, 1, 'empty substrate must pass structural validity');
+  });
+});
+
+// ─── §6.6 pipeline-version pin enforcement ─────────────────────────────────────
+
+describe('§6.6 pipelineVersion pin enforcement', () => {
+  test('assertPipelineVersionMatches accepts the binary\'s own version', () => {
+    assert.doesNotThrow(() => assertPipelineVersionMatches(CORETEX_PIPELINE_VERSION_THIS_BINARY));
+  });
+
+  test('assertPipelineVersionMatches accepts undefined (older bundles without the pin)', () => {
+    assert.doesNotThrow(() => assertPipelineVersionMatches(undefined));
+    assert.doesNotThrow(() => assertPipelineVersionMatches(''));
+  });
+
+  test('assertPipelineVersionMatches throws on mismatch', () => {
+    assert.throws(
+      () => assertPipelineVersionMatches('coretex-retrieval-v3-future'),
+      /pipelineVersion mismatch/,
+    );
+  });
+
+  test('CORETEX_PIPELINE_VERSION_OVERRIDE env var bypasses the mismatch', () => {
+    const original = process.env.CORETEX_PIPELINE_VERSION_OVERRIDE;
+    try {
+      process.env.CORETEX_PIPELINE_VERSION_OVERRIDE = 'coretex-retrieval-v3-future';
+      assert.doesNotThrow(() => assertPipelineVersionMatches('coretex-retrieval-v3-future'));
+    } finally {
+      if (original === undefined) delete process.env.CORETEX_PIPELINE_VERSION_OVERRIDE;
+      else process.env.CORETEX_PIPELINE_VERSION_OVERRIDE = original;
+    }
   });
 });
