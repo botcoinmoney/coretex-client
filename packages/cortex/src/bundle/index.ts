@@ -734,7 +734,7 @@ export function verifyBundleManifest(manifest: CoreTexBundleManifest, repoRoot: 
       errors.push(`${file.path}: missing`);
       continue;
     }
-    const got = sha256Hex(readFileSync(abs));
+    const got = sha256HexStreaming(abs);
     if (got !== file.sha256.toLowerCase()) errors.push(`${file.path}: sha256 mismatch`);
   }
 

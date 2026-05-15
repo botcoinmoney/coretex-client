@@ -31,6 +31,7 @@ export * from './eval/live-eval-admission.js';
 export * from './eval/reranker.js';
 export * from './eval/bi-encoder.js';
 export * from './eval/retrieval-corpus.js';
+export * from './eval/public-corpus-index.js';
 export * from './eval/retrieval-benchmark.js';
 export * from './eval/ir-metrics.js';
 export * from './eval/hidden-query-pack.js';
