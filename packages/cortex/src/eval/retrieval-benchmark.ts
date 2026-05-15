@@ -187,7 +187,14 @@ export async function scoreSubstrateAgainstQuery(
   const publicIndex = getOrBuildPublicIndex(corpus);
 
   // ─── Stage 1: substrate-agnostic BGE-M3 first-stage retrieval ────────────
-  const stage1Docs = firstStageCandidates(queryVec, publicIndex, opts.firstStageTopK);
+  // Stage-1 output is substrate-agnostic — depends only on (queryVec,
+  // publicIndex, K). The same query scored twice in a dual-pack flow
+  // (parent vs candidate substrate) shares its Top-K. Cache per
+  // (corpus, query.id, K) to amortize the ~600ms cosine sweep across all
+  // patch evaluations within a pack. See substrate-hardening §6.7.
+  const stage1Docs = getOrComputeStage1(corpus, query.id, opts.firstStageTopK, () =>
+    firstStageCandidates(queryVec, publicIndex, opts.firstStageTopK),
+  );
 
   // Resolve doc text for the reranker pairs (text lives in the labeled corpus).
   const docTextById = getOrBuildDocTextIndex(corpus);
@@ -418,6 +425,47 @@ function getOrBuildRecordIdIndex(corpus: ProductionCorpus): Map<bigint, Producti
   for (const e of corpus.events) built.set(stableRecordIdFor(e.id), e);
   recordIdIndexCacheV2.set(corpus, built);
   return built;
+}
+
+/**
+ * Substrate-hardening §6.7 — per-(query, K) stage-1 cache. Keyed by corpus
+ * (WeakMap) and by `${query.id}#${K}` (Map) so a long-running coordinator
+ * process reuses the Top-K across all patch evaluations against the same
+ * parent state in a pack.
+ *
+ * Memory: bounded by the live query set. For pack_size=128 queries × 2 packs
+ * × Top-K=3200 docs × ~16 bytes per PublicCorpusDoc reference ≈ 13 MB per
+ * corpus. Negligible; the dense embedding bytes live in the index, not in
+ * the cache.
+ *
+ * `invalidateStage1CacheForCorpus(corpus)` clears the per-corpus cache. The
+ * coordinator calls this on epoch transitions to drop stale Top-Ks if the
+ * cache survives across epochs in the same process.
+ */
+const stage1Cache = new WeakMap<ProductionCorpus, Map<string, readonly { id: string; eventId: string; embedding: Uint8Array }[]>>();
+function getOrComputeStage1(
+  corpus: ProductionCorpus,
+  queryId: string,
+  k: number,
+  compute: () => readonly { id: string; eventId: string; embedding: Uint8Array }[],
+): readonly { id: string; eventId: string; embedding: Uint8Array }[] {
+  let perCorpus = stage1Cache.get(corpus);
+  if (!perCorpus) {
+    perCorpus = new Map();
+    stage1Cache.set(corpus, perCorpus);
+  }
+  const key = `${queryId}#${k}`;
+  const cached = perCorpus.get(key);
+  if (cached) return cached;
+  const fresh = compute();
+  perCorpus.set(key, fresh);
+  return fresh;
+}
+
+/** Drop the stage-1 Top-K cache for a corpus. Coordinator calls this on
+ *  epoch transitions if the cache outlives a single epoch in-process. */
+export function invalidateStage1CacheForCorpus(corpus: ProductionCorpus): void {
+  stage1Cache.delete(corpus);
 }
 
 function resolveCorpusDocsForRecordId(
