@@ -22,7 +22,7 @@
  * `coreVersionHash` does not equal `bundleHash`.
  */
 
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, statSync, openSync, readSync, closeSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { basename, relative, resolve } from 'node:path';
 
@@ -811,13 +811,31 @@ function canonicalJson(value: unknown): string {
 
 function hashFile(repoRoot: string, filePath: string, role: string): BundleFile {
   const abs = resolve(repoRoot, filePath);
-  const bytes = readFileSync(abs);
+  const size = statSync(abs).size;
   return {
     role,
     path: slash(relative(repoRoot, abs)) || basename(abs),
-    sha256: sha256Hex(bytes),
-    bytes: bytes.length,
+    sha256: sha256HexStreaming(abs),
+    bytes: size,
   };
+}
+
+function sha256HexStreaming(path: string): string {
+  // readFileSync has a 2 GiB cap; launch corpus is ~6 GB. Stream via sync
+  // chunked reads to keep the hash sync (callers are sync).
+  const hash = createHash('sha256');
+  const fd = openSync(path, 'r');
+  try {
+    const buf = Buffer.alloc(64 * 1024 * 1024);
+    while (true) {
+      const n = readSync(fd, buf, 0, buf.length, null);
+      if (n <= 0) break;
+      hash.update(buf.subarray(0, n));
+    }
+  } finally {
+    closeSync(fd);
+  }
+  return hash.digest('hex');
 }
 
 function hashJson(value: unknown): string {
