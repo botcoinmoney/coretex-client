@@ -35,6 +35,11 @@ id_ed25519
 *private-key*
 *wallet*.json
 
+# Local working handoff/findings notes — never tracked.
+# The cortex repo is the canonical public CoreTex client; per-session handoff
+# docs are workspace scratch and stay local.
+docs/HANDOFFS/
+
 # Local model/cache material; commit manifests/hashes instead unless release policy approves.
 models/
 model-cache/
