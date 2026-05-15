@@ -93,21 +93,26 @@ export function buildPublicCorpusIndex(corpus: ProductionCorpus): PublicCorpusIn
   // Memory: ~3.6 GB at launch scale (3.7M docs × 243 dim × 4 bytes). Trades RAM
   // for ~30× retrieval throughput; without it, every query re-allocates 3.7M
   // Float32Arrays and dequantizes ~900M int8 values per submit.
+  //
+  // Quantization wire format (matches `bi-encoder.ts:dequantize`):
+  //   bytes[0:4]  big-endian float32 scale
+  //   bytes[4:4+dim]  int8 body
+  // `layout.headerBytes` exists in the layout struct for future schemes that
+  // carry offset + flags, but the int8 production path is scale-only with a
+  // 4-byte header. Hardcoded to keep alignment with the canonical decoder.
   const dim = layout.dim;
-  const headerBytes = layout.headerBytes;
   const dense = new Float32Array(docs.length * dim);
   const invNorms = new Float32Array(docs.length);
   for (let i = 0; i < docs.length; i++) {
     const bytes = docs[i]!.embedding;
     const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     const scale = dv.getFloat32(0, false);
-    const offset = dv.getFloat32(4, false);
     let normSq = 0;
     const base = i * dim;
     for (let j = 0; j < dim; j++) {
-      const b = bytes[headerBytes + j]!;
+      const b = bytes[4 + j]!;
       const signed = b > 127 ? b - 256 : b;
-      const v = scale * signed + offset;
+      const v = scale * signed;
       dense[base + j] = v;
       normSq += v * v;
     }
