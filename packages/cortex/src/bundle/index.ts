@@ -177,9 +177,19 @@ export interface EvaluatorProfile {
 
   // ─── v2-lens pipeline pins (substrate-hardening §6.3) ─────────────────────
   /** Pinned scorer pipeline. v2-lens is the two-stage corpus-retrieval + substrate-bias pipeline. */
-  readonly pipelineVersion?: 'coretex-retrieval-v2-lens';
+  readonly pipelineVersion?: 'coretex-retrieval-v2-lens' | 'coretex-retrieval-v2-lens-r2';
   /** Stage-1 BGE-M3 first-stage retrieval cap (Run 1; per-stratum worst-case ≥0.90). */
   readonly firstStageTopK?: number;
+  /**
+   * §6.5 reranker-input cap. Number of pool candidates the cross-encoder
+   * scores per query, taken from the top of (biCosine + substrateBonus).
+   * Without this cap the reranker scores all `firstStageTopK` (~3,200)
+   * candidates, making single-GPU calibration and per-patch production
+   * scoring infeasible. Substrate expressivity unchanged: substrateBonus
+   * can promote a stage-1 rank-3000 doc into the reranker pool. Typical
+   * launch value: 128 (32× speedup over full-pool reranking).
+   */
+  readonly rerankerInputTopK?: number;
   /** Stage-2 lens-bonus contributing vectors per query. Capped by RetrievalKey slot count. */
   readonly lensTopK?: number;
   /** Stage-2 lens bonus scale (Run 0). */
@@ -693,8 +703,9 @@ export const DEFAULT_PROFILE: EvaluatorProfile = {
   //     Runs 0+1 produce the real pinned values; these are pre-calibration
   //     placeholders. The hardening doc pins these via Run 0 (sensitivity
   //     sweep) and Run 1 (firstStageTopK per-stratum). ───────────────────
-  pipelineVersion: 'coretex-retrieval-v2-lens',
+  pipelineVersion: 'coretex-retrieval-v2-lens-r2',
   firstStageTopK: 200,             // calibration Run 1 will tune per-stratum
+  rerankerInputTopK: 128,          // §6.5 MemReranker-style cross-encoder pool cap
   lensTopK: 36,                    // == retrievalKeys slot count
   lensWeight: 0.10,                // calibration Run 0 will tune
   anchorWeight: 0.15,              // calibration Run 0 will tune
@@ -1127,6 +1138,21 @@ function validateProfile(profile: EvaluatorProfile, errors?: string[]): void {
           }
         }
       }
+    }
+  }
+
+  // §6.5 reranker-input cap. When firstStageTopK is pinned, rerankerInputTopK
+  // must also be pinned (otherwise a bundle would score all ~3,200 first-stage
+  // candidates per query via the cross-encoder, which is infeasible at scale).
+  // Required: 1 <= rerankerInputTopK <= firstStageTopK.
+  if (profile.firstStageTopK && profile.firstStageTopK > 0) {
+    const cap = profile.rerankerInputTopK;
+    if (cap === undefined || cap === null) {
+      out.push('rerankerInputTopK is required when firstStageTopK > 0 (§6.5 MemReranker-style cross-encoder pool cap)');
+    } else if (!Number.isInteger(cap) || cap < 1) {
+      out.push(`rerankerInputTopK must be a positive integer (got ${String(cap)})`);
+    } else if (cap > profile.firstStageTopK) {
+      out.push(`rerankerInputTopK (${cap}) must be <= firstStageTopK (${profile.firstStageTopK})`);
     }
   }
 

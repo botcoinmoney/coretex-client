@@ -126,6 +126,19 @@ export interface ScoringOptions {
   readonly relationExpansionBudget: number;    // stage-2 relation BFS doc cap (Run 0)
   readonly temporalCurrentBoost: number;       // stage-2 temporal bonus (current truth)
   readonly temporalStaleSuppression: number;   // stage-2 temporal penalty (stale truth)
+  /**
+   * §6.5 reranker-input cap (MemReranker semantics). Number of pool
+   * candidates that get forwarded to the cross-encoder reranker per
+   * query — sorted by (biCosine + substrateBonus) descending, tie-break
+   * by docId for determinism. Without this cap the reranker scores all
+   * ~3,200 first-stage candidates per query, making both calibration and
+   * production patch evaluation infeasible on a single GPU. The cap is
+   * on COMPUTE per query; substrate expressivity is unchanged — a doc
+   * the substrate finds compelling (anchor, lens-aligned, BFS-reached)
+   * still enters the reranker pool because substrateBonus contributes to
+   * the pre-rank score. Typical: 128.
+   */
+  readonly rerankerInputTopK: number;
 
   /**
    * §6.4 lens-diversity floor — wired into `decodeSubstrate` so a substrate
@@ -149,7 +162,7 @@ export interface ScoringOptions {
 /** The pipeline version this codebase implements. Bundles that pin a
  *  different value cannot be replayed by this binary — there is no
  *  override; operators upgrade the binary or rebuild the bundle. */
-export const CORETEX_PIPELINE_VERSION_THIS_BINARY = 'coretex-retrieval-v2-lens';
+export const CORETEX_PIPELINE_VERSION_THIS_BINARY = 'coretex-retrieval-v2-lens-r2';
 
 export interface PerQueryBreakdown {
   readonly recordId: string;
@@ -450,8 +463,31 @@ export async function scoreSubstrateAgainstQuery(
 
   const isTemporalQuery = query.family === 'temporal';
 
-  // Compute substrateBonus per pool entry.
-  const candidates: { record: CandidateRecord; substrateBonus: number; docVec: Float32Array }[] = [];
+  // Compute substrateBonus + pre-rank score per pool entry.
+  //
+  // §6.5 reranker-input cap (MemReranker semantics). The reranker is a
+  // cross-encoder; running it over the full stage-1 pool (firstStageTopK,
+  // typ. 3200) at 0.6B params × 2048 seq len is O(firstStageTopK) per query.
+  // The canonical MemReranker shape is: bi-encoder candidates → small
+  // top-N pre-ranked pool → cross-encoder refinement on top-N only.
+  //
+  // We restore that shape with a TWO-key pre-rank: (biCosine + substrateBonus).
+  // - The biCosine half preserves recall on docs the bi-encoder ranked highly
+  //   even when the substrate is empty (early-epoch miners with no substrate
+  //   still get correct rankings).
+  // - The substrateBonus half keeps the substrate's full expressive power:
+  //   a doc the substrate finds compelling (anchor, lens-aligned, BFS-reached)
+  //   gets promoted into the reranker pool even if biCosine alone would have
+  //   ranked it far down. Substrate-promoted docs from stage-1 rank-3000 still
+  //   make it to the reranker. The cap is on COMPUTE per query, not on what
+  //   the substrate can express.
+  const candidates: {
+    record: CandidateRecord;
+    substrateBonus: number;
+    biCosine: number;
+    preRankScore: number;
+    docVec: Float32Array;
+  }[] = [];
   for (const record of pool.values()) {
     const docVec = dequantize(record.embedding, opts.retrievalKeyLayout);
 
@@ -482,9 +518,13 @@ export async function scoreSubstrateAgainstQuery(
     const categoryLensNormWeight = categoryLensWeightByDocId.get(record.docId) ?? 0;
     const categoryLensBonus = opts.lensWeight * categoryLensNormWeight;
 
+    const substrateBonus = lensBonus + anchorBonus + temporalBonus + categoryLensBonus;
+    const biCosine = cosineSimilarity(docVec, queryVec);
     candidates.push({
       record,
-      substrateBonus: lensBonus + anchorBonus + temporalBonus + categoryLensBonus,
+      substrateBonus,
+      biCosine,
+      preRankScore: biCosine + substrateBonus,
       docVec,
     });
   }
@@ -493,18 +533,38 @@ export async function scoreSubstrateAgainstQuery(
     return { ranked: [], top1Score: 0 };
   }
 
+  // ─── §6.5 reranker-input cap: take top-N by pre-rank ─────────────────────
+  // Sort all candidates by (biCosine + substrateBonus) DESCENDING, then take
+  // top `rerankerInputTopK`. Tie-break by docId (lexicographic) so the cap is
+  // byte-deterministic across hosts — two candidates with identical pre-rank
+  // scores would otherwise be order-dependent on Map iteration, and that's a
+  // determinism foot-gun. Docs that don't make the cap get a sentinel
+  // rerankerScore of 0 and finalReorderingScore = substrateBonus only; they
+  // can still appear in the final ranking but at the bottom.
+  candidates.sort((a, b) => {
+    if (b.preRankScore !== a.preRankScore) return b.preRankScore - a.preRankScore;
+    return a.record.docId < b.record.docId ? -1 : a.record.docId > b.record.docId ? 1 : 0;
+  });
+  const rerankerInputCap = Math.max(1, opts.rerankerInputTopK);
+  const rerankerCandidates = candidates.slice(0, rerankerInputCap);
+
   // ─── Reranker: cross-encoder over (query, candidate-text) pairs ──────────
-  const pairs = candidates.map((c) => ({ query: query.queryText, document: c.record.text }));
-  const scores = await opts.reranker.score(pairs);
-  if (scores.length !== pairs.length) {
+  const pairs = rerankerCandidates.map((c) => ({ query: query.queryText, document: c.record.text }));
+  const rerankerScoresTopN = pairs.length > 0 ? await opts.reranker.score(pairs) : [];
+  if (rerankerScoresTopN.length !== pairs.length) {
     throw new Error(
-      `retrieval-benchmark: reranker returned ${scores.length} scores for ${pairs.length} pairs`,
+      `retrieval-benchmark: reranker returned ${rerankerScoresTopN.length} scores for ${pairs.length} pairs`,
     );
   }
-  for (let i = 0; i < scores.length; i++) {
-    if (!Number.isFinite(scores[i])) {
-      throw new Error(`retrieval-benchmark: reranker score[${i}] is non-finite (${scores[i]})`);
+  for (let i = 0; i < rerankerScoresTopN.length; i++) {
+    if (!Number.isFinite(rerankerScoresTopN[i])) {
+      throw new Error(`retrieval-benchmark: reranker score[${i}] is non-finite (${rerankerScoresTopN[i]})`);
     }
+  }
+  // Lay out scores back over the full candidate array; non-reranked docs get 0.
+  const scores: number[] = new Array(candidates.length).fill(0);
+  for (let i = 0; i < rerankerCandidates.length; i++) {
+    scores[i] = rerankerScoresTopN[i]!;
   }
 
   // ─── Pinned final ranking formula ────────────────────────────────────────
