@@ -592,7 +592,22 @@ export async function scoreSubstrateAgainstQuery(
     return a.record.docId < b.record.docId ? -1 : a.record.docId > b.record.docId ? 1 : 0;
   });
   const rerankerInputCap = Math.max(1, opts.rerankerInputTopK);
-  const anchorMandatory = candidates.filter((c) => c.record.memorySlot !== null);
+
+  // §6.5+ Anchor-mandatory sub-cap. With 44 MemoryIndex slots and events
+  // possibly carrying multiple truth docs, an unbounded mandatory pool could
+  // exceed `rerankerInputTopK` and cause unbounded reranker work per query —
+  // a worst-case DoS for the open-source replay validator. We cap mandatory
+  // inclusions at the cap itself, taking docs in (slot, docId) lexicographic
+  // order so the truncation is byte-deterministic across replay hosts.
+  const anchorMandatoryAll = candidates
+    .filter((c) => c.record.memorySlot !== null)
+    .sort((a, b) => {
+      const sa = a.record.memorySlot ?? 0;
+      const sb = b.record.memorySlot ?? 0;
+      if (sa !== sb) return sa - sb;
+      return a.record.docId < b.record.docId ? -1 : 1;
+    });
+  const anchorMandatory = anchorMandatoryAll.slice(0, rerankerInputCap);
   const anchorMandatoryIds = new Set(anchorMandatory.map((c) => c.record.docId));
   const preRankFill = candidates.filter((c) => !anchorMandatoryIds.has(c.record.docId));
   const fillCount = Math.max(0, rerankerInputCap - anchorMandatory.length);
