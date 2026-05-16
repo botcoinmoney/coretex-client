@@ -162,7 +162,7 @@ export interface ScoringOptions {
 /** The pipeline version this codebase implements. Bundles that pin a
  *  different value cannot be replayed by this binary — there is no
  *  override; operators upgrade the binary or rebuild the bundle. */
-export const CORETEX_PIPELINE_VERSION_THIS_BINARY = 'coretex-retrieval-v2-lens-r2';
+export const CORETEX_PIPELINE_VERSION_THIS_BINARY = 'coretex-retrieval-v2-lens-r3';
 
 export interface PerQueryBreakdown {
   readonly recordId: string;
@@ -174,6 +174,15 @@ export interface PerQueryBreakdown {
   readonly multiHopHit: boolean | null;
   readonly abstentionHit: boolean | null;
   readonly top1Score: number;
+  /**
+   * §6.5 candidate-funnel introspection: docIds that made the
+   * `rerankerInputTopK` cap (sorted by preRank desc). Used by gates
+   * G1/G2 (candidate-funnel recall) to verify the substrate's routing
+   * function — does an engineered substrate push the truth doc into the
+   * cap when stage-1 alone misses it? Empty when the cap is the entire
+   * pool (cap >= pool size). Doesn't change the composite score.
+   */
+  readonly cappedDocIds?: readonly string[];
 }
 
 export interface CompositeScore {
@@ -237,6 +246,7 @@ export async function scoreSubstrateAgainstQuery(
 ): Promise<{
   ranked: readonly { documentId: string; relevance: number; rerankerScore: number; memorySlot: number | null }[];
   top1Score: number;
+  cappedDocIds: readonly string[];
 }> {
   const queryVec = dequantize(query.embeddings.query, opts.retrievalKeyLayout);
   const publicIndex = getOrBuildPublicIndex(corpus);
@@ -289,6 +299,33 @@ export async function scoreSubstrateAgainstQuery(
     if (!slot || slot.revoked) continue;
     const ev = corpusByRecordId.get(slot.recordId);
     if (ev) anchorSlotToEvent.set(m, ev);
+  }
+
+  // §6.5+ Anchor-as-routing-primitive: each active anchor's truth docs are
+  // added to the candidate pool directly. Without this, anchors are purely
+  // decorative — the substrate has no way to inject docs into the pool past
+  // stage-1 misses, which makes Phase B's BFS the only routing surface and
+  // reduces the substrate to "additive bias over what bi-encoder found
+  // anyway." The G2 funnel-recall gate showed multi_hop_relation /
+  // long_horizon recall stuck at 0% because of this gap. Anchor budget is
+  // already capped at 44 MemoryIndex slots — this contributes at most 44
+  // additional truth docs per query, dwarfed by stage-1's firstStageTopK.
+  // Anti-cheat invariant intact: anchors are public; reranker still judges.
+  for (const [slot, ev] of anchorSlotToEvent) {
+    for (const td of ev.truthDocuments) {
+      if (pool.has(td.id)) continue; // stage-1 already had it
+      const emb = ev.embeddings.perTruth.get(td.id);
+      if (!emb) continue;
+      pool.set(td.id, {
+        docId: td.id,
+        embedding: emb,
+        text: td.text,
+        eventId: ev.id,
+        memorySlot: slot,
+        isCurrentTruth: td.isCurrent,
+        isStaleTruth: !td.isCurrent,
+      });
+    }
   }
 
   // Relation adjacency (sourceSlot → [targetSlot]). Decoder has already
@@ -530,7 +567,7 @@ export async function scoreSubstrateAgainstQuery(
   }
 
   if (candidates.length === 0) {
-    return { ranked: [], top1Score: 0 };
+    return { ranked: [], top1Score: 0, cappedDocIds: [] };
   }
 
   // ─── §6.5 reranker-input cap: take top-N by pre-rank ─────────────────────
@@ -541,12 +578,25 @@ export async function scoreSubstrateAgainstQuery(
   // determinism foot-gun. Docs that don't make the cap get a sentinel
   // rerankerScore of 0 and finalReorderingScore = substrateBonus only; they
   // can still appear in the final ranking but at the bottom.
+  //
+  // §6.5+ ANCHOR-MANDATORY: docs nominated by an active substrate anchor
+  // (memorySlot !== null) are MANDATORY pool inclusions. Without this,
+  // anchor's own truth gets dropped by preRank for queries where biCosine
+  // is low (multi_hop / long_horizon — exactly the families the substrate
+  // most needs to route). Anchors are the substrate's strongest "this
+  // matters" signal; the reranker MUST see them. Bounded above by the
+  // 44 MemoryIndex slot count, so this contributes at most 44 + truth-doc
+  // multiplicity per query — well under any reasonable cap.
   candidates.sort((a, b) => {
     if (b.preRankScore !== a.preRankScore) return b.preRankScore - a.preRankScore;
     return a.record.docId < b.record.docId ? -1 : a.record.docId > b.record.docId ? 1 : 0;
   });
   const rerankerInputCap = Math.max(1, opts.rerankerInputTopK);
-  const rerankerCandidates = candidates.slice(0, rerankerInputCap);
+  const anchorMandatory = candidates.filter((c) => c.record.memorySlot !== null);
+  const anchorMandatoryIds = new Set(anchorMandatory.map((c) => c.record.docId));
+  const preRankFill = candidates.filter((c) => !anchorMandatoryIds.has(c.record.docId));
+  const fillCount = Math.max(0, rerankerInputCap - anchorMandatory.length);
+  const rerankerCandidates = anchorMandatory.concat(preRankFill.slice(0, fillCount));
 
   // ─── Reranker: cross-encoder over (query, candidate-text) pairs ──────────
   const pairs = rerankerCandidates.map((c) => ({ query: query.queryText, document: c.record.text }));
@@ -592,7 +642,10 @@ export async function scoreSubstrateAgainstQuery(
     }));
 
   const top1Score = ranked.length > 0 ? ranked[0]!.rerankerScore : 0;
-  return { ranked, top1Score };
+  // Expose the cap pool's docIds so gates G1/G2 can verify substrate
+  // routing without inferring from rerankerScore==0 sentinels.
+  const cappedDocIds = rerankerCandidates.map((c) => c.record.docId);
+  return { ranked, top1Score, cappedDocIds };
 }
 
 // ─── Per-call corpus-side index caches ──────────────────────────────────────
@@ -827,7 +880,7 @@ export async function evaluateRetrievalBenchmarkState(
 
   for (const query of pack.events) {
     const isAbstentionProbe = query.truthDocuments.length === 0;
-    const { ranked, top1Score } = await scoreSubstrateAgainstQuery(decoded, query, corpus, opts);
+    const { ranked, top1Score, cappedDocIds } = await scoreSubstrateAgainstQuery(decoded, query, corpus, opts);
 
     // nDCG / MRR / Recall over reranked list.
     const idealRels = query.qrels.map((q) => q.relevance);
@@ -892,6 +945,7 @@ export async function evaluateRetrievalBenchmarkState(
       multiHopHit: multiHit,
       abstentionHit: abstHit,
       top1Score,
+      cappedDocIds,
     });
   }
 

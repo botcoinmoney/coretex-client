@@ -177,7 +177,7 @@ export interface EvaluatorProfile {
 
   // ─── v2-lens pipeline pins (substrate-hardening §6.3) ─────────────────────
   /** Pinned scorer pipeline. v2-lens is the two-stage corpus-retrieval + substrate-bias pipeline. */
-  readonly pipelineVersion?: 'coretex-retrieval-v2-lens' | 'coretex-retrieval-v2-lens-r2';
+  readonly pipelineVersion?: 'coretex-retrieval-v2-lens' | 'coretex-retrieval-v2-lens-r2' | 'coretex-retrieval-v2-lens-r3';
   /** Stage-1 BGE-M3 first-stage retrieval cap (Run 1; per-stratum worst-case ≥0.90). */
   readonly firstStageTopK?: number;
   /**
@@ -703,7 +703,7 @@ export const DEFAULT_PROFILE: EvaluatorProfile = {
   //     Runs 0+1 produce the real pinned values; these are pre-calibration
   //     placeholders. The hardening doc pins these via Run 0 (sensitivity
   //     sweep) and Run 1 (firstStageTopK per-stratum). ───────────────────
-  pipelineVersion: 'coretex-retrieval-v2-lens-r2',
+  pipelineVersion: 'coretex-retrieval-v2-lens-r3',
   firstStageTopK: 200,             // calibration Run 1 will tune per-stratum
   rerankerInputTopK: 128,          // §6.5 MemReranker-style cross-encoder pool cap
   lensTopK: 36,                    // == retrievalKeys slot count
