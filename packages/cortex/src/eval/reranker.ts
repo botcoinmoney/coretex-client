@@ -569,12 +569,55 @@ export async function rerankerFromEnv(): Promise<CrossEncoderReranker> {
  * worth of overlap, with headroom. Configurable at runtime via
  * `CORETEX_RERANKER_CACHE_SIZE`. Each entry is ~200B → 100k entries ≈ 20MB.
  *
- * The cache is the single biggest production-throughput lever: without it,
- * every per-patch eval re-scores every (query, doc) pair the previous patch
- * eval already scored — relevant when many patches share the same hidden
- * pack and overlap on the candidate set produced by stage-1.
+ * Cache scoping invariant: the LRU lives inside a single
+ * `withRerankerCache(...)` wrap, which is applied per reranker factory
+ * (qwen3, streaming-qwen3, miniLM). Each `rerankerFromEnv()` call
+ * therefore produces an instance with its OWN cache — different (model,
+ * revision, prompt template, max-seq) configurations are physically
+ * isolated. Cache keys only encode `(query, document)` because the
+ * isolation invariant already prevents cross-model collision.
+ *
+ * Production caveat: the live per-patch evaluator derives `gateSeed` and
+ * `confirmSeed` from `(epochSecret, blockhash, epochId, patchHash,
+ * parentRoot, corpusRoot, bundleHash)` — patch-bound. Each patch's
+ * hidden pack is unique, so cross-patch reuse is limited to overlapping
+ * (query, doc) pairs from stage-1 candidate-pool overlap. WITHIN one
+ * patch eval (parent + child on the same pack), reuse is high. The
+ * cache is necessary correctness/throughput infrastructure but is NOT
+ * the only production-throughput lever — screener-first admission and a
+ * bounded full-eval worker queue at the coordinator are the other two.
  */
-const DEFAULT_LRU_SIZE = Number(process.env['CORETEX_RERANKER_CACHE_SIZE'] ?? '100000');
+function parseCacheSize(raw: string | undefined): number {
+  const fallback = 100_000;
+  if (raw === undefined || raw === '') return fallback;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || !Number.isInteger(n) || n < 0) {
+    throw new Error(
+      `CORETEX_RERANKER_CACHE_SIZE must be a non-negative integer (got ${JSON.stringify(raw)})`,
+    );
+  }
+  return n;
+}
+const DEFAULT_LRU_SIZE = parseCacheSize(process.env['CORETEX_RERANKER_CACHE_SIZE']);
+
+/**
+ * Cache hit/miss telemetry exposed by `withRerankerCache`. Operators can
+ * read these counters at the end of a run to verify cache effectiveness
+ * against expectations (e.g., warm fraction ≥ 0.9 on fixed-seed
+ * calibration runs; bounded but non-zero on per-patch unique-seed
+ * production loads).
+ */
+export interface RerankerCacheStats {
+  hits: number;
+  misses: number;
+  evictions: number;
+  size: () => number;
+  reset: () => void;
+}
+const cacheStatsByReranker = new WeakMap<CrossEncoderReranker, RerankerCacheStats>();
+export function getRerankerCacheStats(reranker: CrossEncoderReranker): RerankerCacheStats | undefined {
+  return cacheStatsByReranker.get(reranker);
+}
 
 /**
  * Wrap a CrossEncoderReranker with an LRU score cache.
@@ -590,8 +633,10 @@ export function withRerankerCache(
   maxSize: number = DEFAULT_LRU_SIZE,
 ): CrossEncoderReranker {
   const cache = new LRUCache<string, number>(maxSize);
+  const stats = { hits: 0, misses: 0, evictions: 0 };
+  cache.onEvict = () => { stats.evictions++; };
 
-  return {
+  const wrapped: CrossEncoderReranker = {
     model: reranker.model,
     async score(pairs) {
       const results = new Array<number>(pairs.length);
@@ -602,8 +647,10 @@ export function withRerankerCache(
         const cached = cache.get(key);
         if (cached !== undefined) {
           results[i] = cached;
+          stats.hits++;
         } else {
           missingIndices.push(i);
+          stats.misses++;
         }
       }
 
@@ -621,6 +668,16 @@ export function withRerankerCache(
       return results;
     },
   };
+
+  cacheStatsByReranker.set(wrapped, {
+    get hits() { return stats.hits; },
+    get misses() { return stats.misses; },
+    get evictions() { return stats.evictions; },
+    size: () => cache.size(),
+    reset: () => { stats.hits = 0; stats.misses = 0; stats.evictions = 0; },
+  } as RerankerCacheStats);
+
+  return wrapped;
 }
 
 function cacheKey(pair: { query: string; document: string }): string {
@@ -632,8 +689,11 @@ function cacheKey(pair: { query: string; document: string }): string {
 
 class LRUCache<K, V> {
   private readonly map = new Map<K, V>();
+  onEvict?: () => void;
 
   constructor(private readonly maxSize: number) {}
+
+  size(): number { return this.map.size; }
 
   get(key: K): V | undefined {
     if (!this.map.has(key)) return undefined;
@@ -650,7 +710,10 @@ class LRUCache<K, V> {
     if (this.map.size > this.maxSize) {
       // Evict oldest (first inserted)
       const first = this.map.keys().next().value;
-      if (first !== undefined) this.map.delete(first);
+      if (first !== undefined) {
+        this.map.delete(first);
+        this.onEvict?.();
+      }
     }
   }
 }
