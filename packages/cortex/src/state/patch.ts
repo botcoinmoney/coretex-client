@@ -1,6 +1,6 @@
 /**
- * Patch wire-format encode/decode and applyPatch for CortexState V0.
- * Per patch_format_v0.md:
+ * Patch wire-format encode/decode and applyPatch for CoreTex state.
+ * Per patch_format.md:
  *   - LEB128 varint-encoded indices
  *   - Old words omitted from wire (reconstructed from parent state)
  *   - 99th-pct ≤ 200 bytes for 4-word patch
@@ -55,7 +55,7 @@ export function decodeLEB128(data: Uint8Array, offset: number): { value: number;
 // ─── Patch wire encode/decode ─────────────────────────────────────────────────
 
 /**
- * Wire format (per patch_format_v0.md):
+ * Wire format (per patch_format.md):
  *   [1]  patchType
  *   [1]  wordCount
  *   [4]  scoreDeltaHi (big-endian uint32)

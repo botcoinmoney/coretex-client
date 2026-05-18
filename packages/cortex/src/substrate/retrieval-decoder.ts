@@ -2,7 +2,7 @@
  * CoreTex retrieval substrate decoder.
  *
  * Decodes the 1024-uint256 packed substrate body into typed structures the
- * production retrieval scorer reads. Spec: specs/substrate_retrieval_semantics_v0.md.
+ * production retrieval scorer reads. Spec: specs/substrate_retrieval_semantics.md.
  *
  * The contract layer (`CortexState.acceptTransition`) is agnostic to byte
  * semantics; this module is the off-chain source of truth. Decode failures
@@ -60,13 +60,13 @@ export interface RelationEdge {
 
 /**
  * Phase B category-lens entry. The substrate's Relations region (128 entries)
- * shares its budget with legacy anchor-to-anchor edges. A category-lens entry
+ * shares its budget with previous anchor-to-anchor edges. A category-lens entry
  * tells the scorer: "for any stage-1 candidate doc, follow its corpus-native
  * event.relations whose edgeType matches this lens's edgeType, and add the
  * related event's truth docs to the candidate pool." This gives the substrate
  * a corpus-scale retrieval policy beyond the 44-anchor cap.
  *
- * Wire encoding lives in the same 256-bit word as legacy edges; the high bit
+ * Wire encoding lives in the same 256-bit word as previous edges; the high bit
  * of the bits 223..208 reserved field (bit 223) is the mode flag. When set,
  * bits 191..0 must be zero — the entry is not pointing at any specific
  * MemoryIndex slot. See `decodeRelations` for full validation.
@@ -442,7 +442,7 @@ export function decodeRelations(state: CortexState): {
     // Phase B: bit 223 = category-lens mode flag (high bit of the 223..208
     // reserved field). When set, the entry encodes a category-lens (no
     // source/target slot, follows corpus-native edges of `edgeType`). When
-    // clear, the entry is a legacy anchor-to-anchor edge and the remaining
+    // clear, the entry is a previous anchor-to-anchor edge and the remaining
     // 15 reserved bits + bits 207..192 must be zero.
     const reservedField208 = field(word, 208, MASK_16);
     const isCategoryLens = (reservedField208 >> 15n) === 1n;
@@ -468,7 +468,7 @@ export function decodeRelations(state: CortexState): {
       continue;
     }
 
-    // Legacy anchor-to-anchor edge.
+    // Stale anchor-to-anchor edge.
     const sourceField = field(word, 96, MASK_96);
     const targetField = field(word, 0, MASK_96);
     if (sourceField >> 8n !== 0n) {

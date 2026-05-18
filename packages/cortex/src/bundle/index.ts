@@ -2,11 +2,11 @@
  * CoreTex bundle manifest — production retrieval-benchmark form.
  *
  * Specs:
- *   - specs/retrieval_benchmark_v0.md
- *   - specs/substrate_retrieval_semantics_v0.md
- *   - specs/corpus_retrieval_v0.md
- *   - specs/hidden_query_pack_v0.md
- *   - specs/determinism_v0.md
+ *   - specs/retrieval_benchmark.md
+ *   - specs/substrate_retrieval_semantics.md
+ *   - specs/corpus_retrieval.md
+ *   - specs/hidden_query_pack.md
+ *   - specs/determinism.md
  *
  * The bundle pins:
  *   - bi-encoder + revision + per-file SHA-256 + retrieval-key layout
@@ -132,7 +132,7 @@ export interface SplitRatiosPin {
  * scripts/generate-coretex-retrieval-corpus.mjs:
  *
  *   near_collision_entity   — different entity, same domain (nearestEntityDocs)
- *   near_collision_attribute — same entity, wrong attribute value (legacy synth path)
+ *   near_collision_attribute — same entity, wrong attribute value (previous synth path)
  *   temporal_stale          — explicitly stale prior value (modifier/trap-temporal staleText)
  *   trap                    — designed adversarial trap (challenge.silentTraps / trapTextsForQuestion)
  *   lexical_distractor      — surface overlap, weak semantic relevance
@@ -296,7 +296,7 @@ export interface EvaluatorProfile {
    * difficulty-ramp regime.
    *
    * Optional for backward compat with pre-staging bundles. When
-   * omitted, the entire corpus is the active root (legacy
+   * omitted, the entire corpus is the active root (previous
    * single-source-of-truth behavior).
    */
   readonly corpusStagingPolicy?: CorpusStagingPolicyPin;
@@ -526,16 +526,16 @@ export function memReranker4BManifest(opts: RerankerManifestOptions = {}): Reran
 // ─── Default profile ─────────────────────────────────────────────────────────
 
 const DEFAULT_SPEC_FILES = [
-  'specs/cortex_state_v0.md',
-  'specs/cortex_schema_v0.json',
-  'specs/packing_spec_v0.md',
-  'specs/merkleization_spec_v0.md',
-  'specs/patch_format_v0.md',
-  'specs/retrieval_benchmark_v0.md',
-  'specs/substrate_retrieval_semantics_v0.md',
-  'specs/corpus_retrieval_v0.md',
-  'specs/hidden_query_pack_v0.md',
-  'specs/determinism_v0.md',
+  'specs/cortex_state.md',
+  'specs/cortex_schema.json',
+  'specs/packing_spec.md',
+  'specs/merkleization_spec.md',
+  'specs/patch_format.md',
+  'specs/retrieval_benchmark.md',
+  'specs/substrate_retrieval_semantics.md',
+  'specs/corpus_retrieval.md',
+  'specs/hidden_query_pack.md',
+  'specs/determinism.md',
 ] as const;
 
 const DEFAULT_IMPL_FILES = [
@@ -1082,7 +1082,7 @@ function validateProfile(profile: EvaluatorProfile, errors?: string[]): void {
     }
   }
 
-  // corpusStagingPolicy is optional (legacy bundles ship without it),
+  // corpusStagingPolicy is optional (previous bundles ship without it),
   // but if pinned every field must be present and well-formed.
   if (profile.corpusStagingPolicy !== undefined) {
     const sp = profile.corpusStagingPolicy;
@@ -1161,7 +1161,7 @@ function validateProfile(profile: EvaluatorProfile, errors?: string[]): void {
 
 function isMutableOrPlaceholderRevision(revision: string): boolean {
   const lower = revision.toLowerCase();
-  return ['main', 'master', 'latest', 'head', 'placeholder', 'todo', 'v0.1.0'].includes(lower);
+  return ['main', 'master', 'latest', 'head', 'placeholder', 'todo', 'placeholder-version'].includes(lower);
 }
 
 function validateBytes32(value: string, name: string, errors: string[]) {
@@ -1187,7 +1187,7 @@ function slash(path: string): string {
  * the runtime versions don't match the bundle's runtimePin, or when the
  * on-chain coreVersionHash differs from the bundle hash.
  *
- * Spec: specs/determinism_v0.md §Refusal.
+ * Spec: specs/determinism.md §Refusal.
  */
 export function assertBundleBindingAtStartup(opts: {
   readonly manifest: CoreTexBundleManifest;

@@ -94,7 +94,7 @@ experiments/results/phase7-real-smoke/
 experiments/results/synthetic-dryrun/winner.json
 
 # Generated DACR corpus (regenerated from HF dataset by scripts/build-corpus-from-dacr.mjs)
-benchmark/fixtures/dacr-v0/
+benchmark/fixtures/dacr/
 
 # Ephemeral SSH keypair for one-off Vast.ai calibration host (regenerated per rental)
 .ssh-vast-*

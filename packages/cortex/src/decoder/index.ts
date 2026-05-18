@@ -1,5 +1,5 @@
 /**
- * Phase 3 — Typed-slot decoder for CortexState V0.
+ * Phase 3 — Typed-slot decoder for CoreTex state.
  *
  * Responsibilities (§4):
  *   1. Parse 1024-word CortexState into typed slots.
@@ -8,7 +8,7 @@
  */
 
 import type { CortexState } from '../state/index.js';
-import { RANGES, MAGIC, SCHEMA_VERSION_V0, WORD_COUNT_VALUE } from '../state/index.js';
+import { RANGES, MAGIC, SCHEMA_VERSION_CoreTex, WORD_COUNT_VALUE } from '../state/index.js';
 import { getField } from '../state/codec.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -377,7 +377,7 @@ export function decodeCortexState(state: CortexState): DecodeResult {
   }
 
   const schemaVersion = Number(getField(w0, 239, 224));
-  if (schemaVersion !== Number(SCHEMA_VERSION_V0)) {
+  if (schemaVersion !== Number(SCHEMA_VERSION_CoreTex)) {
     return {
       ok: false,
       code: 'DECODE_WRONG_VERSION',

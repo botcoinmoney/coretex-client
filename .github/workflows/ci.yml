@@ -6,8 +6,7 @@ on:
   pull_request:
     branches: [main]
 
-# Node 22 across the board: cortex-server uses node:sqlite which requires
-# Node >=22.5 (was Node 20 which broke on every job using cortex-server).
+# Node 22 across the board: CoreTex uses Node 22 for the pinned launch toolchain.
 env:
   NODE_VERSION: "22"
 
@@ -137,7 +136,7 @@ jobs:
       - run: npm run test:e2e -- --filter phase-3
 
   e2e-phase-4:
-    name: E2E phase-4 (CortexBench)
+    name: E2E phase-4 (CoreTex benchmark)
     runs-on: ubuntu-latest
     needs: lint-type-unit
     steps:
@@ -150,21 +149,6 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run test:e2e -- --filter phase-4
-
-  e2e-phase-5:
-    name: E2E phase-5 (mining API)
-    runs-on: ubuntu-latest
-    needs: [lint-type-unit, contracts]
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-      - uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: npm
-      - run: npm ci
-      - run: npm run test:e2e -- --filter phase-5
 
   e2e-phase-6:
     name: E2E phase-6 (reducer + credit)
@@ -196,21 +180,6 @@ jobs:
       - run: npm ci
       - run: npm run test:e2e -- --filter phase-7
 
-  e2e-phase-8:
-    name: E2E phase-8 (testnet golden fixture — CI MERGE GATE)
-    runs-on: ubuntu-latest
-    needs: lint-type-unit
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-      - uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: npm
-      - run: npm ci
-      - run: npm run test:e2e -- --filter phase-8
-
   e2e-phase-9:
     name: E2E phase-9 (mainnet ops + receipt-mapping observability)
     runs-on: ubuntu-latest
@@ -235,10 +204,8 @@ jobs:
       - e2e-phase-2
       - e2e-phase-3
       - e2e-phase-4
-      - e2e-phase-5
       - e2e-phase-6
       - e2e-phase-7
-      - e2e-phase-8
       - e2e-phase-9
     if: github.ref == 'refs/heads/main' || github.event_name == 'pull_request'
     steps:

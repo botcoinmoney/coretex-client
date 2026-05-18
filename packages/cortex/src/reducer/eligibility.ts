@@ -4,7 +4,7 @@
  * Enforces the no-double-credit invariant:
  *   For any (epoch, miner, patchHash):
  *     - StateAdvance/ScreenerPassed: exactly one tier-credit issuance
- *     - PatchMerged: at most one legacy accrual record
+ *     - PatchMerged: at most one previous accrual record
  *
  * This module models the coordinator's in-memory ledger used when
  * processing CortexStateAdvanced/CortexPatchAccepted and CortexEpochFinalized
@@ -37,7 +37,7 @@ export interface CreditIssuance {
   readonly tierCredits: bigint;
 }
 
-/** A record of a legacy merge accrual. */
+/** A record of a previous merge accrual. */
 export interface MultiplierAccrual {
   readonly epoch: bigint;
   readonly miner: string;
@@ -49,9 +49,9 @@ export interface EpochEligibility {
   /** All credit issuances for this epoch (one per verified state advance). */
   readonly creditIssuances: CreditIssuance[];
   /**
-   * All legacy merge accruals for this epoch.
-   * V0 production sets the separate uplift to zero; this is retained so
-   * historical/legacy proof paths stay replayable.
+   * All previous merge accruals for this epoch.
+   * production launch sets the separate uplift to zero; this is retained so
+   * historical/previous proof paths stay replayable.
    */
   readonly multiplierAccruals: MultiplierAccrual[];
   /**
@@ -70,7 +70,7 @@ export interface EpochEligibility {
  *   1. For each unique (epoch, miner, patchHash) in StateAdvance/ScreenerPassed events,
  *      issue exactly one tier-credit.
  *   2. For each PatchMerged event whose (epoch, miner, patchHash) is also
- *      in the credit-issued set, record a legacy accrual.
+ *      in the credit-issued set, record a previous accrual.
  *   3. Duplicate ScreenerPassed events (same tuple) are silently skipped
  *      and logged in duplicatesSkipped.
  *   4. PatchMerged events without a corresponding ScreenerPassed are skipped
@@ -142,7 +142,7 @@ function eligibilityKey(epoch: bigint, miner: string, patchHash: string): string
 
 /**
  * Count total tier credits earned by a miner in an epoch.
- * V0 production credits are attached to verified state advances; screener-only
+ * production launch credits are attached to verified state advances; screener-only
  * candidates do not receive credits.
  */
 export function minerScreenerCredits(
@@ -160,8 +160,8 @@ export function minerScreenerCredits(
 }
 
 /**
- * Returns true iff the miner has at least one legacy merge accrual in this
- * epoch. The default V0 uplift is zero; use this as an audit helper only.
+ * Returns true iff the miner has at least one previous merge accrual in this
+ * epoch. The default CoreTex uplift is zero; use this as an audit helper only.
  */
 export function minerHasMerge(eligibility: EpochEligibility, miner: string): boolean {
   const m = miner.toLowerCase();

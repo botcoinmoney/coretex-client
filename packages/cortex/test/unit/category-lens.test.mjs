@@ -41,7 +41,7 @@ describe('§6.3 Phase B: RelationCategoryLens decoder/encoder', () => {
     );
   });
 
-  test('legacy anchor edges and category-lenses coexist in the same Relations region', () => {
+  test('previous anchor edges and category-lenses coexist in the same Relations region', () => {
     // Anchor edge at entry 0, category-lens at entry 1. Both decode under
     // their respective modes.
     const anchorEdge = {
@@ -92,7 +92,7 @@ describe('§6.3 Phase B: RelationCategoryLens decoder/encoder', () => {
     assert.equal((word >> 223n) & 1n, 1n);
   });
 
-  test('legacy anchor edge has bit 223 = 0', () => {
+  test('previous anchor edge has bit 223 = 0', () => {
     const edge = { entryIndex: 0, weight: 100, edgeType: 'supports', sourceSlot: 1, targetSlot: 2 };
     const word = encodeRelationEdge(edge);
     assert.equal((word >> 223n) & 1n, 0n);

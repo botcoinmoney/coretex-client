@@ -1,6 +1,6 @@
 /**
- * Reserved-bit enforcement for CortexState V0.
- * Per cortex_state_v0.md: any non-zero reserved bit → reject with E04.
+ * Reserved-bit enforcement for CoreTex state.
+ * Per cortex_state.md: any non-zero reserved bit → reject with E04.
  */
 
 import type { CortexState, PatchError } from './types.js';
@@ -8,7 +8,7 @@ import { RANGES } from './types.js';
 
 // ─── Reserved-bit masks per word ─────────────────────────────────────────────
 // A "reserved mask" for word i is the set of bits that MUST be zero.
-// Non-reserved bits are the named fields per cortex_state_v0.md.
+// Non-reserved bits are the named fields per cortex_state.md.
 
 const UINT256_MAX = (1n << 256n) - 1n;
 
@@ -122,7 +122,7 @@ function memoryIndexSlotReservedMask(slotWord: number): bigint {
 function retrievalKeySlotReservedMask(slotWord: number): bigint {
   void slotWord;
   // Retrieval-key slots are 256-byte packed vector records. Header and vector
-  // semantics are enforced by retrieval-decoder.ts, not the legacy mask.
+  // semantics are enforced by retrieval-decoder.ts, not the previous mask.
   return 0n;
 }
 

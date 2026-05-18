@@ -1,7 +1,7 @@
 /**
  * CPU-only bi-encoder runtime wrapper for the production scorer.
  *
- * Spec: specs/determinism_v0.md.
+ * Spec: specs/determinism.md.
  *
  * Backends:
  *   - 'pinned' (production): subprocess to a pinned Python venv that loads

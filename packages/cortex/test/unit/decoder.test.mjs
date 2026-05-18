@@ -1,11 +1,11 @@
 /**
- * Unit tests: typed-slot decoder for CortexState V0.
+ * Unit tests: typed-slot decoder for CoreTex state.
  */
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { decodeCortexState, isTemporallyValid } from '../../dist/decoder/index.js';
-import { RANGES, MAGIC, SCHEMA_VERSION_V0, WORD_COUNT_VALUE } from '../../dist/state/types.js';
+import { RANGES, MAGIC, SCHEMA_VERSION_CoreTex, WORD_COUNT_VALUE } from '../../dist/state/types.js';
 import { getField, setField } from '../../dist/state/codec.js';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -15,14 +15,14 @@ function makeBlankState() {
 }
 
 /**
- * Build a valid CortexState V0 header in word 0.
- * MAGIC in bits 255:240, SCHEMA_VERSION_V0 in 239:224, WORD_COUNT_VALUE in 223:208.
+ * Build a valid CoreTex state header in word 0.
+ * MAGIC in bits 255:240, SCHEMA_VERSION_CoreTex in 239:224, WORD_COUNT_VALUE in 223:208.
  */
 function makeValidState() {
   const words = new Array(1024).fill(0n);
   let w0 = 0n;
   w0 = setField(w0, 255, 240, MAGIC);
-  w0 = setField(w0, 239, 224, SCHEMA_VERSION_V0);
+  w0 = setField(w0, 239, 224, SCHEMA_VERSION_CoreTex);
   w0 = setField(w0, 223, 208, WORD_COUNT_VALUE);
   words[0] = w0;
   return { words };
@@ -60,7 +60,7 @@ describe('decodeCortexState — error cases', () => {
     const words = new Array(1024).fill(0n);
     let w0 = 0n;
     w0 = setField(w0, 255, 240, MAGIC);
-    w0 = setField(w0, 239, 224, SCHEMA_VERSION_V0);
+    w0 = setField(w0, 239, 224, SCHEMA_VERSION_CoreTex);
     w0 = setField(w0, 223, 208, 512n); // wrong
     words[0] = w0;
     const result = decodeCortexState({ words });
@@ -90,7 +90,7 @@ describe('decodeCortexState — success cases', () => {
       assert.equal(result.decoded.header.epoch, 42n);
       assert.equal(result.decoded.header.epochStartTimestamp, 9999n);
       assert.equal(result.decoded.header.magic, Number(MAGIC));
-      assert.equal(result.decoded.header.schemaVersion, Number(SCHEMA_VERSION_V0));
+      assert.equal(result.decoded.header.schemaVersion, Number(SCHEMA_VERSION_CoreTex));
     }
   });
 

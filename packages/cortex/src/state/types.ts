@@ -1,5 +1,5 @@
 /**
- * Core types for CortexState V0.
+ * Core types for CoreTex state.
  * All word values are bigint (uint256).
  */
 
@@ -44,7 +44,7 @@ export const ERROR_NAMES: Record<PatchErrorCode, string> = {
   E05: 'NOOP_PATCH',
 };
 
-/** Patch type codes per patch_format_v0.md. */
+/** Patch type codes per patch_format.md. */
 export const PATCH_TYPE = {
   KEY_UPDATE:      0x01,
   SLOT_REPLACE:    0x02,
@@ -94,5 +94,5 @@ export const RANGES = {
 
 /** Schema magic constant for word 0. */
 export const MAGIC = 0xC07En;
-export const SCHEMA_VERSION_V0 = 0x0000n;
+export const SCHEMA_VERSION_CoreTex = 0x0000n;
 export const WORD_COUNT_VALUE = 1024n;

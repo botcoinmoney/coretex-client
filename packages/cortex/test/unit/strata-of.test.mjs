@@ -24,7 +24,7 @@ function ev(opts = {}) {
 }
 
 describe('strataOf', () => {
-  test('legacy event without depth fields emits 3 base strata', () => {
+  test('previous event without depth fields emits 3 base strata', () => {
     const e = ev({ family: 'near_collision' });
     const s = strataOf(e);
     assert.deepEqual(s.sort(), [
@@ -57,15 +57,15 @@ describe('strataOf', () => {
     assert.ok(!s.some((x) => x.includes('depth>=')));
   });
 
-  test('legacy stratumOf is contained in strataOf for backward compat', () => {
+  test('previous stratumOf is contained in strataOf for backward compat', () => {
     const e = ev({ family: 'temporal' });
-    const legacy = stratumOf(e);
-    assert.ok(strataOf(e).includes(legacy));
+    const previous = stratumOf(e);
+    assert.ok(strataOf(e).includes(previous));
   });
 });
 
 describe('eventSatisfiesStratum', () => {
-  test('exact legacy stratum matches', () => {
+  test('exact previous stratum matches', () => {
     const e = ev({ family: 'temporal' });
     assert.equal(eventSatisfiesStratum(e, 'family=temporal,bucket=easy'), true);
   });

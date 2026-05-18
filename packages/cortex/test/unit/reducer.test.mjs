@@ -422,12 +422,12 @@ describe('buildEpochEligibility()', () => {
 // Multiplier cap tests
 // ═══════════════════════════════════════════════════════════════════════════════
 
-describe('legacy multiplier-cap', () => {
+describe('previous multiplier-cap', () => {
   test('MERGE_MULTIPLIER_BPS = 10000 (1.0×, no separate uplift)', () => {
     assert.equal(MERGE_MULTIPLIER_BPS, 10_000n);
   });
 
-  test('computeMinerBonus gives zero uplift at the V0 default', () => {
+  test('computeMinerBonus gives zero uplift at the current default', () => {
     const bonus = computeMinerBonus('0xaaaa', 1_000_000n);
     assert.equal(bonus.bonusBotcoin, 0n);
     assert.equal(bonus.capBotcoin, bonus.bonusBotcoin);

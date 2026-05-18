@@ -4,7 +4,7 @@
  * `corpusRoot[N+1] = root(corpusRecords[N] + corpus_delta[N])`
  * `parentCorpusRoot[N+1] = corpusRoot[N]`
  *
- * Spec: specs/corpus_retrieval_v0.md §"CorpusDelta carrying embeddings".
+ * Spec: specs/corpus_retrieval.md §"CorpusDelta carrying embeddings".
  *
  * The delta carries embedding bytes inline; replay watchers depend on them
  * to recompute scores deterministically.

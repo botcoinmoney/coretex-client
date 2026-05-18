@@ -1,6 +1,6 @@
 /**
- * Merkleization for CortexState V0.
- * Per merkleization_spec_v0.md:
+ * Merkleization for CoreTex state.
+ * Per merkleization_spec.md:
  *   - 1024 leaves → perfect binary tree depth 10
  *   - leaf[i] = keccak256(bigEndian32(words[i]))
  *   - internal: keccak256(leftChild ‖ rightChild)
@@ -67,7 +67,7 @@ export function buildMerkleCache(state: CortexState): MerkleTreeCache {
  * Return a new Merkle cache after applying a small set of word updates.
  *
  * The tree shape and hash function are identical to merkleizeState(); this only
- * recomputes the affected leaf-to-root paths. For the V0 patch budget (1-4
+ * recomputes the affected leaf-to-root paths. For the current patch budget (1-4
  * words), this is roughly 40 hashes instead of rebuilding all 2047 nodes.
  */
 export function updateMerkleCache(

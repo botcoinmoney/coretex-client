@@ -1,13 +1,13 @@
 /**
- * Legacy merge-bonus calculation for CortexMergeBonus funding.
+ * Stale merge-bonus calculation for CortexMergeBonus funding.
  *
- * Per reducer_v0.md §Credit mechanics:
+ * Per reducer.md §Credit mechanics:
  *   MERGE_MULTIPLIER_BPS = 10000 (1.0×, no separate uplift)
- *   V0 cap: (MERGE_MULTIPLIER_BPS − 10000) × claimBase / 10000 per miner per epoch.
+ *   current cap: (MERGE_MULTIPLIER_BPS − 10000) × claimBase / 10000 per miner per epoch.
  *   State-advance credits are paid through normal epoch accounting instead.
  *
- * The cap is retained for compatibility with the legacy CortexMergeBonus
- * contract, but V0 production should not fund zero-uplift epochs.
+ * The cap is retained for compatibility with the stale CoreTexMergeBonus
+ * contract, but production launch should not fund zero-uplift epochs.
  */
 
 import type { EpochEligibility } from './eligibility.js';
@@ -51,7 +51,7 @@ export interface MinerClaimBase {
  *
  * bonusBotcoin = (MERGE_MULTIPLIER_BPS − 10000) × claimBase / 10000
  *
- * The cap equals the bonus (they are the same in V0 — the bonus IS the max).
+ * The cap equals the bonus (they are the same in CoreTex — the bonus IS the max).
  * On-chain: CortexMergeBonus checks payout ≤ capBotcoin from the Merkle leaf.
  *
  * Returns 0n for miners with no merge accrual.
@@ -70,7 +70,7 @@ export function computeMinerBonus(
   return {
     miner: miner.toLowerCase(),
     bonusBotcoin,
-    capBotcoin: bonusBotcoin, // cap = bonus in V0 (single-uplift)
+    capBotcoin: bonusBotcoin, // cap = bonus in CoreTex (single-uplift)
   };
 }
 

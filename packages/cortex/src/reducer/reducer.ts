@@ -1,8 +1,8 @@
 /**
- * Cortex Epoch Reducer V0
+ * Cortex Epoch Reducer CoreTex
  *
  * Deterministic greedy-by-marginal-gain patch selection.
- * Per reducer_v0.md:
+ * Per reducer.md:
  *   Sort by (-scoreDelta, +patchSize, +patchHash) then apply greedily,
  *   skipping target-overlap and semantic-conflict (marginal-gain below threshold).
  *
@@ -41,9 +41,9 @@ export interface ReducerInputPatch {
    * Marginal-gain evaluator: re-evaluates this patch on top of `currentState`.
    * Must be a pure function. Returns bigint (signed).
    *
-   * In production this is `CortexBenchEvaluator.scoreDelta(currentState, patch)`.
-   * In replay scripts it is the same evaluator loaded from Core V0.
-   * In V0 with Phase 4 not yet merged: defaults to returning `scoreDelta`
+   * In production this is `CoreTex benchmarkEvaluator.scoreDelta(currentState, patch)`.
+   * In replay scripts it is the same evaluator loaded from Core CoreTex.
+   * In CoreTex with Phase 4 not yet merged: defaults to returning `scoreDelta`
    * unchanged (no semantic-conflict check on top of state — only threshold
    * comparison). TODO: wire in Phase 4 evaluator when it lands.
    */
@@ -55,14 +55,14 @@ export interface ReducerInputPatch {
  * Given the current state (after previously accepted patches) and the
  * candidate patch, returns the marginal score-delta for that patch.
  *
- * TODO(phase-4): Replace the stub implementation with the real CortexBench
- * evaluator once Phase 4 (CortexBench V0) is merged into main.
+ * TODO(phase-4): Replace the stub implementation with the real CoreTex benchmark
+ * evaluator once Phase 4 (CoreTex pre-launch) is merged into main.
  */
 export type MarginalEvaluator = (currentState: CortexState, patch: Patch) => bigint;
 
 /**
  * Stub marginal evaluator: returns the patch's declared scoreDelta.
- * This is the V0 default before Phase 4 lands. It still enforces the
+ * This is the current default before Phase 4 lands. It still enforces the
  * threshold check (anything >= threshold passes; anything < threshold fails
  * with R02_SEMANTIC_CONFLICT). The stub is conservative — it does NOT
  * re-evaluate the actual marginal gain on top of accepted patches, meaning
@@ -73,7 +73,7 @@ export function stubMarginalEvaluator(
   _currentState: CortexState,
   patch: Patch,
 ): bigint {
-  // TODO(phase-4): replace with real CortexBench evaluator
+  // TODO(phase-4): replace with real CoreTex benchmark evaluator
   return patch.scoreDelta;
 }
 

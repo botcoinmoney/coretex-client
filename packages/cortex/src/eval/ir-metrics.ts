@@ -1,7 +1,7 @@
 /**
  * IR metric primitives for the CoreTex production retrieval scorer.
  *
- * Spec: specs/retrieval_benchmark_v0.md.
+ * Spec: specs/retrieval_benchmark.md.
  *
  * All metrics are computed per-query and then averaged across the pack by
  * the higher-level scorer (eval/retrieval-benchmark.ts). These primitives

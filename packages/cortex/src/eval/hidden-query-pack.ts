@@ -1,7 +1,7 @@
 /**
  * Hidden query pack derivation.
  *
- * Spec: specs/hidden_query_pack_v0.md.
+ * Spec: specs/hidden_query_pack.md.
  *
  * The query pack is deterministic from (epochId, evalSeed, corpus). Anyone
  * with the seed and the bundle reproduces the same pack and verifies it
@@ -62,14 +62,14 @@ export function stratumOf(event: ProductionCorpusEvent): string {
  * "family=multi_hop_relation,depth>=3" stratum simultaneously, so deep
  * causal/temporal events count toward all relevant quotas.
  *
- * Returns at minimum the family/bucket strata (legacy `stratumOf`).
+ * Returns at minimum the family/bucket strata (`stratumOf` base).
  * When the event carries synthesis-time `causalDepth` or
  * `relationHopDepth`, additional `depth>=N` and combined predicates are
  * emitted. Old corpora that predate these fields default to depth 1
- * and emit only the legacy strata.
+ * and emit only the base strata.
  *
  * The predicate-quota matcher in `eventSatisfiesStratum` accepts both
- * exact strings (legacy) and predicates (`depth>=N`,
+ * exact strings (previous) and predicates (`depth>=N`,
  * `family=X,depth>=N`).
  */
 export function strataOf(event: ProductionCorpusEvent): string[] {
@@ -83,7 +83,7 @@ export function strataOf(event: ProductionCorpusEvent): string[] {
     `family=${family},bucket=${bucket}`,
   ];
   // Emit depth strata only when the synthesizer set a non-trivial
-  // depth — keeps legacy corpora's strata list short and avoids
+  // depth — keeps previous corpora's strata list short and avoids
   // misleading "depth>=1" quota matches that always pass.
   if (causalDepth > 1) {
     for (let d = 2; d <= causalDepth; d++) out.push(`depth>=${d}`);
@@ -182,7 +182,7 @@ export function deriveQueryPack(
   }
 
   // Stratification fill. Uses the predicate matcher so quotas may be
-  // exact strings (legacy: `'family=temporal,bucket=hard'`) or predicates
+  // exact strings (previous: `'family=temporal,bucket=hard'`) or predicates
   // (`'depth>=3'`, `'family=multi_hop_relation,depth>=3'`). Both forms
   // are matched by `eventSatisfiesStratum` which evaluates the quota
   // string against the event's full strata list.

@@ -65,7 +65,7 @@ describe('CoreTex client bundle manifest', () => {
   });
 
   test('rejects mutable / placeholder revisions on bi-encoder and reranker', () => {
-    for (const revision of ['main', 'latest', 'HEAD', 'placeholder', 'TODO', 'v0.1.0', 'release-tag']) {
+    for (const revision of ['main', 'latest', 'HEAD', 'placeholder', 'TODO', 'placeholder-version', 'release-tag']) {
       const ranked = qwen3Reranker06BManifest({ revision, files: [{ path: 'm', sha256: 'a'.repeat(64), bytes: 1 }] });
       assert.throws(() => buildBundleManifest({
         repoRoot,

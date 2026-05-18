@@ -2,7 +2,7 @@
  * Phase 3 — Eval harness, eval report formatter, deterministic report hash.
  *
  * Responsibilities (§4):
- *   4. Run deterministic CortexBench tasks against experienceCorpusRoot (stub corpus).
+ *   4. Run deterministic CoreTex benchmark tasks against experienceCorpusRoot (stub corpus).
  *   5. Apply candidate patches.
  *   6. Recompute state root.
  *   7. Emit reproducible eval report.
@@ -30,7 +30,7 @@ import type { DecodedCortexState } from '../decoder/index.js';
 
 // ─── Phase 4 corpus loader interface contract ─────────────────────────────────
 //
-// Phase 4 MUST implement this interface to plug in real CortexBench tasks.
+// Phase 4 MUST implement this interface to plug in real CoreTex benchmark tasks.
 // The stub below (StubCorpusLoader) satisfies the contract for Phase 3.
 //
 // CONTRACT (document for Phase 4):
@@ -211,7 +211,7 @@ export function evalPatch(
 
   // Assemble report without hash first
   const reportWithoutHash: Omit<EvalReport, 'reportHash'> = {
-    version: 'cortex-eval-v0',
+    version: 'coretex-eval-current',
     parentStateRoot,
     newStateRoot,
     patchHash,

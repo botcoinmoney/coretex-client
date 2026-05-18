@@ -1,9 +1,9 @@
 /**
  * CoreTex production corpus — retrieval-benchmark shape.
  *
- * Spec: specs/corpus_retrieval_v0.md.
+ * Spec: specs/corpus_retrieval.md.
  *
- * This is the production corpus shape. The legacy slot-fill ProductionCorpus
+ * This is the production corpus shape. The previous slot-fill ProductionCorpus
  * (event ledger with structural-commitment scoring) is gone. The retrieval
  * corpus carries graded qrels, splits, embeddings, and provenance.
  *
@@ -96,7 +96,7 @@ export interface EmbeddingPayload {
 /**
  * Hard-negative category emitted by the corpus generator at construction
  * time. Optional for backwards compatibility with pre-category corpora
- * (the legacy MemReranker-4B-labeled corpus shape does not carry this
+ * (the previous MemReranker-4B-labeled corpus shape does not carry this
  * field). When present, `qrels` relevance for the hard negative is
  * derived from the bundle's `negCategoryRelevanceMap[category]`.
  */
@@ -450,7 +450,7 @@ export function loadProductionCorpus(path: string, options: LoadProductionCorpus
   //      parsing, then the assembled events array.
   //
   //   2) No sidecar               →  fall back to whole-file JSON.parse.
-  //      Works for small/legacy corpora (< ~400 MB) only.
+  //      Works for small/previous corpora (< ~400 MB) only.
   const ndjsonPath = `${path}.events.ndjson`;
   let raw: CorpusFileShape;
   let events: ProductionCorpusEvent[];

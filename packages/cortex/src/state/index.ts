@@ -19,7 +19,7 @@ export {
   PATCH_TYPE,
   ERROR_NAMES,
   MAGIC,
-  SCHEMA_VERSION_V0,
+  SCHEMA_VERSION_CoreTex,
   WORD_COUNT_VALUE,
 } from './types.js';
 

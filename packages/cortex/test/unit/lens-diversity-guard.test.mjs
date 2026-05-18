@@ -355,7 +355,7 @@ describe('§6.6 pipelineVersion pin enforcement', () => {
     try { assertPipelineVersionMatches('coretex-retrieval-v3-future'); }
     catch (err) { captured = err; }
     assert.ok(captured, 'expected throw');
-    // No env-var name (legacy CORETEX_PIPELINE_VERSION_OVERRIDE, anything *_OVERRIDE)
+    // No env-var name (previous CORETEX_PIPELINE_VERSION_OVERRIDE, anything *_OVERRIDE)
     // and no "set X to bypass" instruction — message must not advertise a workaround.
     assert.doesNotMatch(captured.message, /_OVERRIDE|set\s+\S+\s+to\s+bypass/i);
   });

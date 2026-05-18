@@ -4,7 +4,7 @@
  * Wraps decoder output as a [0,1] decode-quality score for use in the
  * composite reward law as a sanity-only signal (w_structural_sanity ≤ 0.10).
  *
- * Spec: specs/retrieval_benchmark_v0.md §structuralValidity.
+ * Spec: specs/retrieval_benchmark.md §structuralValidity.
  */
 
 import type { DecodedSubstrate } from './retrieval-decoder.js';

@@ -1,6 +1,6 @@
 /**
- * Pack/unpack (encode/decode) for CortexState V0.
- * Per packing_spec_v0.md: 1024 words × 32 bytes each = 32768 bytes, big-endian.
+ * Pack/unpack (encode/decode) for CoreTex state.
+ * Per packing_spec.md: 1024 words × 32 bytes each = 32768 bytes, big-endian.
  */
 
 import type { CortexState } from './types.js';

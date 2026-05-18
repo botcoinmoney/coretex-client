@@ -18,7 +18,7 @@
  *   2. All CortexPatchAccepted events for the target epoch.
  *   3. CortexEpochFinalized event for the target epoch.
  *
- * Reducer order per reducer_v0.md (deterministic):
+ * Reducer order per reducer.md (deterministic):
  *   Sort by (scoreDelta desc, wordCount asc, patchHash asc).
  *   Apply; skip patches with conflicting indices, forged patch hashes, or
  *   wrong epoch parent roots.

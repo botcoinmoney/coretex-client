@@ -1,7 +1,7 @@
 /**
  * Compat re-export.
  *
- * The legacy slot-fill `scoreProductionState`, `eventIdToKey128`,
+ * The previous slot-fill `scoreProductionState`, `eventIdToKey128`,
  * `eventIdToMem128`, `evaluateStateWithReranker`, `evaluatePatchWithReranker`
  * are deleted as part of the production hardening overhaul. The retrieval-
  * benchmark replacement lives in:

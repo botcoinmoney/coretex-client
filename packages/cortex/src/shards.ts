@@ -18,7 +18,7 @@
  * shardId = lower 128 bits of keccak256(packed); 16 bytes; '0x' + hex.
  *
  * This module is the single source of truth for shard derivation across:
- *   - cortex-server challenge endpoint
+ *   - coordinator route shim challenge endpoint
  *   - benchmark/shards.ts (re-exported)
  *   - botcoin-cortex CLI verify-epoch path
  *   - any external auditor
@@ -68,7 +68,7 @@ function writeBigUint64BE(buf: Uint8Array, off: number, value: bigint): void {
  * Derive the canonical Cortex shardId. Returns the lower 128 bits of
  * keccak256 over the packed fields, as a bigint.
  *
- * Used by cortex-server, benchmark loaders, replay scripts, and verifiers.
+ * Used by coordinator route shim, benchmark loaders, replay scripts, and verifiers.
  */
 export function deriveShardIdU128(input: DeriveShardIdInput): bigint {
   const { epochSecret, miner, epochId, solveIndex, parentStateRoot,
