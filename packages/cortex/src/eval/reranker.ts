@@ -377,7 +377,14 @@ export function createStreamingQwen3Reranker(
     });
   }
 
-  return { model: `${opts.model}@${opts.revision}`, score, close };
+  // Wrap with the LRU score cache so identical (query, doc) pairs across
+  // sequential patch evaluations on the same hidden pack are scored once.
+  // Without this wrap the streaming Qwen3 reranker re-ran every pair on
+  // every call, which makes per-patch hidden evaluation on a launch-scale
+  // corpus prohibitively expensive (~111 min/eval observed on CPU before
+  // the cache was added).
+  const cached = withRerankerCache({ model: `${opts.model}@${opts.revision}`, score });
+  return { model: cached.model, score: cached.score, close };
 }
 
 // ─── MiniLM cross-encoder (text-classification pipeline) ─────────────────────
@@ -555,7 +562,19 @@ export async function rerankerFromEnv(): Promise<CrossEncoderReranker> {
 
 // ─── LRU memoization wrapper ──────────────────────────────────────────────────
 
-const DEFAULT_LRU_SIZE = 2048;
+/**
+ * Default LRU size for the reranker cache. Sized to comfortably hold the
+ * entire working set of one production hidden-pack eval (packSize=128 ×
+ * rerankerInputTopK=128 = 16,384 pairs) plus a few patch evaluations'
+ * worth of overlap, with headroom. Configurable at runtime via
+ * `CORETEX_RERANKER_CACHE_SIZE`. Each entry is ~200B → 100k entries ≈ 20MB.
+ *
+ * The cache is the single biggest production-throughput lever: without it,
+ * every per-patch eval re-scores every (query, doc) pair the previous patch
+ * eval already scored — relevant when many patches share the same hidden
+ * pack and overlap on the candidate set produced by stage-1.
+ */
+const DEFAULT_LRU_SIZE = Number(process.env['CORETEX_RERANKER_CACHE_SIZE'] ?? '100000');
 
 /**
  * Wrap a CrossEncoderReranker with an LRU score cache.
