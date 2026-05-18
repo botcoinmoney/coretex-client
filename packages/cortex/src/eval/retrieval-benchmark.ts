@@ -1,9 +1,9 @@
 /**
  * CoreTex production retrieval scorer.
  *
- * Spec: specs/retrieval_benchmark_v0.md.
+ * Spec: specs/retrieval_benchmark.md.
  *
- * Replaces the legacy slot-fill `scoreProductionState` /
+ * Replaces the previous slot-fill `scoreProductionState` /
  * `evaluateStateWithReranker` path. The reward law is `nDCG@10` over the
  * per-epoch hidden query pack, retrieval-dominant, with sanity, temporal,
  * multi-hop, and abstention sub-metrics.
@@ -626,22 +626,31 @@ export async function scoreSubstrateAgainstQuery(
       throw new Error(`retrieval-benchmark: reranker score[${i}] is non-finite (${rerankerScoresTopN[i]})`);
     }
   }
-  // Lay out scores back over the full candidate array; non-reranked docs get 0.
-  const scores: number[] = new Array(candidates.length).fill(0);
+  // Map rerank scores back to candidates by docId. Indexing by array
+  // position is unsafe because `rerankerCandidates = anchorMandatory ++
+  // preRankFill` reorders relative to `candidates` (anchor-mandatory docs
+  // are pulled to the front of the rerank pool regardless of preRank
+  // position). A positional copy attaches scores to the wrong docs
+  // whenever any anchor-mandatory candidate is not already the top-
+  // preRank doc. Non-reranked docs (those that didn't make the cap) get 0.
+  const rerankerScoreByDocId = new Map<string, number>();
   for (let i = 0; i < rerankerCandidates.length; i++) {
-    scores[i] = rerankerScoresTopN[i]!;
+    rerankerScoreByDocId.set(rerankerCandidates[i]!.record.docId, rerankerScoresTopN[i]!);
   }
 
   // ─── Pinned final ranking formula ────────────────────────────────────────
   const qrelById = new Map(query.qrels.map((q) => [q.documentId, q.relevance]));
   const ranked = candidates
-    .map((c, i) => ({
-      documentId: c.record.docId,
-      memorySlot: c.record.memorySlot,
-      rerankerScore: scores[i]!,
-      finalReorderingScore: scores[i]! + c.substrateBonus,
-      relevance: qrelById.get(c.record.docId) ?? 0,
-    }))
+    .map((c) => {
+      const r = rerankerScoreByDocId.get(c.record.docId) ?? 0;
+      return {
+        documentId: c.record.docId,
+        memorySlot: c.record.memorySlot,
+        rerankerScore: r,
+        finalReorderingScore: r + c.substrateBonus,
+        relevance: qrelById.get(c.record.docId) ?? 0,
+      };
+    })
     .sort((a, b) => {
       if (b.finalReorderingScore !== a.finalReorderingScore) {
         return b.finalReorderingScore - a.finalReorderingScore;
@@ -996,6 +1005,19 @@ export interface PatchAcceptanceFloors {
   readonly structuralFloor: number;
   readonly protectedRegressionFloor: number;
   readonly familyCatastrophicFloor: number;
+  /**
+   * Production acceptance threshold in ppm — the minimum `deltaPpm` a
+   * patch must clear for `result.accepted === true`. Production wires
+   * `computeAcceptanceThresholdPpm(profile)` = minImprovementPpm +
+   * replayTolerancePpm + baselineVariancePpm. Keeping this explicit
+   * (rather than re-deriving from `minImprovementPpm` alone) closes the
+   * footgun where a caller reads `result.accepted` thinking it captures
+   * the full production gate. When omitted, the evaluator falls back to
+   * `minImprovementPpm` — only acceptable for self-eval / scoring
+   * primitives that are NOT making advancement decisions; production
+   * hosts must always pass it.
+   */
+  readonly acceptanceThresholdPpm?: number;
 }
 
 export async function evaluateRetrievalBenchmarkPatch(
@@ -1006,6 +1028,7 @@ export async function evaluateRetrievalBenchmarkPatch(
   opts: ScoringOptions,
   floors: PatchAcceptanceFloors,
 ): Promise<PatchEvalResult> {
+  const acceptanceThresholdPpm = floors.acceptanceThresholdPpm ?? floors.minImprovementPpm;
   const before = await evaluateRetrievalBenchmarkState(parentState, corpus, pack, opts);
   const applied = applyPatch(parentState, patch);
   if (!applied.ok) {
@@ -1071,7 +1094,7 @@ export async function evaluateRetrievalBenchmarkPatch(
   }
 
   const deltaPpm = Math.round((after.composite - before.composite) * 1_000_000);
-  if (deltaPpm < floors.minImprovementPpm) {
+  if (deltaPpm < acceptanceThresholdPpm) {
     return {
       accepted: false,
       reason: 'no_retrieval_improvement',
