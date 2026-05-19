@@ -196,8 +196,25 @@ export interface EvaluatorProfile {
   readonly lensWeight?: number;
   /** Stage-2 anchor bonus scale (Run 0). */
   readonly anchorWeight?: number;
-  /** Stage-2 relation BFS doc cap per query (Run 0). */
+  /**
+   * Phase A budget: substrate-internal anchor-to-anchor BFS doc cap per
+   * query (Run 0). Independent from Phase B (corpus-native category-lens
+   * BFS) — see `categoryLensExpansionBudget`. On launch corpus the
+   * shared-budget coupling let Phase B flood the candidate pool with
+   * 189 docs and displace anchor-mandatory truths from top-10. Splitting
+   * the budgets keeps Phase A capacity while letting operators guard
+   * Phase B independently.
+   */
   readonly relationExpansionBudget?: number;
+  /**
+   * Phase B budget: corpus-native category-lens BFS doc cap per query.
+   * Optional; when omitted, scorers fall back to `relationExpansionBudget`
+   * for backwards compatibility with bundles that predate the budget
+   * split. Launch-v3 pin: 0 (Phase B suppressed — substrate retains
+   * category-lens entries for future per-family / selectivity work).
+   * See `RELATION_CATLENS_DECISION.md` in `release/calibration/cpu-2026-05-19-repaired-qrels/`.
+   */
+  readonly categoryLensExpansionBudget?: number;
   /** Stage-2 temporal modulation: bonus for current truth docs on temporal queries. */
   readonly temporalCurrentBoost?: number;
   /** Stage-2 temporal modulation: penalty for stale truth docs on temporal queries. */
@@ -709,7 +726,8 @@ export const DEFAULT_PROFILE: EvaluatorProfile = {
   lensTopK: 36,                    // == retrievalKeys slot count
   lensWeight: 0.10,                // calibration Run 0 will tune
   anchorWeight: 0.15,              // calibration Run 0 will tune
-  relationExpansionBudget: 50,     // calibration Run 0 will tune
+  relationExpansionBudget: 50,     // calibration Run 0 will tune (Phase A: anchor-to-anchor BFS)
+  categoryLensExpansionBudget: 50, // calibration Run 0 will tune (Phase B: corpus-native catLens BFS)
   temporalCurrentBoost: 0.10,      // calibration Run 0 will tune
   temporalStaleSuppression: 0.10,  // calibration Run 0 will tune
   lensDiversityFloor: 0.70,        // §6.4; calibration Run 0 confirms
@@ -1009,6 +1027,16 @@ function validateProfile(profile: EvaluatorProfile, errors?: string[]): void {
     out.push('splitRatios must sum to 100');
   if (profile.relationHopBudget < 1 || profile.relationHopBudget > 6)
     out.push('relationHopBudget must be in [1,6]');
+  if (profile.relationExpansionBudget !== undefined) {
+    if (!Number.isInteger(profile.relationExpansionBudget) || profile.relationExpansionBudget < 0) {
+      out.push('relationExpansionBudget must be a non-negative integer when present');
+    }
+  }
+  if (profile.categoryLensExpansionBudget !== undefined) {
+    if (!Number.isInteger(profile.categoryLensExpansionBudget) || profile.categoryLensExpansionBudget < 0) {
+      out.push('categoryLensExpansionBudget must be a non-negative integer when present');
+    }
+  }
   if (profile.replayTolerancePpm > profile.patchAcceptanceFloors.minImprovementPpm)
     out.push('replayTolerancePpm must be <= patchAcceptanceFloors.minImprovementPpm');
 
