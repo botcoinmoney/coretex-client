@@ -123,7 +123,27 @@ export interface ScoringOptions {
   readonly lensTopK: number;                   // how many lens vectors contribute to stage-2 reweighting
   readonly lensWeight: number;                 // stage-2 lens bonus scale (Run 0)
   readonly anchorWeight: number;               // stage-2 anchor bonus scale (Run 0)
-  readonly relationExpansionBudget: number;    // stage-2 relation BFS doc cap (Run 0)
+  readonly relationExpansionBudget: number;    // Phase A: anchor-to-anchor BFS doc cap
+  /**
+   * Phase B (corpus-native category-lens BFS) candidate-pool budget.
+   * Optional; when omitted, defaults to `relationExpansionBudget` for
+   * backwards compatibility with bundles that predate the budget split.
+   *
+   * Phase A (anchor-to-anchor BFS through `decoded.relations`) and Phase B
+   * (corpus-native event.relations BFS via category-lens entries) used to
+   * share a single counter capped by `relationExpansionBudget`. On
+   * launch-corpus scale that coupling let Phase B flood the candidate
+   * pool with 189 docs across 16 queries and displace 14 of 15
+   * anchor-mandatory truths from the reranker's top-10 (commit
+   * ce106be artifact). The two phases now have independent budgets:
+   * substrate retains anchor-graph relation capacity while operators
+   * can guard the broader corpus-native expansion separately.
+   *
+   * Launch-v3 candidate pin: relationExpansionBudget=12,
+   * categoryLensExpansionBudget=0 (Phase B disabled; substrate
+   * structure intact for future tightening).
+   */
+  readonly categoryLensExpansionBudget?: number;
   readonly temporalCurrentBoost: number;       // stage-2 temporal bonus (current truth)
   readonly temporalStaleSuppression: number;   // stage-2 temporal penalty (stale truth)
   /**
@@ -434,12 +454,15 @@ export async function scoreSubstrateAgainstQuery(
     relAdj.set(e.sourceSlot, arr);
   }
 
-  // BFS from active anchors up to `relationHopBudget` hops; add truth docs of
-  // visited anchors to the pool until `relationExpansionBudget` is reached.
-  let expansionAdded = 0;
+  // Phase A: BFS from active anchors up to `relationHopBudget` hops; add
+  // truth docs of visited anchors to the pool until
+  // `relationExpansionBudget` is reached. Has its OWN counter — Phase B
+  // (corpus-native category-lens BFS, below) carries an independent
+  // budget so the two channels don't share a flood-prone pool budget.
+  let anchorBfsExpansionAdded = 0;
   const visited = new Set<number>(anchorSlotToEvent.keys());
   let frontier: number[] = Array.from(visited);
-  for (let hop = 0; hop < opts.relationHopBudget && expansionAdded < opts.relationExpansionBudget; hop++) {
+  for (let hop = 0; hop < opts.relationHopBudget && anchorBfsExpansionAdded < opts.relationExpansionBudget; hop++) {
     const next: number[] = [];
     for (const slot of frontier) {
       const neighbors = relAdj.get(slot) ?? [];
@@ -464,13 +487,13 @@ export async function scoreSubstrateAgainstQuery(
             isStaleTruth: !td.isCurrent,
             sources: new Set(['anchorBFS']),
           });
-          expansionAdded++;
-          if (expansionAdded >= opts.relationExpansionBudget) break;
+          anchorBfsExpansionAdded++;
+          if (anchorBfsExpansionAdded >= opts.relationExpansionBudget) break;
         }
         next.push(nbr);
-        if (expansionAdded >= opts.relationExpansionBudget) break;
+        if (anchorBfsExpansionAdded >= opts.relationExpansionBudget) break;
       }
-      if (expansionAdded >= opts.relationExpansionBudget) break;
+      if (anchorBfsExpansionAdded >= opts.relationExpansionBudget) break;
     }
     frontier = next;
   }
@@ -491,14 +514,24 @@ export async function scoreSubstrateAgainstQuery(
   // For each stage-1 candidate doc, find its source event; follow the event's
   // corpus-native relations whose edgeType matches one of the substrate's
   // category-lens entries; add the related event's truth docs to the pool.
-  // Cap by the same `relationExpansionBudget` so anchor BFS + category-lens
-  // expansion share the candidate-pool growth budget.
   //
-  // This is the substrate's corpus-scale retrieval lever that scales past the
-  // 44-anchor cap. Stage-1 surfacing ANY question with the same answer-entity
-  // reaches that entity's truth doc via category-lens; the reranker scores it.
-  // Anti-cheat invariant intact: the substrate only chooses WHICH edgeTypes to
-  // follow; it cannot manufacture new edges — they come from the corpus.
+  // Phase B carries its OWN budget — `categoryLensExpansionBudget` —
+  // separate from Phase A's `relationExpansionBudget`. On launch-corpus
+  // scale (~296k corpus relation edges), sharing one budget let Phase B
+  // flood the candidate pool with hundreds of plausible-but-irrelevant
+  // docs and displace anchor-mandatory truths from the reranker's
+  // top-10 (commit ce106be artifact). Splitting the budgets lets the
+  // operator disable Phase B (categoryLensExpansionBudget=0) while
+  // retaining Phase A's anchor-graph routing. Default value falls back
+  // to `relationExpansionBudget` for backwards compatibility with
+  // bundles that predate the split.
+  //
+  // This remains the substrate's corpus-scale retrieval lever that scales
+  // past the 44-anchor cap. Stage-1 surfacing ANY question with the same
+  // answer-entity reaches that entity's truth doc via category-lens; the
+  // reranker scores it. Anti-cheat invariant intact: the substrate only
+  // chooses WHICH edgeTypes to follow; it cannot manufacture new edges.
+  const categoryLensExpansionBudget = opts.categoryLensExpansionBudget ?? opts.relationExpansionBudget;
   const lensesByEdgeType = new Map<string, RelationCategoryLens>();
   for (const lens of decoded.categoryLenses) {
     // If multiple lenses share an edgeType, keep the highest-weight one.
@@ -508,7 +541,7 @@ export async function scoreSubstrateAgainstQuery(
   const eventByCorpusId = corpusByCorpusId(corpus);
   /** Per-doc category-lens weight (max across applicable lenses), normalised to [0,1). */
   const categoryLensWeightByDocId = new Map<string, number>();
-  if (lensesByEdgeType.size > 0) {
+  if (lensesByEdgeType.size > 0 && categoryLensExpansionBudget > 0) {
     // Per-event semantic cluster: BFS follows category-lens-matching edges
     // BIDIRECTIONALLY. Stage-1 finds similar question events; forward edges
     // (question → answer-entity) plus inverse edges (entity ← all questions
@@ -523,10 +556,11 @@ export async function scoreSubstrateAgainstQuery(
     for (const d of stage1Docs) visitedEventIds.add(d.eventId);
     let frontierEventIds: string[] = Array.from(visitedEventIds);
 
-    for (let hop = 0; hop < opts.relationHopBudget && expansionAdded < opts.relationExpansionBudget; hop++) {
+    let categoryLensExpansionAdded = 0;
+    for (let hop = 0; hop < opts.relationHopBudget && categoryLensExpansionAdded < categoryLensExpansionBudget; hop++) {
       const next: string[] = [];
       for (const eventId of frontierEventIds) {
-        if (expansionAdded >= opts.relationExpansionBudget) break;
+        if (categoryLensExpansionAdded >= categoryLensExpansionBudget) break;
         const sourceEvent = eventByCorpusId.get(eventId);
         if (!sourceEvent) continue;
 
@@ -540,12 +574,12 @@ export async function scoreSubstrateAgainstQuery(
             visitedEventIds.add(tgtId);
             const targetEvent = eventByCorpusId.get(tgtId);
             if (!targetEvent) continue;
-            expansionAdded += addEventTruthsToPool(
+            categoryLensExpansionAdded += addEventTruthsToPool(
               targetEvent, pool, categoryLensWeightByDocId, lens.weight / 0xFFFF,
-              opts.relationExpansionBudget - expansionAdded,
+              categoryLensExpansionBudget - categoryLensExpansionAdded,
             );
             next.push(tgtId);
-            if (expansionAdded >= opts.relationExpansionBudget) break;
+            if (categoryLensExpansionAdded >= categoryLensExpansionBudget) break;
           }
         }
 
@@ -563,12 +597,12 @@ export async function scoreSubstrateAgainstQuery(
             visitedEventIds.add(srcId);
             const sourceFromInverse = eventByCorpusId.get(srcId);
             if (!sourceFromInverse) continue;
-            expansionAdded += addEventTruthsToPool(
+            categoryLensExpansionAdded += addEventTruthsToPool(
               sourceFromInverse, pool, categoryLensWeightByDocId, lens.weight / 0xFFFF,
-              opts.relationExpansionBudget - expansionAdded,
+              categoryLensExpansionBudget - categoryLensExpansionAdded,
             );
             next.push(srcId);
-            if (expansionAdded >= opts.relationExpansionBudget) break;
+            if (categoryLensExpansionAdded >= categoryLensExpansionBudget) break;
           }
         }
       }
