@@ -183,6 +183,16 @@ export interface PerQueryBreakdown {
    * pool (cap >= pool size). Doesn't change the composite score.
    */
   readonly cappedDocIds?: readonly string[];
+  /**
+   * Candidate-source attribution (parallel array to cappedDocIds). Each
+   * entry lists which routing mechanisms placed that docId into the
+   * candidate pool: 'stage1', 'anchorMandatory', 'anchorBFS', or
+   * 'categoryLensBFS'. A doc reached by multiple mechanisms carries all
+   * applicable tags. Pure diagnostic — does not affect scoring.
+   * Used to answer "which mechanism actually produces relevant top-K
+   * docs?" without inferring from indirect signals.
+   */
+  readonly cappedDocSources?: readonly (readonly string[])[];
 }
 
 export interface CompositeScore {
@@ -247,6 +257,7 @@ export async function scoreSubstrateAgainstQuery(
   ranked: readonly { documentId: string; relevance: number; rerankerScore: number; memorySlot: number | null }[];
   top1Score: number;
   cappedDocIds: readonly string[];
+  cappedDocSources: readonly (readonly string[])[];
 }> {
   const queryVec = dequantize(query.embeddings.query, opts.retrievalKeyLayout);
   const publicIndex = getOrBuildPublicIndex(corpus);
@@ -264,7 +275,13 @@ export async function scoreSubstrateAgainstQuery(
   // Resolve doc text for the reranker pairs (text lives in the labeled corpus).
   const docTextById = getOrBuildDocTextIndex(corpus);
 
-  // Map: docId → { embedding, text, eventId, memorySlot, provenance }
+  // Map: docId → { embedding, text, eventId, memorySlot, provenance, sources }
+  // `sources` records which routing mechanism(s) added this doc to the
+  // candidate pool. A doc may be reached by multiple paths (e.g., stage1
+  // AND anchorMandatory); store all that applied. Pure diagnostic — does
+  // not affect scoring. Surfaced in PerQueryBreakdown.cappedDocSources so
+  // calibration can answer "which mechanism delivered the top-10 docs?"
+  type SourceTag = 'stage1' | 'anchorMandatory' | 'anchorBFS' | 'categoryLensBFS';
   type CandidateRecord = {
     docId: string;
     embedding: Uint8Array;
@@ -273,8 +290,12 @@ export async function scoreSubstrateAgainstQuery(
     memorySlot: number | null; // anchor slot that brought it via stage-2 (if any)
     isCurrentTruth: boolean;
     isStaleTruth: boolean;
+    sources: Set<SourceTag>;
   };
   const pool = new Map<string, CandidateRecord>();
+  function addSource(record: CandidateRecord, src: SourceTag) {
+    record.sources.add(src);
+  }
 
   for (const d of stage1Docs) {
     const text = docTextById.get(d.id);
@@ -287,6 +308,7 @@ export async function scoreSubstrateAgainstQuery(
       memorySlot: null,
       isCurrentTruth: false,
       isStaleTruth: false,
+      sources: new Set(['stage1']),
     });
   }
 
@@ -313,7 +335,12 @@ export async function scoreSubstrateAgainstQuery(
   // Anti-cheat invariant intact: anchors are public; reranker still judges.
   for (const [slot, ev] of anchorSlotToEvent) {
     for (const td of ev.truthDocuments) {
-      if (pool.has(td.id)) continue; // stage-1 already had it
+      const existing = pool.get(td.id);
+      if (existing) {
+        // Stage-1 already had this doc, but anchor-mandatory ALSO routes it.
+        addSource(existing, 'anchorMandatory');
+        continue;
+      }
       const emb = ev.embeddings.perTruth.get(td.id);
       if (!emb) continue;
       pool.set(td.id, {
@@ -324,6 +351,7 @@ export async function scoreSubstrateAgainstQuery(
         memorySlot: slot,
         isCurrentTruth: td.isCurrent,
         isStaleTruth: !td.isCurrent,
+        sources: new Set(['anchorMandatory']),
       });
     }
   }
@@ -353,7 +381,8 @@ export async function scoreSubstrateAgainstQuery(
         if (!ev) continue;
         // Add this neighbor's truth docs to the pool.
         for (const td of ev.truthDocuments) {
-          if (pool.has(td.id)) continue;
+          const existing = pool.get(td.id);
+          if (existing) { addSource(existing, 'anchorBFS'); continue; }
           const emb = ev.embeddings.perTruth.get(td.id);
           if (!emb) continue;
           pool.set(td.id, {
@@ -364,6 +393,7 @@ export async function scoreSubstrateAgainstQuery(
             memorySlot: nbr,
             isCurrentTruth: td.isCurrent,
             isStaleTruth: !td.isCurrent,
+            sources: new Set(['anchorBFS']),
           });
           expansionAdded++;
           if (expansionAdded >= opts.relationExpansionBudget) break;
@@ -567,7 +597,7 @@ export async function scoreSubstrateAgainstQuery(
   }
 
   if (candidates.length === 0) {
-    return { ranked: [], top1Score: 0, cappedDocIds: [] };
+    return { ranked: [], top1Score: 0, cappedDocIds: [], cappedDocSources: [] };
   }
 
   // ─── §6.5 reranker-input cap: take top-N by pre-rank ─────────────────────
@@ -669,7 +699,8 @@ export async function scoreSubstrateAgainstQuery(
   // Expose the cap pool's docIds so gates G1/G2 can verify substrate
   // routing without inferring from rerankerScore==0 sentinels.
   const cappedDocIds = rerankerCandidates.map((c) => c.record.docId);
-  return { ranked, top1Score, cappedDocIds };
+  const cappedDocSources = rerankerCandidates.map((c) => Array.from(c.record.sources));
+  return { ranked, top1Score, cappedDocIds, cappedDocSources };
 }
 
 // ─── Per-call corpus-side index caches ──────────────────────────────────────
@@ -748,6 +779,7 @@ function addEventTruthsToPool(
     memorySlot: number | null;
     isCurrentTruth: boolean;
     isStaleTruth: boolean;
+    sources: Set<'stage1' | 'anchorMandatory' | 'anchorBFS' | 'categoryLensBFS'>;
   }>,
   categoryLensWeightByDocId: Map<string, number>,
   normWeight: number,
@@ -758,6 +790,7 @@ function addEventTruthsToPool(
     if (added >= cap) break;
     const existing = pool.get(td.id);
     if (existing) {
+      existing.sources.add('categoryLensBFS');
       const prev = categoryLensWeightByDocId.get(td.id) ?? 0;
       if (normWeight > prev) categoryLensWeightByDocId.set(td.id, normWeight);
       continue;
@@ -772,6 +805,7 @@ function addEventTruthsToPool(
       memorySlot: null,
       isCurrentTruth: td.isCurrent,
       isStaleTruth: !td.isCurrent,
+      sources: new Set(['categoryLensBFS']),
     });
     categoryLensWeightByDocId.set(td.id, normWeight);
     added++;
@@ -904,7 +938,7 @@ export async function evaluateRetrievalBenchmarkState(
 
   for (const query of pack.events) {
     const isAbstentionProbe = query.truthDocuments.length === 0;
-    const { ranked, top1Score, cappedDocIds } = await scoreSubstrateAgainstQuery(decoded, query, corpus, opts);
+    const { ranked, top1Score, cappedDocIds, cappedDocSources } = await scoreSubstrateAgainstQuery(decoded, query, corpus, opts);
 
     // nDCG / MRR / Recall over reranked list.
     const idealRels = query.qrels.map((q) => q.relevance);
@@ -970,6 +1004,7 @@ export async function evaluateRetrievalBenchmarkState(
       abstentionHit: abstHit,
       top1Score,
       cappedDocIds,
+      cappedDocSources,
     });
   }
 
