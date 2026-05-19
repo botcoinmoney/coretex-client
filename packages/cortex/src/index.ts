@@ -35,6 +35,7 @@ export * from './eval/public-corpus-index.js';
 export * from './eval/retrieval-benchmark.js';
 export * from './eval/ir-metrics.js';
 export * from './eval/hidden-query-pack.js';
+export * from './eval/relation-qrels.js';
 export * from './corpus/admission.js';
 export * from './corpus/delta.js';
 export * from './corpus/epoch-rotation.js';

@@ -172,6 +172,7 @@ export interface PerQueryBreakdown {
   readonly recall10: number | null;
   readonly temporalHit: boolean | null;
   readonly multiHopHit: boolean | null;
+  readonly categoryLensRelationHit: boolean | null;
   readonly abstentionHit: boolean | null;
   readonly top1Score: number;
   /**
@@ -248,6 +249,7 @@ export interface CompositeScore {
   readonly recall10: number;
   readonly temporal: number;
   readonly multiHopRecall10: number;
+  readonly categoryLensRelationHit10: number;
   readonly abstention: number;
   readonly structuralValidity: number;
   readonly perQuery: readonly PerQueryBreakdown[];
@@ -784,10 +786,10 @@ export async function scoreSubstrateAgainstQuery(
     preRankScore: c.preRankScore,
   }));
   // Final ranking top-20 with full attribution + components. Joining
-  // rerankerCandidate components into the final-rank ordering lets
+  // candidate components into the final-rank ordering lets
   // downstream answer "which mechanism produced relevant docs in
   // top-10" and "which surface injected hard negatives at top-20."
-  const componentsByDocId = new Map(rerankerCandidates.map((c) => [c.record.docId, c]));
+  const componentsByDocId = new Map(candidates.map((c) => [c.record.docId, c]));
   const finalRankingTop20 = ranked.slice(0, 20).map((r, idx) => {
     const c = componentsByDocId.get(r.documentId);
     const cs = c?.record.sources;
@@ -1032,6 +1034,7 @@ export async function evaluateRetrievalBenchmarkState(
   const recalls: number[] = [];
   const tempHits: (boolean | null)[] = [];
   const multiHits: (boolean | null)[] = [];
+  const categoryLensRelationHits: (boolean | null)[] = [];
   const abstHits: (boolean | null)[] = [];
 
   // Build the relation graph once.
@@ -1087,6 +1090,14 @@ export async function evaluateRetrievalBenchmarkState(
       multiHit = multiHopRelationHit(candidateSlots, answerSlots, relGraph, opts.relationHopBudget);
     }
 
+    const categoryLensRelationHit = query.family === 'multi_hop_relation'
+      ? finalRankingTop20.some((r) =>
+          r.rank <= opts.rerankerTopK &&
+          r.relevance > 0 &&
+          r.sources.includes('categoryLensBFS'),
+        )
+      : null;
+
     let abstHit: boolean | null = null;
     if (isAbstentionProbe) {
       abstHit = top1Score < opts.abstentionThreshold;
@@ -1097,6 +1108,7 @@ export async function evaluateRetrievalBenchmarkState(
     if (rec !== null) recalls.push(rec);
     tempHits.push(tempHit);
     multiHits.push(multiHit);
+    categoryLensRelationHits.push(categoryLensRelationHit);
     abstHits.push(abstHit);
 
     perQuery.push({
@@ -1107,6 +1119,7 @@ export async function evaluateRetrievalBenchmarkState(
       recall10: rec,
       temporalHit: tempHit,
       multiHopHit: multiHit,
+      categoryLensRelationHit,
       abstentionHit: abstHit,
       top1Score,
       cappedDocIds,
@@ -1121,6 +1134,7 @@ export async function evaluateRetrievalBenchmarkState(
   const meanRec = recalls.length === 0 ? 0 : recalls.reduce((a, b) => a + b, 0) / recalls.length;
   const tempAcc = temporalCurrentStaleAccuracy(tempHits);
   const multiAcc = multiHopRelationRecallAtK(multiHits);
+  const categoryLensRelationHitAcc = multiHopRelationRecallAtK(categoryLensRelationHits);
   const abstAcc = abstentionAccuracy(abstHits);
 
   const composite =
@@ -1137,6 +1151,7 @@ export async function evaluateRetrievalBenchmarkState(
     recall10: meanRec,
     temporal: tempAcc,
     multiHopRecall10: multiAcc,
+    categoryLensRelationHit10: categoryLensRelationHitAcc,
     abstention: abstAcc,
     structuralValidity: sv,
     perQuery,
