@@ -171,5 +171,37 @@ describe('candidate-source attribution', () => {
       assert.ok(q.cappedDocSources[i].length > 0,
         `doc ${q.cappedDocIds[i]} must carry at least one source (got ${JSON.stringify(q.cappedDocSources[i])})`);
     }
+
+    // cappedDocComponents is parallel to cappedDocIds and exposes the
+    // raw inputs to preRankScore so downstream can compute
+    // lens-promotion-into-cap without re-running the scorer.
+    assert.ok(Array.isArray(q.cappedDocComponents), 'cappedDocComponents is array');
+    assert.equal(q.cappedDocComponents.length, q.cappedDocIds.length, 'components parallel to docIds');
+    for (const c of q.cappedDocComponents) {
+      assert.ok(typeof c.biCosine === 'number' && Number.isFinite(c.biCosine), 'biCosine numeric');
+      assert.ok(typeof c.lensBonus === 'number' && Number.isFinite(c.lensBonus), 'lensBonus numeric');
+      assert.ok(typeof c.anchorBonus === 'number' && Number.isFinite(c.anchorBonus), 'anchorBonus numeric');
+      assert.ok(typeof c.categoryLensBonus === 'number' && Number.isFinite(c.categoryLensBonus), 'categoryLensBonus numeric');
+      assert.ok(typeof c.temporalBonus === 'number' && Number.isFinite(c.temporalBonus), 'temporalBonus numeric');
+      const sumComputed = c.biCosine + c.lensBonus + c.anchorBonus + c.categoryLensBonus + c.temporalBonus;
+      // Floating-point tolerance on the identity preRankScore = bi + lens + anchor + categoryLens + temporal.
+      assert.ok(Math.abs(c.preRankScore - sumComputed) < 1e-6,
+        `preRankScore identity violated: ${c.preRankScore} vs sum ${sumComputed}`);
+    }
+
+    // finalRankingTop20 mirrors the reranker's decisions with full
+    // attribution attached. Each rank entry carries sources +
+    // components from the corresponding capped pool record.
+    assert.ok(Array.isArray(q.finalRankingTop20), 'finalRankingTop20 is array');
+    assert.ok(q.finalRankingTop20.length > 0, 'at least one ranked doc');
+    assert.ok(q.finalRankingTop20.length <= 20, 'capped at 20');
+    assert.equal(q.finalRankingTop20[0].rank, 1, 'rank is 1-indexed');
+    // The truth doc must appear in the top-K with anchorMandatory tag.
+    const truthFinal = q.finalRankingTop20.find((r) => r.docId === 'ev-A-truth');
+    assert.ok(truthFinal, 'truth doc lands in final ranking');
+    assert.ok(truthFinal.sources.includes('anchorMandatory'),
+      `truth's final-rank attribution carries anchorMandatory (got ${JSON.stringify(truthFinal.sources)})`);
+    // relevance label is propagated from qrels (1 for the truth doc).
+    assert.equal(truthFinal.relevance, 1, 'truth relevance is 1');
   });
 });

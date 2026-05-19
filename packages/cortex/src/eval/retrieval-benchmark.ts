@@ -193,6 +193,52 @@ export interface PerQueryBreakdown {
    * docs?" without inferring from indirect signals.
    */
   readonly cappedDocSources?: readonly (readonly string[])[];
+  /**
+   * Pre-rank score components per capped doc (parallel array to
+   * cappedDocIds). Each entry exposes the raw inputs to preRankScore so
+   * downstream diagnostics can compute lens-promotion-into-cap, hard-
+   * negative injection, etc. without re-running the scorer:
+   *
+   *   preRankScore = biCosine + lensBonus + anchorBonus + categoryLensBonus + temporalBonus
+   *
+   * A doc whose preRankScore − lensBonus would be below the K-th-place
+   * threshold is "lens-promoted into the cap"; a doc whose biCosine
+   * alone would be in the cap but is displaced by a substrate-promoted
+   * doc is "substrate-displaced." Both questions are answerable from
+   * this field plus cappedDocIds.
+   */
+  readonly cappedDocComponents?: readonly {
+    biCosine: number;
+    lensBonus: number;
+    anchorBonus: number;
+    categoryLensBonus: number;
+    temporalBonus: number;
+    preRankScore: number;
+  }[];
+  /**
+   * Final ranking (top 20) — what the reranker decided, with relevance
+   * labels, source tags, and pre-rank components attached. Used to
+   * answer "which mechanism produces relevant docs in the final top-10?"
+   * and "are hard negatives in top-20 from anchor BFS or category-lens
+   * BFS expansion?"
+   *
+   * `finalReorderingScore = rerankerScore + substrateBonus` is the sort
+   * key actually used by the evaluator. `relevance` is the qrel for
+   * this query (0 = irrelevant, ≥1 = graded relevance).
+   */
+  readonly finalRankingTop20?: readonly {
+    docId: string;
+    rank: number;
+    rerankerScore: number;
+    finalReorderingScore: number;
+    relevance: number;
+    sources: readonly string[];
+    biCosine: number;
+    lensBonus: number;
+    anchorBonus: number;
+    categoryLensBonus: number;
+    temporalBonus: number;
+  }[];
 }
 
 export interface CompositeScore {
@@ -258,6 +304,27 @@ export async function scoreSubstrateAgainstQuery(
   top1Score: number;
   cappedDocIds: readonly string[];
   cappedDocSources: readonly (readonly string[])[];
+  cappedDocComponents: readonly {
+    biCosine: number;
+    lensBonus: number;
+    anchorBonus: number;
+    categoryLensBonus: number;
+    temporalBonus: number;
+    preRankScore: number;
+  }[];
+  finalRankingTop20: readonly {
+    docId: string;
+    rank: number;
+    rerankerScore: number;
+    finalReorderingScore: number;
+    relevance: number;
+    sources: readonly string[];
+    biCosine: number;
+    lensBonus: number;
+    anchorBonus: number;
+    categoryLensBonus: number;
+    temporalBonus: number;
+  }[];
 }> {
   const queryVec = dequantize(query.embeddings.query, opts.retrievalKeyLayout);
   const publicIndex = getOrBuildPublicIndex(corpus);
@@ -554,6 +621,10 @@ export async function scoreSubstrateAgainstQuery(
     biCosine: number;
     preRankScore: number;
     docVec: Float32Array;
+    lensBonus: number;
+    anchorBonus: number;
+    categoryLensBonus: number;
+    temporalBonus: number;
   }[] = [];
   for (const record of pool.values()) {
     const docVec = dequantize(record.embedding, opts.retrievalKeyLayout);
@@ -593,11 +664,15 @@ export async function scoreSubstrateAgainstQuery(
       biCosine,
       preRankScore: biCosine + substrateBonus,
       docVec,
+      lensBonus,
+      anchorBonus,
+      categoryLensBonus,
+      temporalBonus,
     });
   }
 
   if (candidates.length === 0) {
-    return { ranked: [], top1Score: 0, cappedDocIds: [], cappedDocSources: [] };
+    return { ranked: [], top1Score: 0, cappedDocIds: [], cappedDocSources: [], cappedDocComponents: [], finalRankingTop20: [] };
   }
 
   // ─── §6.5 reranker-input cap: take top-N by pre-rank ─────────────────────
@@ -700,7 +775,38 @@ export async function scoreSubstrateAgainstQuery(
   // routing without inferring from rerankerScore==0 sentinels.
   const cappedDocIds = rerankerCandidates.map((c) => c.record.docId);
   const cappedDocSources = rerankerCandidates.map((c) => Array.from(c.record.sources));
-  return { ranked, top1Score, cappedDocIds, cappedDocSources };
+  const cappedDocComponents = rerankerCandidates.map((c) => ({
+    biCosine: c.biCosine,
+    lensBonus: c.lensBonus,
+    anchorBonus: c.anchorBonus,
+    categoryLensBonus: c.categoryLensBonus,
+    temporalBonus: c.temporalBonus,
+    preRankScore: c.preRankScore,
+  }));
+  // Final ranking top-20 with full attribution + components. Joining
+  // rerankerCandidate components into the final-rank ordering lets
+  // downstream answer "which mechanism produced relevant docs in
+  // top-10" and "which surface injected hard negatives at top-20."
+  const componentsByDocId = new Map(rerankerCandidates.map((c) => [c.record.docId, c]));
+  const finalRankingTop20 = ranked.slice(0, 20).map((r, idx) => {
+    const c = componentsByDocId.get(r.documentId);
+    const cs = c?.record.sources;
+    const finalReorderingScore = (r.rerankerScore ?? 0) + (c?.substrateBonus ?? 0);
+    return {
+      docId: r.documentId,
+      rank: idx + 1,
+      rerankerScore: r.rerankerScore,
+      finalReorderingScore,
+      relevance: r.relevance,
+      sources: cs ? Array.from(cs) : [],
+      biCosine: c?.biCosine ?? 0,
+      lensBonus: c?.lensBonus ?? 0,
+      anchorBonus: c?.anchorBonus ?? 0,
+      categoryLensBonus: c?.categoryLensBonus ?? 0,
+      temporalBonus: c?.temporalBonus ?? 0,
+    };
+  });
+  return { ranked, top1Score, cappedDocIds, cappedDocSources, cappedDocComponents, finalRankingTop20 };
 }
 
 // ─── Per-call corpus-side index caches ──────────────────────────────────────
@@ -938,7 +1044,7 @@ export async function evaluateRetrievalBenchmarkState(
 
   for (const query of pack.events) {
     const isAbstentionProbe = query.truthDocuments.length === 0;
-    const { ranked, top1Score, cappedDocIds, cappedDocSources } = await scoreSubstrateAgainstQuery(decoded, query, corpus, opts);
+    const { ranked, top1Score, cappedDocIds, cappedDocSources, cappedDocComponents, finalRankingTop20 } = await scoreSubstrateAgainstQuery(decoded, query, corpus, opts);
 
     // nDCG / MRR / Recall over reranked list.
     const idealRels = query.qrels.map((q) => q.relevance);
@@ -1005,6 +1111,8 @@ export async function evaluateRetrievalBenchmarkState(
       top1Score,
       cappedDocIds,
       cappedDocSources,
+      cappedDocComponents,
+      finalRankingTop20,
     });
   }
 
