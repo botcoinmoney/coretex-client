@@ -383,8 +383,15 @@ export function createStreamingQwen3Reranker(
   // every call, which makes per-patch hidden evaluation on a launch-scale
   // corpus prohibitively expensive (~111 min/eval observed on CPU before
   // the cache was added).
+  // Wrap with the LRU score cache so identical (query, doc) pairs across
+  // sequential patch evaluations on the same hidden pack are scored once.
+  // Use Object.assign so the SAME object is what's keyed in
+  // cacheStatsByReranker — callers that pass the returned reranker into
+  // `getRerankerCacheStats` see live hit/miss counters. Returning a new
+  // wrapper object (with cached.score copied onto it) would silently
+  // disconnect telemetry while keeping the cache itself working.
   const cached = withRerankerCache({ model: `${opts.model}@${opts.revision}`, score });
-  return { model: cached.model, score: cached.score, close };
+  return Object.assign(cached, { close }) as CrossEncoderReranker & { close: () => Promise<void> };
 }
 
 // ─── MiniLM cross-encoder (text-classification pipeline) ─────────────────────
