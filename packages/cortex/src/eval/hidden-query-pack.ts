@@ -38,12 +38,20 @@ export interface QueryPack {
  * as the max negative qrel score: more plausible wrong answers → harder
  * query. Hard negatives are capped at 0.4 because they are deliberately
  * non-answer-bearing.
+ *
+ * Qrels with `relevance >= 0.5` are treated as POSITIVE (true answer or
+ * relation-answer alias) and excluded from the hard-negative
+ * calculation. Pre-relation-alias-repair corpora wouldn't have any such
+ * qrels outside `event.truthDocuments`; post-repair, relation-target
+ * truths are aliased into qrels at relevance=1 and would otherwise
+ * collapse every relation-bearing event's bucket to 'hard'.
  */
 export function hardnessBucketFor(event: ProductionCorpusEvent): HardnessBucket {
   let maxNeg: number = 0;
   const truthIds = new Set(event.truthDocuments.map((d) => d.id));
   for (const q of event.qrels) {
     if (truthIds.has(q.documentId)) continue;
+    if (q.relevance >= 0.5) continue; // positive qrel (true answer / relation alias) — not a hard negative
     if (q.relevance > maxNeg) maxNeg = q.relevance;
   }
   if (maxNeg >= 0.4) return 'hard';
