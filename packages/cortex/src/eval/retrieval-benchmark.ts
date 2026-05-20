@@ -397,6 +397,9 @@ export async function scoreSubstrateAgainstQuery(
 
   // Resolve doc text for the reranker pairs (text lives in the labeled corpus).
   const docTextById = getOrBuildDocTextIndex(corpus);
+  // Per-doc temporal metadata so temporal boost/suppression reaches ANY retrieved
+  // doc the corpus marks current/stale — not only anchored docs (plumbing fix).
+  const docTemporalById = getOrBuildDocTemporalIndex(corpus);
 
   // Map: docId → { embedding, text, eventId, memorySlot, provenance, sources }
   // `sources` records which routing mechanism(s) added this doc to the
@@ -423,14 +426,19 @@ export async function scoreSubstrateAgainstQuery(
   for (const d of stage1Docs) {
     const text = docTextById.get(d.id);
     if (!text) continue; // skip if text is missing (shouldn't happen with a built index)
+    const tmeta = docTemporalById.get(d.id);
     pool.set(d.id, {
       docId: d.id,
       embedding: d.embedding,
       text,
       eventId: d.eventId,
       memorySlot: null,
-      isCurrentTruth: false,
-      isStaleTruth: false,
+      // Temporal metadata is intrinsic to the corpus doc, not to how it was
+      // routed — so a stage-1-retrieved current/stale doc receives temporal
+      // modulation just like an anchored one. (Was hardcoded false: under-wiring
+      // that made temporal substrate anchor-dependent.)
+      isCurrentTruth: tmeta?.isCurrentTruth ?? false,
+      isStaleTruth: tmeta?.isStaleTruth ?? false,
       sources: new Set(['stage1']),
     });
   }
@@ -910,6 +918,33 @@ function getOrBuildDocTextIndex(corpus: ProductionCorpus): Map<string, string> {
     for (const n of event.hardNegatives) if (!map.has(n.id)) map.set(n.id, n.text);
   }
   docTextCache.set(corpus, map);
+  return map;
+}
+
+// Per-doc temporal metadata, derived ONCE from the corpus, keyed by docId.
+// Lets the scorer apply temporal boost/suppression to ANY candidate doc that
+// the corpus marks current/stale — not only docs that entered via a MemoryIndex
+// anchor. Without this, temporal substrate would be anchor-dependent (a
+// plumbing under-wiring): stage-1 / Phase-B docs would silently carry
+// isCurrentTruth=isStaleTruth=false and never receive temporal modulation.
+//   - truthDocument: isCurrentTruth = td.isCurrent ; isStaleTruth = !td.isCurrent
+//   - hardNegative w/ category 'temporal_stale': isStaleTruth = true (stale fact)
+//   - all other docs: neither (non-temporal)
+interface DocTemporalMeta { isCurrentTruth: boolean; isStaleTruth: boolean; }
+const docTemporalCache = new WeakMap<ProductionCorpus, Map<string, DocTemporalMeta>>();
+function getOrBuildDocTemporalIndex(corpus: ProductionCorpus): Map<string, DocTemporalMeta> {
+  const cached = docTemporalCache.get(corpus);
+  if (cached) return cached;
+  const map = new Map<string, DocTemporalMeta>();
+  for (const event of corpus.events) {
+    for (const t of event.truthDocuments) {
+      if (!map.has(t.id)) map.set(t.id, { isCurrentTruth: t.isCurrent === true, isStaleTruth: t.isCurrent === false });
+    }
+    for (const n of event.hardNegatives) {
+      if (!map.has(n.id) && n.category === 'temporal_stale') map.set(n.id, { isCurrentTruth: false, isStaleTruth: true });
+    }
+  }
+  docTemporalCache.set(corpus, map);
   return map;
 }
 
