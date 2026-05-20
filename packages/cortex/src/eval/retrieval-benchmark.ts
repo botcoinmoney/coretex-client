@@ -144,6 +144,40 @@ export interface ScoringOptions {
    * structure intact for future tightening).
    */
   readonly categoryLensExpansionBudget?: number;
+  /**
+   * Phase B traversal direction. Substrate-viability knob.
+   *   'bidirectional' (default) — follow forward edges (question →
+   *      answer-entity) AND inverse edges (entity ← all questions pointing
+   *      at it). Closes the semantic cluster around the answer entity; the
+   *      lever that lets a stage-1 question reach a SIBLING question's truth
+   *      doc that shares the same answer entity. This is the historical
+   *      behaviour and the only mode that produces non-anchor "generalized"
+   *      routing lift.
+   *   'forward' — follow only forward edges. The cluster is one-hop from
+   *      each stage-1 doc; sibling-question truths reached only if a direct
+   *      forward edge exists. Isolates how much Phase B lift is inverse-edge
+   *      (true generalized routing) vs. forward-edge (near-trivial).
+   * Optional; defaults to 'bidirectional' for backwards compatibility.
+   */
+  readonly categoryLensTraversalDirection?: 'forward' | 'bidirectional';
+  /**
+   * Phase B scoring-bonus toggle. Substrate-viability knob.
+   * When false, docs that entered the pool via Phase B still appear in the
+   * candidate pool (inclusion-only) but receive NO categoryLensBonus — the
+   * reranker sees them on biCosine + non-Phase-B substrate bonuses alone.
+   * Isolates whether Phase B lift comes from EXPANSION (reaching the doc at
+   * all) vs. BIASING (the additive lens bonus nudging it up the pre-rank).
+   * Optional; defaults to true (bonus applied).
+   */
+  readonly categoryLensBonusEnabled?: boolean;
+  /**
+   * Phase B bonus scale override. When set, the categoryLensBonus uses this
+   * weight instead of `lensWeight`. Lets viability runs sweep the Phase B
+   * bias independently of the Phase A / retrieval-key lens bonus. Optional;
+   * when omitted, falls back to `lensWeight` (historical behaviour).
+   * Ignored when `categoryLensBonusEnabled === false`.
+   */
+  readonly categoryLensBonusWeight?: number;
   readonly temporalCurrentBoost: number;       // stage-2 temporal bonus (current truth)
   readonly temporalStaleSuppression: number;   // stage-2 temporal penalty (stale truth)
   /**
@@ -550,7 +584,10 @@ export async function scoreSubstrateAgainstQuery(
     // their own truth docs via stage-1 docs that share the same answer
     // entity. Without bidirectional, the cluster is one-hop only and recall
     // remains at the stage-1 ceiling.
-    const inverseIndex = getOrBuildInverseRelationIndex(corpus);
+    const traversalDirection = opts.categoryLensTraversalDirection ?? 'bidirectional';
+    const inverseIndex = traversalDirection === 'bidirectional'
+      ? getOrBuildInverseRelationIndex(corpus)
+      : null;
     const visitedEventIds = new Set<string>();
     // Seed BFS with the stage-1 candidate events.
     for (const d of stage1Docs) visitedEventIds.add(d.eventId);
@@ -587,7 +624,7 @@ export async function scoreSubstrateAgainstQuery(
         // For category-lens semantics, the edgeType filter still applies —
         // we only traverse inverse edges whose forward edgeType matches a
         // substrate lens. Cross-reference via the precomputed inverse index.
-        const inverseRels = inverseIndex.get(eventId);
+        const inverseRels = inverseIndex?.get(eventId);
         if (inverseRels) {
           for (const inv of inverseRels) {
             const lens = lensesByEdgeType.get(inv.edgeType);
@@ -632,6 +669,11 @@ export async function scoreSubstrateAgainstQuery(
   }
 
   const isTemporalQuery = query.family === 'temporal';
+
+  // Phase B bonus knobs (hoisted; constant across the pool). bonusEnabled=false
+  // zeroes the bias (inclusion-only test); bonusWeight overrides the scale.
+  const categoryLensBonusEnabled = opts.categoryLensBonusEnabled ?? true;
+  const categoryLensBonusScale = opts.categoryLensBonusWeight ?? opts.lensWeight;
 
   // Compute substrateBonus + pre-rank score per pool entry.
   //
@@ -690,7 +732,9 @@ export async function scoreSubstrateAgainstQuery(
     // expresses preference for the edge-types whose expansion brought
     // useful answers; the reranker still has final say.
     const categoryLensNormWeight = categoryLensWeightByDocId.get(record.docId) ?? 0;
-    const categoryLensBonus = opts.lensWeight * categoryLensNormWeight;
+    const categoryLensBonus = categoryLensBonusEnabled
+      ? categoryLensBonusScale * categoryLensNormWeight
+      : 0;
 
     const substrateBonus = lensBonus + anchorBonus + temporalBonus + categoryLensBonus;
     const biCosine = cosineSimilarity(docVec, queryVec);
