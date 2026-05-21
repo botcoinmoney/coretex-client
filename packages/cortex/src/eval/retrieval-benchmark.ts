@@ -397,9 +397,6 @@ export async function scoreSubstrateAgainstQuery(
 
   // Resolve doc text for the reranker pairs (text lives in the labeled corpus).
   const docTextById = getOrBuildDocTextIndex(corpus);
-  // Per-doc temporal metadata so temporal boost/suppression reaches ANY retrieved
-  // doc the corpus marks current/stale — not only anchored docs (plumbing fix).
-  const docTemporalById = getOrBuildDocTemporalIndex(corpus);
 
   // Map: docId → { embedding, text, eventId, memorySlot, provenance, sources }
   // `sources` records which routing mechanism(s) added this doc to the
@@ -426,19 +423,17 @@ export async function scoreSubstrateAgainstQuery(
   for (const d of stage1Docs) {
     const text = docTextById.get(d.id);
     if (!text) continue; // skip if text is missing (shouldn't happen with a built index)
-    const tmeta = docTemporalById.get(d.id);
     pool.set(d.id, {
       docId: d.id,
       embedding: d.embedding,
       text,
       eventId: d.eventId,
       memorySlot: null,
-      // Temporal metadata is intrinsic to the corpus doc, not to how it was
-      // routed — so a stage-1-retrieved current/stale doc receives temporal
-      // modulation just like an anchored one. (Was hardcoded false: under-wiring
-      // that made temporal substrate anchor-dependent.)
-      isCurrentTruth: tmeta?.isCurrentTruth ?? false,
-      isStaleTruth: tmeta?.isStaleTruth ?? false,
+      // Corpus current/stale labels are NOT used for scoring (that would leak an
+      // oracle the miner doesn't control). Temporal modulation is driven solely
+      // by the miner's decoded.temporal records (see temporalBySlot below).
+      isCurrentTruth: false,
+      isStaleTruth: false,
       sources: new Set(['stage1']),
     });
   }
@@ -678,6 +673,34 @@ export async function scoreSubstrateAgainstQuery(
 
   const isTemporalQuery = query.family === 'temporal';
 
+  // §temporal — SUBSTRATE-CONTROLLED temporal modulation, driven by the miner's
+  // decoded Temporal records (decoded.temporal), NOT corpus isCurrentTruth labels
+  // (which the miner doesn't control and would leak an oracle).
+  // Semantics (spec substrate_retrieval_semantics.md): currentStaleFlag=true marks
+  // a STALE memory (its MemoryIndex slot must be revoked); supersededBy points to
+  // the current replacement slot. We map each record's slot -> event via recordId
+  // (decoded.memoryIndex includes revoked slots) so suppression/boost reaches the
+  // event's docs ANYWHERE in the pool (stage1-retrieved OR anchored) — temporal is
+  // event-scoped, not anchor-gated.
+  const temporalSuppressEventIds = new Set<string>();
+  const temporalBoostEventIds = new Set<string>();
+  for (const tr of decoded.temporal) {
+    const slot = decoded.memoryIndex[tr.memorySlot];
+    if (!slot) continue;
+    const ev = corpusByRecordId.get(slot.recordId);
+    if (!ev) continue;
+    if (tr.currentStaleFlag) {
+      temporalSuppressEventIds.add(ev.id); // stale (revoked slot)
+      if (tr.supersededBy !== 0xff) {
+        const curSlot = decoded.memoryIndex[tr.supersededBy];
+        const curEv = curSlot ? corpusByRecordId.get(curSlot.recordId) : undefined;
+        if (curEv) temporalBoostEventIds.add(curEv.id); // the current replacement
+      }
+    } else {
+      temporalBoostEventIds.add(ev.id); // explicitly-current memory
+    }
+  }
+
   // Phase B bonus knobs (hoisted; constant across the pool). bonusEnabled=false
   // zeroes the bias (inclusion-only test); bonusWeight overrides the scale.
   const categoryLensBonusEnabled = opts.categoryLensBonusEnabled ?? true;
@@ -729,10 +752,12 @@ export async function scoreSubstrateAgainstQuery(
     }
     const anchorBonus = anchorTruthVecs.length > 0 ? opts.anchorWeight * anchorMaxCos : 0;
 
+    // Temporal bonus driven by the miner's decoded Temporal records, event-scoped
+    // (reaches stage1-retrieved docs of marked events), NOT corpus labels.
     let temporalBonus = 0;
     if (isTemporalQuery) {
-      if (record.isCurrentTruth) temporalBonus = opts.temporalCurrentBoost;
-      else if (record.isStaleTruth) temporalBonus = -opts.temporalStaleSuppression;
+      if (temporalSuppressEventIds.has(record.eventId)) temporalBonus = -opts.temporalStaleSuppression;
+      else if (temporalBoostEventIds.has(record.eventId)) temporalBonus = opts.temporalCurrentBoost;
     }
 
     // Phase B: docs that entered the pool via a category-lens carry the
@@ -918,33 +943,6 @@ function getOrBuildDocTextIndex(corpus: ProductionCorpus): Map<string, string> {
     for (const n of event.hardNegatives) if (!map.has(n.id)) map.set(n.id, n.text);
   }
   docTextCache.set(corpus, map);
-  return map;
-}
-
-// Per-doc temporal metadata, derived ONCE from the corpus, keyed by docId.
-// Lets the scorer apply temporal boost/suppression to ANY candidate doc that
-// the corpus marks current/stale — not only docs that entered via a MemoryIndex
-// anchor. Without this, temporal substrate would be anchor-dependent (a
-// plumbing under-wiring): stage-1 / Phase-B docs would silently carry
-// isCurrentTruth=isStaleTruth=false and never receive temporal modulation.
-//   - truthDocument: isCurrentTruth = td.isCurrent ; isStaleTruth = !td.isCurrent
-//   - hardNegative w/ category 'temporal_stale': isStaleTruth = true (stale fact)
-//   - all other docs: neither (non-temporal)
-interface DocTemporalMeta { isCurrentTruth: boolean; isStaleTruth: boolean; }
-const docTemporalCache = new WeakMap<ProductionCorpus, Map<string, DocTemporalMeta>>();
-function getOrBuildDocTemporalIndex(corpus: ProductionCorpus): Map<string, DocTemporalMeta> {
-  const cached = docTemporalCache.get(corpus);
-  if (cached) return cached;
-  const map = new Map<string, DocTemporalMeta>();
-  for (const event of corpus.events) {
-    for (const t of event.truthDocuments) {
-      if (!map.has(t.id)) map.set(t.id, { isCurrentTruth: t.isCurrent === true, isStaleTruth: t.isCurrent === false });
-    }
-    for (const n of event.hardNegatives) {
-      if (!map.has(n.id) && n.category === 'temporal_stale') map.set(n.id, { isCurrentTruth: false, isStaleTruth: true });
-    }
-  }
-  docTemporalCache.set(corpus, map);
   return map;
 }
 
