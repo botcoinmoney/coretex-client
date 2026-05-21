@@ -60,15 +60,33 @@ type PendingEntry = {
   reject: (reason: Error) => void;
 };
 
+export interface WorkerPoolOptions {
+  /**
+   * Maximum number of requests allowed to wait for a worker. Defaults to
+   * Infinity for backwards compatibility, but production coordinators should
+   * set a finite value and return backpressure (HTTP 503) when saturated.
+   */
+  readonly maxQueueSize?: number;
+}
+
 export class WorkerPool {
   private readonly workers: Worker[] = [];
   private readonly idle: Worker[] = [];
   private readonly queue: Array<{ req: EvalWorkerRequest; entry: PendingEntry }> = [];
   private readonly pending = new Map<Worker, Map<number, PendingEntry>>();
+  private readonly maxQueueSize: number;
   private nextId = 0;
   private closed = false;
 
-  constructor(workerScriptPath: string, size: number = defaultPoolSize()) {
+  constructor(workerScriptPath: string, size: number = defaultPoolSize(), options: WorkerPoolOptions = {}) {
+    const maxQueueSize = options.maxQueueSize ?? Infinity;
+    if (!Number.isFinite(maxQueueSize) && maxQueueSize !== Infinity) {
+      throw new RangeError('WorkerPool: maxQueueSize must be finite or Infinity');
+    }
+    if (maxQueueSize < 0 || Math.floor(maxQueueSize) !== maxQueueSize) {
+      throw new RangeError('WorkerPool: maxQueueSize must be a non-negative integer');
+    }
+    this.maxQueueSize = maxQueueSize;
     for (let i = 0; i < size; i++) {
       this._spawnWorker(workerScriptPath);
     }
@@ -103,6 +121,10 @@ export class WorkerPool {
       if (worker !== undefined) {
         this._dispatch(worker, fullReq, entry);
       } else {
+        if (this.queue.length >= this.maxQueueSize) {
+          reject(new Error('WorkerPool: queue is saturated'));
+          return;
+        }
         this.queue.push({ req: fullReq, entry });
       }
     });
@@ -166,6 +188,16 @@ export class WorkerPool {
 
   get size(): number {
     return this.workers.length;
+  }
+
+  get queueDepth(): number {
+    return this.queue.length;
+  }
+
+  get inFlight(): number {
+    let total = 0;
+    for (const pending of this.pending.values()) total += pending.size;
+    return total;
   }
 }
 

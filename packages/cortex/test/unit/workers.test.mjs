@@ -69,4 +69,41 @@ describe('WorkerPool — plumbing', () => {
       throw err;
     }
   });
+
+  test('WorkerPool enforces bounded queue backpressure', async () => {
+    const pool = new WorkerPool('/tmp/nonexistent-worker.js', 0, { maxQueueSize: 1 });
+    try {
+      const req = {
+        stateBytes: new Uint8Array(32768),
+        patchWireBytes: new Uint8Array(0),
+        shardId: new Uint8Array(32),
+        corpusRoot: '0x' + '00'.repeat(32),
+      };
+      // First request is queued because the pool has no idle workers.
+      pool.eval(req).catch(() => {});
+      assert.equal(pool.queueDepth, 1);
+      assert.equal(pool.inFlight, 0);
+
+      // Second request is rejected immediately instead of growing an
+      // unbounded coordinator eval queue.
+      await assert.rejects(
+        () => pool.eval(req),
+        /queue is saturated/,
+      );
+      assert.equal(pool.queueDepth, 1);
+    } finally {
+      await pool.close();
+    }
+  });
+
+  test('WorkerPool validates maxQueueSize option', () => {
+    assert.throws(
+      () => new WorkerPool('/tmp/nonexistent-worker.js', 0, { maxQueueSize: -1 }),
+      /maxQueueSize/,
+    );
+    assert.throws(
+      () => new WorkerPool('/tmp/nonexistent-worker.js', 0, { maxQueueSize: 1.5 }),
+      /maxQueueSize/,
+    );
+  });
 });
