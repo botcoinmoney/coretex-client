@@ -535,6 +535,46 @@ export async function scoreSubstrateAgainstQuery(
     frontier = next;
   }
 
+  // Anchor-seeded corpus-relation expansion (substrate-controlled relation routing).
+  // A decoded relation edge from anchored slot S carries an edgeType T; it instructs
+  // the scorer to follow event(S)'s CORPUS relations of edgeType T to related events
+  // and add their truths via anchorBFS — reaching NON-anchored relation targets that
+  // the pure anchor-to-anchor BFS above cannot (that BFS pre-marks every anchored
+  // slot visited, so it never adds a node; this is the fix). Bounded by
+  // relationExpansionBudget; the reranker still judges. Substrate chooses WHICH
+  // anchored event + edgeType to follow; it cannot fabricate corpus edges.
+  const eventByCorpusIdForPhaseA = corpusByCorpusId(corpus);
+  const relEdgeTypesBySlot = new Map<number, Set<string>>();
+  for (const e of decoded.relations) {
+    let s = relEdgeTypesBySlot.get(e.sourceSlot);
+    if (!s) { s = new Set<string>(); relEdgeTypesBySlot.set(e.sourceSlot, s); }
+    s.add(e.edgeType);
+  }
+  for (const [slot, ev] of anchorSlotToEvent) {
+    if (anchorBfsExpansionAdded >= opts.relationExpansionBudget) break;
+    const edgeTypes = relEdgeTypesBySlot.get(slot);
+    if (!edgeTypes || !ev.relations) continue;
+    for (const rel of ev.relations) {
+      if (anchorBfsExpansionAdded >= opts.relationExpansionBudget) break;
+      if (!edgeTypes.has(rel.edgeType)) continue;
+      const tgt = eventByCorpusIdForPhaseA.get(rel.other_id);
+      if (!tgt) continue;
+      for (const td of tgt.truthDocuments) {
+        const existing = pool.get(td.id);
+        if (existing) { addSource(existing, 'anchorBFS'); continue; }
+        const emb = tgt.embeddings.perTruth.get(td.id);
+        if (!emb) continue;
+        pool.set(td.id, {
+          docId: td.id, embedding: emb, text: td.text, eventId: tgt.id,
+          memorySlot: null, isCurrentTruth: false, isStaleTruth: false,
+          sources: new Set(['anchorBFS']),
+        });
+        anchorBfsExpansionAdded++;
+        if (anchorBfsExpansionAdded >= opts.relationExpansionBudget) break;
+      }
+    }
+  }
+
   // Tag pool entries that match an active anchor directly with the anchor's slot.
   for (const [slot, ev] of anchorSlotToEvent) {
     for (const td of ev.truthDocuments) {
@@ -818,7 +858,11 @@ export async function scoreSubstrateAgainstQuery(
   // inclusions at the cap itself, taking docs in (slot, docId) lexicographic
   // order so the truncation is byte-deterministic across replay hosts.
   const anchorMandatoryAll = candidates
-    .filter((c) => c.record.memorySlot !== null)
+    // Force-include direct anchors (memorySlot set) AND relation-routed docs
+    // (anchorBFS) so a substrate-routed answer the bi-encoder ranked far down
+    // still reaches the reranker. Both are bounded by relationExpansionBudget +
+    // the 44-slot anchor cap, so this cannot blow up the reranker workload.
+    .filter((c) => c.record.memorySlot !== null || c.record.sources.has('anchorBFS'))
     .sort((a, b) => {
       const sa = a.record.memorySlot ?? 0;
       const sb = b.record.memorySlot ?? 0;
