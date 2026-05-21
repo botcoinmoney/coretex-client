@@ -963,6 +963,29 @@ export async function scoreSubstrateAgainstQuery(
       temporalBonus: c?.temporalBonus ?? 0,
     };
   });
+  // ─── env-guarded relation trace (P1.5/P2 Phase-B diagnosis) ──────────────
+  // CORETEX_RELTRACE_QID=<query id> CORETEX_RELTRACE_DOCS=<csv doc ids>. Emits one stderr JSON line
+  // exposing, per target doc, the lowest-layer status: seed (stage-1) → enqueued (pool) → tagged
+  // (categoryLensBFS) → normWeight → preRank → reranker-cap → Qwen rank → final rank, plus lensJunkTop10.
+  // No behavior change when unset. Lets the trace harness classify each query at its lowest failing layer.
+  if (process.env['CORETEX_RELTRACE_QID'] === query.id && process.env['CORETEX_RELTRACE_DOCS']) {
+    const targets = process.env['CORETEX_RELTRACE_DOCS']!.split(',').filter(Boolean);
+    const stage1Set = new Set(stage1Docs.map((d) => d.id));
+    const capSet = new Set(rerankerCandidates.map((c) => c.record.docId));
+    const candByDoc = new Map(candidates.map((c) => [c.record.docId, c]));
+    const rerankOrder = [...rerankerCandidates].sort((a, b) => (rerankerScoreByDocId.get(b.record.docId) ?? 0) - (rerankerScoreByDocId.get(a.record.docId) ?? 0));
+    const rerankRankByDoc = new Map(rerankOrder.map((c, i) => [c.record.docId, i + 1]));
+    const finalRankByDoc = new Map(ranked.map((r, i) => [r.documentId, i + 1]));
+    const lensJunkTop10 = finalRankingTop20.filter((r) => r.rank <= 10 && (r.relevance ?? 0) === 0 && (r.sources ?? []).includes('categoryLensBFS')).length;
+    const tr = targets.map((t) => {
+      const poolE = pool.get(t); const cand = candByDoc.get(t);
+      return { doc: t, inStage1: stage1Set.has(t), inPool: !!poolE, sources: poolE ? Array.from(poolE.sources) : [],
+        categoryLensNormWeight: categoryLensWeightByDocId.get(t) ?? 0, preRankScore: cand?.preRankScore ?? null,
+        categoryLensBonus: cand?.categoryLensBonus ?? null, inCap: capSet.has(t), qwenScore: rerankerScoreByDocId.get(t) ?? null,
+        rerankRank: rerankRankByDoc.get(t) ?? null, finalRank: finalRankByDoc.get(t) ?? null };
+    });
+    process.stderr.write('RELTRACE ' + JSON.stringify({ queryId: query.id, family: query.family, stage1Count: stage1Docs.length, poolSize: pool.size, lensJunkTop10, targets: tr }) + '\n');
+  }
   return { ranked, top1Score, cappedDocIds, cappedDocSources, cappedDocComponents, finalRankingTop20 };
 }
 
