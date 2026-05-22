@@ -204,6 +204,49 @@ describe('CoreTex V4 difficulty calculator', () => {
     assert.equal(result.next, 20_000n);
   });
 
+  test('calibration-only maxClampPpm override lets ramp-up exceed the pinned ceiling', () => {
+    // Default behavior: 149_000 * 1.5 = 223_500 clamps to MAX (150_000).
+    // With maxClampPpm=300_000 the calibration harness can measure the
+    // response surface above the pinned ceiling.
+    const current = 149_000n;
+    const result = nextMinImprovementPpm({
+      current,
+      observedAdvances: 10,
+      targetAdvances: 5,
+      qualityAttempts: 8,
+      maxClampPpm: 300_000n,
+    });
+    assert.equal(result.reason, 'ramp_up');
+    assert.equal(result.next, 223_500n); // 149_000 * 1.5, no longer clamped at 150_000
+    assert.equal(result.clamped, false);
+  });
+
+  test('calibration-only minClampPpm override raises the effective floor', () => {
+    // decay 10_000 * 0.85 = 8_500; with minClampPpm=9_000 it clamps up to 9_000.
+    const current = 10_000n;
+    const result = nextMinImprovementPpm({
+      current,
+      observedAdvances: 0,
+      targetAdvances: 5,
+      qualityAttempts: 20,
+      minClampPpm: 9_000n,
+    });
+    assert.equal(result.reason, 'decay');
+    assert.equal(result.next, 9_000n);
+    assert.equal(result.clamped, true);
+  });
+
+  test('clamp overrides default to pinned constants when undefined / non-sensible', () => {
+    // undefined → pinned MAX; a maxClampPpm <= floor is ignored (falls back to MAX).
+    const a = nextMinImprovementPpm({ current: 149_000n, observedAdvances: 10, targetAdvances: 5, qualityAttempts: 8 });
+    assert.equal(a.next, MAX_IMPROVEMENT_PPM);
+    const b = nextMinImprovementPpm({ current: 149_000n, observedAdvances: 10, targetAdvances: 5, qualityAttempts: 8, maxClampPpm: 1_000n });
+    assert.equal(b.next, MAX_IMPROVEMENT_PPM); // 1_000 < floor → ignored
+    const c = nextMinImprovementPpm({ current: 10_000n, observedAdvances: 0, targetAdvances: 5, qualityAttempts: 20, minClampPpm: -5n });
+    assert.equal(c.next, 8_500n); // negative floor ignored → normal decay, no clamp
+    assert.equal(c.clamped, false);
+  });
+
   test('difficultyHistogram: correct counts over a short sequence', () => {
     const snapshots = [
       // epoch 1: ramp up (10 > 5)

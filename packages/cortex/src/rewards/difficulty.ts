@@ -64,6 +64,23 @@ export interface DifficultyInputs {
    * difficulty progression.
    */
   readonly majorDeltaActive?: boolean;
+  /**
+   * CALIBRATION-ONLY clamp-floor override (bigint ppm). Default:
+   * `MIN_IMPROVEMENT_PPM`. This exists so the difficulty/longevity
+   * calibration harnesses can sweep alternative clamp bounds (e.g. to
+   * measure response surfaces beyond the pinned protocol constants)
+   * WITHOUT mutating the launch-pinned constants. Production callers
+   * MUST NOT set this — leaving it undefined preserves the pinned floor
+   * exactly. Any value <= 0 is ignored (falls back to the constant).
+   */
+  readonly minClampPpm?: bigint;
+  /**
+   * CALIBRATION-ONLY clamp-ceiling override (bigint ppm). Default:
+   * `MAX_IMPROVEMENT_PPM`. Same contract as `minClampPpm`: research-only,
+   * for response-surface sweeps; production callers leave it undefined.
+   * Ignored unless strictly greater than the effective floor.
+   */
+  readonly maxClampPpm?: bigint;
 }
 
 export interface DifficultyOutput {
@@ -99,6 +116,17 @@ export function nextMinImprovementPpm(inputs: DifficultyInputs): DifficultyOutpu
   const smallDriftRatio = inputs.smallDriftRatio ?? 1.05;
   const qualityHighThreshold = inputs.qualityHighThreshold ?? 4 * targetAdvances;
 
+  // CALIBRATION-ONLY effective clamp bounds. Default to the launch-pinned
+  // protocol constants; only the calibration harnesses pass overrides (and
+  // only when strictly sensible). Production callers never set these, so the
+  // pinned [MIN, MAX] window is preserved exactly.
+  const minClamp = inputs.minClampPpm !== undefined && inputs.minClampPpm > 0n
+    ? inputs.minClampPpm
+    : MIN_IMPROVEMENT_PPM;
+  const maxClamp = inputs.maxClampPpm !== undefined && inputs.maxClampPpm > minClamp
+    ? inputs.maxClampPpm
+    : MAX_IMPROVEMENT_PPM;
+
   // Major-delta grace: short-circuit before any ramp/decay/drift logic.
   // The just-applied corpus delta moved the benchmark distribution
   // enough that miner-output signals from the prior epoch are no longer
@@ -107,7 +135,7 @@ export function nextMinImprovementPpm(inputs: DifficultyInputs): DifficultyOutpu
   // epoch will resume normal adjustment using the new baseline.
   if (inputs.majorDeltaActive === true) {
     return {
-      next: clampPpm(inputs.current),
+      next: clampPpm(inputs.current, minClamp, maxClamp),
       reason: 'major_delta_grace',
       ratioApplied: 1.0,
       clamped: false,
@@ -147,8 +175,8 @@ export function nextMinImprovementPpm(inputs: DifficultyInputs): DifficultyOutpu
   }
 
   const unclamped = BigInt(Math.round(Number(current) * ratio));
-  const next = clampPpm(unclamped);
-  const clamped = unclamped < MIN_IMPROVEMENT_PPM || unclamped > MAX_IMPROVEMENT_PPM;
+  const next = clampPpm(unclamped, minClamp, maxClamp);
+  const clamped = unclamped < minClamp || unclamped > maxClamp;
 
   return { next, reason, ratioApplied: ratio, clamped };
 }
@@ -204,8 +232,12 @@ export function difficultyHistogram(
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-function clampPpm(value: bigint): bigint {
-  if (value < MIN_IMPROVEMENT_PPM) return MIN_IMPROVEMENT_PPM;
-  if (value > MAX_IMPROVEMENT_PPM) return MAX_IMPROVEMENT_PPM;
+function clampPpm(
+  value: bigint,
+  min: bigint = MIN_IMPROVEMENT_PPM,
+  max: bigint = MAX_IMPROVEMENT_PPM,
+): bigint {
+  if (value < min) return min;
+  if (value > max) return max;
   return value;
 }
