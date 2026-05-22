@@ -27,6 +27,7 @@ import {
   buildPublicCorpusIndex,
   firstStageCandidates,
   type PublicCorpusIndex,
+  type PublicCorpusDoc,
 } from './public-corpus-index.js';
 import type { QueryPack } from './hidden-query-pack.js';
 import {
@@ -118,6 +119,19 @@ export interface ScoringOptions {
   readonly abstentionThreshold: number;    // calibrated
   readonly rerankerTopK: number;           // calibrated, e.g. 10
 
+  /**
+   * Owner-scoped retrieval (Layer-2 validity fix, 2026-05-21). When 'restrict'
+   * AND the query event carries `ownerScoped===true` + `ownerEntityId`, stage-1
+   * retrieval is restricted to the owner's memory store (the events tagged with
+   * that owner entity) instead of the pooled corpus. This is the realistic,
+   * well-posed task: real memory retrieval searches a KNOWN user's/project's
+   * store, not a pool of strangers. Without it, first-name subjects collide
+   * ~80-way at 100k and the relation families are ill-posed. Cross-entity
+   * families (entity_disambiguation, abstention) carry `ownerScoped=false` and
+   * stay pooled. Default 'off' preserves the legacy full-pool behavior.
+   */
+  readonly ownerScopeMode?: 'off' | 'restrict';
+
   // ─── v2-lens pipeline params (substrate-hardening Phase A) ───
   readonly firstStageTopK: number;             // calibrated per-stratum (Run 1)
   readonly lensTopK: number;                   // how many lens vectors contribute to stage-2 reweighting
@@ -176,8 +190,22 @@ export interface ScoringOptions {
    * bias independently of the Phase A / retrieval-key lens bonus. Optional;
    * when omitted, falls back to `lensWeight` (historical behaviour).
    * Ignored when `categoryLensBonusEnabled === false`.
+   *
+   * This is the ADMISSION scale: it biases the PRE-RANK score so a category-lens
+   * routed doc enters the reranker cap. See `categoryLensFinalBonusWeight`.
    */
   readonly categoryLensBonusWeight?: number;
+  /**
+   * NON-FLOODING PROMOTION — the FINAL-reorder category-lens bonus scale.
+   * Defaults to `categoryLensBonusWeight` (back-compat: legacy single-bonus
+   * behavior). Set to ~0 for an INCLUSION-ONLY profile: category-lens routing
+   * still admits a doc into the reranker cap (via the admission scale) but adds
+   * little/no bias to the FINAL ranking, so the reranker — not a flat additive
+   * lens bonus — decides final order. This is the fix for the P2 flood
+   * (`lensJunkTop10`≈9), where a large final additive bonus swamped the reranker.
+   * Ignored when `categoryLensBonusEnabled === false`.
+   */
+  readonly categoryLensFinalBonusWeight?: number;
   readonly temporalCurrentBoost: number;       // stage-2 temporal bonus (current truth)
   readonly temporalStaleSuppression: number;   // stage-2 temporal penalty (stale truth)
   /**
@@ -391,8 +419,22 @@ export async function scoreSubstrateAgainstQuery(
   // (parent vs candidate substrate) shares its Top-K. Cache per
   // (corpus, query.id, K) to amortize the ~600ms cosine sweep across all
   // patch evaluations within a pack. See substrate-hardening §6.7.
+  // Owner-scoped stage-1 (Layer-2 validity fix): when enabled and the query
+  // carries a public owner scope, rank ONLY the owner's store. Owner scopes are
+  // small (~tens to low-hundreds of docs ≪ firstStageTopK), so we rank the full
+  // scope exactly — no buried-but-excluded risk inside scope. The owner set is
+  // PUBLIC retrieval context (query.ownerEntityId), never derived from qrels.
+  const useOwnerScope =
+    (opts.ownerScopeMode ?? 'off') === 'restrict' && query.ownerScoped === true && !!query.ownerEntityId;
   const stage1Docs = getOrComputeStage1(corpus, query.id, opts.firstStageTopK, () =>
-    firstStageCandidates(queryVec, publicIndex, opts.firstStageTopK),
+    useOwnerScope
+      ? scopedFirstStageCandidates(
+          queryVec,
+          getOrBuildEntityScopeIndex(corpus).get(query.ownerEntityId!) ?? [],
+          opts.firstStageTopK,
+          opts.retrievalKeyLayout,
+        )
+      : firstStageCandidates(queryVec, publicIndex, opts.firstStageTopK),
   );
 
   // Resolve doc text for the reranker pairs (text lives in the labeled corpus).
@@ -650,15 +692,16 @@ export async function scoreSubstrateAgainstQuery(
             const lens = lensesByEdgeType.get(rel.edgeType);
             if (!lens) continue;
             const tgtId = rel.other_id;
-            if (visitedEventIds.has(tgtId)) continue;
-            visitedEventIds.add(tgtId);
             const targetEvent = eventByCorpusId.get(tgtId);
             if (!targetEvent) continue;
+            // Apply routing signal to the target's docs whether or not the
+            // target is already in the pool (tagging existing consumes no
+            // budget). Only ENQUEUE for further expansion if newly visited.
             categoryLensExpansionAdded += addEventTruthsToPool(
               targetEvent, pool, categoryLensWeightByDocId, lens.weight / 0xFFFF,
               categoryLensExpansionBudget - categoryLensExpansionAdded,
             );
-            next.push(tgtId);
+            if (!visitedEventIds.has(tgtId)) { visitedEventIds.add(tgtId); next.push(tgtId); }
             if (categoryLensExpansionAdded >= categoryLensExpansionBudget) break;
           }
         }
@@ -673,15 +716,13 @@ export async function scoreSubstrateAgainstQuery(
             const lens = lensesByEdgeType.get(inv.edgeType);
             if (!lens) continue;
             const srcId = inv.fromEventId;
-            if (visitedEventIds.has(srcId)) continue;
-            visitedEventIds.add(srcId);
             const sourceFromInverse = eventByCorpusId.get(srcId);
             if (!sourceFromInverse) continue;
             categoryLensExpansionAdded += addEventTruthsToPool(
               sourceFromInverse, pool, categoryLensWeightByDocId, lens.weight / 0xFFFF,
               categoryLensExpansionBudget - categoryLensExpansionAdded,
             );
-            next.push(srcId);
+            if (!visitedEventIds.has(srcId)) { visitedEventIds.add(srcId); next.push(srcId); }
             if (categoryLensExpansionAdded >= categoryLensExpansionBudget) break;
           }
         }
@@ -743,8 +784,19 @@ export async function scoreSubstrateAgainstQuery(
 
   // Phase B bonus knobs (hoisted; constant across the pool). bonusEnabled=false
   // zeroes the bias (inclusion-only test); bonusWeight overrides the scale.
+  //
+  // NON-FLOODING PROMOTION (split admission from final reorder): the category-lens
+  // bonus has TWO scales. The ADMISSION scale (`categoryLensBonusWeight`) adds to
+  // the PRE-RANK score so a routed doc enters the reranker cap. The FINAL scale
+  // (`categoryLensFinalBonusWeight`) adds to the FINAL reorder. P2 flooded because
+  // a large additive bonus in the FINAL reorder swamped the reranker and force-
+  // floated the whole lens blob into top-10. Inclusion-only sets the final scale
+  // to ~0 so category-lens routing earns a candidate the chance to be judged but
+  // the RERANKER determines final order. Back-compat: when unset, the final scale
+  // defaults to the admission scale → identical to the legacy single-bonus path.
   const categoryLensBonusEnabled = opts.categoryLensBonusEnabled ?? true;
-  const categoryLensBonusScale = opts.categoryLensBonusWeight ?? opts.lensWeight;
+  const categoryLensAdmissionScale = opts.categoryLensBonusWeight ?? opts.lensWeight;
+  const categoryLensFinalScale = opts.categoryLensFinalBonusWeight ?? categoryLensAdmissionScale;
 
   // Compute substrateBonus + pre-rank score per pool entry.
   //
@@ -766,13 +818,15 @@ export async function scoreSubstrateAgainstQuery(
   //   the substrate can express.
   const candidates: {
     record: CandidateRecord;
-    substrateBonus: number;
+    admissionBonus: number;  // pre-rank cap inclusion bias
+    finalBonus: number;      // final-reorder bias (reranker-dominated under inclusion-only)
     biCosine: number;
     preRankScore: number;
     docVec: Float32Array;
     lensBonus: number;
     anchorBonus: number;
-    categoryLensBonus: number;
+    categoryLensBonus: number;       // admission-scale (drives cap inclusion)
+    categoryLensFinalBonus: number;  // final-scale (drives final reorder)
     temporalBonus: number;
   }[] = [];
   for (const record of pool.values()) {
@@ -806,20 +860,30 @@ export async function scoreSubstrateAgainstQuery(
     // useful answers; the reranker still has final say.
     const categoryLensNormWeight = categoryLensWeightByDocId.get(record.docId) ?? 0;
     const categoryLensBonus = categoryLensBonusEnabled
-      ? categoryLensBonusScale * categoryLensNormWeight
+      ? categoryLensAdmissionScale * categoryLensNormWeight
+      : 0;
+    const categoryLensFinalBonus = categoryLensBonusEnabled
+      ? categoryLensFinalScale * categoryLensNormWeight
       : 0;
 
-    const substrateBonus = lensBonus + anchorBonus + temporalBonus + categoryLensBonus;
+    // Admission (pre-rank cap inclusion) vs final (reorder) bonuses. lens/anchor/
+    // temporal contribute to BOTH; only the category-lens routing bonus is split,
+    // so an inclusion-only profile (categoryLensFinalBonusWeight≈0) lets the
+    // reranker — not a flat lens bias — decide final order among routed docs.
+    const admissionBonus = lensBonus + anchorBonus + temporalBonus + categoryLensBonus;
+    const finalBonus = lensBonus + anchorBonus + temporalBonus + categoryLensFinalBonus;
     const biCosine = cosineSimilarity(docVec, queryVec);
     candidates.push({
       record,
-      substrateBonus,
+      admissionBonus,
+      finalBonus,
       biCosine,
-      preRankScore: biCosine + substrateBonus,
+      preRankScore: biCosine + admissionBonus,
       docVec,
       lensBonus,
       anchorBonus,
       categoryLensBonus,
+      categoryLensFinalBonus,
       temporalBonus,
     });
   }
@@ -909,7 +973,7 @@ export async function scoreSubstrateAgainstQuery(
         documentId: c.record.docId,
         memorySlot: c.record.memorySlot,
         rerankerScore: r,
-        finalReorderingScore: r + c.substrateBonus,
+        finalReorderingScore: r + c.finalBonus,
         relevance: qrelById.get(c.record.docId) ?? 0,
       };
     })
@@ -948,7 +1012,7 @@ export async function scoreSubstrateAgainstQuery(
   const finalRankingTop20 = ranked.slice(0, 20).map((r, idx) => {
     const c = componentsByDocId.get(r.documentId);
     const cs = c?.record.sources;
-    const finalReorderingScore = (r.rerankerScore ?? 0) + (c?.substrateBonus ?? 0);
+    const finalReorderingScore = (r.rerankerScore ?? 0) + (c?.finalBonus ?? 0);
     return {
       docId: r.documentId,
       rank: idx + 1,
@@ -987,6 +1051,62 @@ export async function scoreSubstrateAgainstQuery(
     process.stderr.write('RELTRACE ' + JSON.stringify({ queryId: query.id, family: query.family, stage1Count: stage1Docs.length, poolSize: pool.size, lensJunkTop10, targets: tr }) + '\n');
   }
   return { ranked, top1Score, cappedDocIds, cappedDocSources, cappedDocComponents, finalRankingTop20 };
+}
+
+// ─── Owner-scoped retrieval (Layer-2 validity fix) ──────────────────────────
+
+/**
+ * Exact cosine ranking over a small owner-scope doc set (the owner's memory
+ * store). Owner scopes are tens-to-low-hundreds of docs ≪ firstStageTopK, so
+ * we score the whole scope (no heap/approximation) and take top-k. Tie-break
+ * by docId for cross-host determinism, matching `firstStageCandidates`.
+ */
+function scopedFirstStageCandidates(
+  queryVec: Float32Array,
+  scopeDocs: readonly PublicCorpusDoc[],
+  k: number,
+  layout: RetrievalKeyLayout,
+): readonly PublicCorpusDoc[] {
+  if (k <= 0 || scopeDocs.length === 0) return [];
+  const scored = scopeDocs.map((d) => ({ d, cos: cosineSimilarity(queryVec, dequantize(d.embedding, layout)) }));
+  scored.sort((a, b) => {
+    if (b.cos !== a.cos) return b.cos - a.cos;
+    return a.d.id < b.d.id ? -1 : a.d.id > b.d.id ? 1 : 0;
+  });
+  return scored.slice(0, k).map((s) => s.d);
+}
+
+/**
+ * entityId → that owner's truth docs ({id, eventId, embedding}). Built from the
+ * PUBLIC per-event entityIds + embeddings. The owner store for scope restriction
+ * and (later) within-scope entity-text seeding. Cached per corpus instance.
+ */
+const entityScopeIndexCache = new WeakMap<ProductionCorpus, Map<string, PublicCorpusDoc[]>>();
+function getOrBuildEntityScopeIndex(corpus: ProductionCorpus): Map<string, PublicCorpusDoc[]> {
+  const cached = entityScopeIndexCache.get(corpus);
+  if (cached) return cached;
+  const index = new Map<string, PublicCorpusDoc[]>();
+  const seenPerEntity = new Map<string, Set<string>>();
+  for (const event of corpus.events) {
+    if (!event.entityIds || event.entityIds.length === 0) continue;
+    for (const td of event.truthDocuments) {
+      const emb = event.embeddings.perTruth.get(td.id);
+      if (!emb) continue;
+      for (const entId of event.entityIds) {
+        let seen = seenPerEntity.get(entId);
+        if (!seen) { seen = new Set(); seenPerEntity.set(entId, seen); }
+        if (seen.has(td.id)) continue;
+        seen.add(td.id);
+        let arr = index.get(entId);
+        if (!arr) { arr = []; index.set(entId, arr); }
+        arr.push({ id: td.id, eventId: event.id, embedding: emb });
+      }
+    }
+  }
+  // Stable order per entity (docId asc) for deterministic seeding/budgeting.
+  for (const arr of index.values()) arr.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  entityScopeIndexCache.set(corpus, index);
+  return index;
 }
 
 // ─── Per-call corpus-side index caches ──────────────────────────────────────
@@ -1073,14 +1193,19 @@ function addEventTruthsToPool(
 ): number {
   let added = 0;
   for (const td of event.truthDocuments) {
-    if (added >= cap) break;
     const existing = pool.get(td.id);
     if (existing) {
+      // Apply the relation-routing signal (source tag + lens weight) to docs
+      // ALREADY in the pool. Crucial under owner-scope, where every owner doc
+      // is a stage-1 seed: the lens-edge target is already present, so the
+      // routing value is the EDGE SIGNAL (ranking), not novel pool inclusion.
+      // Tagging existing docs expands nothing → does NOT consume the budget.
       existing.sources.add('categoryLensBFS');
       const prev = categoryLensWeightByDocId.get(td.id) ?? 0;
       if (normWeight > prev) categoryLensWeightByDocId.set(td.id, normWeight);
       continue;
     }
+    if (added >= cap) continue; // budget gates only NEW pool additions
     const emb = event.embeddings.perTruth.get(td.id);
     if (!emb) continue;
     pool.set(td.id, {

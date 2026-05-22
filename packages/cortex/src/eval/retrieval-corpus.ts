@@ -115,6 +115,20 @@ export interface HardNegativeRecord {
   readonly category?: HardNegativeCategory;
 }
 
+/**
+ * Proposer-visible entity record. Public corpus metadata: the canonical name
+ * and surface aliases a query can mention. The scorer's query-text entity
+ * resolver (Layer-8 scale-aware seeding) matches `queryText` against these to
+ * resolve the query's SUBJECT entity. Strictly construction-time / public —
+ * NOT a hidden label. Aliases deliberately collide (reused first names) so
+ * resolution is many-to-one and the reranker still disambiguates.
+ */
+export interface CorpusEntity {
+  readonly id: string;
+  readonly canonicalName: string;
+  readonly aliases: readonly string[];
+}
+
 export interface ProductionCorpusEvent {
   readonly id: string;
   readonly family: ProductionCorpusFamily;
@@ -127,6 +141,29 @@ export interface ProductionCorpusEvent {
   readonly protected: boolean;
   readonly temporal?: TemporalAnnotation;
   readonly relations?: readonly RelationAnnotation[];
+  /**
+   * Proposer-visible entity tags for this event's truth docs. Public corpus
+   * metadata (the entity the memory is ABOUT), used by query-text entity
+   * seeding to scope candidate expansion to the resolved subject entity's
+   * memory neighborhood. Optional for backward compatibility — corpora that
+   * predate entity tagging omit it (the key is absent, so it does not change
+   * the canonical event hash / corpusRoot). NEVER an answer pointer: the
+   * resolver reads `queryText` + the public entity table, never qrels.
+   */
+  readonly entityIds?: readonly string[];
+  /**
+   * PUBLIC retrieval scope for a query event: the owner entity whose memory
+   * store this query searches (the session/user/project context a real memory
+   * system always has). Set at corpus-generation time, NEVER inferred from
+   * qrels/gold. When `ownerScoped` is true the scorer restricts stage-1 +
+   * relation seeding to this owner's store — the realistic, well-posed task
+   * (avoids the pooled subject-ambiguity that makes first-name queries
+   * ~80-way ambiguous at scale). `ownerScoped=false` for cross-entity-by-design
+   * families (entity_disambiguation, abstention) which must stay pooled.
+   * Optional/back-compat: absent → unscoped (full-pool) behavior.
+   */
+  readonly ownerEntityId?: string;
+  readonly ownerScoped?: boolean;
   readonly provenance: Provenance;
   readonly embeddings: EmbeddingPayload;
   /**
@@ -153,6 +190,13 @@ export interface ProductionCorpusEvent {
 export interface ProductionCorpus {
   readonly events: readonly ProductionCorpusEvent[];
   readonly byId: ReadonlyMap<string, ProductionCorpusEvent>;
+  /**
+   * Proposer-visible entity table (canonicalName + aliases). Optional. Does
+   * NOT participate in `corpusRoot` (only events are hashed) — it is public
+   * resolver metadata, not Merkle-committed corpus content. Consumed by the
+   * scorer's query-text entity resolver for scale-aware seeding.
+   */
+  readonly entities?: readonly CorpusEntity[];
   readonly corpusRoot: string;            // bytes32 hex
   readonly corpusEpoch: number;
   readonly biEncoderRevision: string;
@@ -399,6 +443,8 @@ export interface CorpusFileShape {
   readonly biEncoder: { readonly modelId: string; readonly revision: string; readonly layout: RetrievalKeyLayout };
   readonly labelingModel: { readonly modelId: string; readonly revision: string };
   readonly events: readonly ProductionCorpusEventOnDisk[];
+  /** Proposer-visible entity table; optional, not part of corpusRoot. */
+  readonly entities?: readonly CorpusEntity[];
   readonly corpusRoot: string;
 }
 
@@ -505,6 +551,7 @@ export function loadProductionCorpus(path: string, options: LoadProductionCorpus
   return {
     events,
     byId: new Map(events.map((e) => [e.id, e])),
+    ...(raw.entities !== undefined ? { entities: raw.entities } : {}),
     corpusRoot: raw.corpusRoot.toLowerCase(),
     corpusEpoch: raw.corpusEpoch,
     biEncoderModelId: raw.biEncoder.modelId,
@@ -528,6 +575,9 @@ export function serializeProductionCorpus(corpus: ProductionCorpus): CorpusFileS
     protected: e.protected,
     ...(e.temporal !== undefined ? { temporal: e.temporal } : {}),
     ...(e.relations !== undefined ? { relations: e.relations } : {}),
+    ...(e.entityIds !== undefined ? { entityIds: e.entityIds } : {}),
+    ...(e.ownerEntityId !== undefined ? { ownerEntityId: e.ownerEntityId } : {}),
+    ...(e.ownerScoped !== undefined ? { ownerScoped: e.ownerScoped } : {}),
     provenance: e.provenance,
     embeddings: {
       modelId: e.embeddings.modelId,
@@ -551,6 +601,7 @@ export function serializeProductionCorpus(corpus: ProductionCorpus): CorpusFileS
       revision: corpus.labelingModelRevision,
     },
     events,
+    ...(corpus.entities !== undefined ? { entities: corpus.entities } : {}),
     corpusRoot: corpus.corpusRoot,
   };
 }
