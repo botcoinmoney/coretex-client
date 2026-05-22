@@ -435,7 +435,8 @@ export async function scoreSubstrateAgainstQuery(
   // PUBLIC retrieval context (query.ownerEntityId), never derived from qrels.
   const useOwnerScope =
     (opts.ownerScopeMode ?? 'off') === 'restrict' && query.ownerScoped === true && !!query.ownerEntityId;
-  const stage1Docs = getOrComputeStage1(corpus, query.id, opts.firstStageTopK, () =>
+  const stage1ScopeTag = useOwnerScope ? `s:${query.ownerEntityId}` : 'p';
+  const stage1Docs = getOrComputeStage1(corpus, query.id, opts.firstStageTopK, stage1ScopeTag, () =>
     useOwnerScope
       ? scopedFirstStageCandidates(
           queryVec,
@@ -1303,6 +1304,7 @@ function getOrComputeStage1(
   corpus: ProductionCorpus,
   queryId: string,
   k: number,
+  scopeTag: string,
   compute: () => readonly { id: string; eventId: string; embedding: Uint8Array }[],
 ): readonly { id: string; eventId: string; embedding: Uint8Array }[] {
   let perCorpus = stage1Cache.get(corpus);
@@ -1310,7 +1312,11 @@ function getOrComputeStage1(
     perCorpus = new Map();
     stage1Cache.set(corpus, perCorpus);
   }
-  const key = `${queryId}#${k}`;
+  // The stage-1 result depends on the retrieval SCOPE (owner-scoped vs pooled,
+  // and WHICH owner). Without `scopeTag` in the key, the same queryId scored
+  // under different scopes would cross-contaminate (a scoped Top-K served to a
+  // pooled call or vice-versa). scopeTag = 'p' (pooled) | 's:<ownerEntityId>'.
+  const key = `${queryId}#${k}#${scopeTag}`;
   const cached = perCorpus.get(key);
   if (cached) return cached;
   const fresh = compute();
