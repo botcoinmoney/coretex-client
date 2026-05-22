@@ -175,6 +175,21 @@ export interface ScoringOptions {
    */
   readonly categoryLensTraversalDirection?: 'forward' | 'bidirectional';
   /**
+   * Phase B PRECISE-ADMISSION knob (deep-memory scaling fix). When set to a
+   * positive integer, the category-lens BFS is seeded ONLY from the top-K most
+   * query-similar stage-1 docs (stage-1 is sorted descending by cosine), instead
+   * of from EVERY stage-1 candidate (up to `firstStageTopK`). On a shallow
+   * owner-scoped store this is a no-op (stage-1 is already small). On a DEEP
+   * universe it is the difference between routing from the query's genuinely
+   * relevant seed (the bridge doc that names the subject → high stage-1 rank →
+   * follow its single public edge to the specific answer) versus admitting the
+   * edge-peers of hundreds of unrelated stage-1 candidates (the whole edge-type
+   * CATEGORY blob — e.g. ~1000 `supersedes` docs — which floods the rerank pool).
+   * Undefined (default) preserves the legacy all-stage-1-seed behaviour so prior
+   * owner-scoped P1/P2/P3 results are unchanged. Recommended deep value: 8–16.
+   */
+  readonly categoryLensSeedTopK?: number;
+  /**
    * Phase B scoring-bonus toggle. Substrate-viability knob.
    * When false, docs that entered the pool via Phase B still appear in the
    * candidate pool (inclusion-only) but receive NO categoryLensBonus — the
@@ -697,8 +712,16 @@ export async function scoreSubstrateAgainstQuery(
       ? getOrBuildInverseRelationIndex(corpus)
       : null;
     const visitedEventIds = new Set<string>();
-    // Seed BFS with the stage-1 candidate events.
-    for (const d of stage1Docs) visitedEventIds.add(d.eventId);
+    // Seed BFS with the stage-1 candidate events. PRECISE-ADMISSION: when
+    // `categoryLensSeedTopK` is set, seed ONLY from the top-K most query-similar
+    // stage-1 docs (stage1Docs is sorted descending by cosine), so relation routing
+    // expands from the query's genuinely relevant seed (e.g. the bridge doc) rather
+    // than from every stage-1 candidate — the latter admits the whole edge-type
+    // CATEGORY into the pool and floods deep universes. Default (undefined): legacy
+    // all-stage-1-seed behaviour (no-op on shallow owner-scoped stores).
+    const seedTopK = opts.categoryLensSeedTopK !== undefined && opts.categoryLensSeedTopK > 0
+      ? opts.categoryLensSeedTopK : stage1Docs.length;
+    for (let i = 0; i < stage1Docs.length && i < seedTopK; i++) visitedEventIds.add(stage1Docs[i]!.eventId);
     let frontierEventIds: string[] = Array.from(visitedEventIds);
 
     let categoryLensExpansionAdded = 0;

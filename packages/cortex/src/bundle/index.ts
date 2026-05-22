@@ -243,6 +243,13 @@ export interface EvaluatorProfile {
    * (NOT launch-pinned until 3-seed adversarial + larger sample sign-off).
    */
   readonly categoryLensScoreInheritance?: number;
+  /**
+   * Precise-admission knob (deep-memory scaling): seed the category-lens BFS only
+   * from the top-K most query-similar stage-1 docs, instead of every stage-1
+   * candidate. Prevents whole-edge-type-CATEGORY admission flooding the rerank pool
+   * on deep universes. Undefined = legacy all-stage-1-seed behaviour. Deep value 8–16.
+   */
+  readonly categoryLensSeedTopK?: number;
   /** §6.4 lens-diversity floor — mean pairwise cosine among active lenses must be ≤ this. */
   readonly lensDiversityFloor?: number;
   /** §6.1 pinned dedupe algorithm for PublicCorpusIndex. */
@@ -808,6 +815,7 @@ export function scoringOptionsFromProfile(
     ...(profile.ownerScopeMode !== undefined ? { ownerScopeMode: profile.ownerScopeMode } : {}),
     ...(profile.categoryLensFinalBonusWeight !== undefined ? { categoryLensFinalBonusWeight: profile.categoryLensFinalBonusWeight } : {}),
     ...(profile.categoryLensScoreInheritance !== undefined ? { categoryLensScoreInheritance: profile.categoryLensScoreInheritance } : {}),
+    ...(profile.categoryLensSeedTopK !== undefined ? { categoryLensSeedTopK: profile.categoryLensSeedTopK } : {}),
     pipelineVersion: profile.pipelineVersion,
   } as ScoringOptions;
 }
