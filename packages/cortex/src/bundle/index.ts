@@ -29,6 +29,9 @@ import { basename, relative, resolve } from 'node:path';
 import { bytesToHex } from '../state/merkle.js';
 import { keccak256 } from '../state/keccak256.js';
 import type { RetrievalKeyLayout } from '../eval/retrieval-corpus.js';
+import type { ScoringOptions } from '../eval/retrieval-benchmark.js';
+import type { BiEncoder } from '../eval/bi-encoder.js';
+import type { CrossEncoderReranker } from '../eval/reranker.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -219,6 +222,27 @@ export interface EvaluatorProfile {
   readonly temporalCurrentBoost?: number;
   /** Stage-2 temporal modulation: penalty for stale truth docs on temporal queries. */
   readonly temporalStaleSuppression?: number;
+  /**
+   * Owner-scoped retrieval (Layer-2 validity fix, 2026-05-22). When 'restrict',
+   * stage-1 + relation seeding for an owner-scoped query (event.ownerScoped) are
+   * restricted to the query's PUBLIC owner store — the realistic, well-posed task.
+   * Default 'off' = legacy full-pool. The V2 launch lane pins 'restrict'.
+   */
+  readonly ownerScopeMode?: 'off' | 'restrict';
+  /**
+   * Non-flooding promotion: FINAL-reorder category-lens bonus scale. Defaults to
+   * `categoryLensBonusWeight`/`lensWeight` (legacy single-bonus). The V2 lane pins
+   * 0 (INCLUSION-ONLY): category-lens admits to the rerank cap but the reranker —
+   * not a flat additive bonus — sets final order (fixes the P2 flood).
+   */
+  readonly categoryLensFinalBonusWeight?: number;
+  /**
+   * Score-inheritance alpha ∈ [0,1]. When > 0, a category-lens-edge target inherits
+   * `alpha × its best lens-peer's reranker score` (one hop, final reorder only,
+   * edge-gated) — the public bridge→answer routing signal. V2 candidate: 0.3
+   * (NOT launch-pinned until 3-seed adversarial + larger sample sign-off).
+   */
+  readonly categoryLensScoreInheritance?: number;
   /** §6.4 lens-diversity floor — mean pairwise cosine among active lenses must be ≤ this. */
   readonly lensDiversityFloor?: number;
   /** §6.1 pinned dedupe algorithm for PublicCorpusIndex. */
@@ -742,6 +766,51 @@ export const DEFAULT_PROFILE: EvaluatorProfile = {
     calibrationReport: 'release/calibration/first-stage-topk-sweep.json',
   },
 };
+
+/**
+ * Canonical profile → `ScoringOptions` mapping. The SINGLE place that turns a
+ * signed `EvaluatorProfile` into scorer options, so production, calibration, and
+ * replay all express the SAME config — including the V2 knobs (`ownerScopeMode`,
+ * `categoryLensFinalBonusWeight`, `categoryLensScoreInheritance`). Previously
+ * each caller assembled options ad hoc, so the signed profile could not fully
+ * express the winning V2 config (owner-scope + non-flooding promotion + score-
+ * inheritance). Runtime deps (models) are injected; the profile supplies scalars.
+ */
+export function scoringOptionsFromProfile(
+  profile: EvaluatorProfile,
+  runtime: {
+    readonly biEncoder: BiEncoder;
+    readonly reranker: CrossEncoderReranker;
+    readonly biEncoderHash: string;
+    readonly retrievalKeyLayout: RetrievalKeyLayout;
+  },
+): ScoringOptions {
+  return {
+    weights: profile.compositeWeights,
+    biEncoder: runtime.biEncoder,
+    reranker: runtime.reranker,
+    biEncoderHash: runtime.biEncoderHash,
+    retrievalKeyLayout: runtime.retrievalKeyLayout,
+    relationHopBudget: profile.relationHopBudget,
+    abstentionThreshold: profile.abstentionThreshold,
+    rerankerTopK: profile.rerankerTopK,
+    retrievalKeyTopK: profile.retrievalKeyTopK,
+    firstStageTopK: profile.firstStageTopK ?? 3200,
+    rerankerInputTopK: profile.rerankerInputTopK ?? 128,
+    lensTopK: profile.lensTopK ?? 36,
+    lensWeight: profile.lensWeight ?? 0.1,
+    anchorWeight: profile.anchorWeight ?? 0.15,
+    relationExpansionBudget: profile.relationExpansionBudget ?? 50,
+    ...(profile.categoryLensExpansionBudget !== undefined ? { categoryLensExpansionBudget: profile.categoryLensExpansionBudget } : {}),
+    temporalCurrentBoost: profile.temporalCurrentBoost ?? 0.1,
+    temporalStaleSuppression: profile.temporalStaleSuppression ?? 0.1,
+    // ─── V2 launch-lane knobs (the winning config the profile must express) ───
+    ...(profile.ownerScopeMode !== undefined ? { ownerScopeMode: profile.ownerScopeMode } : {}),
+    ...(profile.categoryLensFinalBonusWeight !== undefined ? { categoryLensFinalBonusWeight: profile.categoryLensFinalBonusWeight } : {}),
+    ...(profile.categoryLensScoreInheritance !== undefined ? { categoryLensScoreInheritance: profile.categoryLensScoreInheritance } : {}),
+    pipelineVersion: profile.pipelineVersion,
+  } as ScoringOptions;
+}
 
 // ─── Build / verify ──────────────────────────────────────────────────────────
 
