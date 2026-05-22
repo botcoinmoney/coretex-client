@@ -241,4 +241,27 @@ describe('score-inheritance (categoryLensScoreInheritance)', () => {
     assert.ok(Math.abs(a.finalReorderingScore - 0.1) < 1e-9,
       `no inheritance ⇒ final == raw reranker 0.1, got ${a.finalReorderingScore}`);
   });
+
+  // NEGATIVE control: a high-reranked bridge is present but a low-scored doc is
+  // NOT lens-linked to it (no edge). Even with alpha>0 it must NOT inherit —
+  // inheritance flows ONLY along genuine category-lens edges.
+  test("alpha>0: a NON-linked low doc does NOT inherit (inheritance is edge-gated)", async () => {
+    const queryVec = [1, 0, 0, 0, 0, 0, 0, 0];
+    const bridgeVec = [1, 0, 0, 0, 0, 0, 0, 0];
+    const loneVec = [0, 1, 0, 0, 0, 0, 0, 0];
+    // memB (bridge, high reranker) and memC (low reranker) share an owner but have
+    // NO relation edge between them → memC is not a lens-peer of memB.
+    const memB = memEvent('memB', 'BRIDGE', bridgeVec, ['e_x']);
+    const memC = memEvent('memC', 'LONELY', loneVec, ['e_x']); // no relations
+    const q = queryEvent('qN', queryVec, 'e_x', false, [{ documentId: 'memB-truth', relevance: 1 }]);
+    const corpus = buildCorpus([memB, memC, q]);
+    const opts = baseOpts({ reranker: bridgeAwareReranker(), categoryLensFinalBonusWeight: 0, categoryLensScoreInheritance: 0.8 });
+    const composite = await evaluateRetrievalBenchmarkState(lensState(), corpus, packOf(q), opts);
+    const pq = composite.perQuery[0];
+    const c = pq.finalRankingTop20.find((r) => r.docId === 'memC-truth');
+    assert.ok(c, 'lonely doc present');
+    assert.ok(!(c.sources ?? []).includes('categoryLensBFS'), 'lonely doc is NOT lens-tagged');
+    assert.ok(Math.abs(c.finalReorderingScore - 0.1) < 1e-9,
+      `non-linked doc must keep its raw 0.1 (no inheritance), got ${c.finalReorderingScore}`);
+  });
 });
