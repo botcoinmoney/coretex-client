@@ -206,6 +206,15 @@ export interface ScoringOptions {
    * Ignored when `categoryLensBonusEnabled === false`.
    */
   readonly categoryLensFinalBonusWeight?: number;
+  /**
+   * SCORE-INHERITANCE alpha ∈ [0,1]. When > 0, a category-lens-edge target
+   * inherits `alpha × its best lens-peer's reranker score` (one hop), floored at
+   * its own score, applied in the FINAL reorder only (reported rerankerScore
+   * stays raw). Lifts a surface-dissimilar bridge ANSWER the reranker under-ranks
+   * via the signal that it links to a high-scoring bridge — targeted along
+   * genuine public edges, so junk edges confer no boost. Default 0 (off).
+   */
+  readonly categoryLensScoreInheritance?: number;
   readonly temporalCurrentBoost: number;       // stage-2 temporal bonus (current truth)
   readonly temporalStaleSuppression: number;   // stage-2 temporal penalty (stale truth)
   /**
@@ -660,6 +669,19 @@ export async function scoreSubstrateAgainstQuery(
   const eventByCorpusId = corpusByCorpusId(corpus);
   /** Per-doc category-lens weight (max across applicable lenses), normalised to [0,1). */
   const categoryLensWeightByDocId = new Map<string, number>();
+  /**
+   * Lens-edge adjacency (event ↔ event), recorded as the BFS traverses each
+   * matching category-lens edge. Used by SCORE-INHERITANCE: a surface-dissimilar
+   * answer that the reranker under-ranks can inherit a bounded fraction of its
+   * lens-linked bridge's reranker score, but ONLY along a genuine public edge —
+   * so a junk edge (whose peer scores low) confers no boost. Targeted, one-hop,
+   * flood-resistant. Empty / unused unless `categoryLensScoreInheritance > 0`.
+   */
+  const lensPeerEvents = new Map<string, Set<string>>();
+  const addLensPeer = (a: string, b: string) => {
+    let s = lensPeerEvents.get(a); if (!s) { s = new Set(); lensPeerEvents.set(a, s); } s.add(b);
+    let t = lensPeerEvents.get(b); if (!t) { t = new Set(); lensPeerEvents.set(b, t); } t.add(a);
+  };
   if (lensesByEdgeType.size > 0 && categoryLensExpansionBudget > 0) {
     // Per-event semantic cluster: BFS follows category-lens-matching edges
     // BIDIRECTIONALLY. Stage-1 finds similar question events; forward edges
@@ -701,6 +723,7 @@ export async function scoreSubstrateAgainstQuery(
               targetEvent, pool, categoryLensWeightByDocId, lens.weight / 0xFFFF,
               categoryLensExpansionBudget - categoryLensExpansionAdded,
             );
+            addLensPeer(eventId, tgtId);
             if (!visitedEventIds.has(tgtId)) { visitedEventIds.add(tgtId); next.push(tgtId); }
             if (categoryLensExpansionAdded >= categoryLensExpansionBudget) break;
           }
@@ -722,6 +745,7 @@ export async function scoreSubstrateAgainstQuery(
               sourceFromInverse, pool, categoryLensWeightByDocId, lens.weight / 0xFFFF,
               categoryLensExpansionBudget - categoryLensExpansionAdded,
             );
+            addLensPeer(eventId, srcId);
             if (!visitedEventIds.has(srcId)) { visitedEventIds.add(srcId); next.push(srcId); }
             if (categoryLensExpansionAdded >= categoryLensExpansionBudget) break;
           }
@@ -964,6 +988,41 @@ export async function scoreSubstrateAgainstQuery(
     rerankerScoreByDocId.set(rerankerCandidates[i]!.record.docId, rerankerScoresTopN[i]!);
   }
 
+  // ─── Score-inheritance (optional, default off) ───────────────────────────
+  // A lens-edge target inherits `alpha × its best lens-peer's reranker score`
+  // (one hop), floored at its own score. This lifts a surface-dissimilar bridge
+  // ANSWER that the reranker under-ranks, using the signal that it is linked to
+  // a high-scoring BRIDGE — but ONLY along a genuine public edge. A junk edge's
+  // peer scores low, so it confers no boost (flood-resistant). The reported
+  // `rerankerScore` stays RAW (honest attribution); only the final reorder uses
+  // the inherited score. alpha=0 ⇒ exact legacy behavior.
+  const inheritAlpha = opts.categoryLensScoreInheritance ?? 0;
+  const effectiveRerankByDocId = new Map<string, number>();
+  if (inheritAlpha > 0 && lensPeerEvents.size > 0) {
+    const docsByEvent = new Map<string, string[]>();
+    for (const c of candidates) {
+      const arr = docsByEvent.get(c.record.eventId);
+      if (arr) arr.push(c.record.docId); else docsByEvent.set(c.record.eventId, [c.record.docId]);
+    }
+    for (const c of candidates) {
+      const own = rerankerScoreByDocId.get(c.record.docId) ?? 0;
+      let peerMax = 0;
+      const peers = lensPeerEvents.get(c.record.eventId);
+      if (peers) {
+        for (const pe of peers) {
+          for (const pd of docsByEvent.get(pe) ?? []) {
+            const ps = rerankerScoreByDocId.get(pd) ?? 0;
+            if (ps > peerMax) peerMax = ps;
+          }
+        }
+      }
+      const inherited = inheritAlpha * peerMax;
+      effectiveRerankByDocId.set(c.record.docId, inherited > own ? inherited : own);
+    }
+  }
+  const effRerank = (docId: string, raw: number): number =>
+    inheritAlpha > 0 ? (effectiveRerankByDocId.get(docId) ?? raw) : raw;
+
   // ─── Pinned final ranking formula ────────────────────────────────────────
   const qrelById = new Map(query.qrels.map((q) => [q.documentId, q.relevance]));
   const ranked = candidates
@@ -973,7 +1032,7 @@ export async function scoreSubstrateAgainstQuery(
         documentId: c.record.docId,
         memorySlot: c.record.memorySlot,
         rerankerScore: r,
-        finalReorderingScore: r + c.finalBonus,
+        finalReorderingScore: effRerank(c.record.docId, r) + c.finalBonus,
         relevance: qrelById.get(c.record.docId) ?? 0,
       };
     })
@@ -1012,7 +1071,7 @@ export async function scoreSubstrateAgainstQuery(
   const finalRankingTop20 = ranked.slice(0, 20).map((r, idx) => {
     const c = componentsByDocId.get(r.documentId);
     const cs = c?.record.sources;
-    const finalReorderingScore = (r.rerankerScore ?? 0) + (c?.finalBonus ?? 0);
+    const finalReorderingScore = effRerank(r.documentId, r.rerankerScore ?? 0) + (c?.finalBonus ?? 0);
     return {
       docId: r.documentId,
       rank: idx + 1,

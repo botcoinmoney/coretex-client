@@ -198,3 +198,47 @@ describe('non-flooding promotion (admission vs final bonus split)', () => {
       `legacy: final score should exceed reranker score by the lens bonus, got delta ${junk.finalReorderingScore - junk.rerankerScore}`);
   });
 });
+
+// memB (bridge) ranks high under the reranker; memA (answer) is lens-linked to it
+// but the reranker scores it low. Score-inheritance should lift memA's FINAL score
+// toward alpha×memB, while a NON-linked low doc gets no lift.
+function makeInheritanceCorpus() {
+  const queryVec = [1, 0, 0, 0, 0, 0, 0, 0];
+  const bridgeVec = [1, 0, 0, 0, 0, 0, 0, 0];  // memB: high biCosine (reranker hi)
+  const ansVec    = [0, 1, 0, 0, 0, 0, 0, 0];  // memA: surface-dissimilar (reranker lo)
+  // memA --supports--> memB so the bidirectional BFS links them.
+  const memB = memEvent('memB', 'BRIDGE', bridgeVec, ['e_x']);
+  const memA = memEvent('memA', 'ANSWER', ansVec, ['e_x'], [{ other_id: 'memB', edgeType: 'supports' }]);
+  const q = queryEvent('qI', queryVec, 'e_x', false, [{ documentId: 'memA-truth', relevance: 1 }]);
+  return { corpus: buildCorpus([memB, memA, q]), q };
+}
+// Reranker: high score for the bridge text, low for everything else.
+function bridgeAwareReranker() {
+  return { model: 'br', async score(pairs) { return pairs.map((p) => p.document === 'BRIDGE' ? 0.9 : 0.1); } };
+}
+
+describe('score-inheritance (categoryLensScoreInheritance)', () => {
+  test("alpha>0: lens-linked answer inherits a bounded fraction of its bridge's reranker score", async () => {
+    const { corpus, q } = makeInheritanceCorpus();
+    const opts = baseOpts({ reranker: bridgeAwareReranker(), categoryLensFinalBonusWeight: 0, categoryLensScoreInheritance: 0.8 });
+    const composite = await evaluateRetrievalBenchmarkState(lensState(), corpus, packOf(q), opts);
+    const pq = composite.perQuery[0];
+    const a = pq.finalRankingTop20.find((r) => r.docId === 'memA-truth');
+    assert.ok(a, 'answer present');
+    assert.ok(a.sources.includes('categoryLensBFS'), 'answer linked via lens edge');
+    // raw reranker 0.1; inherited = 0.8 × bridge 0.9 = 0.72 ⇒ finalReorderingScore ≈ 0.72.
+    assert.ok(Math.abs(a.rerankerScore - 0.1) < 1e-9, `raw reranker stays 0.1, got ${a.rerankerScore}`);
+    assert.ok(a.finalReorderingScore > 0.6, `inherited final score should be ~0.72, got ${a.finalReorderingScore}`);
+  });
+
+  test("alpha=0 (default): no inheritance — answer keeps its raw reranker score", async () => {
+    const { corpus, q } = makeInheritanceCorpus();
+    const opts = baseOpts({ reranker: bridgeAwareReranker(), categoryLensFinalBonusWeight: 0 });
+    const composite = await evaluateRetrievalBenchmarkState(lensState(), corpus, packOf(q), opts);
+    const pq = composite.perQuery[0];
+    const a = pq.finalRankingTop20.find((r) => r.docId === 'memA-truth');
+    assert.ok(a, 'answer present');
+    assert.ok(Math.abs(a.finalReorderingScore - 0.1) < 1e-9,
+      `no inheritance ⇒ final == raw reranker 0.1, got ${a.finalReorderingScore}`);
+  });
+});
