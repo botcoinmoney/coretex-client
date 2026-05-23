@@ -230,6 +230,19 @@ export interface ScoringOptions {
    * genuine public edges, so junk edges confer no boost. Default 0 (off).
    */
   readonly categoryLensScoreInheritance?: number;
+  /**
+   * EVIDENCE-BUNDLE reranking (deep-memory final-surfacing fix). When true, a
+   * category-lens-routed candidate (admitted via categoryLensBFS that has a lens-peer)
+   * is scored by the cross-encoder together with its highest-query-similarity lens-peer
+   * (the BRIDGE), as a compact `Bridge evidence:\n<bridge>\nCandidate answer:\n<answer>`
+   * bundle, instead of `query + answer` alone. The bridge ANSWER is intentionally
+   * lexically distant from the query (routing-required), so the bridge carries the
+   * relevance signal; without it the reranker is under-informed and demotes the answer
+   * below the subject's dense same-surface docs at depth. The reported rerankerScore is
+   * the bundle score (the substrate's evidence-aware judgment). Default false (legacy:
+   * query+answer only) — opt-in so owner-scoped P1/P2/P3 are unchanged.
+   */
+  readonly categoryLensEvidenceBundle?: boolean;
   readonly temporalCurrentBoost: number;       // stage-2 temporal bonus (current truth)
   readonly temporalStaleSuppression: number;   // stage-2 temporal penalty (stale truth)
   /**
@@ -988,7 +1001,36 @@ export async function scoreSubstrateAgainstQuery(
   const rerankerCandidates = anchorMandatory.concat(preRankFill.slice(0, fillCount));
 
   // ─── Reranker: cross-encoder over (query, candidate-text) pairs ──────────
-  const pairs = rerankerCandidates.map((c) => ({ query: query.queryText, document: c.record.text }));
+  // EVIDENCE-BUNDLE: for a category-lens-routed candidate, bundle its highest-query-
+  // similarity lens-peer (the bridge) into the document so the reranker sees the
+  // relevance-carrying bridge alongside the lexically-distant answer.
+  const evidenceBundle = opts.categoryLensEvidenceBundle === true && lensPeerEvents.size > 0;
+  let bestPeerTextByEvent: Map<string, string> | null = null;
+  if (evidenceBundle) {
+    // per-event: the highest-biCosine candidate text (the most query-similar doc of that event).
+    const bestByEvent = new Map<string, { text: string; biCosine: number }>();
+    for (const c of candidates) {
+      const cur = bestByEvent.get(c.record.eventId);
+      if (!cur || c.biCosine > cur.biCosine) bestByEvent.set(c.record.eventId, { text: c.record.text, biCosine: c.biCosine });
+    }
+    bestPeerTextByEvent = new Map();
+    for (const [ev] of bestByEvent) bestPeerTextByEvent.set(ev, bestByEvent.get(ev)!.text);
+  }
+  const bundleDoc = (c: typeof rerankerCandidates[number]): string => {
+    if (!evidenceBundle || !c.record.sources.has('categoryLensBFS')) return c.record.text;
+    const peers = lensPeerEvents.get(c.record.eventId);
+    if (!peers || peers.size === 0) return c.record.text;
+    // pick the peer event with the highest query-biCosine (the bridge seed).
+    let bridgeText: string | null = null, bridgeCos = -Infinity;
+    for (const pe of peers) {
+      const t = bestPeerTextByEvent?.get(pe);
+      if (t === undefined) continue;
+      const bc = candidates.find((x) => x.record.eventId === pe)?.biCosine ?? -Infinity;
+      if (bc > bridgeCos) { bridgeCos = bc; bridgeText = t; }
+    }
+    return bridgeText ? `Bridge evidence:\n${bridgeText}\nCandidate answer:\n${c.record.text}` : c.record.text;
+  };
+  const pairs = rerankerCandidates.map((c) => ({ query: query.queryText, document: bundleDoc(c) }));
   const rerankerScoresTopN = pairs.length > 0 ? await opts.reranker.score(pairs) : [];
   if (rerankerScoresTopN.length !== pairs.length) {
     throw new Error(
