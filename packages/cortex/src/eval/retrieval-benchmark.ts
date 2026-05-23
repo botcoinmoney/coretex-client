@@ -1028,6 +1028,8 @@ export async function scoreSubstrateAgainstQuery(
       const arr = docsByEvent.get(c.record.eventId);
       if (arr) arr.push(c.record.docId); else docsByEvent.set(c.record.eventId, [c.record.docId]);
     }
+    const _dbg = process.env.CORETEX_INHERIT_DEBUG === '1';
+    let _dbgLensDocs = 0, _dbgWithPeers = 0, _dbgPeerMaxPos = 0, _dbgLifted = 0;
     for (const c of candidates) {
       const own = rerankerScoreByDocId.get(c.record.docId) ?? 0;
       let peerMax = 0;
@@ -1042,7 +1044,9 @@ export async function scoreSubstrateAgainstQuery(
       }
       const inherited = inheritAlpha * peerMax;
       effectiveRerankByDocId.set(c.record.docId, inherited > own ? inherited : own);
+      if (_dbg && c.record.sources.has('categoryLensBFS')) { _dbgLensDocs++; if (peers && peers.size) _dbgWithPeers++; if (peerMax > 0) _dbgPeerMaxPos++; if (inherited > own) _dbgLifted++; }
     }
+    if (_dbg) console.error(`[inherit-dbg] q=${query.id} lensPeerEvents=${lensPeerEvents.size} catLensDocs=${_dbgLensDocs} withPeers=${_dbgWithPeers} peerMax>0=${_dbgPeerMaxPos} lifted=${_dbgLifted}`);
   }
   const effRerank = (docId: string, raw: number): number =>
     inheritAlpha > 0 ? (effectiveRerankByDocId.get(docId) ?? raw) : raw;
