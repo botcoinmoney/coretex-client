@@ -43,10 +43,11 @@ function reservedMask(wordIdx: number): bigint {
     return 0n;
   }
 
-  // Temporal range (words 800–895): 1-word entries
+  // Temporal range (words 800–895): 96 one-word records (canonical layout).
+  // Used bits: memorySlot 255:248, supersededBy 247:240, validFrom 239:200,
+  // validUntil 199:160, flags 159:152. Reserved region = bits 151:0 (must be zero).
   if (wordIdx >= RANGES.TEMPORAL_START && wordIdx <= RANGES.TEMPORAL_END) {
-    // bits 31:0 reserved
-    return (1n << 32n) - 1n;
+    return (1n << 152n) - 1n;
   }
 
   // Codebook range (words 896–991): 2-word entries

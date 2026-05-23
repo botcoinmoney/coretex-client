@@ -7,6 +7,7 @@ import assert from 'node:assert/strict';
 import { decodeCortexState, isTemporallyValid } from '../../dist/decoder/index.js';
 import { RANGES, MAGIC, SCHEMA_VERSION_CoreTex, WORD_COUNT_VALUE } from '../../dist/state/types.js';
 import { getField, setField } from '../../dist/state/codec.js';
+import { encodeMemoryIndexSlot, encodeTemporalRecord } from '../../dist/substrate/retrieval-decoder.js';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -206,26 +207,43 @@ describe('retrievalKeys slot decoding', () => {
 
 // ─── Temporal entry decoding ──────────────────────────────────────────────────
 
-describe('temporal entry decoding', () => {
-  test('revocation flag decoded', () => {
+describe('temporal entry decoding (canonical slot layout)', () => {
+  test('currentStaleFlag decoded (flags bit 0 at word bit 152)', () => {
     const state = makeValidState();
-    // Word 800: temporal entry 0. Set revoked = bit 0
-    state.words[800] = setField(0n, 0, 0, 1n);
+    // Word 800: temporal record 0. currentStaleFlag = flags bit 0 = word bit 152.
+    state.words[800] = setField(0n, 152, 152, 1n);
     const result = decodeCortexState(state);
     assert.equal(result.ok, true);
     if (result.ok) {
-      assert.equal(result.decoded.temporal[0]?.revoked, true);
+      assert.equal(result.decoded.temporal[0]?.currentStaleFlag, true);
+      assert.equal(result.decoded.temporal[0]?.memorySlot, 0);
     }
   });
 
-  test('revokedEventIds set includes non-zero revoked event IDs', () => {
+  test('memorySlot / supersededBy / epochs decoded from canonical bits', () => {
     const state = makeValidState();
-    const eventId = 0xABCDn;
-    // Set eventId (bits 255:96) and revoked (bit 0)
-    let w = 0n;
-    w = setField(w, 255, 96, eventId);
-    w = setField(w, 0, 0, 1n);
-    state.words[800] = w;
+    const tw = encodeTemporalRecord({ recordIndex: 0, memorySlot: 7, supersededBy: 9, validFromEpoch: 3n, validUntilEpoch: 99n, currentStaleFlag: true });
+    state.words[800] = tw[0];
+    const result = decodeCortexState(state);
+    assert.equal(result.ok, true);
+    if (result.ok) {
+      const t = result.decoded.temporal[0];
+      assert.equal(t?.memorySlot, 7);
+      assert.equal(t?.supersededBy, 9);
+      assert.equal(t?.validFrom, 3n);
+      assert.equal(t?.validUntil, 99n);
+      assert.equal(t?.currentStaleFlag, true);
+    }
+  });
+
+  test('revokedEventIds derived from a stale record’s MemoryIndex slot eventId', () => {
+    const state = makeValidState();
+    const eventId = 0xABCDn; // recordId of the memory slot == eventId in decoder/index.ts
+    const slotIndex = 5;
+    const sw = encodeMemoryIndexSlot({ slotIndex, recordId: eventId, family: 'temporal', domainBits: 1n, valid: true, revoked: true, protected: false, retrievalSlot: slotIndex, expiryEpoch: 0n });
+    for (let j = 0; j < sw.length; j++) state.words[RANGES.MEMORY_INDEX_START + slotIndex * 8 + j] = sw[j];
+    const tw = encodeTemporalRecord({ recordIndex: 0, memorySlot: slotIndex, supersededBy: 0xff, validFromEpoch: 0n, validUntilEpoch: 0n, currentStaleFlag: true });
+    state.words[800] = tw[0];
     const result = decodeCortexState(state);
     assert.equal(result.ok, true);
     if (result.ok) {

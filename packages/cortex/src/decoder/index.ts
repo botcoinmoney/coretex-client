@@ -76,14 +76,25 @@ export interface RelationEntry {
   readonly weight: number;       // bits 207:192
 }
 
-/** A single temporal-validity entry (1-word entry). */
+/**
+ * A single temporal record (1-word entry). CANONICAL layout — identical to the
+ * retrieval decoder's `encodeTemporalRecord` (substrate/retrieval-decoder.ts):
+ *   memorySlot   bits 255:248 (8)   — the MemoryIndex slot this record governs
+ *   supersededBy bits 247:240 (8)   — slot that supersedes it (0xFF = none)
+ *   validFrom    bits 239:200 (40)
+ *   validUntil   bits 199:160 (40)
+ *   flags        bits 159:152 (8)   — bit 0 = currentStaleFlag
+ *   reserved     bits 151:0          — MUST be zero (canonical reserved region)
+ * The TEMPORAL range (800–895) holds 96 such one-word records.
+ */
 export interface TemporalEntry {
   readonly entryIndex: number;
   readonly wordIndex: number;
-  readonly eventId: bigint;    // bits 255:96 (160 bits)
-  readonly validFrom: number;  // bits 95:64
-  readonly validUntil: number; // bits 63:32
-  readonly revoked: boolean;   // bit 0 of bits 31:0
+  readonly memorySlot: number;       // bits 255:248
+  readonly supersededBy: number;     // bits 247:240
+  readonly validFrom: bigint;        // bits 239:200 (40)
+  readonly validUntil: bigint;       // bits 199:160 (40)
+  readonly currentStaleFlag: boolean; // flags bit 0 (word bit 152)
 }
 
 /** A single codebook entry (2-word entry). */
@@ -281,13 +292,14 @@ function decodeTemporal(words: readonly bigint[]): TemporalEntry[] {
   for (let i = 0; i < TEMPORAL_COUNT; i++) {
     const wordIndex = RANGES.TEMPORAL_START + i;
     const w = words[wordIndex] ?? 0n;
-    // bits 255:96 = eventId (160 bits), bits 95:64 = validFrom, bits 63:32 = validUntil
-    // bits 31:0 reserved except bit 0 = revoked
-    const eventId = getField(w, 255, 96);
-    const validFrom = Number(getField(w, 95, 64));
-    const validUntil = Number(getField(w, 63, 32));
-    const revoked = (Number(getField(w, 0, 0))) !== 0;
-    entries.push({ entryIndex: i, wordIndex, eventId, validFrom, validUntil, revoked });
+    // CANONICAL layout (matches encodeTemporalRecord / retrieval-decoder):
+    const memorySlot = Number(getField(w, 255, 248));
+    const supersededBy = Number(getField(w, 247, 240));
+    const validFrom = getField(w, 239, 200);
+    const validUntil = getField(w, 199, 160);
+    const flags = Number(getField(w, 159, 152));
+    const currentStaleFlag = (flags & 0x01) !== 0;
+    entries.push({ entryIndex: i, wordIndex, memorySlot, supersededBy, validFrom, validUntil, currentStaleFlag });
   }
   return entries;
 }
@@ -339,12 +351,21 @@ function buildRoutes(
 
 // ─── Revocation resolver ──────────────────────────────────────────────────────
 
-function buildRevokedSet(temporal: readonly TemporalEntry[]): Set<bigint> {
+// Re-derived for the canonical slot model: a temporal record with currentStaleFlag
+// marks its governed MemoryIndex slot as stale/superseded; the revoked set is the
+// eventIds of those stale slots (preserves the eventId-keyed isTemporallyValid
+// contract on top of slot-based temporal records).
+function buildRevokedSet(
+  temporal: readonly TemporalEntry[],
+  memory: readonly MemoryIndexSlot[],
+): Set<bigint> {
+  const bySlot = new Map<number, MemoryIndexSlot>();
+  for (const s of memory) bySlot.set(s.slotIndex, s);
   const revoked = new Set<bigint>();
   for (const entry of temporal) {
-    if (entry.revoked && entry.eventId !== 0n) {
-      revoked.add(entry.eventId);
-    }
+    if (!entry.currentStaleFlag) continue;
+    const slot = bySlot.get(entry.memorySlot);
+    if (slot && slot.eventId !== 0n) revoked.add(slot.eventId);
   }
   return revoked;
 }
@@ -401,7 +422,7 @@ export function decodeCortexState(state: CortexState): DecodeResult {
   const temporal = decodeTemporal(words);
   const codebook = decodeCodebook(words);
   const routes = buildRoutes(retrievalKeys, memoryIndex);
-  const revokedEventIds = buildRevokedSet(temporal);
+  const revokedEventIds = buildRevokedSet(temporal, memoryIndex);
 
   return {
     ok: true,
