@@ -185,6 +185,16 @@ export interface ProductionCorpusEvent {
    * the synthesizer produced.
    */
   readonly relationHopDepth?: number;
+  /**
+   * Synthesis-time hidden-eval difficulty band ∈
+   * {easy, medium, hard, very_hard, exhaustion}. Pinned by the generator
+   * (DGEN-1) from the query's structural difficulty (revision depth, distractor
+   * density, exhaustion probes). Optional for backward compatibility — old
+   * records have no band and fall back to the qrel-derived hardness bucket in
+   * `strataOf`. Used to make hidden-pack selection difficulty-aware (band quotas
+   * + epoch band-progression), not just labeled.
+   */
+  readonly band?: 'easy' | 'medium' | 'hard' | 'very_hard' | 'exhaustion';
 }
 
 export interface ProductionCorpus {

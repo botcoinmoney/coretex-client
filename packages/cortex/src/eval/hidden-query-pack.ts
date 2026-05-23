@@ -90,6 +90,15 @@ export function strataOf(event: ProductionCorpusEvent): string[] {
     `bucket=${bucket}`,
     `family=${family},bucket=${bucket}`,
   ];
+  // Explicit generator difficulty band (DGEN-1+): make hidden-pack selection
+  // difficulty-aware (band quotas + epoch band-progression). Independent of the
+  // qrel-derived `bucket` (which is only easy/medium/hard); the band carries the
+  // generator's structural difficulty incl. very_hard/exhaustion. Old corpora
+  // without `event.band` emit no band stratum (back-compat).
+  if (event.band) {
+    out.push(`band=${event.band}`);
+    out.push(`family=${family},band=${event.band}`);
+  }
   // Emit depth strata only when the synthesizer set a non-trivial
   // depth — keeps previous corpora's strata list short and avoids
   // misleading "depth>=1" quota matches that always pass.
