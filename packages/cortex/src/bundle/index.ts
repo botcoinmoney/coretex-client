@@ -250,6 +250,7 @@ export interface EvaluatorProfile {
    * on deep universes. Undefined = legacy all-stage-1-seed behaviour. Deep value 8–16.
    */
   readonly categoryLensSeedTopK?: number;
+  readonly categoryLensHopBudget?: number;
   /** Evidence-bundle reranking: score a routed answer together with its bridge (deep-memory surfacing). */
   readonly categoryLensEvidenceBundle?: boolean;
   /** §6.4 lens-diversity floor — mean pairwise cosine among active lenses must be ≤ this. */
@@ -818,6 +819,7 @@ export function scoringOptionsFromProfile(
     ...(profile.categoryLensFinalBonusWeight !== undefined ? { categoryLensFinalBonusWeight: profile.categoryLensFinalBonusWeight } : {}),
     ...(profile.categoryLensScoreInheritance !== undefined ? { categoryLensScoreInheritance: profile.categoryLensScoreInheritance } : {}),
     ...(profile.categoryLensSeedTopK !== undefined ? { categoryLensSeedTopK: profile.categoryLensSeedTopK } : {}),
+    ...(profile.categoryLensHopBudget !== undefined ? { categoryLensHopBudget: profile.categoryLensHopBudget } : {}),
     ...(profile.categoryLensEvidenceBundle !== undefined ? { categoryLensEvidenceBundle: profile.categoryLensEvidenceBundle } : {}),
     pipelineVersion: profile.pipelineVersion,
   } as ScoringOptions;

@@ -190,6 +190,16 @@ export interface ScoringOptions {
    */
   readonly categoryLensSeedTopK?: number;
   /**
+   * Hop budget for the categoryLens BFS specifically (independent of the
+   * anchor-relation `relationHopBudget`). At hop budget 1 the lens admits only
+   * the DIRECT routed-edge neighbours of the query-similar seed docs — e.g. the
+   * bridge_seed's answer target — but NOT the answer's own siblings (2 hops),
+   * which is the main source of cluster collateral / induced junk in the
+   * evidence-bundle path. Undefined (default) falls back to relationHopBudget so
+   * prior results are unchanged. Recommended deep value: 1.
+   */
+  readonly categoryLensHopBudget?: number;
+  /**
    * Phase B scoring-bonus toggle. Substrate-viability knob.
    * When false, docs that entered the pool via Phase B still appear in the
    * candidate pool (inclusion-only) but receive NO categoryLensBonus — the
@@ -738,7 +748,9 @@ export async function scoreSubstrateAgainstQuery(
     let frontierEventIds: string[] = Array.from(visitedEventIds);
 
     let categoryLensExpansionAdded = 0;
-    for (let hop = 0; hop < opts.relationHopBudget && categoryLensExpansionAdded < categoryLensExpansionBudget; hop++) {
+    const lensHopBudget = opts.categoryLensHopBudget !== undefined && opts.categoryLensHopBudget > 0
+      ? opts.categoryLensHopBudget : opts.relationHopBudget;
+    for (let hop = 0; hop < lensHopBudget && categoryLensExpansionAdded < categoryLensExpansionBudget; hop++) {
       const next: string[] = [];
       for (const eventId of frontierEventIds) {
         if (categoryLensExpansionAdded >= categoryLensExpansionBudget) break;
