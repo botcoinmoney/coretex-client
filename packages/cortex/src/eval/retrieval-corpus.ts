@@ -195,6 +195,14 @@ export interface ProductionCorpusEvent {
    * + epoch band-progression), not just labeled.
    */
   readonly band?: 'easy' | 'medium' | 'hard' | 'very_hard' | 'exhaustion';
+  /**
+   * Realism slice tag for relation queries: 'distant' = answer is maximally
+   * lexically-distant from the subject (routing strictly required); 'partial' =
+   * answer carries a weak subject reference (reachable via edge AND partially
+   * retrievable). Lets surfacing metrics report whether relation lift generalizes
+   * off the most-adversarial end rather than only at it.
+   */
+  readonly grounding?: 'distant' | 'partial';
 }
 
 export interface ProductionCorpus {
