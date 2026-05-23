@@ -238,8 +238,14 @@ const RETRIEVAL_KEY_SLOT_COUNT = 36;
 const RETRIEVAL_KEY_WORDS_PER_SLOT = 8;
 const RETRIEVAL_KEY_BYTES_PER_SLOT = RETRIEVAL_KEY_WORDS_PER_SLOT * 32; // 256
 const RELATIONS_ENTRY_COUNT = 128;
-const TEMPORAL_RECORD_COUNT = 12;
-const TEMPORAL_WORDS_PER_RECORD = 8;
+// Temporal capacity: the TEMPORAL range (words 800–895 = 96 words) holds one record
+// PER WORD. A record's payload is a single word (see encodeTemporalRecord); the prior
+// 8-word stride reserved 7 padding words per record and capped capacity at 12, which was
+// the temporal runway bottleneck. Stride 1 exposes the full 96-record capacity the state
+// format + validator already support (decoder/index.ts TEMPORAL_COUNT=96; validate.ts
+// treats the range as 1-word entries). No range change; eval encode+decode stay symmetric.
+const TEMPORAL_WORDS_PER_RECORD = 1;
+const TEMPORAL_RECORD_COUNT = (RANGES.TEMPORAL_END - RANGES.TEMPORAL_START + 1) / TEMPORAL_WORDS_PER_RECORD; // 96
 const CODEBOOK_ENTRY_COUNT = 48;
 const CODEBOOK_WORDS_PER_ENTRY = 2;
 
@@ -908,7 +914,11 @@ export function encodeTemporalRecord(rec: TemporalRecord): bigint[] {
     (rec.validFromEpoch << 200n) |
     (rec.validUntilEpoch << 160n) |
     (flags << 152n);
-  return [w0, 0n, 0n, 0n, 0n, 0n, 0n, 0n];
+  // One record == one word. (The decoder reads at stride TEMPORAL_WORDS_PER_RECORD; any
+  // padding words it expects beyond w0 must be zero, which a 1-length array satisfies.)
+  const out: bigint[] = new Array(TEMPORAL_WORDS_PER_RECORD).fill(0n);
+  out[0] = w0;
+  return out;
 }
 
 export function encodeCodebookEntry(entry: CodebookEntry): bigint[] {
