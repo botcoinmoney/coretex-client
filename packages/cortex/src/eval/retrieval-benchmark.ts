@@ -269,6 +269,17 @@ export interface ScoringOptions {
   readonly temporalCurrentBoost: number;       // stage-2 temporal bonus (current truth)
   readonly temporalStaleSuppression: number;   // stage-2 temporal penalty (stale truth)
   /**
+   * ORACLE / DIAGNOSTIC ONLY (substrate-vNext Lifecycle oracle upper-bound, 2026-05-24).
+   * When true, a substrate temporal record's boost/suppress is applied to a doc ONLY when that
+   * doc belongs to the CURRENT query's own truth set — i.e. each chain's routing is SCOPED to its
+   * owning query instead of the blunt GLOBAL behaviour (current default) where a boosted current
+   * doc lifts ANY pack temporal query whose pool contains it, flooding neighbours (the measured
+   * 0.65 pack-interference factor). This models the IDEAL scoped lifecycle surface (scope_differs)
+   * using qrels as the oracle scope signal. NOT a substrate-format change; production callers leave
+   * it undefined (= blunt global behaviour, byte-identical). Marked oracle: uses query truth labels.
+   */
+  readonly temporalOracleScopePerQuery?: boolean;
+  /**
    * §6.5 reranker-input cap (MemReranker semantics). Number of pool
    * candidates that get forwarded to the cross-encoder reranker per
    * query — sorted by (biCosine + substrateBonus) descending, tie-break
@@ -846,6 +857,12 @@ export async function scoreSubstrateAgainstQuery(
   }
 
   const isTemporalQuery = query.family === 'temporal';
+  // ORACLE scoped-lifecycle (temporalOracleScopePerQuery): the set of doc ids that belong to THIS
+  // query's own temporal truth (current + stale). Used to scope temporal modulation to the owning
+  // query so one chain's boost can't flood neighbour temporal queries. null = blunt global default.
+  const ownTemporalTruthIds = (opts.temporalOracleScopePerQuery === true && isTemporalQuery)
+    ? new Set((query.truthDocuments ?? []).map((t) => t.id))
+    : null;
 
   // §temporal — SUBSTRATE-CONTROLLED temporal modulation, driven by the miner's
   // decoded Temporal records (decoded.temporal), NOT corpus isCurrentTruth labels
@@ -974,7 +991,7 @@ export async function scoreSubstrateAgainstQuery(
     // Temporal bonus driven by the miner's decoded Temporal records, event-scoped
     // (reaches stage1-retrieved docs of marked events), NOT corpus labels.
     let temporalBonus = 0;
-    if (isTemporalQuery) {
+    if (isTemporalQuery && (ownTemporalTruthIds === null || ownTemporalTruthIds.has(record.docId))) {
       if (temporalSuppressEventIds.has(record.eventId)) temporalBonus = -opts.temporalStaleSuppression;
       else if (temporalBoostEventIds.has(record.eventId)) temporalBonus = opts.temporalCurrentBoost;
     }
