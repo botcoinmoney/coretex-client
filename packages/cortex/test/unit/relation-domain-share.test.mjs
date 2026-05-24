@@ -26,8 +26,9 @@ function withWords(state, indexed) {
 
 function placeMemorySlot(state, slotIndex, slot) {
   const enc = encodeMemoryIndexSlot({ ...slot, slotIndex });
-  const indexed = enc.map((v, i) => [RANGES.MEMORY_INDEX_START + slotIndex * 8 + i, v]);
-  return withWords(state, indexed);
+  // Tier-2 stride-1: each MemoryIndex slot is ONE word (word 0); write only enc[0] at
+  // START+slotIndex so adjacent slots are independent.
+  return withWords(state, [[RANGES.MEMORY_INDEX_START + slotIndex, enc[0]]]);
 }
 
 function placeRelation(state, entryIndex, edge) {

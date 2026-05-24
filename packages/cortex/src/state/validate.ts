@@ -24,10 +24,10 @@ function reservedMask(wordIdx: number): bigint {
     return headerReservedMask(wordIdx);
   }
 
-  // MemoryIndex range (words 32–383): 8-word slots
+  // MemoryIndex range (words 32–383): STRIDE-1 slots (Tier-2 decoupling) — every word is a
+  // slot word-0, so there are no padding words; reserved mask is the word-0 mask for all.
   if (wordIdx >= RANGES.MEMORY_INDEX_START && wordIdx <= RANGES.MEMORY_INDEX_END) {
-    const slotWord = (wordIdx - RANGES.MEMORY_INDEX_START) % 8;
-    return memoryIndexSlotReservedMask(slotWord);
+    return memoryIndexSlotReservedMask(0);
   }
 
   // RetrievalKeys range (words 384–671): 8-word slots

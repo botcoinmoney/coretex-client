@@ -48,7 +48,7 @@ describe('retrieval decoder — round-trip', () => {
       expiryEpoch: 12345n,
     };
     const enc = encodeMemoryIndexSlot(slot);
-    const indexed = enc.map((v, i) => [RANGES.MEMORY_INDEX_START + 3 * 8 + i, v]);
+    const indexed = [[RANGES.MEMORY_INDEX_START + 3, enc[0]]]; // Tier-2 stride-1: slot 3 = one word
     const state = withWords(ZERO_STATE, indexed);
     const { slots } = decodeMemoryIndex(state);
     const got = slots[3];
@@ -61,25 +61,22 @@ describe('retrieval decoder — round-trip', () => {
     assert.equal(got.expiryEpoch, slot.expiryEpoch);
   });
 
-  test('decoder zeroes memory slots with reserved bits set', () => {
+  test('stride-1 MemoryIndex: each slot is one independent word (no shared padding)', () => {
+    // Tier-2 stride-1: a slot occupies ONE word (word 0 uses all 256 bits — no reserved
+    // padding words to reject). Slots are independent: an unrelated word at slot 3 does not
+    // corrupt slot 0 (unlike the old stride-8 layout where word 3 was slot 0's padding).
     const slot = {
-      slotIndex: 0,
-      recordId: 1n,
-      family: 'near_collision',
-      domainBits: 0n,
-      valid: true,
-      revoked: false,
-      protected: false,
-      retrievalSlot: 0,
-      expiryEpoch: 0n,
+      slotIndex: 0, recordId: 1n, family: 'near_collision', domainBits: 0n,
+      valid: true, revoked: false, protected: false, retrievalSlot: 0, expiryEpoch: 0n,
     };
     const enc = encodeMemoryIndexSlot(slot);
-    const indexed = enc.map((v, i) => [RANGES.MEMORY_INDEX_START + i, v]);
-    indexed[3][1] = 0xdeadn;          // pollute payload word 3
-    const state = withWords(ZERO_STATE, indexed);
-    const { slots, failures } = decodeMemoryIndex(state);
-    assert.equal(slots[0], null);
-    assert.equal(failures, 1);
+    const state = withWords(ZERO_STATE, [
+      [RANGES.MEMORY_INDEX_START + 0, enc[0]],   // valid slot 0
+      [RANGES.MEMORY_INDEX_START + 3, 0xdeadn],  // unrelated word at slot 3
+    ]);
+    const { slots } = decodeMemoryIndex(state);
+    assert.notEqual(slots[0], null, 'slot 0 must decode independently of the slot-3 word');
+    assert.equal(slots[0].recordId, 1n);
   });
 
   test('retrieval key slot encode→decode preserves vector bytes', () => {
@@ -138,11 +135,13 @@ describe('retrieval decoder — round-trip', () => {
     assert.equal(edges[0].targetSlot, 12);
   });
 
-  test('relation edge zeroes when slot index >= 44', () => {
+  test('relation edge zeroes when slot ref exceeds the 8-bit range (>255)', () => {
     const edge = { entryIndex: 0, weight: 100, edgeType: 'supports', sourceSlot: 10, targetSlot: 50 };
     const word = encodeRelationEdge({ ...edge, targetSlot: 10 }); // encode valid first
-    // Manually set targetSlot bits to 50 (out of range)
-    const polluted = (word & ~((1n << 96n) - 1n)) | 50n;
+    // Tier-2: MemoryIndex has 352 slots but relation source/targetSlot fields are 8-bit
+    // (decode rejects refs whose value exceeds 8 bits, i.e. > 255). Set targetSlot to 300
+    // (out of the 8-bit ref range) → the edge must be zeroed.
+    const polluted = (word & ~((1n << 96n) - 1n)) | 300n;
     const state = withWords(ZERO_STATE, [[RANGES.RELATIONS_START, polluted]]);
     const { edges, failures } = decodeRelations(state);
     assert.equal(edges.length, 0);

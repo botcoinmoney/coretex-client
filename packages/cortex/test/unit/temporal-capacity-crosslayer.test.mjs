@@ -8,11 +8,13 @@
  *   2. retrieval decoder      (substrate/retrieval-decoder.ts:decodeSubstrate)  ← what the scorer iterates
  *   3. reserved-bit validator (state/validate.ts:validateReservedBits)
  *
- * Honest ceiling: a pair consumes two MemoryIndex slots whose `retrievalSlot` must be < 36,
- * so the patch-family can place at most 18 pairs end-to-end even though the temporal RANGE
- * holds 96 one-word records. N=12,18 construct & round-trip; N=24,48,96 are expected to be
- * construction-bounded (retrievalSlot >= 36) until the MemoryIndex/retrieval-key coupling is
- * redesigned.
+ * Tier-2 decoupling (TEMPORAL_DECOUPLING_DESIGN.md): the artificial retrievalSlot<36 cap is
+ * removed (temporal slots set retrievalSlot=0 — the scorer's §temporal path resolves via
+ * recordId, never retrievalSlot) and MemoryIndex is STRIDE-1 (352 slots). A pair now consumes
+ * two 1-word slots with no <36 constraint; the honest end-to-end ceiling is the Temporal RANGE
+ * (96 one-word records → 96 pairs, ≤192 slots, under 256 for 8-bit refs and under 352 slots).
+ * N=12,18,24,48,96 all construct & round-trip identically across every layer. Beyond 96 needs a
+ * Temporal-region expansion (separately gated).
  */
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
@@ -27,7 +29,7 @@ import { validateReservedBits } from '../../dist/state/validate.js';
 import { RANGES, MAGIC, SCHEMA_VERSION_CoreTex, WORD_COUNT_VALUE } from '../../dist/state/types.js';
 import { setField } from '../../dist/state/codec.js';
 
-const TEMPORAL_PAIR_CEILING = 18; // retrievalSlot < 36, two slots per pair
+const TEMPORAL_PAIR_CEILING = 96; // Tier-2: Temporal-region-bound (96 one-word records), retrievalSlot decoupled
 
 function header(words) {
   let w0 = 0n;
@@ -37,19 +39,21 @@ function header(words) {
   words[0] = w0;
 }
 
-// Build a state with N temporal current/stale pairs. Throws (from encodeMemoryIndexSlot)
-// when a slot's retrievalSlot reaches 36 — that throw IS the honest end-to-end ceiling.
+// Build a state with N temporal current/stale pairs the way the patch-families now do
+// (Tier-2): STRIDE-1 MemoryIndex slots (1 word each, write word 0 only), retrievalSlot=0
+// (decoupled), one stride-1 temporal record per pair. Beyond the Temporal region (96 records)
+// encodeTemporalRecord's recordIndex would exceed the range — that bounds the ceiling.
 function buildTemporalState(N) {
   const words = new Array(1024).fill(0n);
   header(words);
   for (let i = 0; i < N; i++) {
     const staleSlot = i * 2, curSlot = i * 2 + 1;
-    const sw = encodeMemoryIndexSlot({ slotIndex: staleSlot, recordId: BigInt(0x1000 + staleSlot), family: 'temporal', domainBits: 1n, valid: true, revoked: true, protected: false, retrievalSlot: staleSlot, expiryEpoch: 0n });
-    for (let j = 0; j < sw.length; j++) words[RANGES.MEMORY_INDEX_START + staleSlot * 8 + j] = sw[j];
-    const cw = encodeMemoryIndexSlot({ slotIndex: curSlot, recordId: BigInt(0x1000 + curSlot), family: 'temporal', domainBits: 1n, valid: true, revoked: false, protected: false, retrievalSlot: curSlot, expiryEpoch: 0n });
-    for (let j = 0; j < cw.length; j++) words[RANGES.MEMORY_INDEX_START + curSlot * 8 + j] = cw[j];
+    const sw = encodeMemoryIndexSlot({ slotIndex: staleSlot, recordId: BigInt(0x1000 + staleSlot), family: 'temporal', domainBits: 1n, valid: true, revoked: true, protected: false, retrievalSlot: 0, expiryEpoch: 0n });
+    words[RANGES.MEMORY_INDEX_START + staleSlot] = sw[0]; // stride-1: one word per slot
+    const cw = encodeMemoryIndexSlot({ slotIndex: curSlot, recordId: BigInt(0x1000 + curSlot), family: 'temporal', domainBits: 1n, valid: true, revoked: false, protected: false, retrievalSlot: 0, expiryEpoch: 0n });
+    words[RANGES.MEMORY_INDEX_START + curSlot] = cw[0];
     const tw = encodeTemporalRecord({ recordIndex: i, memorySlot: staleSlot, supersededBy: curSlot, validFromEpoch: 1n, validUntilEpoch: (2n ** 40n - 1n), currentStaleFlag: true });
-    for (let j = 0; j < tw.length; j++) words[RANGES.TEMPORAL_START + i * tw.length + j] = tw[j];
+    words[RANGES.TEMPORAL_START + i] = tw[0]; // stride-1 temporal records
   }
   return { words };
 }

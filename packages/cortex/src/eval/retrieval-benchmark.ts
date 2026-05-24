@@ -132,6 +132,19 @@ export interface ScoringOptions {
    */
   readonly ownerScopeMode?: 'off' | 'restrict';
 
+  /**
+   * EvidencePolicy (opt-in, default off). A candidate THIRD miner-facing strategy
+   * surface (distinct from temporal records / relation edges / dense lenses): the
+   * miner writes compact POLICY atoms to the CODEBOOK region (not data, not answer
+   * maps) that drive generalizable, honest scorer effects. Currently implements
+   * `high_density_evidence` (CODEBOOK code=5): boost candidates whose event is
+   * corroborated by many PUBLIC supports-edges (in-degree >= K). The in-degree is
+   * corpus-derived (public, auditable); the miner's degree of freedom is the POLICY
+   * (threshold K + weight), not the data. Default off → the default scoring path is
+   * byte-identical. See EVIDENCE_POLICY_DESIGN.md.
+   */
+  readonly evidencePolicyEnabled?: boolean;
+
   // ─── v2-lens pipeline params (substrate-hardening Phase A) ───
   readonly firstStageTopK: number;             // calibrated per-stratum (Run 1)
   readonly lensTopK: number;                   // how many lens vectors contribute to stage-2 reweighting
@@ -871,6 +884,37 @@ export async function scoreSubstrateAgainstQuery(
   const categoryLensAdmissionScale = opts.categoryLensBonusWeight ?? opts.lensWeight;
   const categoryLensFinalScale = opts.categoryLensFinalBonusWeight ?? categoryLensAdmissionScale;
 
+  // ─── EvidencePolicy (opt-in, default off): miner-written CODEBOOK policy atoms ──
+  // high_density_evidence (code=5): a generalizable contribution rule — boost
+  // candidates whose event has PUBLIC supports-edge in-degree >= K (corroboration),
+  // with the atom's bounded weight. In-degree is corpus-derived (public, auditable);
+  // the miner writes only the POLICY (threshold + weight), never a doc/query/answer
+  // map. Family-agnostic for v1. Default off → contributionBoostByEventId stays empty
+  // and the per-candidate bonus below is 0 (default path unchanged).
+  const POLICY_HIGH_DENSITY = 5;
+  const contributionBoostByEventId = new Map<string, number>();
+  if (opts.evidencePolicyEnabled === true) {
+    const atoms = decoded.codebook.filter(
+      (e): e is NonNullable<typeof e> => e !== null && e.valid && e.code === POLICY_HIGH_DENSITY,
+    );
+    if (atoms.length > 0) {
+      const inDeg = getOrBuildSupportsInDegree(corpus);
+      for (const a of atoms) {
+        const k = Number(a.payload & 0xffffn);                       // bits[15:0]  = in-degree threshold
+        const weightPpm = Number((a.payload >> 16n) & 0xffffffffn);  // bits[47:16] = weight (ppm)
+        const w = Math.max(0, Math.min(1, weightPpm / 1_000_000));
+        if (k <= 0 || w <= 0) continue;
+        for (const [evId, deg] of inDeg) {
+          if (deg >= k) {
+            const prev = contributionBoostByEventId.get(evId) ?? 0;
+            if (w > prev) contributionBoostByEventId.set(evId, w);
+          }
+        }
+      }
+    }
+  }
+  const evidencePolicyActive = contributionBoostByEventId.size > 0;
+
   // Compute substrateBonus + pre-rank score per pool entry.
   //
   // §6.5 reranker-input cap (MemReranker semantics). The reranker is a
@@ -901,6 +945,7 @@ export async function scoreSubstrateAgainstQuery(
     categoryLensBonus: number;       // admission-scale (drives cap inclusion)
     categoryLensFinalBonus: number;  // final-scale (drives final reorder)
     temporalBonus: number;
+    evidencePolicyBonus: number;     // CODEBOOK high_density_evidence contribution boost
   }[] = [];
   for (const record of pool.values()) {
     const docVec = dequantize(record.embedding, opts.retrievalKeyLayout);
@@ -943,7 +988,14 @@ export async function scoreSubstrateAgainstQuery(
     // temporal contribute to BOTH; only the category-lens routing bonus is split,
     // so an inclusion-only profile (categoryLensFinalBonusWeight≈0) lets the
     // reranker — not a flat lens bias — decide final order among routed docs.
-    const admissionBonus = lensBonus + anchorBonus + temporalBonus + categoryLensBonus;
+    // EvidencePolicy contribution boost (opt-in; 0 unless a high_density atom matched).
+    // ADMISSION-ONLY (non-flooding promotion, mirrors the relation inclusion-only fix): the
+    // policy lifts a low-cosine but corroborated answer INTO the reranker cap; the RERANKER
+    // decides final order among the admitted corroborated class. Adding it to the FINAL reorder
+    // force-floats the whole boosted class into top-10 (flood), so it is excluded from finalBonus.
+    const evidencePolicyBonus = evidencePolicyActive ? (contributionBoostByEventId.get(record.eventId) ?? 0) : 0;
+
+    const admissionBonus = lensBonus + anchorBonus + temporalBonus + categoryLensBonus + evidencePolicyBonus;
     const finalBonus = lensBonus + anchorBonus + temporalBonus + categoryLensFinalBonus;
     const biCosine = cosineSimilarity(docVec, queryVec);
     candidates.push({
@@ -958,6 +1010,7 @@ export async function scoreSubstrateAgainstQuery(
       categoryLensBonus,
       categoryLensFinalBonus,
       temporalBonus,
+      evidencePolicyBonus,
     });
   }
 
@@ -1195,6 +1248,29 @@ export async function scoreSubstrateAgainstQuery(
 }
 
 // ─── Owner-scoped retrieval (Layer-2 validity fix) ──────────────────────────
+
+/**
+ * eventId → count of INCOMING public `supports`-edges (corroboration in-degree).
+ * Corpus-derived (public, auditable), memoized per corpus instance. Used by
+ * EvidencePolicy `high_density_evidence`: the miner's POLICY asserts "answers
+ * corroborated by >= K supports edges are more relevant"; the in-degree itself is
+ * public corpus structure, not miner-written data or an answer map.
+ */
+const supportsInDegreeCache = new WeakMap<ProductionCorpus, Map<string, number>>();
+function getOrBuildSupportsInDegree(corpus: ProductionCorpus): Map<string, number> {
+  const cached = supportsInDegreeCache.get(corpus);
+  if (cached) return cached;
+  const inDeg = new Map<string, number>();
+  for (const ev of corpus.events) {
+    if (!ev.relations) continue;
+    for (const rel of ev.relations) {
+      if (rel.edgeType !== 'supports') continue;
+      inDeg.set(rel.other_id, (inDeg.get(rel.other_id) ?? 0) + 1);
+    }
+  }
+  supportsInDegreeCache.set(corpus, inDeg);
+  return inDeg;
+}
 
 /**
  * Exact cosine ranking over a small owner-scope doc set (the owner's memory

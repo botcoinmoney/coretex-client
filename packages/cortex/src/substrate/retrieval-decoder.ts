@@ -232,8 +232,15 @@ function readFloat32BE(bytes: Uint8Array, offset: number): number {
 
 // ─── Slot decoders ────────────────────────────────────────────────────────────
 
-const MEMORY_INDEX_SLOT_COUNT = 44;
-const MEMORY_INDEX_WORDS_PER_SLOT = 8;
+// Tier-2 decoupling (TEMPORAL_DECOUPLING_DESIGN.md): MemoryIndex repacked to STRIDE-1.
+// Each slot is 1 word (only word 0 was ever used; words 1-7 were zero padding). The region
+// (words 32-383 = 352 words) now holds up to 352 slots instead of 44, lifting the temporal
+// current/stale PAIR cap from the MemoryIndex-bound 22 toward the Temporal region's 96-record
+// ceiling. 8-bit slot-reference fields (temporal memorySlot/supersededBy, relation
+// source/targetSlot) cap referencible slots at 0-255 — ample for 96 pairs (≤192 slots).
+// NEW PROTOCOL EPOCH — bump pipelineVersion before launch.
+const MEMORY_INDEX_SLOT_COUNT = 352;
+const MEMORY_INDEX_WORDS_PER_SLOT = 1;
 const RETRIEVAL_KEY_SLOT_COUNT = 36;
 const RETRIEVAL_KEY_WORDS_PER_SLOT = 8;
 const RETRIEVAL_KEY_BYTES_PER_SLOT = RETRIEVAL_KEY_WORDS_PER_SLOT * 32; // 256
