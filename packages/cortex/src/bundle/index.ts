@@ -351,6 +351,23 @@ export interface EvaluatorProfile {
    * single-source-of-truth behavior).
    */
   readonly corpusStagingPolicy?: CorpusStagingPolicyPin;
+  /**
+   * Difficulty-controller knobs pinned into the signed profile so the launch
+   * controller shape is auditable and replayable, instead of living only in
+   * `difficulty.ts` defaults + ad-hoc harness CLI flags. Maps onto the optional
+   * `DifficultyInputs` fields via `controllerParamsFromProfile()` (the single
+   * profile → controller-override path, analogous to `scoringOptionsFromProfile`).
+   *
+   * Optional for backward compatibility: when omitted, `controllerParamsFromProfile`
+   * falls back to the pinned `difficulty.ts` protocol defaults (rampUp 1.5 / decay
+   * 0.85 / drift 1.05 / qualityHighThresholdMult 4) — the pre-pin behaviour.
+   *
+   * 2026-05-24 launch calibration (`V2_DGEN1_ENDURANCE_FINDINGS.md` §Controller-
+   * calibration A/B): `qualityHighThresholdMult=1` so the `decay` branch can engage
+   * (`qualityHighThreshold = mult × targetAdvances ≤ honestAttempts`), and a gentler
+   * `rampUpMaxRatio≈1.1`, recover +25% temporal runway (51→64) with anti-cheat 0.
+   */
+  readonly controllerParams?: ControllerParamsPin;
 }
 
 /**
@@ -385,6 +402,34 @@ export const DEFAULT_BASE_RPC_CONFIG: BaseRpcConfigPin = {
   blockTimeSeconds: 2,
   targetBlockOffset: 30,                  // ≈ 60 s on Base
   replayBlockhashLookbackBlocks: 50_000,  // ≈ 28 h coverage
+};
+
+/**
+ * Pinned difficulty-controller shape (see `EvaluatorProfile.controllerParams`).
+ * Every field is optional so a profile can pin a subset; unset fields fall back
+ * to the `difficulty.ts` protocol defaults inside `controllerParamsFromProfile`.
+ *
+ * `qualityHighThresholdMult` is a MULTIPLIER on the runtime `targetAdvances`
+ * (the absolute `qualityHighThreshold = mult × targetAdvances`), because the
+ * per-epoch target is a runtime/emission parameter, not a signed profile pin.
+ */
+export interface ControllerParamsPin {
+  /** Max multiplier when ramping difficulty up. difficulty.ts default 1.5. */
+  readonly rampUpMaxRatio?: number;
+  /** Multiplier when decaying (0 advances AND many quality attempts). difficulty.ts default 0.85. */
+  readonly decayRatio?: number;
+  /** Multiplier for slow upward drift (some advances, below target). difficulty.ts default 1.05. */
+  readonly smallDriftRatio?: number;
+  /** Multiplier on runtime targetAdvances setting the "high quality attempts" threshold. difficulty.ts default 4. */
+  readonly qualityHighThresholdMult?: number;
+}
+
+/** difficulty.ts protocol defaults, expressed as a controller pin (the legacy pre-pin shape). */
+export const DEFAULT_CONTROLLER_PARAMS: Required<ControllerParamsPin> = {
+  rampUpMaxRatio: 1.5,
+  decayRatio: 0.85,
+  smallDriftRatio: 1.05,
+  qualityHighThresholdMult: 4,
 };
 
 export interface CorpusStagingPolicyPin {
@@ -825,6 +870,38 @@ export function scoringOptionsFromProfile(
   } as ScoringOptions;
 }
 
+/**
+ * Canonical profile → difficulty-controller overrides mapping. The SINGLE place
+ * that turns a signed `EvaluatorProfile`'s `controllerParams` into the optional
+ * `DifficultyInputs` fields, so the launch controller shape is sourced from the
+ * signed profile (auditable, replayable) rather than ad-hoc harness CLI flags.
+ *
+ * `targetAdvances` is a runtime/emission parameter, so it is supplied by the
+ * caller and used to resolve the absolute `qualityHighThreshold` from the pinned
+ * `qualityHighThresholdMult`. When `controllerParams` (or a field) is absent the
+ * `difficulty.ts` protocol defaults apply — identical to the pre-pin behaviour.
+ *
+ * The returned object is spread directly into `nextMinImprovementPpm(...)`.
+ */
+export function controllerParamsFromProfile(
+  profile: EvaluatorProfile,
+  targetAdvances: number,
+): {
+  readonly rampUpMaxRatio: number;
+  readonly decayRatio: number;
+  readonly smallDriftRatio: number;
+  readonly qualityHighThreshold: number;
+} {
+  const cp = profile.controllerParams ?? {};
+  const mult = cp.qualityHighThresholdMult ?? DEFAULT_CONTROLLER_PARAMS.qualityHighThresholdMult;
+  return {
+    rampUpMaxRatio: cp.rampUpMaxRatio ?? DEFAULT_CONTROLLER_PARAMS.rampUpMaxRatio,
+    decayRatio: cp.decayRatio ?? DEFAULT_CONTROLLER_PARAMS.decayRatio,
+    smallDriftRatio: cp.smallDriftRatio ?? DEFAULT_CONTROLLER_PARAMS.smallDriftRatio,
+    qualityHighThreshold: mult * targetAdvances,
+  };
+}
+
 // ─── Build / verify ──────────────────────────────────────────────────────────
 
 export interface BuildBundleManifestOptions {
@@ -1168,6 +1245,22 @@ function validateProfile(profile: EvaluatorProfile, errors?: string[]): void {
   if (profile.majorDeltaThreshold !== undefined) {
     if (!Number.isInteger(profile.majorDeltaThreshold) || profile.majorDeltaThreshold < 0)
       out.push('majorDeltaThreshold must be a non-negative integer when present');
+  }
+
+  // controllerParams is optional (pre-pin bundles ship without it → difficulty.ts
+  // defaults apply), but any pinned field must be in a sane controller range so a
+  // signed profile can't encode a degenerate controller (e.g. rampUp<1 that would
+  // shrink the threshold on a ramp, or decay>=1 that never eases difficulty).
+  if (profile.controllerParams !== undefined) {
+    const cp = profile.controllerParams;
+    if (cp.rampUpMaxRatio !== undefined && (!Number.isFinite(cp.rampUpMaxRatio) || cp.rampUpMaxRatio < 1))
+      out.push('controllerParams.rampUpMaxRatio must be a finite number >= 1 when present');
+    if (cp.decayRatio !== undefined && (!Number.isFinite(cp.decayRatio) || cp.decayRatio <= 0 || cp.decayRatio >= 1))
+      out.push('controllerParams.decayRatio must be a finite number in (0, 1) when present');
+    if (cp.smallDriftRatio !== undefined && (!Number.isFinite(cp.smallDriftRatio) || cp.smallDriftRatio < 1))
+      out.push('controllerParams.smallDriftRatio must be a finite number >= 1 when present');
+    if (cp.qualityHighThresholdMult !== undefined && (!Number.isFinite(cp.qualityHighThresholdMult) || cp.qualityHighThresholdMult <= 0))
+      out.push('controllerParams.qualityHighThresholdMult must be a finite number > 0 when present');
   }
 
   // baseRpcConfig is required at launch — per-patch eval seeds bind to
