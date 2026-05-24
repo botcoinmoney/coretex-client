@@ -303,8 +303,15 @@ export interface ScoringOptions {
 
 /** The pipeline version this codebase implements. Bundles that pin a
  *  different value cannot be replayed by this binary — there is no
- *  override; operators upgrade the binary or rebuild the bundle. */
-export const CORETEX_PIPELINE_VERSION_THIS_BINARY = 'coretex-retrieval-v2-lens-r3';
+ *  override; operators upgrade the binary or rebuild the bundle.
+ *
+ *  r4 (2026-05-24) = the Tier-2 substrate epoch: MemoryIndex repacked to
+ *  STRIDE-1 (WORDS_PER_SLOT 8→1, SLOT_COUNT 44→352) and the temporal
+ *  retrievalSlot<36 coupling removed, lifting the current/stale PAIR cap
+ *  18→96 (TEMPORAL_DECOUPLING_DESIGN.md). This changes the scorer's
+ *  substrate DECODE semantics, so an r3-signed (stride-8) bundle must NOT
+ *  be silently scored by this binary — the version pin fails it closed. */
+export const CORETEX_PIPELINE_VERSION_THIS_BINARY = 'coretex-retrieval-v2-lens-r4';
 
 export interface PerQueryBreakdown {
   readonly recordId: string;
