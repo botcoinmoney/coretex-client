@@ -52,6 +52,7 @@ export const PATCH_TYPE = {
   RELATION_UPDATE: 0x04,
   CODEBOOK_UPDATE: 0x05,
   HEADER_UPDATE:   0x06,
+  POLICY_UPDATE:   0x07, // r5 typed PolicyAtom write (evidence-bundle / conflict / abstention)
   MIXED:           0xFF,
 } as const;
 
@@ -90,6 +91,16 @@ export const RANGES = {
   RESERVED_START:      992,
   RESERVED_END:        1023,
   WORD_COUNT:          1024,
+  // ── r5 PolicyAtom regions (NEW PROTOCOL EPOCH coretex-retrieval-v2-policy-r5) ──
+  // These OVERLAY the reclaimed words. r4 (lens) profiles read 384–671 as RetrievalKeys
+  // and 896–991 as Codebook; r5 (policy) profiles read them as typed PolicyAtoms. The
+  // active interpretation is decided HARD by pipelineVersion / profile — never silently.
+  // The static reclaimed forms (dense lens, static EvidencePolicy) failed; r5 reclaims
+  // their WORDS for a typed, bounded, query-local policy grammar. Stride-1: 1 word/atom.
+  POLICY_EVIDENCE_START:    384,  POLICY_EVIDENCE_END:    511,  // 128 evidence-bundle/answer-density atoms
+  POLICY_CONFLICT_START:    512,  POLICY_CONFLICT_END:    639,  // 128 conflict_lifecycle atoms
+  POLICY_ABSTENTION_START:  640,  POLICY_ABSTENTION_END:  671,  //  32 abstention_missing atoms
+  POLICY_RESERVED_START:    896,  POLICY_RESERVED_END:    991,  //  96w reserved r5 policy capacity (MUST be zero)
 } as const;
 
 /** Schema magic constant for word 0. */

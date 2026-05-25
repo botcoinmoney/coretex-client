@@ -80,6 +80,7 @@ function validIndexForPatchType(patchType) {
     case PATCH_TYPE.RELATION_UPDATE: return 700;
     case PATCH_TYPE.CODEBOOK_UPDATE: return 900;
     case PATCH_TYPE.HEADER_UPDATE: return 1;
+    case PATCH_TYPE.POLICY_UPDATE: return 384; // r5 PolicyAtom region (evidence-bundle)
     case PATCH_TYPE.MIXED: return 401;
     default: throw new Error(`unknown patch type ${patchType}`);
   }

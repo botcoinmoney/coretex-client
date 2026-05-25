@@ -68,10 +68,10 @@ export const DEFAULT_COMPOSITE_WEIGHTS: CompositeWeights = {
  */
 export function assertPipelineVersionMatches(bundlePin?: string): void {
   if (!bundlePin) return; // older bundles without the pin: caller decides
-  if (bundlePin === CORETEX_PIPELINE_VERSION_THIS_BINARY) return;
+  if (CORETEX_PIPELINE_VERSIONS_SUPPORTED.has(bundlePin)) return; // r4 + r5 both replayable
   throw new Error(
     `pipelineVersion mismatch: bundle pins '${bundlePin}', this binary implements ` +
-    `'${CORETEX_PIPELINE_VERSION_THIS_BINARY}'. Run a binary whose pipeline matches the ` +
+    `{${[...CORETEX_PIPELINE_VERSIONS_SUPPORTED].join(', ')}}. Run a binary whose pipeline matches the ` +
     `bundle (or rebuild the bundle against this binary's pipeline) — no override exists.`,
   );
 }
@@ -331,6 +331,26 @@ export interface ScoringOptions {
    * cannot be replayed by an older binary without an explicit override.
    */
   readonly pipelineVersion?: string;
+
+  // ── r5 PolicyAtom knobs (active only under pipelineVersion policy-r5) ──
+  /** Decode the reclaimed words as PolicyAtoms (set from pipelineVersion r5). HARD gate. */
+  readonly policyAtomsMode?: boolean;
+  /** Per-family enable flags (operator profile). A disabled family is decoded but NOT applied. */
+  readonly enableEvidenceBundleAtoms?: boolean;
+  readonly enableConflictLifecycleAtoms?: boolean;
+  readonly enableAbstentionAtoms?: boolean;
+  /** Per-family budget caps (ppm-ish). A miner atom's budget is clamped to these. */
+  readonly policyMaxBudgetEvidence?: number;
+  readonly policyMaxBudgetConflict?: number;
+  /**
+   * Abstention is a SPLIT: the miner atom supplies the public no-evidence-path policy;
+   * the confidence gate is an OPERATOR PROFILE calibration. Abstain fires only when the
+   * atom's selector matches AND the calibrated top1 score < this threshold (Qwen top1 is
+   * saturated ~0.999x so this is never a hardcoded universal — it is profile-pinned).
+   */
+  readonly policyAbstentionTop1Threshold?: number;
+  /** Emit per-atom trace receipts (atomId/family/selectorMatched/docsMoved/evidencePath/delta/junk). */
+  readonly policyEmitTraces?: boolean;
 }
 
 /** The pipeline version this codebase implements. Bundles that pin a
@@ -342,8 +362,18 @@ export interface ScoringOptions {
  *  retrievalSlot<36 coupling removed, lifting the current/stale PAIR cap
  *  18→96 (TEMPORAL_DECOUPLING_DESIGN.md). This changes the scorer's
  *  substrate DECODE semantics, so an r3-signed (stride-8) bundle must NOT
- *  be silently scored by this binary — the version pin fails it closed. */
+ *  be silently scored by this binary — the version pin fails it closed.
+ *
+ *  r5 (2026-05-25) = the PolicyAtom epoch: reclaimed RetrievalKeys+Codebook
+ *  words read as typed PolicyAtoms (this binary implements BOTH r4 and r5;
+ *  r4 stays replayable). The active decode is chosen by the profile's pin. */
 export const CORETEX_PIPELINE_VERSION_THIS_BINARY = 'coretex-retrieval-v2-lens-r4';
+export const CORETEX_PIPELINE_VERSION_R5 = 'coretex-retrieval-v2-policy-r5';
+/** Versions this binary can replay (r4 + r5 coexist; decode mode chosen by the profile pin). */
+export const CORETEX_PIPELINE_VERSIONS_SUPPORTED: ReadonlySet<string> = new Set([
+  CORETEX_PIPELINE_VERSION_THIS_BINARY,
+  CORETEX_PIPELINE_VERSION_R5,
+]);
 
 export interface PerQueryBreakdown {
   readonly recordId: string;
@@ -1631,6 +1661,7 @@ export async function evaluateRetrievalBenchmarkState(
   const decoded = decodeSubstrate(state, {
     biEncoderModelIdHash: opts.biEncoderHash,
     retrievalKeyHeaderBytes: opts.retrievalKeyLayout.headerBytes,
+    ...(opts.policyAtomsMode ? { policyAtomsMode: true } : {}),
     ...(typeof opts.lensDiversityFloor === 'number'
       ? { lensDiversityFloor: opts.lensDiversityFloor, retrievalKeyLayout: opts.retrievalKeyLayout }
       : {}),

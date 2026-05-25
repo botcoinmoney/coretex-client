@@ -101,6 +101,53 @@ export interface LensDiversityCheck {
   readonly meanPairwiseCosine?: number;
 }
 
+// ─── r5 PolicyAtoms (typed, bounded, query-local policy grammar) ───────────────
+
+export type PolicyAtomFamily = 'evidence_bundle' | 'conflict_lifecycle' | 'abstention';
+export type PolicyAction = 'include' | 'boost' | 'suppress' | 'bundle' | 'abstain';
+export type PolicyScope = 'entity' | 'owner' | 'relation_path' | 'temporal_chain' | 'conflict_set' | 'aspect';
+
+/** Selector = the query-predicate type that gates when an atom applies (8-bit code). */
+export const POLICY_SELECTOR = {
+  RELATION_PATH_PRESENT: 0x1, // query resolves to a public support/bridge path (evidence-bundle)
+  CONFLICT_SET_MEMBER:   0x2, // query's subject has a public conflict set (conflict_lifecycle)
+  MISSING_EVIDENCE:      0x3, // query has no public evidence path (abstention)
+  ANSWER_DENSITY:        0x4, // query's anchor has high public support-in-degree (evidence-bundle)
+} as const;
+/** EvidenceFeature = which PUBLIC Memory-IR / corpus feature the atom reads (8-bit code). */
+export const POLICY_EVIDENCE_FEATURE = {
+  SUPPORT_IN_DEGREE:       0x1,
+  BRIDGE_HOP:              0x2,
+  LIFECYCLE_STATE:         0x3, // resolved/candidate
+  CONTRADICTS_EDGE:        0x4,
+  SCOPE_DIFFERS_EDGE:      0x5,
+  TOP1_SCORE:              0x6, // calibrated top score (paired with profile threshold)
+  NO_PUBLIC_EVIDENCE_PATH: 0x7,
+} as const;
+/** Abstention atom flag bits. */
+export const POLICY_FLAG = {
+  REQUIRE_NO_EVIDENCE_PATH: 0x01, // abstention: only abstain when public evidence path is absent
+} as const;
+
+const VALID_SELECTOR = new Set<number>(Object.values(POLICY_SELECTOR));
+const VALID_EVIDENCE_FEATURE = new Set<number>(Object.values(POLICY_EVIDENCE_FEATURE));
+
+export interface PolicyAtom {
+  readonly atomIndex: number;          // slot index within its region
+  readonly family: PolicyAtomFamily;   // implicit from which region the atom lives in
+  readonly selector: number;           // POLICY_SELECTOR code
+  readonly evidenceFeature: number;    // POLICY_EVIDENCE_FEATURE code
+  readonly action: PolicyAction;
+  readonly scope: PolicyScope;
+  readonly targetSlot: number;         // MemoryIndex slot anchor (< 352); 0xFFFF = none (abstention)
+  readonly budget: number;             // bounded effect magnitude 0..65535 (profile caps per family)
+  readonly flags: number;              // 8-bit per-family flags
+  readonly validFromEpoch: bigint;     // atom active from (0 = genesis)
+  readonly expiryEpoch: bigint;        // atom expires at (0 = never); frontier-churn retirement hook
+}
+
+export const POLICY_TARGET_NONE = 0xffff;
+
 export interface DecodedSubstrate {
   readonly memoryIndex: ReadonlyArray<MemoryIndexSlot | null>;     // length 44
   readonly retrievalKeys: ReadonlyArray<RetrievalKeySlot | null>;  // length 36
@@ -125,9 +172,23 @@ export interface DecodedSubstrate {
    * only; not a failure (the substrate remains structurally valid).
    */
   readonly relationsDroppedByDomainPredicate: number;
+  // ── r5 PolicyAtoms (populated only when DecoderOptions.policyAtomsMode; else empty) ──
+  readonly evidenceBundleAtoms: ReadonlyArray<PolicyAtom>;
+  readonly conflictLifecycleAtoms: ReadonlyArray<PolicyAtom>;
+  readonly abstentionAtoms: ReadonlyArray<PolicyAtom>;
+  /** Count of non-zero words in the reserved r5 policy region (896–991); >0 = invalid-for-reward. */
+  readonly policyReservedNonZeroWords: number;
 }
 
 export interface DecoderOptions {
+  /**
+   * r5 mode: read the reclaimed RetrievalKeys (384–671) + Codebook (896–991) words as typed
+   * PolicyAtoms instead of as a dense lens / codebook. HARD gate (set from the bundle
+   * pipelineVersion / profile). When true, RetrievalKeys + Codebook are NOT decoded (so r4
+   * lens semantics cannot leak under r5); when false (r4), PolicyAtom arrays are empty (zero
+   * effect) so r5 atoms cannot leak under r4. No silent reinterpretation.
+   */
+  readonly policyAtomsMode?: boolean;
   /**
    * Bundle-pinned bi-encoder model id hash (first 4 bytes of
    * keccak256(modelId || revision || mode), 0x-prefixed 8-hex).
@@ -189,8 +250,10 @@ const CODE_TYPE_BY_BITS: Record<number, CodebookEntry['codeType']> = {
 
 // ─── Bit helpers ──────────────────────────────────────────────────────────────
 
+const MASK_4: bigint = (1n << 4n) - 1n;
 const MASK_8: bigint = (1n << 8n) - 1n;
 const MASK_16: bigint = (1n << 16n) - 1n;
+const MASK_112: bigint = (1n << 112n) - 1n;
 const MASK_40: bigint = (1n << 40n) - 1n;
 const MASK_60: bigint = (1n << 60n) - 1n;
 const MASK_96: bigint = (1n << 96n) - 1n;
@@ -609,6 +672,106 @@ export function decodeCodebook(state: CortexState): {
   return { entries, attempts, failures };
 }
 
+// ─── r5 PolicyAtom decode / encode ─────────────────────────────────────────────
+
+const POLICY_ACTION_BY_BITS: Record<number, PolicyAction> = {
+  0x1: 'include', 0x2: 'boost', 0x3: 'suppress', 0x4: 'bundle', 0x5: 'abstain',
+};
+const POLICY_ACTION_TO_BITS: Record<PolicyAction, number> = {
+  include: 0x1, boost: 0x2, suppress: 0x3, bundle: 0x4, abstain: 0x5,
+};
+const POLICY_SCOPE_BY_BITS: Record<number, PolicyScope> = {
+  0x1: 'entity', 0x2: 'owner', 0x3: 'relation_path', 0x4: 'temporal_chain', 0x5: 'conflict_set', 0x6: 'aspect',
+};
+const POLICY_SCOPE_TO_BITS: Record<PolicyScope, number> = {
+  entity: 0x1, owner: 0x2, relation_path: 0x3, temporal_chain: 0x4, conflict_set: 0x5, aspect: 0x6,
+};
+
+interface PolicyRegionSpec { readonly start: number; readonly count: number; readonly allowed: ReadonlySet<PolicyAction>; }
+export const POLICY_REGIONS: Record<PolicyAtomFamily, PolicyRegionSpec> = {
+  evidence_bundle:    { start: RANGES.POLICY_EVIDENCE_START,   count: RANGES.POLICY_EVIDENCE_END   - RANGES.POLICY_EVIDENCE_START   + 1, allowed: new Set(['include', 'boost', 'suppress', 'bundle']) },
+  conflict_lifecycle: { start: RANGES.POLICY_CONFLICT_START,   count: RANGES.POLICY_CONFLICT_END   - RANGES.POLICY_CONFLICT_START   + 1, allowed: new Set(['boost', 'suppress']) },
+  abstention:         { start: RANGES.POLICY_ABSTENTION_START, count: RANGES.POLICY_ABSTENTION_END - RANGES.POLICY_ABSTENTION_START + 1, allowed: new Set(['abstain']) },
+};
+
+/**
+ * Decode one PolicyAtom region (1 word/atom). Fail-closed per atom: a structurally
+ * invalid atom (bad enum, disallowed action, out-of-range anchor, non-zero reserved bits,
+ * inverted validity window) is DROPPED + counted as a failure — never silently rewarded.
+ * The atom carries NO answer/qrel reference; its effect set is reconstructed by the scorer
+ * from PUBLIC edges out of `targetSlot` (answer-density = public structure, not answer id).
+ */
+export function decodePolicyAtomRegion(state: CortexState, family: PolicyAtomFamily): {
+  atoms: ReadonlyArray<PolicyAtom>;
+  attempts: number;
+  failures: number;
+} {
+  const reg = POLICY_REGIONS[family];
+  const atoms: PolicyAtom[] = [];
+  let attempts = 0;
+  let failures = 0;
+  for (let k = 0; k < reg.count; k++) {
+    const w0 = state.words[reg.start + k] ?? 0n;
+    if (w0 === 0n) continue;
+    attempts++;
+    const selector = Number(field(w0, 248, MASK_8));
+    const evidenceFeature = Number(field(w0, 240, MASK_8));
+    const action = POLICY_ACTION_BY_BITS[Number(field(w0, 236, MASK_4))];
+    const scope = POLICY_SCOPE_BY_BITS[Number(field(w0, 232, MASK_4))];
+    const targetSlot = Number(field(w0, 216, MASK_16));
+    const budget = Number(field(w0, 200, MASK_16));
+    const flags = Number(field(w0, 192, MASK_8));
+    const validFromEpoch = field(w0, 152, MASK_40);
+    const expiryEpoch = field(w0, 112, MASK_40);
+    if (field(w0, 0, MASK_112) !== 0n) { failures++; continue; }          // reserved bits MUST be zero
+    if (!action || !scope) { failures++; continue; }                       // unknown action/scope enum
+    if (!reg.allowed.has(action)) { failures++; continue; }                // action not allowed for this family
+    if (!VALID_SELECTOR.has(selector) || !VALID_EVIDENCE_FEATURE.has(evidenceFeature)) { failures++; continue; }
+    if (action === 'abstain') {
+      if (targetSlot !== POLICY_TARGET_NONE && targetSlot >= MEMORY_INDEX_SLOT_COUNT) { failures++; continue; }
+    } else {
+      if (targetSlot === POLICY_TARGET_NONE || targetSlot >= MEMORY_INDEX_SLOT_COUNT) { failures++; continue; } // non-abstain needs a real public anchor
+    }
+    if (validFromEpoch > 0n && expiryEpoch > 0n && validFromEpoch > expiryEpoch) { failures++; continue; }
+    atoms.push({ atomIndex: k, family, selector, evidenceFeature, action, scope, targetSlot, budget, flags, validFromEpoch, expiryEpoch });
+  }
+  return { atoms, attempts, failures };
+}
+
+/** Count non-zero words in the reserved r5 policy region (896–991). >0 ⇒ invalid-for-reward. */
+export function policyReservedNonZeroWords(state: CortexState): number {
+  let n = 0;
+  for (let w = RANGES.POLICY_RESERVED_START; w <= RANGES.POLICY_RESERVED_END; w++) {
+    if ((state.words[w] ?? 0n) !== 0n) n++;
+  }
+  return n;
+}
+
+/** Encode one PolicyAtom into its single packed word (round-trip side; patch builders + tests). */
+export function encodePolicyAtom(atom: PolicyAtom): bigint {
+  if (!Number.isInteger(atom.selector) || atom.selector <= 0 || atom.selector > 0xff) throw new Error('encodePolicyAtom: selector out of range');
+  if (!Number.isInteger(atom.evidenceFeature) || atom.evidenceFeature <= 0 || atom.evidenceFeature > 0xff) throw new Error('encodePolicyAtom: evidenceFeature out of range');
+  const actionBits = POLICY_ACTION_TO_BITS[atom.action];
+  const scopeBits = POLICY_SCOPE_TO_BITS[atom.scope];
+  if (!actionBits) throw new Error('encodePolicyAtom: bad action');
+  if (!scopeBits) throw new Error('encodePolicyAtom: bad scope');
+  if (atom.targetSlot !== POLICY_TARGET_NONE && (atom.targetSlot < 0 || atom.targetSlot >= MEMORY_INDEX_SLOT_COUNT)) throw new Error('encodePolicyAtom: targetSlot out of range');
+  if (atom.budget < 0 || atom.budget > 0xffff) throw new Error('encodePolicyAtom: budget out of range');
+  if (atom.flags < 0 || atom.flags > 0xff) throw new Error('encodePolicyAtom: flags out of range');
+  if (atom.validFromEpoch >> 40n !== 0n || atom.expiryEpoch >> 40n !== 0n) throw new Error('encodePolicyAtom: epoch exceeds 40 bits');
+  return (
+    (BigInt(atom.selector) << 248n) |
+    (BigInt(atom.evidenceFeature) << 240n) |
+    (BigInt(actionBits) << 236n) |
+    (BigInt(scopeBits) << 232n) |
+    (BigInt(atom.targetSlot) << 216n) |
+    (BigInt(atom.budget) << 200n) |
+    (BigInt(atom.flags) << 192n) |
+    (atom.validFromEpoch << 152n) |
+    (atom.expiryEpoch << 112n)
+  );
+}
+
 // ─── §6.4 lens-diversity floor ────────────────────────────────────────────────
 
 /**
@@ -739,11 +902,33 @@ export function relationEdgeValid(
 // ─── Composite ────────────────────────────────────────────────────────────────
 
 export function decodeSubstrate(state: CortexState, opts: DecoderOptions = {}): DecodedSubstrate {
+  const policyMode = opts.policyAtomsMode === true;
   const memory = decodeMemoryIndex(state);
-  const keys = decodeRetrievalKeys(state, opts);
   const relations = decodeRelations(state);
   const temporal = decodeTemporal(state);
-  const codebook = decodeCodebook(state);
+  // HARD gate: r5 reads the reclaimed words as PolicyAtoms (RetrievalKeys/Codebook NOT decoded
+  // → no dense-lens leak under r5); r4 decodes keys/codebook and leaves PolicyAtoms empty
+  // (→ no policy-atom leak under r4). Either side is zeroed, never both interpreted.
+  const keys = policyMode ? { slots: [] as ReadonlyArray<RetrievalKeySlot | null>, attempts: 0, failures: 0 } : decodeRetrievalKeys(state, opts);
+  const codebook = policyMode ? { entries: [] as ReadonlyArray<CodebookEntry | null>, attempts: 0, failures: 0 } : decodeCodebook(state);
+  let evidenceBundleAtoms: ReadonlyArray<PolicyAtom> = [];
+  let conflictLifecycleAtoms: ReadonlyArray<PolicyAtom> = [];
+  let abstentionAtoms: ReadonlyArray<PolicyAtom> = [];
+  let policyReservedNonZero = 0;
+  let policyAttempts = 0;
+  let policyFailures = 0;
+  if (policyMode) {
+    const eb = decodePolicyAtomRegion(state, 'evidence_bundle');
+    const cl = decodePolicyAtomRegion(state, 'conflict_lifecycle');
+    const ab = decodePolicyAtomRegion(state, 'abstention');
+    evidenceBundleAtoms = eb.atoms;
+    conflictLifecycleAtoms = cl.atoms;
+    abstentionAtoms = ab.atoms;
+    policyReservedNonZero = policyReservedNonZeroWords(state);
+    // reserved-region writes are decode failures (invalid-for-reward; not a miner surface).
+    policyAttempts = eb.attempts + cl.attempts + ab.attempts + policyReservedNonZero;
+    policyFailures = eb.failures + cl.failures + ab.failures + policyReservedNonZero;
+  }
 
   // Cross-region invariants:
   //   - currentStaleFlag in temporal requires the referenced MemoryIndex slot's revoked bit to be set.
@@ -781,9 +966,9 @@ export function decodeSubstrate(state: CortexState, opts: DecoderOptions = {}): 
   }
 
   const decodeAttempts =
-    memory.attempts + keys.attempts + relations.attempts + temporal.attempts + codebook.attempts + crossAttempts;
+    memory.attempts + keys.attempts + relations.attempts + temporal.attempts + codebook.attempts + crossAttempts + policyAttempts;
   const decodeFailures =
-    memory.failures + keys.failures + relations.failures + temporal.failures + codebook.failures + crossFailures;
+    memory.failures + keys.failures + relations.failures + temporal.failures + codebook.failures + crossFailures + policyFailures;
   const decodedSlots = decodeAttempts - decodeFailures;
 
   // §6.4 lens-diversity floor. Only runs when both floor and layout are
@@ -808,6 +993,10 @@ export function decodeSubstrate(state: CortexState, opts: DecoderOptions = {}): 
     decodeAttempts,
     ...(lensDiversityCheck ? { lensDiversityCheck } : {}),
     relationsDroppedByDomainPredicate,
+    evidenceBundleAtoms,
+    conflictLifecycleAtoms,
+    abstentionAtoms,
+    policyReservedNonZeroWords: policyReservedNonZero,
   };
 }
 

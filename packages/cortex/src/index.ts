@@ -62,7 +62,21 @@ export {
   biEncoderModelIdHash,
   checkLensDiversity,
   relationEdgeValid,
+  // r5 PolicyAtoms
+  type PolicyAtom,
+  type PolicyAtomFamily,
+  type PolicyAction,
+  type PolicyScope,
+  decodePolicyAtomRegion,
+  encodePolicyAtom,
+  policyReservedNonZeroWords,
+  POLICY_REGIONS,
+  POLICY_SELECTOR,
+  POLICY_EVIDENCE_FEATURE,
+  POLICY_FLAG,
+  POLICY_TARGET_NONE,
 } from './substrate/retrieval-decoder.js';
+export { validatePolicyRegions, validateReservedBits, hasNonZeroReservedBits } from './state/validate.js';
 export type {
   MemoryIndexSlot as RetrievalMemoryIndexSlot,
   RetrievalKeySlot as RetrievalKeySlotV2,

@@ -371,6 +371,11 @@ function patchTypeRange(patchType: number): { start: number; end: number } | und
       return { start: RANGES.CODEBOOK_START, end: RANGES.CODEBOOK_END };
     case PATCH_TYPE.HEADER_UPDATE:
       return { start: RANGES.HEADER_START, end: RANGES.HEADER_END };
+    case PATCH_TYPE.POLICY_UPDATE:
+      // r5: the three contiguous PolicyAtom regions (evidence 384–511, conflict 512–639,
+      // abstention 640–671). The reserved r5 policy region (896–991) is intentionally NOT
+      // writable via POLICY_UPDATE — it must stay zero (no miner spam surface).
+      return { start: RANGES.POLICY_EVIDENCE_START, end: RANGES.POLICY_ABSTENTION_END };
     default:
       return undefined;
   }

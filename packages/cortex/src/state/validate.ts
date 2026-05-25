@@ -5,6 +5,7 @@
 
 import type { CortexState, PatchError } from './types.js';
 import { RANGES } from './types.js';
+import { decodePolicyAtomRegion, policyReservedNonZeroWords, type PolicyAtomFamily } from '../substrate/retrieval-decoder.js';
 
 // ─── Reserved-bit masks per word ─────────────────────────────────────────────
 // A "reserved mask" for word i is the set of bits that MUST be zero.
@@ -173,6 +174,30 @@ export function validateReservedBits(state: CortexState): PatchError | null {
       code: 'E04',
       message: 'RESERVED_BIT_SET: one or more reserved bits are non-zero',
     };
+  }
+  return null;
+}
+
+/**
+ * r5 PolicyAtom region validator (hard-fail). Used by the r5 patch-acceptance path + tests.
+ * Distinct from `validateReservedBits` (which stays r4-compatible: the RetrievalKeys/Codebook
+ * word masks are 0 so r4 lens/codebook bytes pass). For r5 this enforces the typed grammar:
+ *   - every non-empty atom must be structurally valid (enum / allowed-action / anchor-range /
+ *     zero reserved-bits / non-inverted validity window) — any invalid atom fails closed;
+ *   - the reserved r5 policy region (896–991) MUST be entirely zero (no miner spam surface).
+ * Returns the first violation, or null when the regions are clean.
+ */
+export function validatePolicyRegions(state: CortexState): PatchError | null {
+  const families: PolicyAtomFamily[] = ['evidence_bundle', 'conflict_lifecycle', 'abstention'];
+  for (const fam of families) {
+    const { failures } = decodePolicyAtomRegion(state, fam);
+    if (failures > 0) {
+      return { ok: false, code: 'E02', message: `WRONG_TYPE_FIELD: ${failures} invalid PolicyAtom(s) in ${fam} region` };
+    }
+  }
+  const reservedNonZero = policyReservedNonZeroWords(state);
+  if (reservedNonZero > 0) {
+    return { ok: false, code: 'E04', message: `RESERVED_BIT_SET: ${reservedNonZero} non-zero word(s) in reserved r5 policy region (896–991)` };
   }
   return null;
 }

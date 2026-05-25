@@ -179,8 +179,23 @@ export interface EvaluatorProfile {
   readonly relationEdgeTypes: readonly string[];
 
   // ─── v2-lens pipeline pins (substrate-hardening §6.3) ─────────────────────
-  /** Pinned scorer pipeline. v2-lens is the two-stage corpus-retrieval + substrate-bias pipeline. */
-  readonly pipelineVersion?: 'coretex-retrieval-v2-lens' | 'coretex-retrieval-v2-lens-r2' | 'coretex-retrieval-v2-lens-r3' | 'coretex-retrieval-v2-lens-r4';
+  /** Pinned scorer pipeline. v2-lens is the two-stage corpus-retrieval + substrate-bias pipeline.
+   *  `coretex-retrieval-v2-policy-r5` = the PolicyAtom epoch (reclaimed RetrievalKeys+Codebook
+   *  words read as typed PolicyAtoms; r4 stays replayable). */
+  readonly pipelineVersion?: 'coretex-retrieval-v2-lens' | 'coretex-retrieval-v2-lens-r2' | 'coretex-retrieval-v2-lens-r3' | 'coretex-retrieval-v2-lens-r4' | 'coretex-retrieval-v2-policy-r5';
+  // ─── r5 PolicyAtom knobs (active only when pipelineVersion = …-policy-r5) ───
+  /** Per-family enables. A disabled family is decoded but its atoms are NOT applied. */
+  readonly enableEvidenceBundleAtoms?: boolean;
+  readonly enableConflictLifecycleAtoms?: boolean;
+  readonly enableAbstentionAtoms?: boolean;
+  /** Per-family budget caps; a miner atom's budget is clamped to these (anti-flood). */
+  readonly policyMaxBudgetEvidence?: number;
+  readonly policyMaxBudgetConflict?: number;
+  /** Operator-calibrated abstention confidence gate (NOT hardcoded; Qwen top1 is saturated).
+   *  Abstain fires only when the atom's no-evidence-path selector matches AND top1 < this. */
+  readonly policyAbstentionTop1Threshold?: number;
+  /** Emit per-atom trace receipts for the Memory-IR pipeline (default off). */
+  readonly policyEmitTraces?: boolean;
   /** Stage-1 BGE-M3 first-stage retrieval cap (Run 1; per-stratum worst-case ≥0.90). */
   readonly firstStageTopK?: number;
   /**
@@ -876,6 +891,15 @@ export function scoringOptionsFromProfile(
     ...(profile.categoryLensEvidenceBundle !== undefined ? { categoryLensEvidenceBundle: profile.categoryLensEvidenceBundle } : {}),
     ...(profile.temporalStaleContrast !== undefined ? { temporalStaleContrast: profile.temporalStaleContrast } : {}),
     pipelineVersion: profile.pipelineVersion,
+    // ─── r5 PolicyAtoms: policyAtomsMode is driven HARD by the pinned pipelineVersion ───
+    ...(profile.pipelineVersion === 'coretex-retrieval-v2-policy-r5' ? { policyAtomsMode: true } : {}),
+    ...(profile.enableEvidenceBundleAtoms !== undefined ? { enableEvidenceBundleAtoms: profile.enableEvidenceBundleAtoms } : {}),
+    ...(profile.enableConflictLifecycleAtoms !== undefined ? { enableConflictLifecycleAtoms: profile.enableConflictLifecycleAtoms } : {}),
+    ...(profile.enableAbstentionAtoms !== undefined ? { enableAbstentionAtoms: profile.enableAbstentionAtoms } : {}),
+    ...(profile.policyMaxBudgetEvidence !== undefined ? { policyMaxBudgetEvidence: profile.policyMaxBudgetEvidence } : {}),
+    ...(profile.policyMaxBudgetConflict !== undefined ? { policyMaxBudgetConflict: profile.policyMaxBudgetConflict } : {}),
+    ...(profile.policyAbstentionTop1Threshold !== undefined ? { policyAbstentionTop1Threshold: profile.policyAbstentionTop1Threshold } : {}),
+    ...(profile.policyEmitTraces !== undefined ? { policyEmitTraces: profile.policyEmitTraces } : {}),
   } as ScoringOptions;
 }
 
@@ -1204,6 +1228,21 @@ function validateProfile(profile: EvaluatorProfile, errors?: string[]): void {
     if (!Number.isInteger(profile.categoryLensExpansionBudget) || profile.categoryLensExpansionBudget < 0) {
       out.push('categoryLensExpansionBudget must be a non-negative integer when present');
     }
+  }
+  // ─── r5 PolicyAtom knob validation ───
+  for (const k of ['policyMaxBudgetEvidence', 'policyMaxBudgetConflict'] as const) {
+    const v = profile[k];
+    if (v !== undefined && (!Number.isInteger(v) || v < 0 || v > 0xffff)) out.push(`${k} must be an integer in [0, 65535] when present`);
+  }
+  if (profile.policyAbstentionTop1Threshold !== undefined) {
+    const t = profile.policyAbstentionTop1Threshold;
+    if (typeof t !== 'number' || t < 0 || t > 1) out.push('policyAbstentionTop1Threshold must be in [0,1] when present');
+  }
+  // r5 enables only meaningful under the policy-r5 pipeline pin (warn-as-error: prevents
+  // accidentally shipping r5 atoms under an r4 profile, where they would be ignored).
+  const r5Enabled = profile.enableEvidenceBundleAtoms || profile.enableConflictLifecycleAtoms || profile.enableAbstentionAtoms;
+  if (r5Enabled && profile.pipelineVersion !== 'coretex-retrieval-v2-policy-r5') {
+    out.push('r5 PolicyAtom enables require pipelineVersion = coretex-retrieval-v2-policy-r5');
   }
   if (profile.replayTolerancePpm > profile.patchAcceptanceFloors.minImprovementPpm)
     out.push('replayTolerancePpm must be <= patchAcceptanceFloors.minImprovementPpm');
