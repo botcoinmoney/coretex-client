@@ -429,7 +429,8 @@ export interface PatchEvalResult {
 /**
  * Score a single query against the substrate using the v2-lens pipeline.
  *
- * Spec: docs/CORETEX_SUBSTRATE_EXPANSION_HARDENING.md §3.
+ * Spec: specs/substrate_retrieval_semantics.md plus the active evaluator
+ * profile described in release/calibration/CURRENT.md.
  *
  * Two-stage retrieval, substrate is the bias not the gate:
  *   Stage 1: blind BGE-M3 cosine over the full public corpus index →

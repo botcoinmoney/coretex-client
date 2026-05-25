@@ -2,7 +2,7 @@
  * §6.4 relation-edge domain-share predicate — drops relation edges whose
  * two endpoints don't share at least one MemoryIndex.domainBits bit.
  *
- * Spec: docs/CORETEX_SUBSTRATE_EXPANSION_HARDENING.md §6.4.
+ * Spec: specs/substrate_retrieval_semantics.md.
  */
 
 import { test, describe } from 'node:test';

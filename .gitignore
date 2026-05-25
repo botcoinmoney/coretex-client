@@ -114,5 +114,6 @@ release/calibration/2026-05-21-memory-corpus-v2/dgen1-rework/*.log
 release/calibration/2026-05-21-memory-corpus-v2/dgen1-rework/shadow-epoch-*.json
 release/calibration/2026-05-21-memory-corpus-v2/dgen1-rework/tier2-g2-traces.json
 
-# Handoff docs are working-session scratch (CURRENT.md is the canonical first-read state); kept local, not committed.
-docs/HANDOFFS/
+# Handoff docs are working-session scratch, except the canonical zero-context handoff.
+docs/HANDOFFS/*
+!docs/HANDOFFS/NEW_CORPUS_HANDOFF.md

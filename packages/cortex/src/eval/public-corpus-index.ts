@@ -2,7 +2,8 @@
  * PublicCorpusIndex — the label-free retrieval surface used by stage-1 of
  * the substrate-hardened scorer.
  *
- * Spec: docs/CORETEX_SUBSTRATE_EXPANSION_HARDENING.md §3 + §6.1.
+ * Spec: specs/substrate_retrieval_semantics.md and
+ * specs/coretex_memory_control_plane.md.
  *
  * Anti-cheat boundary, by type:
  *   - PublicCorpusIndex contains only doc id + event id + embedding.

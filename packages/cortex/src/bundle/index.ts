@@ -131,8 +131,8 @@ export interface SplitRatiosPin {
 /**
  * Hard-negative categories the corpus generator emits by construction.
  *
- * Each category corresponds to a specific synthesis site in
- * scripts/generate-coretex-retrieval-corpus.mjs:
+ * Each category corresponds to a specific synthesis site in the active
+ * V2/DGEN-1 corpus generators:
  *
  *   near_collision_entity   — different entity, same domain (nearestEntityDocs)
  *   near_collision_attribute — same entity, wrong attribute value (previous synth path)

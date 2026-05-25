@@ -15,7 +15,7 @@ import { readFileSync } from 'node:fs';
 
 import { verifyBundleManifest } from '../../dist/index.js';
 
-const MANIFEST_PATH = '/root/cortex/release/bundle/bundle-manifest-launch-v3.json';
+const MANIFEST_PATH = '/root/cortex/release/bundle/bundle-manifest-v2-ownerscope-candidate.json';
 const REPO_ROOT = '/root/cortex';
 
 function baseManifest() {
@@ -29,14 +29,11 @@ function selectionErrors(manifest) {
 }
 
 describe('§5 firstStageTopKSelection — signed manifest attestation', () => {
-  test('production bundle is accepted as-is (operator-override with full evidence)', () => {
+  test('candidate bundle is accepted as-is (worst-stratum target with calibration report)', () => {
     const m = baseManifest();
     assert.deepEqual(selectionErrors(m), [], 'shipped bundle should pass selection validation');
-    assert.equal(m.evaluator.profile.firstStageTopKSelection.method, 'operator-override');
-    assert.ok(
-      Array.isArray(m.evaluator.profile.firstStageTopKSelection.substrateBridgedFamilies)
-        && m.evaluator.profile.firstStageTopKSelection.substrateBridgedFamilies.length > 0,
-    );
+    assert.equal(m.evaluator.profile.firstStageTopKSelection.method, 'worst-stratum-target');
+    assert.ok(m.evaluator.profile.firstStageTopKSelection.calibrationReport);
   });
 
   test('rejects bundle missing firstStageTopKSelection when firstStageTopK > 0', () => {

@@ -2,7 +2,7 @@
  * §6.4 lens-diversity floor — substrate-level structural guard against
  * collapsing all 36 retrieval-key (lens) vectors to a single direction.
  *
- * Spec: docs/CORETEX_SUBSTRATE_EXPANSION_HARDENING.md §6.4.
+ * Spec: specs/substrate_retrieval_semantics.md.
  */
 
 import { test, describe } from 'node:test';

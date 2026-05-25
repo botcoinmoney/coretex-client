@@ -7,7 +7,7 @@
  *
  * Before the fix, repaired multi_hop_relation events reclassified to
  * bucket='hard' because alias qrels at relevance=1 pushed maxNeg to
- * 1.0. This broke deriveQueryPack: the launch-v3 profile.hiddenPack
+ * 1.0. This broke deriveQueryPack: the old launch profile.hiddenPack
  * quotas required bucket='medium' for multi_hop_relation, and the
  * eval_hidden split had 0 events at that bucket.
  *

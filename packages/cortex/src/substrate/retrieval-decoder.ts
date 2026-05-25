@@ -683,7 +683,7 @@ function cosineSim(a: Float32Array, b: Float32Array): number {
  * `meanPairwiseCosine` field is always populated when there is at least
  * one pair, regardless of pass/fail, for telemetry.
  *
- * Spec: docs/CORETEX_SUBSTRATE_EXPANSION_HARDENING.md §6.4.
+ * Spec: specs/substrate_retrieval_semantics.md.
  */
 export function checkLensDiversity(
   retrievalKeys: ReadonlyArray<RetrievalKeySlot | null>,
@@ -722,7 +722,7 @@ export function checkLensDiversity(
  * structurally valid; the offending edge simply does not contribute to BFS
  * expansion downstream).
  *
- * Spec: docs/CORETEX_SUBSTRATE_EXPANSION_HARDENING.md §6.4.
+ * Spec: specs/substrate_retrieval_semantics.md.
  */
 export function relationEdgeValid(
   edge: RelationEdge,

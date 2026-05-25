@@ -20,8 +20,8 @@
  * manifest. Any independent verifier reproduces it from the bundle +
  * corpus root + eval seed + pinned models.
  *
- * Spec: docs/CORETEX_LAUNCH_PLAN_v2.md (Phase H1 + H2 of the simplified
- * scalability hardening plan).
+ * Spec: docs/HANDOFFS/NEW_CORPUS_HANDOFF.md and release/calibration/CURRENT.md
+ * define the current baseline-reset / rate-matching lane.
  */
 
 import type { CortexState } from '../state/types.js';
