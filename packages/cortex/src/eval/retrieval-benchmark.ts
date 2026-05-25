@@ -12,7 +12,7 @@
 import type { CortexState, Patch } from '../state/index.js';
 import { applyPatch } from '../state/patch.js';
 import { keccak256 } from '../state/keccak256.js';
-import { decodeSubstrate, type DecodedSubstrate, type RelationCategoryLens } from '../substrate/retrieval-decoder.js';
+import { decodeSubstrate, type DecodedSubstrate, type RelationCategoryLens, POLICY_SELECTOR } from '../substrate/retrieval-decoder.js';
 import { biEncoderModelIdHash } from '../substrate/retrieval-decoder.js';
 import { structuralValidity } from '../substrate/structural-validity.js';
 import type { CrossEncoderReranker } from './reranker.js';
@@ -375,6 +375,18 @@ export const CORETEX_PIPELINE_VERSIONS_SUPPORTED: ReadonlySet<string> = new Set(
   CORETEX_PIPELINE_VERSION_R5,
 ]);
 
+/** r5 PolicyAtom trace receipt (Memory-IR pipeline input; emitted when policyEmitTraces). */
+export interface PolicyAtomTrace {
+  readonly atomId: string;
+  readonly atomFamily: 'evidence_bundle' | 'conflict_lifecycle' | 'abstention';
+  readonly selectorMatched: boolean;
+  readonly action: string;
+  readonly anchorEvent: string | null;
+  readonly docsMoved: number;
+  readonly evidencePath: readonly string[];
+  readonly beta: number;
+}
+
 export interface PerQueryBreakdown {
   readonly recordId: string;
   readonly family: string;
@@ -474,6 +486,11 @@ export interface PerQueryBreakdown {
    * (contrast) docs — observable but NOT in the reward. Null when off / non-temporal / no stale docs.
    */
   readonly temporalContrastRecall?: number | null;
+  /** r5: per-atom trace receipts (when policyEmitTraces). */
+  readonly policyTraces?: readonly PolicyAtomTrace[];
+  /** r5: this query's abstain decision + whether it false-abstained (answerable query). */
+  readonly policyAbstain?: boolean;
+  readonly policyFalseAbstain?: boolean;
 }
 
 export interface CompositeScore {
@@ -564,6 +581,8 @@ export async function scoreSubstrateAgainstQuery(
   }[];
   answerInCap: boolean;
   finalRankingFull: readonly { docId: string; relevance: number; rerankerScore: number }[] | undefined;
+  policyTraces: readonly PolicyAtomTrace[];
+  policyAbstain: boolean;
 }> {
   const queryVec = dequantize(query.embeddings.query, opts.retrievalKeyLayout);
   const publicIndex = getOrBuildPublicIndex(corpus);
@@ -1116,7 +1135,7 @@ export async function scoreSubstrateAgainstQuery(
   }
 
   if (candidates.length === 0) {
-    return { ranked: [], top1Score: 0, cappedDocIds: [], cappedDocSources: [], cappedDocComponents: [], finalRankingTop20: [], answerInCap: false, finalRankingFull: opts.exposeFullRanking === true ? [] : undefined };
+    return { ranked: [], top1Score: 0, cappedDocIds: [], cappedDocSources: [], cappedDocComponents: [], finalRankingTop20: [], answerInCap: false, finalRankingFull: opts.exposeFullRanking === true ? [] : undefined, policyTraces: [], policyAbstain: false };
   }
 
   // ─── §6.5 reranker-input cap: take top-N by pre-rank ─────────────────────
@@ -1259,6 +1278,84 @@ export async function scoreSubstrateAgainstQuery(
   const effRerank = (docId: string, raw: number): number =>
     inheritAlpha > 0 ? (effectiveRerankByDocId.get(docId) ?? raw) : raw;
 
+  // ─── r5 PolicyAtoms: BOUNDED QUERY-LOCAL final-reorder nudges ─────────────
+  // Reproduces the A100 oracle's per-query bounded intervention from PUBLIC structure
+  // only: per query, UNIT = (max−min rerankerScore over this query's OWN reranked list);
+  // an atom adds ±(budget/1000)·UNIT to the docs it targets, where the target set is
+  // reconstructed from PUBLIC edges out of the atom's MemoryIndex anchor (NO qrel/answer id).
+  // An atom fires ONLY if its anchor event is present in THIS query's candidate pool
+  // (query-local gate). Disabled families are skipped. No atoms ⇒ zero bonus ⇒ byte-identical
+  // to the r4 final reorder (the no-op safety invariant).
+  const policyBonusByDocId = new Map<string, number>();
+  const policyTraces: PolicyAtomTrace[] = [];
+  let policyAbstain = false;
+  if (opts.policyAtomsMode === true) {
+    const rsVals = rerankerCandidates.map((c) => rerankerScoreByDocId.get(c.record.docId) ?? 0);
+    const UNIT = rsVals.length ? Math.max(...rsVals) - Math.min(...rsVals) : 0;
+    const docsByEventLocal = new Map<string, string[]>();
+    const eventsInPool = new Set<string>();
+    for (const c of candidates) {
+      eventsInPool.add(c.record.eventId);
+      const a = docsByEventLocal.get(c.record.eventId);
+      if (a) a.push(c.record.docId); else docsByEventLocal.set(c.record.eventId, [c.record.docId]);
+    }
+    const sign = (action: string): number => (action === 'suppress' ? -1 : 1);
+    const addBonus = (docId: string, delta: number) => policyBonusByDocId.set(docId, (policyBonusByDocId.get(docId) ?? 0) + delta);
+    const PUBLIC_EDGES = new Set(['supports', 'supersedes', 'coreference_of', 'causes', 'derived_from', 'co_occurs_with']);
+
+    // Evidence-bundle / answer-density: target = anchor's PUBLIC-edge reach (+ anchor's own docs for bundle/include).
+    if (opts.enableEvidenceBundleAtoms !== false) {
+      for (const atom of decoded.evidenceBundleAtoms) {
+        const anchorEv = anchorSlotToEvent.get(atom.targetSlot);
+        if (!anchorEv || !eventsInPool.has(anchorEv.id)) continue; // query-local gate
+        const beta = Math.min(atom.budget, opts.policyMaxBudgetEvidence ?? atom.budget) / 1000;
+        const target = new Set<string>();
+        const evidencePath: string[] = [];
+        for (const rel of anchorEv.relations ?? []) {
+          if (!PUBLIC_EDGES.has(rel.edgeType)) continue;
+          const tgt = eventByCorpusIdForPhaseA.get(rel.other_id);
+          if (!tgt || !docsByEventLocal.has(tgt.id)) continue;
+          for (const d of docsByEventLocal.get(tgt.id)!) target.add(d);
+          evidencePath.push(`${rel.edgeType}->${tgt.id}`);
+        }
+        if (atom.action === 'bundle' || atom.action === 'include') for (const d of docsByEventLocal.get(anchorEv.id) ?? []) target.add(d);
+        if (target.size === 0) continue;
+        for (const d of target) addBonus(d, sign(atom.action) * beta * UNIT);
+        if (opts.policyEmitTraces) policyTraces.push({ atomId: `eb#${atom.atomIndex}`, atomFamily: 'evidence_bundle', selectorMatched: true, action: atom.action, anchorEvent: anchorEv.id, docsMoved: target.size, evidencePath, beta });
+      }
+    }
+    // Conflict_lifecycle: target = anchor event's OWN docs (miner anchors boost@resolved, suppress@candidate;
+    // resolved-vs-candidate is the miner's PUBLIC supersedes-structure judgment, encoded as the action choice).
+    if (opts.enableConflictLifecycleAtoms !== false) {
+      for (const atom of decoded.conflictLifecycleAtoms) {
+        const anchorEv = anchorSlotToEvent.get(atom.targetSlot);
+        if (!anchorEv || !eventsInPool.has(anchorEv.id)) continue; // query-local: same conflict set in pool
+        const beta = Math.min(atom.budget, opts.policyMaxBudgetConflict ?? atom.budget) / 1000;
+        const ownDocs = docsByEventLocal.get(anchorEv.id) ?? [];
+        if (ownDocs.length === 0) continue;
+        for (const d of ownDocs) addBonus(d, sign(atom.action) * beta * UNIT);
+        if (opts.policyEmitTraces) policyTraces.push({ atomId: `cl#${atom.atomIndex}`, atomFamily: 'conflict_lifecycle', selectorMatched: true, action: atom.action, anchorEvent: anchorEv.id, docsMoved: ownDocs.length, evidencePath: [], beta });
+      }
+    }
+    // Abstention: SPLIT — miner atom supplies the public no-evidence-path policy; the confidence
+    // gate (top1 < threshold) is the OPERATOR PROFILE calibration. Abstain only when BOTH hold.
+    if (opts.enableAbstentionAtoms !== false && decoded.abstentionAtoms.length > 0) {
+      const hasPublicEvidencePath = candidates.some((c) => c.record.memorySlot !== null || c.record.sources.has('anchorBFS') || c.record.sources.has('categoryLensBFS'));
+      const maxRerank = rsVals.length ? Math.max(...rsVals) : 0;
+      const thr = opts.policyAbstentionTop1Threshold;
+      for (const atom of decoded.abstentionAtoms) {
+        const requireNoEvidence = (atom.flags & 0x01) !== 0;
+        const noEvidenceOk = !requireNoEvidence || !hasPublicEvidencePath;
+        const confidenceOk = thr === undefined || maxRerank < thr;
+        if (atom.selector === POLICY_SELECTOR.MISSING_EVIDENCE && noEvidenceOk && confidenceOk) {
+          policyAbstain = true;
+          if (opts.policyEmitTraces) policyTraces.push({ atomId: `ab#${atom.atomIndex}`, atomFamily: 'abstention', selectorMatched: true, action: 'abstain', anchorEvent: null, docsMoved: 0, evidencePath: [], beta: 0 });
+          break;
+        }
+      }
+    }
+  }
+
   // ─── Pinned final ranking formula ────────────────────────────────────────
   const qrelById = new Map(query.qrels.map((q) => [q.documentId, q.relevance]));
   const ranked = candidates
@@ -1268,7 +1365,7 @@ export async function scoreSubstrateAgainstQuery(
         documentId: c.record.docId,
         memorySlot: c.record.memorySlot,
         rerankerScore: r,
-        finalReorderingScore: effRerank(c.record.docId, r) + c.finalBonus,
+        finalReorderingScore: effRerank(c.record.docId, r) + c.finalBonus + (policyBonusByDocId.get(c.record.docId) ?? 0),
         relevance: qrelById.get(c.record.docId) ?? 0,
       };
     })
@@ -1358,7 +1455,7 @@ export async function scoreSubstrateAgainstQuery(
   const finalRankingFull = opts.exposeFullRanking === true
     ? ranked.map((r) => ({ docId: r.documentId, relevance: r.relevance, rerankerScore: r.rerankerScore }))
     : undefined;
-  return { ranked, top1Score, cappedDocIds, cappedDocSources, cappedDocComponents, finalRankingTop20, answerInCap, finalRankingFull };
+  return { ranked, top1Score, cappedDocIds, cappedDocSources, cappedDocComponents, finalRankingTop20, answerInCap, finalRankingFull, policyTraces, policyAbstain };
 }
 
 // ─── Owner-scoped retrieval (Layer-2 validity fix) ──────────────────────────
@@ -1687,7 +1784,7 @@ export async function evaluateRetrievalBenchmarkState(
 
   for (const query of pack.events) {
     const isAbstentionProbe = query.truthDocuments.length === 0;
-    const { ranked, top1Score, cappedDocIds, cappedDocSources, cappedDocComponents, finalRankingTop20, answerInCap, finalRankingFull } = await scoreSubstrateAgainstQuery(decoded, query, corpus, opts);
+    const { ranked, top1Score, cappedDocIds, cappedDocSources, cappedDocComponents, finalRankingTop20, answerInCap, finalRankingFull, policyTraces, policyAbstain } = await scoreSubstrateAgainstQuery(decoded, query, corpus, opts);
 
     // nDCG / MRR / Recall over reranked list.
     const idealRels = query.qrels.map((q) => q.relevance);
@@ -1757,10 +1854,16 @@ export async function evaluateRetrievalBenchmarkState(
         )
       : null;
 
+    // Abstention decision: under r5 (policyAtomsMode + abstention enabled) the abstain decision is
+    // the PolicyAtom decision (public no-evidence-path selector AND operator-calibrated top1 gate);
+    // otherwise the legacy raw top1<abstentionThreshold. `policyFalseAbstain` flags an abstain on an
+    // ANSWERABLE query (the false-abstention risk the operator gated on).
+    const r5Abstention = opts.policyAtomsMode === true && opts.enableAbstentionAtoms !== false && decoded.abstentionAtoms.length > 0;
     let abstHit: boolean | null = null;
     if (isAbstentionProbe) {
-      abstHit = top1Score < opts.abstentionThreshold;
+      abstHit = r5Abstention ? policyAbstain : top1Score < opts.abstentionThreshold;
     }
+    const policyFalseAbstain = r5Abstention && !isAbstentionProbe && policyAbstain;
 
     ndcgs.push(ndcg);
     mrrs.push(mrr);
@@ -1788,6 +1891,8 @@ export async function evaluateRetrievalBenchmarkState(
       answerInCap: isAbstentionProbe ? null : answerInCap,
       ...(finalRankingFull !== undefined ? { finalRankingFull } : {}),
       temporalContrastRecall,
+      ...(opts.policyEmitTraces && policyTraces.length > 0 ? { policyTraces } : {}),
+      ...(opts.policyAtomsMode === true ? { policyAbstain, policyFalseAbstain } : {}),
     });
   }
 
