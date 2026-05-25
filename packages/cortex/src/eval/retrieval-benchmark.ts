@@ -1293,12 +1293,16 @@ export async function scoreSubstrateAgainstQuery(
     const rsVals = rerankerCandidates.map((c) => rerankerScoreByDocId.get(c.record.docId) ?? 0);
     const UNIT = rsVals.length ? Math.max(...rsVals) - Math.min(...rsVals) : 0;
     const docsByEventLocal = new Map<string, string[]>();
-    const eventsInPool = new Set<string>();
     for (const c of candidates) {
-      eventsInPool.add(c.record.eventId);
       const a = docsByEventLocal.get(c.record.eventId);
       if (a) a.push(c.record.docId); else docsByEventLocal.set(c.record.eventId, [c.record.docId]);
     }
+    // QUERY-LOCAL gate = the anchor event is GENUINELY in THIS query's reranker cap VIA RETRIEVAL
+    // (a stage-1-sourced doc that made the rerankerInputTopK cap), NOT merely force-injected by
+    // anchor-mandatory routing (which puts every active anchor in every pool/cap and would make
+    // atoms fire globally). This is the genuinely competitive, query-specific evidence-path signal.
+    const eventsInStage1 = new Set<string>();
+    for (const c of rerankerCandidates) if (c.record.sources.has('stage1')) eventsInStage1.add(c.record.eventId);
     const sign = (action: string): number => (action === 'suppress' ? -1 : 1);
     const addBonus = (docId: string, delta: number) => policyBonusByDocId.set(docId, (policyBonusByDocId.get(docId) ?? 0) + delta);
     const PUBLIC_EDGES = new Set(['supports', 'supersedes', 'coreference_of', 'causes', 'derived_from', 'co_occurs_with']);
@@ -1307,7 +1311,7 @@ export async function scoreSubstrateAgainstQuery(
     if (opts.enableEvidenceBundleAtoms !== false) {
       for (const atom of decoded.evidenceBundleAtoms) {
         const anchorEv = anchorSlotToEvent.get(atom.targetSlot);
-        if (!anchorEv || !eventsInPool.has(anchorEv.id)) continue; // query-local gate
+        if (!anchorEv || !eventsInStage1.has(anchorEv.id)) continue; // query-local gate (genuine stage-1 retrieval)
         const beta = Math.min(atom.budget, opts.policyMaxBudgetEvidence ?? atom.budget) / 1000;
         const target = new Set<string>();
         const evidencePath: string[] = [];
@@ -1329,7 +1333,7 @@ export async function scoreSubstrateAgainstQuery(
     if (opts.enableConflictLifecycleAtoms !== false) {
       for (const atom of decoded.conflictLifecycleAtoms) {
         const anchorEv = anchorSlotToEvent.get(atom.targetSlot);
-        if (!anchorEv || !eventsInPool.has(anchorEv.id)) continue; // query-local: same conflict set in pool
+        if (!anchorEv || !eventsInStage1.has(anchorEv.id)) continue; // query-local: same conflict set genuinely retrieved
         const beta = Math.min(atom.budget, opts.policyMaxBudgetConflict ?? atom.budget) / 1000;
         const ownDocs = docsByEventLocal.get(anchorEv.id) ?? [];
         if (ownDocs.length === 0) continue;
