@@ -145,6 +145,17 @@ export interface ScoringOptions {
    */
   readonly evidencePolicyEnabled?: boolean;
 
+  /**
+   * Diagnostic-only (opt-in, default off). When true, the per-query breakdown
+   * surfaces the FULL final reranked list (`finalRankingFull`: docId + relevance,
+   * in final-reorder order) in addition to the top-20 view. Used by offline
+   * oracle-upper-bound probes (substrate-r5 oracle ladder) that need to reorder
+   * the complete reranked list and recompute nDCG faithfully with the same
+   * `ndcgAtK`. Pure diagnostic — does not affect scoring or any reward path; the
+   * default scoring path is byte-identical when unset.
+   */
+  readonly exposeFullRanking?: boolean;
+
   // ─── v2-lens pipeline params (substrate-hardening Phase A) ───
   readonly firstStageTopK: number;             // calibrated per-stratum (Run 1)
   readonly lensTopK: number;                   // how many lens vectors contribute to stage-2 reweighting
@@ -421,6 +432,14 @@ export interface PerQueryBreakdown {
    */
   readonly answerInCap?: boolean | null;
   /**
+   * Diagnostic-only (opt-in via ScoringOptions.exposeFullRanking): the FULL final
+   * reranked candidate list (docId + graded relevance) in final-reorder order, not
+   * truncated to 20. Used by offline oracle-upper-bound probes that reorder the
+   * complete reranked list and recompute nDCG faithfully. Undefined unless the
+   * opt-in is set. Pure diagnostic — does not affect scoring.
+   */
+  readonly finalRankingFull?: readonly { docId: string; relevance: number }[];
+  /**
    * Diagnostic (temporalStaleContrast mode): recall@rerankerTopK of this temporal query's STALE
    * (contrast) docs — observable but NOT in the reward. Null when off / non-temporal / no stale docs.
    */
@@ -514,6 +533,7 @@ export async function scoreSubstrateAgainstQuery(
     temporalBonus: number;
   }[];
   answerInCap: boolean;
+  finalRankingFull: readonly { docId: string; relevance: number }[] | undefined;
 }> {
   const queryVec = dequantize(query.embeddings.query, opts.retrievalKeyLayout);
   const publicIndex = getOrBuildPublicIndex(corpus);
@@ -1066,7 +1086,7 @@ export async function scoreSubstrateAgainstQuery(
   }
 
   if (candidates.length === 0) {
-    return { ranked: [], top1Score: 0, cappedDocIds: [], cappedDocSources: [], cappedDocComponents: [], finalRankingTop20: [], answerInCap: false };
+    return { ranked: [], top1Score: 0, cappedDocIds: [], cappedDocSources: [], cappedDocComponents: [], finalRankingTop20: [], answerInCap: false, finalRankingFull: opts.exposeFullRanking === true ? [] : undefined };
   }
 
   // ─── §6.5 reranker-input cap: take top-N by pre-rank ─────────────────────
@@ -1304,7 +1324,11 @@ export async function scoreSubstrateAgainstQuery(
   // (no relevance>0 qrels) there is no answer to admit, so this is false.
   const capSetForAnswer = new Set(cappedDocIds);
   const answerInCap = query.qrels.some((q) => q.relevance > 0 && capSetForAnswer.has(q.documentId));
-  return { ranked, top1Score, cappedDocIds, cappedDocSources, cappedDocComponents, finalRankingTop20, answerInCap };
+  // Opt-in: the FULL reranked list (diagnostic only, for offline oracle probes).
+  const finalRankingFull = opts.exposeFullRanking === true
+    ? ranked.map((r) => ({ docId: r.documentId, relevance: r.relevance }))
+    : undefined;
+  return { ranked, top1Score, cappedDocIds, cappedDocSources, cappedDocComponents, finalRankingTop20, answerInCap, finalRankingFull };
 }
 
 // ─── Owner-scoped retrieval (Layer-2 validity fix) ──────────────────────────
@@ -1632,7 +1656,7 @@ export async function evaluateRetrievalBenchmarkState(
 
   for (const query of pack.events) {
     const isAbstentionProbe = query.truthDocuments.length === 0;
-    const { ranked, top1Score, cappedDocIds, cappedDocSources, cappedDocComponents, finalRankingTop20, answerInCap } = await scoreSubstrateAgainstQuery(decoded, query, corpus, opts);
+    const { ranked, top1Score, cappedDocIds, cappedDocSources, cappedDocComponents, finalRankingTop20, answerInCap, finalRankingFull } = await scoreSubstrateAgainstQuery(decoded, query, corpus, opts);
 
     // nDCG / MRR / Recall over reranked list.
     const idealRels = query.qrels.map((q) => q.relevance);
@@ -1731,6 +1755,7 @@ export async function evaluateRetrievalBenchmarkState(
       cappedDocComponents,
       finalRankingTop20,
       answerInCap: isAbstentionProbe ? null : answerInCap,
+      ...(finalRankingFull !== undefined ? { finalRankingFull } : {}),
       temporalContrastRecall,
     });
   }
