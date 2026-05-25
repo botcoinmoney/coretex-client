@@ -202,6 +202,9 @@ export interface EvaluatorProfile {
   readonly policyQueryLocalTopK?: number;
   /** r5.1: enable query-conditioned admission (generic public entity selector injects matched anchors). */
   readonly policyQueryConditionedAdmission?: boolean;
+  /** Category-B: relation-TYPED admission — restrict admission + evidence boost to the query's
+   *  PUBLIC parsed relation-intent edge types (finer than r5.1's entity-only all-edge admission). */
+  readonly policyRelationTypedAdmission?: boolean;
   /** Stage-1 BGE-M3 first-stage retrieval cap (Run 1; per-stratum worst-case ≥0.90). */
   readonly firstStageTopK?: number;
   /**
@@ -909,6 +912,7 @@ export function scoringOptionsFromProfile(
     ...(profile.policyEmitTraces !== undefined ? { policyEmitTraces: profile.policyEmitTraces } : {}),
     ...(profile.policyQueryLocalTopK !== undefined ? { policyQueryLocalTopK: profile.policyQueryLocalTopK } : {}),
     ...(profile.policyQueryConditionedAdmission !== undefined ? { policyQueryConditionedAdmission: profile.policyQueryConditionedAdmission } : {}),
+    ...(profile.policyRelationTypedAdmission !== undefined ? { policyRelationTypedAdmission: profile.policyRelationTypedAdmission } : {}),
   } as ScoringOptions;
 }
 

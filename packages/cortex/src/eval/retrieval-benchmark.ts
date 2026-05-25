@@ -362,6 +362,13 @@ export interface ScoringOptions {
    *  (selectively, for matching queries) AND drives the boost/suppress — replacing the "anchor must
    *  already be in top-K" gate. Routes the bridge the bi-encoder MISSED, without the global flood. */
   readonly policyQueryConditionedAdmission?: boolean;
+  /** Category-B: relation-TYPED admission. When on (with query-conditioned admission), the query text
+   *  is parsed for a PUBLIC relation-intent (why→causes, how-resolved→causes, depends/uses→supports,
+   *  "X the <role>"→coreference_of, …); the admission + evidence boost are then restricted to the
+   *  matched anchor's reach along edges of THOSE types only. Finer than entity (r5.1 admitted all 6
+   *  edge types' reach for every subject-query → displaced the answer). When NO relation-intent parses
+   *  (temporal/aspect "current X" queries), admission is suppressed for that query (no bridge flood). */
+  readonly policyRelationTypedAdmission?: boolean;
   /** Public entity registry (id → lowercased names/aliases) for the entity-parse selector. Corpus-
    *  derived, public; NOT qrels. Provided by the host (runtime), not the signed profile. */
   readonly policyEntityRegistry?: ReadonlyArray<{ readonly id: string; readonly names: readonly string[] }>;
@@ -390,6 +397,40 @@ export const CORETEX_PIPELINE_VERSIONS_SUPPORTED: ReadonlySet<string> = new Set(
   CORETEX_PIPELINE_VERSION_THIS_BINARY,
   CORETEX_PIPELINE_VERSION_R5,
 ]);
+
+/**
+ * Category-B PUBLIC query relation-intent parser. Maps a natural-language query to the set of
+ * relation EDGE TYPES whose reach plausibly holds the answer — using only generic, portable
+ * lexical cues that exist outside CoreTex (interrogative form + relational nouns + a generic
+ * occupation lexicon for coreference). NO qrels / gold / family label is consulted: the input is
+ * the public query text only. Returns an empty set when the query carries no relation intent
+ * (e.g. a bare temporal "what is X's current Y?"), which tells the relation-typed admitter to
+ * inject nothing for that query (the fix for r5.1's all-edge bridge flood).
+ *
+ * The cue→type map is deliberately a small, auditable, domain-agnostic table — not a per-corpus
+ * trick. Edge types are the 6 public production types (supports/supersedes/coreference_of/
+ * causes/derived_from/co_occurs_with).
+ */
+export function parseQueryRelationIntent(queryText: string): Set<string> {
+  const q = (queryText ?? '').toLowerCase();
+  const types = new Set<string>();
+  // provenance / causation: "why did …", "how was … resolved/fixed/mitigated/addressed".
+  if (/\bwhy\b/.test(q)) types.add('causes');
+  if (/\bhow\b[^?]*\b(resolv|fix|address|mitigat|debug|patch)/.test(q)) types.add('causes');
+  if (/\b(caused|because of|reason for|root cause|led to|due to)\b/.test(q)) types.add('causes');
+  // dependency / support: "depend(s) on", "uses", "relies on", "built on", "datastore".
+  if (/\b(depend|depends on|rely|relies on|built on|runs on|backed by|datastore|uses?\b)\b/.test(q)) types.add('supports');
+  // relational bridge ("the job of X's sibling", "X's manager", …) routes via support edges. The
+  // unambiguous relational nouns match bare; collision-prone ones (manager/partner/parent/friend —
+  // cf. "package manager") require a possessive so common compound nouns don't false-trigger.
+  if (/\b(sibling|colleague|teammate|mentor|the job of|works with|reports to)\b/.test(q)) types.add('supports');
+  if (/'s\s+(manager|partner|parent|spouse|friend|boss|assistant|roommate|neighbou?r)\b/.test(q)) types.add('supports');
+  // derivation: "derived from", "based on", "forked from", "comes from".
+  if (/\b(derived from|based on|forked from|comes from|originates? from|adapted from)\b/.test(q)) types.add('derived_from');
+  // coreference: "<Name> the <role>" — generic occupation lexicon (portable, not corpus gold).
+  if (/\bthe (pastry chef|chef|accountant|engineer|teacher|nurse|doctor|lawyer|artist|writer|baker|barista|dentist|pilot|plumber|painter|architect|designer|analyst|manager|scientist|professor|musician|photographer|electrician|carpenter|mechanic|chemist|surgeon|therapist|consultant|developer|programmer|administrator|technician|researcher|journalist|editor|director|founder|owner|clerk|cashier|waiter|waitress|bartender|farmer|gardener|tailor|jeweler|optician|veterinarian|pharmacist|librarian|translator|interpreter)\b/.test(q)) types.add('coreference_of');
+  return types;
+}
 
 /** r5 PolicyAtom trace receipt (Memory-IR pipeline input; emitted when policyEmitTraces). */
 export interface PolicyAtomTrace {
@@ -699,6 +740,13 @@ export async function scoreSubstrateAgainstQuery(
   const POLICY_PUBLIC_EDGES = new Set(['supports', 'supersedes', 'coreference_of', 'causes', 'derived_from', 'co_occurs_with']);
   const selectorMatchedAnchorEvents = new Set<string>();
   let policyAnchorsAdmitted = 0;
+  // Category-B: PUBLIC relation-intent parse of THIS query (empty = no relation intent). Shared by the
+  // admission block (below) and the evidence-bundle boost (later) so both filter on the same typed reach.
+  const policyRelationTyped = opts.policyRelationTypedAdmission === true;
+  const policyIntentTypes: Set<string> = policyRelationTyped ? parseQueryRelationIntent(query.queryText ?? '') : new Set();
+  // when relation-typed admission is on, an edge is admissible only if its type is in the parsed intent.
+  const edgeAdmissible = (edgeType: string): boolean =>
+    POLICY_PUBLIC_EDGES.has(edgeType) && (!policyRelationTyped || policyIntentTypes.has(edgeType));
   if (opts.policyAtomsMode === true && opts.policyQueryConditionedAdmission === true && opts.policyEntityRegistry) {
     const qtext = (query.queryText ?? '').toLowerCase();
     const generic = new Set(opts.policyGenericEntityIds ?? []);
@@ -708,7 +756,10 @@ export async function scoreSubstrateAgainstQuery(
       if (generic.has(ent.id)) continue;
       if (ent.names.some((n) => n.length > 0 && qtext.includes(n))) querySubjects.add(ent.id);
     }
-    if (querySubjects.size > 0) {
+    // Category-B gate: when relation-typed and the query has NO relation intent (e.g. temporal "current
+    // X"), inject NOTHING — entity-only admission flooded these with off-intent bridges and displaced the
+    // real answer (the r5.1 −0.14). A query with relation intent only admits reach along the typed edges.
+    if (querySubjects.size > 0 && (!policyRelationTyped || policyIntentTypes.size > 0)) {
       const eventByCorpusIdAdmit = corpusByCorpusId(corpus);
       const admitDocs = (ev: ProductionCorpusEvent) => {
         for (const td of ev.truthDocuments) {
@@ -729,10 +780,14 @@ export async function scoreSubstrateAgainstQuery(
           if (!eA) continue;
           const anchorSubjects = (eA.entityIds ?? []).filter((e) => !generic.has(e));
           if (!anchorSubjects.some((e) => querySubjects.has(e))) continue; // SELECTOR: entity match
+          // Category-B: also require the anchor to carry at least one edge of an intent-matched type —
+          // otherwise this subject-bearing anchor is not relevant to the query's relation intent.
+          const anchorEdges = (eA.relations ?? []).filter((rel) => edgeAdmissible(rel.edgeType));
+          if (policyRelationTyped && anchorEdges.length === 0) continue;
           if (!selectorMatchedAnchorEvents.has(eA.id)) { selectorMatchedAnchorEvents.add(eA.id); policyAnchorsAdmitted++; }
           admitDocs(eA);                                  // admit the anchor (bridge) itself
-          for (const rel of eA.relations ?? []) {          // admit its PUBLIC-edge reach (the evidence)
-            if (!POLICY_PUBLIC_EDGES.has(rel.edgeType)) continue;
+          for (const rel of eA.relations ?? []) {          // admit its (typed) PUBLIC-edge reach (the evidence)
+            if (!edgeAdmissible(rel.edgeType)) continue;
             const tgt = eventByCorpusIdAdmit.get(rel.other_id);
             if (tgt) admitDocs(tgt);
           }
@@ -1387,7 +1442,7 @@ export async function scoreSubstrateAgainstQuery(
     }
     const sign = (action: string): number => (action === 'suppress' ? -1 : 1);
     const addBonus = (docId: string, delta: number) => policyBonusByDocId.set(docId, (policyBonusByDocId.get(docId) ?? 0) + delta);
-    const PUBLIC_EDGES = new Set(['supports', 'supersedes', 'coreference_of', 'causes', 'derived_from', 'co_occurs_with']);
+    // (edge admissibility — POLICY_PUBLIC_EDGES + Category-B intent typing — is `edgeAdmissible`, defined above.)
     // r5.1: when query-conditioned admission is on, the boost/suppress fires for the SELECTOR-MATCHED
     // anchors (the same generic public selector that admitted them), NOT the top-K biCosine gate.
     const policyFires = (evId: string): boolean =>
@@ -1402,7 +1457,7 @@ export async function scoreSubstrateAgainstQuery(
         const target = new Set<string>();
         const evidencePath: string[] = [];
         for (const rel of anchorEv.relations ?? []) {
-          if (!PUBLIC_EDGES.has(rel.edgeType)) continue;
+          if (!edgeAdmissible(rel.edgeType)) continue; // Category-B: typed reach only (else all public edges)
           const tgt = eventByCorpusIdForPhaseA.get(rel.other_id);
           if (!tgt || !docsByEventLocal.has(tgt.id)) continue;
           for (const d of docsByEventLocal.get(tgt.id)!) target.add(d);

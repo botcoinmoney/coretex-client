@@ -18,6 +18,7 @@ import {
   POLICY_SELECTOR,
   POLICY_EVIDENCE_FEATURE,
   POLICY_TARGET_NONE,
+  parseQueryRelationIntent,
 } from '../../dist/index.js';
 import { RANGES } from '../../dist/state/types.js';
 
@@ -154,5 +155,26 @@ describe('r5 pipelineVersion routing', () => {
     assert.doesNotThrow(() => assertPipelineVersionMatches(CORETEX_PIPELINE_VERSION_THIS_BINARY));
     assert.doesNotThrow(() => assertPipelineVersionMatches(CORETEX_PIPELINE_VERSION_R5));
     assert.throws(() => assertPipelineVersionMatches('coretex-retrieval-v9-imaginary'));
+  });
+});
+
+describe('Category-B query relation-intent parser (public, lexical, no gold)', () => {
+  const has = (q, t) => parseQueryRelationIntent(q).has(t);
+  test('provenance/causal queries map to causes', () => {
+    assert.ok(has('Why did search-ranking-svc-0 migrate its datastore?', 'causes'));
+    assert.ok(has('How was the flaky timeout in CI in search-ranking-svc-0 resolved?', 'causes'));
+  });
+  test('dependency/bridge queries map to supports', () => {
+    assert.ok(has('What datastore does search-ranking-svc-0 depend on?', 'supports'));
+    assert.ok(has('What is the job of Aisha Costa\'s sibling?', 'supports'));
+  });
+  test('coreference queries ("<Name> the <role>") map to coreference_of', () => {
+    assert.ok(has('What pet does Aisha the pastry chef have?', 'coreference_of'));
+    assert.ok(has('What pet does Jordan the accountant have?', 'coreference_of'));
+  });
+  test('bare temporal/aspect queries carry NO relation intent (empty set → admission suppressed)', () => {
+    assert.equal(parseQueryRelationIntent("What is search-ranking-svc-0's current package manager?").size, 0);
+    assert.equal(parseQueryRelationIntent('For search-ranking-svc-0, what is the latency detail?').size, 0);
+    assert.equal(parseQueryRelationIntent('').size, 0);
   });
 });
