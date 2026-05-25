@@ -351,6 +351,9 @@ export interface ScoringOptions {
   readonly policyAbstentionTop1Threshold?: number;
   /** Emit per-atom trace receipts (atomId/family/selectorMatched/docsMoved/evidencePath/delta/junk). */
   readonly policyEmitTraces?: boolean;
+  /** Query-local gate: an atom fires only if its anchor is among the query's top-K stage-1 docs by
+   *  biCosine (genuinely near-top retrieval), not the 3200-tail. Lower = more query-local. Default 24. */
+  readonly policyQueryLocalTopK?: number;
 }
 
 /** The pipeline version this codebase implements. Bundles that pin a
@@ -1297,12 +1300,18 @@ export async function scoreSubstrateAgainstQuery(
       const a = docsByEventLocal.get(c.record.eventId);
       if (a) a.push(c.record.docId); else docsByEventLocal.set(c.record.eventId, [c.record.docId]);
     }
-    // QUERY-LOCAL gate = the anchor event is GENUINELY in THIS query's reranker cap VIA RETRIEVAL
-    // (a stage-1-sourced doc that made the rerankerInputTopK cap), NOT merely force-injected by
-    // anchor-mandatory routing (which puts every active anchor in every pool/cap and would make
-    // atoms fire globally). This is the genuinely competitive, query-specific evidence-path signal.
+    // QUERY-LOCAL gate = the anchor event is GENUINELY NEAR-TOP in THIS query's stage-1 retrieval
+    // (its stage-1 doc is among the top-K by biCosine), NOT merely present in the 3200-tail. Mere
+    // stage-1 presence is defeated by anchor-mandatory injection (which pulls every active anchor's
+    // doc into every pool/cap where it appears anywhere in stage-1, even at rank 3000) → global
+    // firing. A biCosine-RANK gate is the genuinely competitive, query-specific signal; it also
+    // gives implicit family-selectivity (a relation bridge is not near-top for a temporal query).
+    const POLICY_LOCAL_TOPK = opts.policyQueryLocalTopK ?? 24;
     const eventsInStage1 = new Set<string>();
-    for (const c of rerankerCandidates) if (c.record.sources.has('stage1')) eventsInStage1.add(c.record.eventId);
+    {
+      const stage1Ranked = candidates.filter((c) => c.record.sources.has('stage1')).sort((a, b) => b.biCosine - a.biCosine);
+      for (let i = 0; i < Math.min(POLICY_LOCAL_TOPK, stage1Ranked.length); i++) eventsInStage1.add(stage1Ranked[i]!.record.eventId);
+    }
     const sign = (action: string): number => (action === 'suppress' ? -1 : 1);
     const addBonus = (docId: string, delta: number) => policyBonusByDocId.set(docId, (policyBonusByDocId.get(docId) ?? 0) + delta);
     const PUBLIC_EDGES = new Set(['supports', 'supersedes', 'coreference_of', 'causes', 'derived_from', 'co_occurs_with']);

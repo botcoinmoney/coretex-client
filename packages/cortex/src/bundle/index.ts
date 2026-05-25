@@ -196,6 +196,8 @@ export interface EvaluatorProfile {
   readonly policyAbstentionTop1Threshold?: number;
   /** Emit per-atom trace receipts for the Memory-IR pipeline (default off). */
   readonly policyEmitTraces?: boolean;
+  /** Query-local gate: atom fires only if its anchor is in the query's top-K stage-1 docs by biCosine (default 24). */
+  readonly policyQueryLocalTopK?: number;
   /** Stage-1 BGE-M3 first-stage retrieval cap (Run 1; per-stratum worst-case ≥0.90). */
   readonly firstStageTopK?: number;
   /**
@@ -900,6 +902,7 @@ export function scoringOptionsFromProfile(
     ...(profile.policyMaxBudgetConflict !== undefined ? { policyMaxBudgetConflict: profile.policyMaxBudgetConflict } : {}),
     ...(profile.policyAbstentionTop1Threshold !== undefined ? { policyAbstentionTop1Threshold: profile.policyAbstentionTop1Threshold } : {}),
     ...(profile.policyEmitTraces !== undefined ? { policyEmitTraces: profile.policyEmitTraces } : {}),
+    ...(profile.policyQueryLocalTopK !== undefined ? { policyQueryLocalTopK: profile.policyQueryLocalTopK } : {}),
   } as ScoringOptions;
 }
 
