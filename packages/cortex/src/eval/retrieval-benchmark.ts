@@ -349,6 +349,9 @@ export interface ScoringOptions {
    * saturated ~0.999x so this is never a hardcoded universal — it is profile-pinned).
    */
   readonly policyAbstentionTop1Threshold?: number;
+  /** Category-A guard: abstain only if ALSO the top1−top2 margin < this (no clear winner / weak
+   *  bundle). Operator-calibrated; combined with the top1 gate so top1 alone never triggers abstain. */
+  readonly policyAbstentionMarginThreshold?: number;
   /** Emit per-atom trace receipts (atomId/family/selectorMatched/docsMoved/evidencePath/delta/junk). */
   readonly policyEmitTraces?: boolean;
   /** Query-local gate: an atom fires only if its anchor is among the query's top-K stage-1 docs by
@@ -1428,12 +1431,19 @@ export async function scoreSubstrateAgainstQuery(
     // gate (top1 < threshold) is the OPERATOR PROFILE calibration. Abstain only when BOTH hold.
     if (opts.enableAbstentionAtoms !== false && decoded.abstentionAtoms.length > 0) {
       const hasPublicEvidencePath = candidates.some((c) => c.record.memorySlot !== null || c.record.sources.has('anchorBFS') || c.record.sources.has('categoryLensBFS'));
-      const maxRerank = rsVals.length ? Math.max(...rsVals) : 0;
+      // category-A guard: top1 AND margin (top1 − top2). A low margin = no clear winner (weak
+      // evidence bundle); abstaining only when BOTH top1 is low AND the margin is low avoids
+      // false-abstention on answerable queries that have a confident top1. (top1 alone is not enough.)
+      const sortedR = [...rsVals].sort((a, b) => b - a);
+      const maxRerank = sortedR[0] ?? 0;
+      const top2 = sortedR[1] ?? 0;
+      const margin = maxRerank - top2;
       const thr = opts.policyAbstentionTop1Threshold;
+      const marginThr = opts.policyAbstentionMarginThreshold;
       for (const atom of decoded.abstentionAtoms) {
         const requireNoEvidence = (atom.flags & 0x01) !== 0;
         const noEvidenceOk = !requireNoEvidence || !hasPublicEvidencePath;
-        const confidenceOk = thr === undefined || maxRerank < thr;
+        const confidenceOk = (thr === undefined || maxRerank < thr) && (marginThr === undefined || margin < marginThr);
         if (atom.selector === POLICY_SELECTOR.MISSING_EVIDENCE && noEvidenceOk && confidenceOk) {
           policyAbstain = true;
           if (opts.policyEmitTraces) policyTraces.push({ atomId: `ab#${atom.atomIndex}`, atomFamily: 'abstention', selectorMatched: true, action: 'abstain', anchorEvent: null, docsMoved: 0, evidencePath: [], beta: 0 });

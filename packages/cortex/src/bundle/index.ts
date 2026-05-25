@@ -194,6 +194,8 @@ export interface EvaluatorProfile {
   /** Operator-calibrated abstention confidence gate (NOT hardcoded; Qwen top1 is saturated).
    *  Abstain fires only when the atom's no-evidence-path selector matches AND top1 < this. */
   readonly policyAbstentionTop1Threshold?: number;
+  /** Category-A: abstain only if ALSO top1-top2 margin < this (combined with top1; never top1 alone). */
+  readonly policyAbstentionMarginThreshold?: number;
   /** Emit per-atom trace receipts for the Memory-IR pipeline (default off). */
   readonly policyEmitTraces?: boolean;
   /** Query-local gate: atom fires only if its anchor is in the query's top-K stage-1 docs by biCosine (default 24). */
@@ -903,6 +905,7 @@ export function scoringOptionsFromProfile(
     ...(profile.policyMaxBudgetEvidence !== undefined ? { policyMaxBudgetEvidence: profile.policyMaxBudgetEvidence } : {}),
     ...(profile.policyMaxBudgetConflict !== undefined ? { policyMaxBudgetConflict: profile.policyMaxBudgetConflict } : {}),
     ...(profile.policyAbstentionTop1Threshold !== undefined ? { policyAbstentionTop1Threshold: profile.policyAbstentionTop1Threshold } : {}),
+    ...(profile.policyAbstentionMarginThreshold !== undefined ? { policyAbstentionMarginThreshold: profile.policyAbstentionMarginThreshold } : {}),
     ...(profile.policyEmitTraces !== undefined ? { policyEmitTraces: profile.policyEmitTraces } : {}),
     ...(profile.policyQueryLocalTopK !== undefined ? { policyQueryLocalTopK: profile.policyQueryLocalTopK } : {}),
     ...(profile.policyQueryConditionedAdmission !== undefined ? { policyQueryConditionedAdmission: profile.policyQueryConditionedAdmission } : {}),
