@@ -662,12 +662,19 @@ export async function scoreSubstrateAgainstQuery(
   // Build an anchor-slot → corpus-event map once per scoring call.
   const corpusByRecordId = getOrBuildRecordIdIndex(corpus);
   const anchorSlotToEvent = new Map<number, ProductionCorpusEvent>();
+  // r5: policy-anchor slots are resolvable (for PolicyAtom anchoring) but EXCLUDED from
+  // anchor-mandatory routing + relation BFS seeding — they must not inject their docs into
+  // every query's pool (that flood, not the atoms, is what damaged nDCG; see R5 findings).
+  const policyAnchorSlots = new Set<number>();
   for (let m = 0; m < decoded.memoryIndex.length; m++) {
     const slot = decoded.memoryIndex[m];
     if (!slot || slot.revoked) continue;
     const ev = corpusByRecordId.get(slot.recordId);
     if (ev) anchorSlotToEvent.set(m, ev);
+    if (slot.policyAnchor) policyAnchorSlots.add(m);
   }
+  // routing anchors = anchors that DO inject (everything except policy-only anchors).
+  const routingSlotToEvent = new Map([...anchorSlotToEvent].filter(([m]) => !policyAnchorSlots.has(m)));
 
   // §6.5+ Anchor-as-routing-primitive: each active anchor's truth docs are
   // added to the candidate pool directly. Without this, anchors are purely
@@ -679,7 +686,8 @@ export async function scoreSubstrateAgainstQuery(
   // already capped at 44 MemoryIndex slots — this contributes at most 44
   // additional truth docs per query, dwarfed by stage-1's firstStageTopK.
   // Anti-cheat invariant intact: anchors are public; reranker still judges.
-  for (const [slot, ev] of anchorSlotToEvent) {
+  // (policy-only anchors excluded — they don't inject; see routingSlotToEvent.)
+  for (const [slot, ev] of routingSlotToEvent) {
     for (const td of ev.truthDocuments) {
       const existing = pool.get(td.id);
       if (existing) {
@@ -717,7 +725,7 @@ export async function scoreSubstrateAgainstQuery(
   // (corpus-native category-lens BFS, below) carries an independent
   // budget so the two channels don't share a flood-prone pool budget.
   let anchorBfsExpansionAdded = 0;
-  const visited = new Set<number>(anchorSlotToEvent.keys());
+  const visited = new Set<number>(routingSlotToEvent.keys());
   let frontier: number[] = Array.from(visited);
   for (let hop = 0; hop < opts.relationHopBudget && anchorBfsExpansionAdded < opts.relationExpansionBudget; hop++) {
     const next: number[] = [];
@@ -726,7 +734,7 @@ export async function scoreSubstrateAgainstQuery(
       for (const nbr of neighbors) {
         if (visited.has(nbr)) continue;
         visited.add(nbr);
-        const ev = anchorSlotToEvent.get(nbr);
+        const ev = routingSlotToEvent.get(nbr);
         if (!ev) continue;
         // Add this neighbor's truth docs to the pool.
         for (const td of ev.truthDocuments) {
@@ -770,7 +778,7 @@ export async function scoreSubstrateAgainstQuery(
     if (!s) { s = new Set<string>(); relEdgeTypesBySlot.set(e.sourceSlot, s); }
     s.add(e.edgeType);
   }
-  for (const [slot, ev] of anchorSlotToEvent) {
+  for (const [slot, ev] of routingSlotToEvent) {
     if (anchorBfsExpansionAdded >= opts.relationExpansionBudget) break;
     const edgeTypes = relEdgeTypesBySlot.get(slot);
     if (!edgeTypes || !ev.relations) continue;
@@ -796,7 +804,7 @@ export async function scoreSubstrateAgainstQuery(
   }
 
   // Tag pool entries that match an active anchor directly with the anchor's slot.
-  for (const [slot, ev] of anchorSlotToEvent) {
+  for (const [slot, ev] of routingSlotToEvent) {
     for (const td of ev.truthDocuments) {
       const entry = pool.get(td.id);
       if (entry && entry.memorySlot === null) {
@@ -946,7 +954,7 @@ export async function scoreSubstrateAgainstQuery(
 
   // Anchor truth embeddings (one per active anchor that has a current/sole truth).
   const anchorTruthVecs: Float32Array[] = [];
-  for (const [, ev] of anchorSlotToEvent) {
+  for (const [, ev] of routingSlotToEvent) {
     // Pick the current truth if any, else the first truth.
     const truth = ev.truthDocuments.find((t) => t.isCurrent) ?? ev.truthDocuments[0];
     if (!truth) continue;

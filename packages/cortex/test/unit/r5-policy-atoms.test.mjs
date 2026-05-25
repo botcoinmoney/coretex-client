@@ -10,6 +10,8 @@ import {
   validateReservedBits,
   encodeRetrievalKeySlot,
   encodeCodebookEntry,
+  encodeMemoryIndexSlot,
+  decodeMemoryIndex,
   assertPipelineVersionMatches,
   CORETEX_PIPELINE_VERSION_THIS_BINARY,
   CORETEX_PIPELINE_VERSION_R5,
@@ -129,6 +131,21 @@ describe('r5 reserved region + invalid-atom enforcement', () => {
     const s = zero();
     s.words[RANGES.POLICY_EVIDENCE_START] = encodePolicyAtom(EB);
     assert.equal(validateReservedBits(s), null);
+  });
+});
+
+describe('r5 policyAnchor MemoryIndex flag', () => {
+  test('policyAnchor roundtrips and defaults false', () => {
+    const s = zero();
+    const w = encodeMemoryIndexSlot({ slotIndex: 0, recordId: 123n, family: 'multi_hop_relation', domainBits: 1n, valid: true, revoked: false, protected: false, policyAnchor: true, retrievalSlot: 0, expiryEpoch: 0n });
+    s.words[RANGES.MEMORY_INDEX_START] = w[0];
+    const w2 = encodeMemoryIndexSlot({ slotIndex: 1, recordId: 456n, family: 'temporal', domainBits: 1n, valid: true, revoked: false, protected: false, retrievalSlot: 0, expiryEpoch: 0n });
+    s.words[RANGES.MEMORY_INDEX_START + 1] = w2[0];
+    const d = decodeMemoryIndex(s);
+    assert.equal(d.slots[0].policyAnchor, true);
+    assert.equal(d.slots[1].policyAnchor, false, 'defaults false when flag bit unset');
+    assert.equal(d.slots[0].valid, true);
+    assert.equal(d.failures, 0);
   });
 });
 

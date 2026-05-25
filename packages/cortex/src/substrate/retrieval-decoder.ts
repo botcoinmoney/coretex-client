@@ -38,6 +38,7 @@ export interface MemoryIndexSlot {
   readonly valid: boolean;
   readonly revoked: boolean;
   readonly protected: boolean;
+  readonly policyAnchor?: boolean;    // r5: resolvable as a PolicyAtom anchor, but NOT anchor-mandatory-injected
   readonly retrievalSlot: number;     // 0..35
   readonly expiryEpoch: bigint;
 }
@@ -376,6 +377,12 @@ export function decodeMemoryIndex(state: CortexState): {
     const valid = (flags & 0x0001) !== 0;
     const revoked = (flags & 0x0002) !== 0;
     const isProtected = (flags & 0x0004) !== 0;
+    // r5: a policy-anchor slot is RESOLVABLE (its event anchors a PolicyAtom) but is EXCLUDED
+    // from anchor-mandatory routing + relation BFS seeding — it does NOT inject its docs into
+    // every query's pool. This lets a query-local PolicyAtom reference an anchor without the
+    // anchor-mandatory flood (the atom's reach comes from the anchor's public-edge neighbours
+    // that the query already retrieved, not from the anchor's own docs).
+    const policyAnchor = (flags & 0x0008) !== 0;
 
     const retrievalSlot = Number(field(w0, 40, MASK_8));
     if (retrievalSlot >= RETRIEVAL_KEY_SLOT_COUNT) {
@@ -400,6 +407,7 @@ export function decodeMemoryIndex(state: CortexState): {
       valid,
       revoked,
       protected: isProtected,
+      policyAnchor,
       retrievalSlot,
       expiryEpoch,
     });
@@ -1019,7 +1027,7 @@ export function encodeMemoryIndexSlot(slot: MemoryIndexSlot): bigint[] {
   const familyBits = familyToBits(slot.family);
   const familyDomain = (BigInt(familyBits) << 60n) | slot.domainBits;
   const flags =
-    (slot.valid ? 0x0001n : 0n) | (slot.revoked ? 0x0002n : 0n) | (slot.protected ? 0x0004n : 0n);
+    (slot.valid ? 0x0001n : 0n) | (slot.revoked ? 0x0002n : 0n) | (slot.protected ? 0x0004n : 0n) | (slot.policyAnchor ? 0x0008n : 0n);
   if (slot.retrievalSlot < 0 || slot.retrievalSlot >= RETRIEVAL_KEY_SLOT_COUNT) {
     throw new Error('encodeMemoryIndexSlot: retrievalSlot out of range');
   }
