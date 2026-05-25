@@ -280,6 +280,16 @@ export interface ScoringOptions {
    */
   readonly temporalOracleScopePerQuery?: boolean;
   /**
+   * TEMPORAL answer-vs-contrast eval semantics (launch lever, 2026-05-25). When true, on temporal
+   * queries a STALE (superseded) doc earns 0 nDCG reward — it is CONTRAST evidence, not a correct
+   * answer to "the current value" — so the reward neither credits outdated info nor penalises the
+   * substrate's correct demotion of it; stale recall is reported separately (temporalContrastRecall)
+   * as a diagnostic. Real-Qwen confirmed to recover in-context temporal yield 0.30→0.56
+   * (PROFILE_QREL_YIELD_EXPERIMENT.md). Default off → current behaviour (stale qrel relevance counts).
+   * EVAL-SEMANTICS only — NOT a substrate change, NOT a protocol epoch.
+   */
+  readonly temporalStaleContrast?: boolean;
+  /**
    * §6.5 reranker-input cap (MemReranker semantics). Number of pool
    * candidates that get forwarded to the cross-encoder reranker per
    * query — sorted by (biCosine + substrateBonus) descending, tie-break
@@ -410,6 +420,11 @@ export interface PerQueryBreakdown {
    * admit). Pure diagnostic — does not affect scoring.
    */
   readonly answerInCap?: boolean | null;
+  /**
+   * Diagnostic (temporalStaleContrast mode): recall@rerankerTopK of this temporal query's STALE
+   * (contrast) docs — observable but NOT in the reward. Null when off / non-temporal / no stale docs.
+   */
+  readonly temporalContrastRecall?: number | null;
 }
 
 export interface CompositeScore {
@@ -1622,7 +1637,26 @@ export async function evaluateRetrievalBenchmarkState(
     // nDCG / MRR / Recall over reranked list.
     const idealRels = query.qrels.map((q) => q.relevance);
     const totalRel = query.qrels.filter((q) => q.relevance > 0).length;
-    const ndcg = ndcgAtK(ranked, idealRels, opts.rerankerTopK);
+    // TEMPORAL answer-vs-contrast (opt-in `temporalStaleContrast`): on temporal queries a STALE
+    // (superseded) doc is CONTRAST evidence, not a correct answer to "the CURRENT value" — so give it
+    // 0 nDCG reward (the reward must not be defeated by, nor penalise the substrate's correct demotion
+    // of, stale docs) while tracking its recall SEPARATELY as a diagnostic (observable, not rewarded).
+    // Default off → current behaviour. Real-Qwen confirmed to recover in-context temporal yield
+    // 0.30→0.56 (PROFILE_QREL_YIELD_EXPERIMENT.md). Not a substrate change; eval-semantics only.
+    let ndcg: number;
+    let temporalContrastRecall: number | null = null;
+    if (opts.temporalStaleContrast === true && query.family === 'temporal') {
+      const staleIds = new Set(query.truthDocuments.filter((d) => !d.isCurrent).map((d) => d.id));
+      const rankedC = ranked.map((r) => (staleIds.has(r.documentId) ? { ...r, relevance: 0 } : r));
+      const idealC = query.qrels.map((q) => (staleIds.has(q.documentId) ? 0 : q.relevance));
+      ndcg = ndcgAtK(rankedC, idealC, opts.rerankerTopK);
+      if (staleIds.size > 0) {
+        const inTopK = ranked.slice(0, opts.rerankerTopK).filter((r) => staleIds.has(r.documentId)).length;
+        temporalContrastRecall = inTopK / staleIds.size;
+      }
+    } else {
+      ndcg = ndcgAtK(ranked, idealRels, opts.rerankerTopK);
+    }
     const mrr = mrrAtK(ranked, opts.rerankerTopK);
     const rec = recallAtK(ranked, totalRel, opts.rerankerTopK);
 
@@ -1697,6 +1731,7 @@ export async function evaluateRetrievalBenchmarkState(
       cappedDocComponents,
       finalRankingTop20,
       answerInCap: isAbstentionProbe ? null : answerInCap,
+      temporalContrastRecall,
     });
   }
 

@@ -253,6 +253,14 @@ export interface EvaluatorProfile {
   readonly categoryLensHopBudget?: number;
   /** Evidence-bundle reranking: score a routed answer together with its bridge (deep-memory surfacing). */
   readonly categoryLensEvidenceBundle?: boolean;
+  /**
+   * TEMPORAL answer-vs-contrast eval semantics (2026-05-25). When true, temporal-query STALE docs earn
+   * 0 nDCG reward (contrast role; recall tracked separately as `temporalContrastRecall`) so the reward
+   * aligns with "current beats stale" instead of penalising the substrate's correct demotion of
+   * superseded values. Real-Qwen confirmed to recover in-context temporal yield 0.30→0.56
+   * (PROFILE_QREL_YIELD_EXPERIMENT.md). Eval-semantics only; NOT a substrate change / protocol epoch.
+   */
+  readonly temporalStaleContrast?: boolean;
   /** §6.4 lens-diversity floor — mean pairwise cosine among active lenses must be ≤ this. */
   readonly lensDiversityFloor?: number;
   /** §6.1 pinned dedupe algorithm for PublicCorpusIndex. */
@@ -866,6 +874,7 @@ export function scoringOptionsFromProfile(
     ...(profile.categoryLensSeedTopK !== undefined ? { categoryLensSeedTopK: profile.categoryLensSeedTopK } : {}),
     ...(profile.categoryLensHopBudget !== undefined ? { categoryLensHopBudget: profile.categoryLensHopBudget } : {}),
     ...(profile.categoryLensEvidenceBundle !== undefined ? { categoryLensEvidenceBundle: profile.categoryLensEvidenceBundle } : {}),
+    ...(profile.temporalStaleContrast !== undefined ? { temporalStaleContrast: profile.temporalStaleContrast } : {}),
     pipelineVersion: profile.pipelineVersion,
   } as ScoringOptions;
 }
