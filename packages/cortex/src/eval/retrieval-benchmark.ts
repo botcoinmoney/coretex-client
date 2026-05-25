@@ -438,7 +438,7 @@ export interface PerQueryBreakdown {
    * complete reranked list and recompute nDCG faithfully. Undefined unless the
    * opt-in is set. Pure diagnostic — does not affect scoring.
    */
-  readonly finalRankingFull?: readonly { docId: string; relevance: number }[];
+  readonly finalRankingFull?: readonly { docId: string; relevance: number; rerankerScore: number }[];
   /**
    * Diagnostic (temporalStaleContrast mode): recall@rerankerTopK of this temporal query's STALE
    * (contrast) docs — observable but NOT in the reward. Null when off / non-temporal / no stale docs.
@@ -533,7 +533,7 @@ export async function scoreSubstrateAgainstQuery(
     temporalBonus: number;
   }[];
   answerInCap: boolean;
-  finalRankingFull: readonly { docId: string; relevance: number }[] | undefined;
+  finalRankingFull: readonly { docId: string; relevance: number; rerankerScore: number }[] | undefined;
 }> {
   const queryVec = dequantize(query.embeddings.query, opts.retrievalKeyLayout);
   const publicIndex = getOrBuildPublicIndex(corpus);
@@ -1326,7 +1326,7 @@ export async function scoreSubstrateAgainstQuery(
   const answerInCap = query.qrels.some((q) => q.relevance > 0 && capSetForAnswer.has(q.documentId));
   // Opt-in: the FULL reranked list (diagnostic only, for offline oracle probes).
   const finalRankingFull = opts.exposeFullRanking === true
-    ? ranked.map((r) => ({ docId: r.documentId, relevance: r.relevance }))
+    ? ranked.map((r) => ({ docId: r.documentId, relevance: r.relevance, rerankerScore: r.rerankerScore }))
     : undefined;
   return { ranked, top1Score, cappedDocIds, cappedDocSources, cappedDocComponents, finalRankingTop20, answerInCap, finalRankingFull };
 }
