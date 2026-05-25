@@ -198,6 +198,8 @@ export interface EvaluatorProfile {
   readonly policyEmitTraces?: boolean;
   /** Query-local gate: atom fires only if its anchor is in the query's top-K stage-1 docs by biCosine (default 24). */
   readonly policyQueryLocalTopK?: number;
+  /** r5.1: enable query-conditioned admission (generic public entity selector injects matched anchors). */
+  readonly policyQueryConditionedAdmission?: boolean;
   /** Stage-1 BGE-M3 first-stage retrieval cap (Run 1; per-stratum worst-case ≥0.90). */
   readonly firstStageTopK?: number;
   /**
@@ -903,6 +905,7 @@ export function scoringOptionsFromProfile(
     ...(profile.policyAbstentionTop1Threshold !== undefined ? { policyAbstentionTop1Threshold: profile.policyAbstentionTop1Threshold } : {}),
     ...(profile.policyEmitTraces !== undefined ? { policyEmitTraces: profile.policyEmitTraces } : {}),
     ...(profile.policyQueryLocalTopK !== undefined ? { policyQueryLocalTopK: profile.policyQueryLocalTopK } : {}),
+    ...(profile.policyQueryConditionedAdmission !== undefined ? { policyQueryConditionedAdmission: profile.policyQueryConditionedAdmission } : {}),
   } as ScoringOptions;
 }
 

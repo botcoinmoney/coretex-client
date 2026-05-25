@@ -354,6 +354,16 @@ export interface ScoringOptions {
   /** Query-local gate: an atom fires only if its anchor is among the query's top-K stage-1 docs by
    *  biCosine (genuinely near-top retrieval), not the 3200-tail. Lower = more query-local. Default 24. */
   readonly policyQueryLocalTopK?: number;
+  /** r5.1: query-CONDITIONED admission. When on, an atom whose anchor's PUBLIC entity is mentioned by
+   *  the query (entity-parse selector) ADMITS the anchor's public-edge reach into the candidate pool
+   *  (selectively, for matching queries) AND drives the boost/suppress — replacing the "anchor must
+   *  already be in top-K" gate. Routes the bridge the bi-encoder MISSED, without the global flood. */
+  readonly policyQueryConditionedAdmission?: boolean;
+  /** Public entity registry (id → lowercased names/aliases) for the entity-parse selector. Corpus-
+   *  derived, public; NOT qrels. Provided by the host (runtime), not the signed profile. */
+  readonly policyEntityRegistry?: ReadonlyArray<{ readonly id: string; readonly names: readonly string[] }>;
+  /** Entity ids treated as too-generic to be a selector key (e.g. the single-universe owner). */
+  readonly policyGenericEntityIds?: readonly string[];
 }
 
 /** The pipeline version this codebase implements. Bundles that pin a
@@ -624,7 +634,7 @@ export async function scoreSubstrateAgainstQuery(
   // AND anchorMandatory); store all that applied. Pure diagnostic — does
   // not affect scoring. Surfaced in PerQueryBreakdown.cappedDocSources so
   // calibration can answer "which mechanism delivered the top-10 docs?"
-  type SourceTag = 'stage1' | 'anchorMandatory' | 'anchorBFS' | 'categoryLensBFS';
+  type SourceTag = 'stage1' | 'anchorMandatory' | 'anchorBFS' | 'categoryLensBFS' | 'policyAdmitted';
   type CandidateRecord = {
     docId: string;
     embedding: Uint8Array;
@@ -675,6 +685,58 @@ export async function scoreSubstrateAgainstQuery(
   }
   // routing anchors = anchors that DO inject (everything except policy-only anchors).
   const routingSlotToEvent = new Map([...anchorSlotToEvent].filter(([m]) => !policyAnchorSlots.has(m)));
+
+  // ─── r5.1: query-CONDITIONED policy admission (selective-anchor admission) ───
+  // A GENERIC PUBLIC selector (entity-mention parse of the query text vs the public entity registry)
+  // decides which policy anchors this query matches; a matched anchor's PUBLIC-edge reach is ADMITTED
+  // into the pool + force-included in the reranker cap (source 'policyAdmitted') — SELECTIVELY, only
+  // for matching queries. This routes the bridge the bi-encoder MISSED without the global anchor-
+  // mandatory flood. selectorMatchedAnchorEvents also gates the late boost/suppress (replacing the
+  // top-K gate). Public only: no qrels/answer/gold-bridge. Default off → byte-identical.
+  const POLICY_PUBLIC_EDGES = new Set(['supports', 'supersedes', 'coreference_of', 'causes', 'derived_from', 'co_occurs_with']);
+  const selectorMatchedAnchorEvents = new Set<string>();
+  let policyAnchorsAdmitted = 0;
+  if (opts.policyAtomsMode === true && opts.policyQueryConditionedAdmission === true && opts.policyEntityRegistry) {
+    const qtext = (query.queryText ?? '').toLowerCase();
+    const generic = new Set(opts.policyGenericEntityIds ?? []);
+    // query subjects = public entities whose name/alias appears in the query text (entity parse).
+    const querySubjects = new Set<string>();
+    for (const ent of opts.policyEntityRegistry) {
+      if (generic.has(ent.id)) continue;
+      if (ent.names.some((n) => n.length > 0 && qtext.includes(n))) querySubjects.add(ent.id);
+    }
+    if (querySubjects.size > 0) {
+      const eventByCorpusIdAdmit = corpusByCorpusId(corpus);
+      const admitDocs = (ev: ProductionCorpusEvent) => {
+        for (const td of ev.truthDocuments) {
+          const existing = pool.get(td.id);
+          if (existing) { addSource(existing, 'policyAdmitted'); continue; }
+          const emb = ev.embeddings.perTruth.get(td.id);
+          if (!emb) continue;
+          pool.set(td.id, { docId: td.id, embedding: emb, text: td.text, eventId: ev.id, memorySlot: null, isCurrentTruth: td.isCurrent, isStaleTruth: !td.isCurrent, sources: new Set<SourceTag>(['policyAdmitted']) });
+        }
+      };
+      const enabledAtomSets: ReadonlyArray<ReadonlyArray<{ targetSlot: number }>> = [
+        ...(opts.enableEvidenceBundleAtoms !== false ? [decoded.evidenceBundleAtoms] : []),
+        ...(opts.enableConflictLifecycleAtoms !== false ? [decoded.conflictLifecycleAtoms] : []),
+      ];
+      for (const atoms of enabledAtomSets) {
+        for (const atom of atoms) {
+          const eA = anchorSlotToEvent.get(atom.targetSlot);
+          if (!eA) continue;
+          const anchorSubjects = (eA.entityIds ?? []).filter((e) => !generic.has(e));
+          if (!anchorSubjects.some((e) => querySubjects.has(e))) continue; // SELECTOR: entity match
+          if (!selectorMatchedAnchorEvents.has(eA.id)) { selectorMatchedAnchorEvents.add(eA.id); policyAnchorsAdmitted++; }
+          admitDocs(eA);                                  // admit the anchor (bridge) itself
+          for (const rel of eA.relations ?? []) {          // admit its PUBLIC-edge reach (the evidence)
+            if (!POLICY_PUBLIC_EDGES.has(rel.edgeType)) continue;
+            const tgt = eventByCorpusIdAdmit.get(rel.other_id);
+            if (tgt) admitDocs(tgt);
+          }
+        }
+      }
+    }
+  }
 
   // §6.5+ Anchor-as-routing-primitive: each active anchor's truth docs are
   // added to the candidate pool directly. Without this, anchors are purely
@@ -1183,7 +1245,7 @@ export async function scoreSubstrateAgainstQuery(
     // (anchorBFS) so a substrate-routed answer the bi-encoder ranked far down
     // still reaches the reranker. Both are bounded by relationExpansionBudget +
     // the 44-slot anchor cap, so this cannot blow up the reranker workload.
-    .filter((c) => c.record.memorySlot !== null || c.record.sources.has('anchorBFS'))
+    .filter((c) => c.record.memorySlot !== null || c.record.sources.has('anchorBFS') || c.record.sources.has('policyAdmitted'))
     .sort((a, b) => {
       const sa = a.record.memorySlot ?? 0;
       const sb = b.record.memorySlot ?? 0;
@@ -1323,12 +1385,16 @@ export async function scoreSubstrateAgainstQuery(
     const sign = (action: string): number => (action === 'suppress' ? -1 : 1);
     const addBonus = (docId: string, delta: number) => policyBonusByDocId.set(docId, (policyBonusByDocId.get(docId) ?? 0) + delta);
     const PUBLIC_EDGES = new Set(['supports', 'supersedes', 'coreference_of', 'causes', 'derived_from', 'co_occurs_with']);
+    // r5.1: when query-conditioned admission is on, the boost/suppress fires for the SELECTOR-MATCHED
+    // anchors (the same generic public selector that admitted them), NOT the top-K biCosine gate.
+    const policyFires = (evId: string): boolean =>
+      opts.policyQueryConditionedAdmission === true ? selectorMatchedAnchorEvents.has(evId) : eventsInStage1.has(evId);
 
     // Evidence-bundle / answer-density: target = anchor's PUBLIC-edge reach (+ anchor's own docs for bundle/include).
     if (opts.enableEvidenceBundleAtoms !== false) {
       for (const atom of decoded.evidenceBundleAtoms) {
         const anchorEv = anchorSlotToEvent.get(atom.targetSlot);
-        if (!anchorEv || !eventsInStage1.has(anchorEv.id)) continue; // query-local gate (genuine stage-1 retrieval)
+        if (!anchorEv || !policyFires(anchorEv.id)) continue; // r5.1: selector-match (admission) else top-K gate
         const beta = Math.min(atom.budget, opts.policyMaxBudgetEvidence ?? atom.budget) / 1000;
         const target = new Set<string>();
         const evidencePath: string[] = [];
@@ -1350,7 +1416,7 @@ export async function scoreSubstrateAgainstQuery(
     if (opts.enableConflictLifecycleAtoms !== false) {
       for (const atom of decoded.conflictLifecycleAtoms) {
         const anchorEv = anchorSlotToEvent.get(atom.targetSlot);
-        if (!anchorEv || !eventsInStage1.has(anchorEv.id)) continue; // query-local: same conflict set genuinely retrieved
+        if (!anchorEv || !policyFires(anchorEv.id)) continue; // r5.1: selector-match (admission) else top-K gate
         const beta = Math.min(atom.budget, opts.policyMaxBudgetConflict ?? atom.budget) / 1000;
         const ownDocs = docsByEventLocal.get(anchorEv.id) ?? [];
         if (ownDocs.length === 0) continue;
@@ -1634,7 +1700,7 @@ function addEventTruthsToPool(
     memorySlot: number | null;
     isCurrentTruth: boolean;
     isStaleTruth: boolean;
-    sources: Set<'stage1' | 'anchorMandatory' | 'anchorBFS' | 'categoryLensBFS'>;
+    sources: Set<'stage1' | 'anchorMandatory' | 'anchorBFS' | 'categoryLensBFS' | 'policyAdmitted'>;
   }>,
   categoryLensWeightByDocId: Map<string, number>,
   normWeight: number,
