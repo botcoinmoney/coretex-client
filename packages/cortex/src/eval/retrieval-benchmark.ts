@@ -400,6 +400,16 @@ export interface PerQueryBreakdown {
     categoryLensBonus: number;
     temporalBonus: number;
   }[];
+  /**
+   * Admission-headroom diagnostic: true iff any qrel doc with relevance>0 is
+   * among the `rerankerInputTopK`-capped candidates (sorted by preRankScore =
+   * biCosine + substrateBonus). RERANKER-INDEPENDENT — a routing surface can
+   * only help by getting an answer INTO this cap, so the answer-in-cap rate
+   * (and its complement, residual routing headroom) bounds the value of any
+   * new substrate routing region. Null for abstention probes (no answer to
+   * admit). Pure diagnostic — does not affect scoring.
+   */
+  readonly answerInCap?: boolean | null;
 }
 
 export interface CompositeScore {
@@ -488,6 +498,7 @@ export async function scoreSubstrateAgainstQuery(
     categoryLensBonus: number;
     temporalBonus: number;
   }[];
+  answerInCap: boolean;
 }> {
   const queryVec = dequantize(query.embeddings.query, opts.retrievalKeyLayout);
   const publicIndex = getOrBuildPublicIndex(corpus);
@@ -1040,7 +1051,7 @@ export async function scoreSubstrateAgainstQuery(
   }
 
   if (candidates.length === 0) {
-    return { ranked: [], top1Score: 0, cappedDocIds: [], cappedDocSources: [], cappedDocComponents: [], finalRankingTop20: [] };
+    return { ranked: [], top1Score: 0, cappedDocIds: [], cappedDocSources: [], cappedDocComponents: [], finalRankingTop20: [], answerInCap: false };
   }
 
   // ─── §6.5 reranker-input cap: take top-N by pre-rank ─────────────────────
@@ -1269,7 +1280,16 @@ export async function scoreSubstrateAgainstQuery(
     });
     process.stderr.write('RELTRACE ' + JSON.stringify({ queryId: query.id, family: query.family, stage1Count: stage1Docs.length, poolSize: pool.size, lensJunkTop10, targets: tr }) + '\n');
   }
-  return { ranked, top1Score, cappedDocIds, cappedDocSources, cappedDocComponents, finalRankingTop20 };
+  // answerInCap: true iff any qrel doc with relevance>0 is among the
+  // rerankerInputTopK-capped candidates. RERANKER-INDEPENDENT (cap membership
+  // is determined by preRankScore = biCosine + substrateBonus only). This is
+  // the admission-headroom signal: a routing surface can only help by getting
+  // an answer INTO this cap; if answers are already in-cap, no routing surface
+  // helps. Pure diagnostic — does not affect scoring. For abstention probes
+  // (no relevance>0 qrels) there is no answer to admit, so this is false.
+  const capSetForAnswer = new Set(cappedDocIds);
+  const answerInCap = query.qrels.some((q) => q.relevance > 0 && capSetForAnswer.has(q.documentId));
+  return { ranked, top1Score, cappedDocIds, cappedDocSources, cappedDocComponents, finalRankingTop20, answerInCap };
 }
 
 // ─── Owner-scoped retrieval (Layer-2 validity fix) ──────────────────────────
@@ -1597,7 +1617,7 @@ export async function evaluateRetrievalBenchmarkState(
 
   for (const query of pack.events) {
     const isAbstentionProbe = query.truthDocuments.length === 0;
-    const { ranked, top1Score, cappedDocIds, cappedDocSources, cappedDocComponents, finalRankingTop20 } = await scoreSubstrateAgainstQuery(decoded, query, corpus, opts);
+    const { ranked, top1Score, cappedDocIds, cappedDocSources, cappedDocComponents, finalRankingTop20, answerInCap } = await scoreSubstrateAgainstQuery(decoded, query, corpus, opts);
 
     // nDCG / MRR / Recall over reranked list.
     const idealRels = query.qrels.map((q) => q.relevance);
@@ -1676,6 +1696,7 @@ export async function evaluateRetrievalBenchmarkState(
       cappedDocSources,
       cappedDocComponents,
       finalRankingTop20,
+      answerInCap: isAbstentionProbe ? null : answerInCap,
     });
   }
 
