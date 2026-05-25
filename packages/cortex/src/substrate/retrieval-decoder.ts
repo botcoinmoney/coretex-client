@@ -147,6 +147,13 @@ export interface PolicyAtom {
 }
 
 export const POLICY_TARGET_NONE = 0xffff;
+/**
+ * Max addressable PolicyAtom anchor slot. MemoryIndex decodes 352 slots, but slot REFERENCES
+ * elsewhere (temporal memorySlot, relation source/target) are 8-bit (0..255). To keep anchors
+ * cross-referenceable and avoid "decoded-but-unaddressable" anchors, an atom's targetSlot is
+ * restricted to 0..255 (a non-abstain atom must point into this range).
+ */
+export const POLICY_ANCHOR_SLOT_LIMIT = 256;
 
 export interface DecodedSubstrate {
   readonly memoryIndex: ReadonlyArray<MemoryIndexSlot | null>;     // length 44
@@ -728,9 +735,9 @@ export function decodePolicyAtomRegion(state: CortexState, family: PolicyAtomFam
     if (!reg.allowed.has(action)) { failures++; continue; }                // action not allowed for this family
     if (!VALID_SELECTOR.has(selector) || !VALID_EVIDENCE_FEATURE.has(evidenceFeature)) { failures++; continue; }
     if (action === 'abstain') {
-      if (targetSlot !== POLICY_TARGET_NONE && targetSlot >= MEMORY_INDEX_SLOT_COUNT) { failures++; continue; }
+      if (targetSlot !== POLICY_TARGET_NONE && targetSlot >= POLICY_ANCHOR_SLOT_LIMIT) { failures++; continue; }
     } else {
-      if (targetSlot === POLICY_TARGET_NONE || targetSlot >= MEMORY_INDEX_SLOT_COUNT) { failures++; continue; } // non-abstain needs a real public anchor
+      if (targetSlot === POLICY_TARGET_NONE || targetSlot >= POLICY_ANCHOR_SLOT_LIMIT) { failures++; continue; } // non-abstain needs a real, 8-bit-addressable public anchor (0..255)
     }
     if (validFromEpoch > 0n && expiryEpoch > 0n && validFromEpoch > expiryEpoch) { failures++; continue; }
     atoms.push({ atomIndex: k, family, selector, evidenceFeature, action, scope, targetSlot, budget, flags, validFromEpoch, expiryEpoch });
@@ -755,7 +762,7 @@ export function encodePolicyAtom(atom: PolicyAtom): bigint {
   const scopeBits = POLICY_SCOPE_TO_BITS[atom.scope];
   if (!actionBits) throw new Error('encodePolicyAtom: bad action');
   if (!scopeBits) throw new Error('encodePolicyAtom: bad scope');
-  if (atom.targetSlot !== POLICY_TARGET_NONE && (atom.targetSlot < 0 || atom.targetSlot >= MEMORY_INDEX_SLOT_COUNT)) throw new Error('encodePolicyAtom: targetSlot out of range');
+  if (atom.targetSlot !== POLICY_TARGET_NONE && (atom.targetSlot < 0 || atom.targetSlot >= POLICY_ANCHOR_SLOT_LIMIT)) throw new Error('encodePolicyAtom: targetSlot out of range (0..255 or POLICY_TARGET_NONE)');
   if (atom.budget < 0 || atom.budget > 0xffff) throw new Error('encodePolicyAtom: budget out of range');
   if (atom.flags < 0 || atom.flags > 0xff) throw new Error('encodePolicyAtom: flags out of range');
   if (atom.validFromEpoch >> 40n !== 0n || atom.expiryEpoch >> 40n !== 0n) throw new Error('encodePolicyAtom: epoch exceeds 40 bits');

@@ -110,6 +110,19 @@ describe('r5 reserved region + invalid-atom enforcement', () => {
     assert.equal(decodePolicyAtomRegion(s, 'conflict_lifecycle').failures, 1);
   });
 
+  test('targetSlot must be 8-bit-addressable (0..255); 256..351 rejected at encode AND decode', () => {
+    // encode rejects an unaddressable anchor (256..351 is decoded by MemoryIndex but not 8-bit referenceable)
+    assert.throws(() => encodePolicyAtom({ ...EB, targetSlot: 300 }), /targetSlot/);
+    // and if a raw word smuggles slot 300 in, decode drops it
+    const s = zero();
+    s.words[RANGES.POLICY_EVIDENCE_START] = (encodePolicyAtom({ ...EB, targetSlot: 255 }) & ~(0xffffn << 216n)) | (300n << 216n);
+    assert.equal(decodePolicyAtomRegion(s, 'evidence_bundle').failures, 1);
+    // slot 255 is the max valid anchor
+    const s2 = zero();
+    s2.words[RANGES.POLICY_EVIDENCE_START] = encodePolicyAtom({ ...EB, targetSlot: 255 });
+    assert.equal(decodePolicyAtomRegion(s2, 'evidence_bundle').atoms.length, 1);
+  });
+
   test('static validateReservedBits stays r4-compatible for the reclaimed word ranges', () => {
     // An r5 atom sets bits in 384-671 that r4 treated as key payload (mask 0) → static
     // reserved-bit check must still pass (the r5 typed check is validatePolicyRegions).
