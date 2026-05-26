@@ -374,6 +374,16 @@ export interface ScoringOptions {
   readonly policyEntityRegistry?: ReadonlyArray<{ readonly id: string; readonly names: readonly string[] }>;
   /** Entity ids treated as too-generic to be a selector key (e.g. the single-universe owner). */
   readonly policyGenericEntityIds?: readonly string[];
+  /**
+   * Memory-IR SIDECAR doc rendering for the reranker (Phase-3 reranker-format probe → launch hook).
+   * When 'F2', each candidate doc handed to the reranker is prefixed with the substrate's DERIVED
+   * lifecycle header `[lifecycle=current|superseded|none | subject=<entity>]` (computed from PUBLIC
+   * supersedes structure — the same signal the F2 traces train on). This lets a Memory-IR-tuned E1
+   * reranker consume the substrate's derived currency at score time (the format probe verdict:
+   * the reranker can't infer recency from text/timestamp but USES the derived lifecycle label).
+   * Timestamp is omitted by design (timestamp-shuffle proved it decorative; and the production event
+   * carries no per-doc timestamp). Default off → byte-identical (raw doc text). */
+  readonly rerankerMemoryIRFormat?: 'off' | 'F2';
 }
 
 /** The pipeline version this codebase implements. Bundles that pin a
@@ -1346,7 +1356,19 @@ export async function scoreSubstrateAgainstQuery(
     }
     return bridgeText ? `Bridge evidence:\n${bridgeText}\nCandidate answer:\n${c.record.text}` : c.record.text;
   };
-  const pairs = rerankerCandidates.map((c) => ({ query: query.queryText, document: bundleDoc(c) }));
+  // Memory-IR sidecar doc rendering (F2): prefix the substrate's DERIVED lifecycle header so a
+  // Memory-IR-tuned reranker consumes the currency it cannot infer from text. Default off → raw text.
+  const mirF2 = opts.rerankerMemoryIRFormat === 'F2';
+  const lifecycleIdx = mirF2 ? getOrBuildLifecycleIndex(corpus) : null;
+  const mirDoc = (c: typeof rerankerCandidates[number]): string => {
+    const base = bundleDoc(c);
+    if (!mirF2) return base;
+    const ev = corpus.byId.get(c.record.eventId);
+    const subj = (ev?.entityIds ?? []).find((e) => !(opts.policyGenericEntityIds ?? []).includes(e)) ?? '?';
+    const lc = lifecycleIdx!.get(c.record.eventId) ?? 'none';
+    return `[lifecycle=${lc} | subject=${subj}] ${base}`;
+  };
+  const pairs = rerankerCandidates.map((c) => ({ query: query.queryText, document: mirDoc(c) }));
   const rerankerScoresTopN = pairs.length > 0 ? await opts.reranker.score(pairs) : [];
   if (rerankerScoresTopN.length !== pairs.length) {
     throw new Error(
@@ -1710,6 +1732,30 @@ function getOrBuildDocTextIndex(corpus: ProductionCorpus): Map<string, string> {
     for (const n of event.hardNegatives) if (!map.has(n.id)) map.set(n.id, n.text);
   }
   docTextCache.set(corpus, map);
+  return map;
+}
+
+/**
+ * Memory-IR lifecycle index for the F2 reranker doc-render hook. Per EVENT id: the substrate's DERIVED
+ * lifecycle from PUBLIC supersedes structure — an event that is the SOURCE of a supersedes edge (and not
+ * a target) is the current head; a target of a supersedes edge is superseded. Cached per corpus. This is
+ * exactly the signal the F2 traces train on, computed at score time from the same public edges.
+ */
+const lifecycleIndexCache = new WeakMap<ProductionCorpus, Map<string, 'current' | 'superseded' | 'none'>>();
+function getOrBuildLifecycleIndex(corpus: ProductionCorpus): Map<string, 'current' | 'superseded' | 'none'> {
+  const cached = lifecycleIndexCache.get(corpus);
+  if (cached) return cached;
+  const supSrc = new Set<string>(), supDst = new Set<string>();
+  for (const e of corpus.events) {
+    for (const r of e.relations ?? []) {
+      if (r.edgeType === 'supersedes') { supSrc.add(e.id); supDst.add(r.other_id); }
+    }
+  }
+  const map = new Map<string, 'current' | 'superseded' | 'none'>();
+  for (const e of corpus.events) {
+    map.set(e.id, supDst.has(e.id) ? 'superseded' : (supSrc.has(e.id) ? 'current' : 'none'));
+  }
+  lifecycleIndexCache.set(corpus, map);
   return map;
 }
 
