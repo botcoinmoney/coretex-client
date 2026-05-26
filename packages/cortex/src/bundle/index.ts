@@ -208,6 +208,9 @@ export interface EvaluatorProfile {
   /** Memory-IR sidecar doc rendering for the reranker ('F2' prefixes the derived lifecycle header).
    *  Pin only with a Memory-IR-tuned reranker (E1); default off → raw doc text. */
   readonly rerankerMemoryIRFormat?: 'off' | 'F2';
+  /** Memory-IR lifecycle SOURCE: 'resolved' (substrate's decoded temporal state — launch form, lifecycle
+   *  earned by the miner patch) vs 'corpus' (raw corpus labels — convenience). Default 'corpus'. */
+  readonly rerankerMemoryIRSource?: 'corpus' | 'resolved';
   /** Stage-1 BGE-M3 first-stage retrieval cap (Run 1; per-stratum worst-case ≥0.90). */
   readonly firstStageTopK?: number;
   /**
@@ -917,6 +920,7 @@ export function scoringOptionsFromProfile(
     ...(profile.policyQueryConditionedAdmission !== undefined ? { policyQueryConditionedAdmission: profile.policyQueryConditionedAdmission } : {}),
     ...(profile.policyRelationTypedAdmission !== undefined ? { policyRelationTypedAdmission: profile.policyRelationTypedAdmission } : {}),
     ...(profile.rerankerMemoryIRFormat !== undefined ? { rerankerMemoryIRFormat: profile.rerankerMemoryIRFormat } : {}),
+    ...(profile.rerankerMemoryIRSource !== undefined ? { rerankerMemoryIRSource: profile.rerankerMemoryIRSource } : {}),
   } as ScoringOptions;
 }
 

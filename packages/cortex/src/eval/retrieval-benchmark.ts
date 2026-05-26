@@ -384,6 +384,17 @@ export interface ScoringOptions {
    * Timestamp is omitted by design (timestamp-shuffle proved it decorative; and the production event
    * carries no per-doc timestamp). Default off → byte-identical (raw doc text). */
   readonly rerankerMemoryIRFormat?: 'off' | 'F2';
+  /**
+   * SOURCE of the Memory-IR lifecycle the renderer emits (hardening, 2026-05-26):
+   *  - 'corpus'   = derive lifecycle from the raw corpus supersedes edges directly (static corpus labels;
+   *                 the convenience path — proves the FORMAT helps but NOT that the miner's state earns it).
+   *  - 'resolved' = derive lifecycle from the RESOLVED MemoryState — the substrate's decoded temporal
+   *                 records (corpus + baseline + the miner's STATE_ADVANCE patch), i.e. temporalBoost/
+   *                 Suppress event sets. This is the LAUNCH form: the lifecycle the reranker reads is
+   *                 EARNED by the miner compiling temporal records into the substrate, not read off the
+   *                 corpus. With an empty substrate, resolved lifecycle is all 'none' (no header) — the
+   *                 lift only appears once the miner patch resolves the lifecycle. Default 'corpus'. */
+  readonly rerankerMemoryIRSource?: 'corpus' | 'resolved';
 }
 
 /** The pipeline version this codebase implements. Bundles that pin a
@@ -1359,11 +1370,16 @@ export async function scoreSubstrateAgainstQuery(
   // Memory-IR sidecar doc rendering (F2): prefix the substrate's DERIVED lifecycle header so a
   // Memory-IR-tuned reranker consumes the currency it cannot infer from text. Default off → raw text.
   const mirF2 = opts.rerankerMemoryIRFormat === 'F2';
-  const lifecycleIdx = mirF2 ? getOrBuildLifecycleIndex(corpus) : null;
+  const lifecycleIdx = (mirF2 && opts.rerankerMemoryIRSource !== 'resolved') ? getOrBuildLifecycleIndex(corpus) : null;
+  // RESOLVED-state lifecycle (launch form): from the substrate's decoded temporal records (the miner's
+  // compiled state), NOT corpus labels. temporalBoost/Suppress are resolved above from decoded.temporal.
+  const mirResolved = opts.rerankerMemoryIRSource === 'resolved';
   const mirDoc = (c: typeof rerankerCandidates[number]): string => {
     const base = bundleDoc(c);
     if (!mirF2) return base;
-    const lc = lifecycleIdx!.get(c.record.eventId) ?? 'none';
+    const lc = mirResolved
+      ? (temporalBoostEventIds.has(c.record.eventId) ? 'current' : temporalSuppressEventIds.has(c.record.eventId) ? 'superseded' : 'none')
+      : (lifecycleIdx!.get(c.record.eventId) ?? 'none');
     // Launch refinement: only prepend the lifecycle header for docs ACTUALLY in a supersedes chain
     // (lifecycle current/superseded). For lifecycle=none docs the header is pure noise (it slightly
     // hurt aspect_constraint in the full-benchmark), so they get raw text → no off-family regression.
