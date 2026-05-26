@@ -1363,9 +1363,13 @@ export async function scoreSubstrateAgainstQuery(
   const mirDoc = (c: typeof rerankerCandidates[number]): string => {
     const base = bundleDoc(c);
     if (!mirF2) return base;
+    const lc = lifecycleIdx!.get(c.record.eventId) ?? 'none';
+    // Launch refinement: only prepend the lifecycle header for docs ACTUALLY in a supersedes chain
+    // (lifecycle current/superseded). For lifecycle=none docs the header is pure noise (it slightly
+    // hurt aspect_constraint in the full-benchmark), so they get raw text → no off-family regression.
+    if (lc === 'none') return base;
     const ev = corpus.byId.get(c.record.eventId);
     const subj = (ev?.entityIds ?? []).find((e) => !(opts.policyGenericEntityIds ?? []).includes(e)) ?? '?';
-    const lc = lifecycleIdx!.get(c.record.eventId) ?? 'none';
     return `[lifecycle=${lc} | subject=${subj}] ${base}`;
   };
   const pairs = rerankerCandidates.map((c) => ({ query: query.queryText, document: mirDoc(c) }));
