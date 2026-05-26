@@ -16,6 +16,7 @@ import { decodeSubstrate, type DecodedSubstrate, type RelationCategoryLens, POLI
 import { biEncoderModelIdHash } from '../substrate/retrieval-decoder.js';
 import { structuralValidity } from '../substrate/structural-validity.js';
 import type { CrossEncoderReranker } from './reranker.js';
+import { renderMemoryIRDoc } from './memory-ir-render.js';
 import type { BiEncoder } from './bi-encoder.js';
 import { cosineSimilarity, dequantize } from './bi-encoder.js';
 import type {
@@ -395,6 +396,19 @@ export interface ScoringOptions {
    *                 corpus. With an empty substrate, resolved lifecycle is all 'none' (no header) — the
    *                 lift only appears once the miner patch resolves the lifecycle. Default 'corpus'. */
   readonly rerankerMemoryIRSource?: 'corpus' | 'resolved';
+  /**
+   * FULL multi-field Memory-IR rendering (2026-05-26 correction). When 'full', each candidate doc is
+   * rendered by the protocol-owned shared renderer (`renderMemoryIRDoc`) over the COMPLETE MemoryOps IR
+   * (lifecycle/role/path/conflict/scope/evidence/density) — the SAME grammar the exporter writes and the
+   * trainer renders, so train-time and serve-time documents are byte-identical. The IR per (queryId,
+   * eventId) is supplied by `rerankerMemoryIRLookup` (computed by the harness from the public corpus +
+   * resolved state via the shared `scripts/lib/memory-ir.mjs` module). This SUPERSEDES the lifecycle-only
+   * 'F2' path for the MemReranker-lite tuning probe (the prior loop trained multi-field but served
+   * lifecycle-only — incompatible). Default off → raw doc text. */
+  readonly rerankerMemoryIRMode?: 'off' | 'full';
+  /** (queryId, eventId) → resolved MemoryIR (or null) for `rerankerMemoryIRMode==='full'`. The candidate
+   * text rendered is the RAW event text (matching the exporter's `candidate_text`), not the bundled doc. */
+  readonly rerankerMemoryIRLookup?: (queryId: string, eventId: string) => import('./memory-ir-render.js').MemoryIR | null;
 }
 
 /** The pipeline version this codebase implements. Bundles that pin a
@@ -1367,6 +1381,10 @@ export async function scoreSubstrateAgainstQuery(
     }
     return bridgeText ? `Bridge evidence:\n${bridgeText}\nCandidate answer:\n${c.record.text}` : c.record.text;
   };
+  // FULL multi-field Memory-IR render (shared protocol renderer): byte-identical to the exporter/trainer.
+  // The harness supplies the resolved IR per (queryId, eventId); we render header + RAW event text so the
+  // served document matches the trained `candidate_text` exactly. Takes precedence over the legacy F2 path.
+  const mirFull = opts.rerankerMemoryIRMode === 'full' && typeof opts.rerankerMemoryIRLookup === 'function';
   // Memory-IR sidecar doc rendering (F2): prefix the substrate's DERIVED lifecycle header so a
   // Memory-IR-tuned reranker consumes the currency it cannot infer from text. Default off → raw text.
   const mirF2 = opts.rerankerMemoryIRFormat === 'F2';
@@ -1375,6 +1393,11 @@ export async function scoreSubstrateAgainstQuery(
   // compiled state), NOT corpus labels. temporalBoost/Suppress are resolved above from decoded.temporal.
   const mirResolved = opts.rerankerMemoryIRSource === 'resolved';
   const mirDoc = (c: typeof rerankerCandidates[number]): string => {
+    if (mirFull) {
+      // FULL IR: render the protocol header over the resolved IR + RAW event text (train==serve).
+      const ir = opts.rerankerMemoryIRLookup!(query.id, c.record.eventId);
+      return renderMemoryIRDoc(ir, c.record.text);
+    }
     const base = bundleDoc(c);
     if (!mirF2) return base;
     const lc = mirResolved
