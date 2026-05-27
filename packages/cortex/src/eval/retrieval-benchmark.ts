@@ -792,9 +792,15 @@ export async function scoreSubstrateAgainstQuery(
       if (ent.names.some((n) => n.length > 0 && qtext.includes(n))) querySubjects.add(ent.id);
     }
     // Category-B gate: when relation-typed and the query has NO relation intent (e.g. temporal "current
-    // X"), inject NOTHING — entity-only admission flooded these with off-intent bridges and displaced the
-    // real answer (the r5.1 −0.14). A query with relation intent only admits reach along the typed edges.
-    if (querySubjects.size > 0 && (!policyRelationTyped || policyIntentTypes.size > 0)) {
+    // X"), inject NOTHING for EVIDENCE-BUNDLE (relation-routing) atoms — entity-only admission flooded these
+    // with off-intent bridges and displaced the real answer (the r5.1 −0.14). CONFLICT_LIFECYCLE atoms use a
+    // DIFFERENT selector (CONFLICT_SET_MEMBER = the query's subject has a public conflict set) and admit on
+    // entity-match alone (scope = the anchor's OWN docs, no typed reach), independent of relation intent —
+    // so conflict coexists with live Category-B without being blocked by the no-relation-intent gate.
+    const evidenceAtomsAdm = opts.enableEvidenceBundleAtoms !== false ? decoded.evidenceBundleAtoms : [];
+    const conflictAtomsAdm = opts.enableConflictLifecycleAtoms !== false ? decoded.conflictLifecycleAtoms : [];
+    const hasConflictAtomsAdm = conflictAtomsAdm.length > 0;
+    if (querySubjects.size > 0 && (!policyRelationTyped || policyIntentTypes.size > 0 || hasConflictAtomsAdm)) {
       const eventByCorpusIdAdmit = corpusByCorpusId(corpus);
       const admitDocs = (ev: ProductionCorpusEvent) => {
         for (const td of ev.truthDocuments) {
@@ -805,26 +811,29 @@ export async function scoreSubstrateAgainstQuery(
           pool.set(td.id, { docId: td.id, embedding: emb, text: td.text, eventId: ev.id, memorySlot: null, isCurrentTruth: td.isCurrent, isStaleTruth: !td.isCurrent, sources: new Set<SourceTag>(['policyAdmitted']) });
         }
       };
-      const enabledAtomSets: ReadonlyArray<ReadonlyArray<{ targetSlot: number }>> = [
-        ...(opts.enableEvidenceBundleAtoms !== false ? [decoded.evidenceBundleAtoms] : []),
-        ...(opts.enableConflictLifecycleAtoms !== false ? [decoded.conflictLifecycleAtoms] : []),
+      const taggedSets: ReadonlyArray<{ conflict: boolean; atoms: ReadonlyArray<{ targetSlot: number }> }> = [
+        { conflict: false, atoms: evidenceAtomsAdm },
+        { conflict: true, atoms: conflictAtomsAdm },
       ];
-      for (const atoms of enabledAtomSets) {
+      for (const { conflict, atoms } of taggedSets) {
         for (const atom of atoms) {
           const eA = anchorSlotToEvent.get(atom.targetSlot);
           if (!eA) continue;
           const anchorSubjects = (eA.entityIds ?? []).filter((e) => !generic.has(e));
           if (!anchorSubjects.some((e) => querySubjects.has(e))) continue; // SELECTOR: entity match
-          // Category-B: also require the anchor to carry at least one edge of an intent-matched type —
-          // otherwise this subject-bearing anchor is not relevant to the query's relation intent.
-          const anchorEdges = (eA.relations ?? []).filter((rel) => edgeAdmissible(rel.edgeType));
-          if (policyRelationTyped && anchorEdges.length === 0) continue;
+          if (!conflict) {
+            // Category-B (evidence routing): require the anchor to carry an intent-matched edge.
+            const anchorEdges = (eA.relations ?? []).filter((rel) => edgeAdmissible(rel.edgeType));
+            if (policyRelationTyped && anchorEdges.length === 0) continue;
+          }
           if (!selectorMatchedAnchorEvents.has(eA.id)) { selectorMatchedAnchorEvents.add(eA.id); policyAnchorsAdmitted++; }
-          admitDocs(eA);                                  // admit the anchor (bridge) itself
-          for (const rel of eA.relations ?? []) {          // admit its (typed) PUBLIC-edge reach (the evidence)
-            if (!edgeAdmissible(rel.edgeType)) continue;
-            const tgt = eventByCorpusIdAdmit.get(rel.other_id);
-            if (tgt) admitDocs(tgt);
+          admitDocs(eA);                                  // admit the anchor itself (the conflict doc / bridge)
+          if (!conflict) {                                 // evidence routing admits its typed PUBLIC-edge reach
+            for (const rel of eA.relations ?? []) {        // (conflict scope = the anchor's OWN docs only)
+              if (!edgeAdmissible(rel.edgeType)) continue;
+              const tgt = eventByCorpusIdAdmit.get(rel.other_id);
+              if (tgt) admitDocs(tgt);
+            }
           }
         }
       }
