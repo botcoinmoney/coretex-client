@@ -7,9 +7,12 @@
  *      — i.e., the coordinator didn't pick a fictional blockhash and
  *      didn't reorg out a stale one.
  *   2. Re-deriving `gateSeed` + `confirmSeed` from (epochSecret,
- *      blockhash, epochId, patchHash, parentRoot, minerAddress,
- *      corpusRoot, bundleHash) reproduces the receipt's seeds byte-
- *      for-byte.
+ *      blockhash, epochId, patchHash, parentRoot, corpusRoot, bundleHash)
+ *      reproduces the receipt's seeds byte-for-byte. NOTE: `minerAddress`
+ *      is intentionally NOT a seed input (see seed-derivation.ts EvalSeedInput
+ *      + test fixtures/seed-derivation-golden.json) — seeds are bound to the
+ *      patch + parent + epoch randomness, not the submitter, so the first
+ *      submitter of a given (parentRoot, patchBytes) wins via the dedup cache.
  *   3. Re-deriving `patchHash` from the patch bytes matches the
  *      receipt's patchHash.
  *   4. Re-deriving `dedupKey` from (parentRoot, patchBytes) matches.
