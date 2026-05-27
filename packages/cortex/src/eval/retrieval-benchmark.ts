@@ -343,6 +343,11 @@ export interface ScoringOptions {
   /** Per-family budget caps (ppm-ish). A miner atom's budget is clamped to these. */
   readonly policyMaxBudgetEvidence?: number;
   readonly policyMaxBudgetConflict?: number;
+  /** Conflict-INTENT-typed admission: conflict_lifecycle atoms admit ONLY when the query carries public
+   * conflict/scope intent (`parseQueryConflictIntent`: a leading "For <scope>," clause whose phrase is not the
+   * subject entity), so they fire on conflict queries and stay silent on co-subject aspect/temporal/bridge queries
+   * (the off-family damage from the coarse CONFLICT_SET_MEMBER entity selector). Default off → byte-identical. */
+  readonly policyConflictIntentAdmission?: boolean;
   /**
    * Abstention is a SPLIT: the miner atom supplies the public no-evidence-path policy;
    * the confidence gate is an OPERATOR PROFILE calibration. Abstain fires only when the
@@ -465,6 +470,21 @@ export function parseQueryRelationIntent(queryText: string): Set<string> {
   // coreference: "<Name> the <role>" — generic occupation lexicon (portable, not corpus gold).
   if (/\bthe (pastry chef|chef|accountant|engineer|teacher|nurse|doctor|lawyer|artist|writer|baker|barista|dentist|pilot|plumber|painter|architect|designer|analyst|manager|scientist|professor|musician|photographer|electrician|carpenter|mechanic|chemist|surgeon|therapist|consultant|developer|programmer|administrator|technician|researcher|journalist|editor|director|founder|owner|clerk|cashier|waiter|waitress|bartender|farmer|gardener|tailor|jeweler|optician|veterinarian|pharmacist|librarian|translator|interpreter)\b/.test(q)) types.add('coreference_of');
   return types;
+}
+
+/**
+ * PUBLIC conflict-intent parse for conflict_lifecycle PolicyAtom admission (the conflict analogue of
+ * `parseQueryRelationIntent`). A conflict/scope-contested question leads with a SCOPE clause — "For <scope>,
+ * what is <subject>'s current/preferred …" — where the leading phrase is a CONDITION, not the subject entity.
+ * This distinguishes conflict queries from aspect queries ("For <subject>, what is the <aspect> detail?"), which
+ * lead with the SUBJECT itself, and from temporal/bridge/etc. (no leading scope clause). Honest: query text +
+ * the public entity-name set only — NO family labels, NO qrels. Returns true iff the query carries conflict intent.
+ */
+export function parseQueryConflictIntent(queryText: string, entityNames: ReadonlySet<string>): boolean {
+  const m = (queryText ?? '').toLowerCase().match(/^for\s+([^,]+),/);
+  if (!m) return false;                       // no leading scope clause → not a contested/scope question
+  const scope = (m[1] ?? '').trim();
+  return !entityNames.has(scope);             // leading phrase is the SUBJECT (aspect) → not conflict; else a scope condition → conflict
 }
 
 /** r5 PolicyAtom trace receipt (Memory-IR pipeline input; emitted when policyEmitTraces). */
@@ -800,6 +820,11 @@ export async function scoreSubstrateAgainstQuery(
     const evidenceAtomsAdm = opts.enableEvidenceBundleAtoms !== false ? decoded.evidenceBundleAtoms : [];
     const conflictAtomsAdm = opts.enableConflictLifecycleAtoms !== false ? decoded.conflictLifecycleAtoms : [];
     const hasConflictAtomsAdm = conflictAtomsAdm.length > 0;
+    // CONFLICT-INTENT-typed admission (the conflict analogue of relation-typed): conflict atoms fire only on
+    // queries carrying public conflict/scope intent, so they stay silent on co-subject aspect/temporal queries.
+    const conflictIntentGate = opts.policyConflictIntentAdmission === true;
+    const queryHasConflictIntent = !conflictIntentGate
+      || parseQueryConflictIntent(query.queryText ?? '', new Set((opts.policyEntityRegistry ?? []).flatMap((e) => e.names)));
     if (querySubjects.size > 0 && (!policyRelationTyped || policyIntentTypes.size > 0 || hasConflictAtomsAdm)) {
       const eventByCorpusIdAdmit = corpusByCorpusId(corpus);
       const admitDocs = (ev: ProductionCorpusEvent) => {
@@ -816,6 +841,7 @@ export async function scoreSubstrateAgainstQuery(
         { conflict: true, atoms: conflictAtomsAdm },
       ];
       for (const { conflict, atoms } of taggedSets) {
+        if (conflict && conflictIntentGate && !queryHasConflictIntent) continue; // conflict-intent typed gate
         for (const atom of atoms) {
           const eA = anchorSlotToEvent.get(atom.targetSlot);
           if (!eA) continue;
