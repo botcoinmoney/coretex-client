@@ -10,6 +10,7 @@ import {
   rpcCall,
   type RpcLog,
 } from './replay/v4.js';
+import { coretexRangeLogs, replayCoreTexFromLogs } from './replay/coretex-registry.js';
 import { unpack } from './state/codec.js';
 import { hexToBytes } from './state/merkle.js';
 import {
@@ -65,7 +66,7 @@ async function main() {
   if (!cmd || cmd === '--help' || cmd === '-h') {
     process.stderr.write(
       'usage: coretex-replay {tx|current|watch} --parent-state state.bin [--logs logs.json | --rpc url --tx hash]\n'
-      + '       coretex-replay watch --rpc url --parent-state state.bin --bundle-manifest manifest.json --core-version-hash 0x... [--v4 addr] [--cortex-state addr] [--from-block n] [--once]\n'
+      + '       coretex-replay watch --rpc url --coretex-registry addr --parent-state state.bin --bundle-manifest manifest.json --expected-bundle-hash 0x... [--from-block n] [--to-block latest] [--once]\n'
       + '       canonical replay: --bundle-manifest manifest.json --expected-bundle-hash 0x... (or --core-version-hash 0x...) [--client-version x.y.z] [--allow-outdated-client]\n',
     );
     process.exit(cmd ? 0 : 1);
@@ -102,18 +103,22 @@ async function main() {
     const toBlockArg = opt(args, '--to-block');
     const pollIntervalMs = Number(opt(args, '--poll-interval-ms') ?? '12000');
     const once = args.includes('--once') || toBlockArg !== undefined;
-    const addresses = [opt(args, '--v4'), opt(args, '--cortex-state')].filter((v): v is string => v !== undefined);
-    let cursor = fromBlockArg === 'latest' ? await latestBlock(rpc) : parseBlock(fromBlockArg);
+    // Canonical CoreTexRegistry replay; legacy --v4/--cortex-state addresses still accepted as aliases.
+    const registry = opt(args, '--coretex-registry') ?? opt(args, '--registry');
+    const addresses = [registry, opt(args, '--v4'), opt(args, '--cortex-state')].filter((v): v is string => v !== undefined);
+    const expectedBundleHash = opt(args, '--expected-bundle-hash') ?? opt(args, '--core-version-hash');
+    const fromFixed = fromBlockArg === 'latest' ? await latestBlock(rpc) : parseBlock(fromBlockArg);
 
     for (;;) {
       const latest = toBlockArg ? (toBlockArg === 'latest' ? await latestBlock(rpc) : parseBlock(toBlockArg)) : await latestBlock(rpc);
-      if (latest >= cursor) {
-        const logs = await rangeLogs(rpc, addresses.length > 0 ? addresses : undefined, blockHex(cursor), blockHex(latest));
-        const result = replayV4TransitionsFromLogs(parentState, logs);
-        print({ fromBlock: blockHex(cursor), toBlock: blockHex(latest), logCount: logs.length, ...result });
+      if (latest >= fromFixed) {
+        // cumulative + idempotent: always replay the full range from the pinned start over the empty/parent state.
+        const logs = await coretexRangeLogs(rpc, addresses.length > 0 ? addresses : undefined, blockHex(fromFixed), blockHex(latest));
+        const result = expectedBundleHash
+          ? replayCoreTexFromLogs(parentState, logs, { expectedBundleHash })
+          : replayCoreTexFromLogs(parentState, logs);
+        print({ fromBlock: blockHex(fromFixed), toBlock: blockHex(latest), logCount: logs.length, ...result });
         if (!result.ok) process.exit(1);
-        parentState = unpack(hexToBytes(result.finalStatePackedHex));
-        cursor = latest + 1n;
       }
       if (once) return;
       await sleep(pollIntervalMs);

@@ -1,3 +1,9 @@
+/**
+ * LEGACY decoder for the pre-canonical events (CoretexPatchBytes + the old two-arg
+ * CortexStateAdvanced). SUPERSEDED by ./coretex-registry.ts (canonical CoreTexRegistry events).
+ * Retained only for its generic RPC transport helpers (rpcCall/receiptLogs/rangeLogs/RpcLog) and
+ * for decoding historical pre-rename logs. Do NOT use the old event topics on the launch path.
+ */
 import { readFileSync } from 'node:fs';
 
 import { unpack, pack } from '../state/codec.js';

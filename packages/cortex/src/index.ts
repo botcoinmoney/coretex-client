@@ -20,6 +20,7 @@ export * from './shards.js';
 export * from './event-topics.js';
 export * from './bundle/index.js';
 export * from './replay/v4.js';
+export * from './replay/coretex-registry.js';
 export * from './replay/per-patch.js';
 export * from './coordinator/endpoints.js';
 export * from './coordinator/retrieval-data-source.js';
