@@ -205,6 +205,10 @@ export interface EvaluatorProfile {
   /** Category-B: relation-TYPED admission — restrict admission + evidence boost to the query's
    *  PUBLIC parsed relation-intent edge types (finer than r5.1's entity-only all-edge admission). */
   readonly policyRelationTypedAdmission?: boolean;
+  /** conflict_lifecycle: gate conflict-atom admission on a PUBLIC parsed conflict/scope intent
+   *  (parseQueryConflictIntent) instead of the coarse CONFLICT_SET_MEMBER entity selector — eliminates
+   *  the off-family damage. MUST be true whenever enableConflictLifecycleAtoms is true at launch. */
+  readonly policyConflictIntentAdmission?: boolean;
   /** Memory-IR sidecar doc rendering for the reranker ('F2' prefixes the derived lifecycle header).
    *  Pin only with a Memory-IR-tuned reranker (E1); default off → raw doc text. */
   readonly rerankerMemoryIRFormat?: 'off' | 'F2';
@@ -406,6 +410,10 @@ export interface EvaluatorProfile {
    * `rampUpMaxRatio≈1.1`, recover +25% temporal runway (51→64) with anti-cheat 0.
    */
   readonly controllerParams?: ControllerParamsPin;
+  /** LAUNCH-REQUIRED active-frontier / churn controller pin (EpochFrontier). When present, the
+   *  validator rotates the active eval_hidden frontier deterministically and recomputes the
+   *  baseline on activeRootChanged. Hashed into bundleHash so churn behavior is attested. */
+  readonly epochFrontier?: EpochFrontierPin;
 }
 
 /**
@@ -460,6 +468,27 @@ export interface ControllerParamsPin {
   readonly smallDriftRatio?: number;
   /** Multiplier on runtime targetAdvances setting the "high quality attempts" threshold. difficulty.ts default 4. */
   readonly qualityHighThresholdMult?: number;
+}
+
+/** EpochFrontier (churn) launch pin. Mirrors scripts/lib/epoch-frontier.mjs
+ *  DEFAULT_EPOCH_FRONTIER_PROFILE; pinned into the signed profile so the active-frontier rotation
+ *  is deterministic + attested. baselineRecompute MUST be 'activeRootChanged', majorDeltaPolicy
+ *  'corpusRootChanged' (the two are distinct triggers). */
+export interface EpochFrontierPin {
+  readonly mode: 'off' | 'C0' | 'C1' | 'C2' | 'C3' | 'C4';
+  readonly activeWindow: number;
+  readonly minChurn?: number;
+  readonly maxChurn?: number;
+  readonly headroomLowWatermark?: number;
+  readonly headroomHighWatermark?: number;
+  readonly ewmaHalfLife?: number;
+  readonly targetAccepts?: number;
+  readonly expectedYieldPerUnit?: number;
+  readonly maxRootDeltaPerEpoch?: number;
+  readonly maxAge?: number | null;
+  readonly seed: string;
+  readonly baselineRecompute: 'activeRootChanged';
+  readonly majorDeltaPolicy: 'corpusRootChanged';
 }
 
 /** difficulty.ts protocol defaults, expressed as a controller pin (the legacy pre-pin shape). */
@@ -919,6 +948,7 @@ export function scoringOptionsFromProfile(
     ...(profile.policyQueryLocalTopK !== undefined ? { policyQueryLocalTopK: profile.policyQueryLocalTopK } : {}),
     ...(profile.policyQueryConditionedAdmission !== undefined ? { policyQueryConditionedAdmission: profile.policyQueryConditionedAdmission } : {}),
     ...(profile.policyRelationTypedAdmission !== undefined ? { policyRelationTypedAdmission: profile.policyRelationTypedAdmission } : {}),
+    ...(profile.policyConflictIntentAdmission !== undefined ? { policyConflictIntentAdmission: profile.policyConflictIntentAdmission } : {}),
     ...(profile.rerankerMemoryIRFormat !== undefined ? { rerankerMemoryIRFormat: profile.rerankerMemoryIRFormat } : {}),
     ...(profile.rerankerMemoryIRSource !== undefined ? { rerankerMemoryIRSource: profile.rerankerMemoryIRSource } : {}),
   } as ScoringOptions;
@@ -1264,6 +1294,22 @@ function validateProfile(profile: EvaluatorProfile, errors?: string[]): void {
   const r5Enabled = profile.enableEvidenceBundleAtoms || profile.enableConflictLifecycleAtoms || profile.enableAbstentionAtoms;
   if (r5Enabled && profile.pipelineVersion !== 'coretex-retrieval-v2-policy-r5') {
     out.push('r5 PolicyAtom enables require pipelineVersion = coretex-retrieval-v2-policy-r5');
+  }
+  // Launch-safety: conflict_lifecycle atoms MUST use the conflict-INTENT selector, never the
+  // coarse CONFLICT_SET_MEMBER entity selector (which causes off-family damage). Fail closed.
+  if (profile.enableConflictLifecycleAtoms === true && profile.policyConflictIntentAdmission !== true) {
+    out.push('enableConflictLifecycleAtoms=true requires policyConflictIntentAdmission=true (no coarse entity-selector fallback)');
+  }
+  // EpochFrontier (churn) pin validation — launch-required churn must be deterministic + attested.
+  if (profile.epochFrontier !== undefined) {
+    const f = profile.epochFrontier;
+    const modes = ['off', 'C0', 'C1', 'C2', 'C3', 'C4'];
+    if (!modes.includes(f.mode)) out.push(`epochFrontier.mode must be one of ${modes.join('|')}`);
+    if (!Number.isInteger(f.activeWindow) || f.activeWindow < 1) out.push('epochFrontier.activeWindow must be a positive integer');
+    if (typeof f.seed !== 'string' || f.seed.length === 0) out.push('epochFrontier.seed must be a non-empty precommit string');
+    if (f.baselineRecompute !== 'activeRootChanged') out.push("epochFrontier.baselineRecompute must be 'activeRootChanged'");
+    if (f.majorDeltaPolicy !== 'corpusRootChanged') out.push("epochFrontier.majorDeltaPolicy must be 'corpusRootChanged'");
+    if (f.maxRootDeltaPerEpoch !== undefined && (!Number.isInteger(f.maxRootDeltaPerEpoch) || f.maxRootDeltaPerEpoch < 1)) out.push('epochFrontier.maxRootDeltaPerEpoch must be a positive integer when present');
   }
   if (profile.replayTolerancePpm > profile.patchAcceptanceFloors.minImprovementPpm)
     out.push('replayTolerancePpm must be <= patchAcceptanceFloors.minImprovementPpm');
