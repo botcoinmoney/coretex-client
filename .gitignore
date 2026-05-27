@@ -25,6 +25,7 @@ dataset/
 .env.local
 .env.*.local
 ops/secrets/
+ops/coretex-*-drill-*.json
 .ssh-keys/
 id_ed25519
 *.pem

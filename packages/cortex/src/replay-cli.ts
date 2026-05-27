@@ -45,7 +45,7 @@ function sleep(ms: number): Promise<void> {
 }
 
 function print(value: unknown) {
-  process.stdout.write(JSON.stringify(value, null, 2) + '\n');
+  process.stdout.write(JSON.stringify(value, (_k, v) => (typeof v === 'bigint' ? v.toString() : v), 2) + '\n');
 }
 
 function parseBlock(value: string): bigint {
