@@ -38,9 +38,20 @@ export interface DecodedHeader {
   readonly scoreRoot: bigint;
 }
 
-/** A single memory-index slot (8-word entry). */
+/**
+ * A single memory-index slot (8-word entry) — LEGACY V4 work-unit layout.
+ *
+ * NOT the V2 launch substrate. The V2 retrieval scorer uses
+ * `substrate/retrieval-decoder.ts:decodeSubstrate` which decodes the same words at
+ * stride-1 (352 one-word slots, see `MEMORY_INDEX_SLOT_COUNT`). This 8-word raw decoder
+ * is retained for the legacy V4 work-unit object model only (see `eval/index.ts:scoreWithLoader`)
+ * and is documented as superseded in `specs/cortex_state.md` §Range B.
+ *
+ * Miner tooling MUST target the V2 stride-1 layout (352 single-word slots) — see
+ * `docs/BOTCOIN_CORETEX_MINER_SKILL.md` and `docs/miner-api-contract.md`.
+ */
 export interface MemoryIndexSlot {
-  readonly slotIndex: number;        // 0–43 (44 slots = 352 words / 8)
+  readonly slotIndex: number;        // 0–43 (legacy 8-word stride; V2 uses 0–351 stride-1)
   readonly wordBase: number;         // absolute word index of first word in slot
   readonly eventId: bigint;          // bits 255:128 of word 0
   readonly domainCode: number;       // bits 127:96 of word 0

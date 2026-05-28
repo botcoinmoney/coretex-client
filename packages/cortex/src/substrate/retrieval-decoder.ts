@@ -65,7 +65,7 @@ export interface RelationEdge {
  * tells the scorer: "for any stage-1 candidate doc, follow its corpus-native
  * event.relations whose edgeType matches this lens's edgeType, and add the
  * related event's truth docs to the candidate pool." This gives the substrate
- * a corpus-scale retrieval policy beyond the 44-anchor cap.
+ * a corpus-scale retrieval policy beyond the 352-anchor cap (Tier-2 stride-1 MemoryIndex).
  *
  * Wire encoding lives in the same 256-bit word as previous edges; the high bit
  * of the bits 223..208 reserved field (bit 223) is the mode flag. When set,
@@ -157,7 +157,7 @@ export const POLICY_TARGET_NONE = 0xffff;
 export const POLICY_ANCHOR_SLOT_LIMIT = 256;
 
 export interface DecodedSubstrate {
-  readonly memoryIndex: ReadonlyArray<MemoryIndexSlot | null>;     // length 44
+  readonly memoryIndex: ReadonlyArray<MemoryIndexSlot | null>;     // length 352 (Tier-2 stride-1)
   readonly retrievalKeys: ReadonlyArray<RetrievalKeySlot | null>;  // length 36
   readonly relations: ReadonlyArray<RelationEdge>;                 // anchor-to-anchor (Phase A)
   readonly categoryLenses: ReadonlyArray<RelationCategoryLens>;    // corpus-native edge-type filters (Phase B)
