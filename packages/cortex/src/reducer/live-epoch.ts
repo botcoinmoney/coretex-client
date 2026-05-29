@@ -11,6 +11,7 @@ import type { CortexState, Patch } from '../state/types.js';
 import { applyPatchOntoCurrent, encodePatch } from '../state/patch.js';
 import { buildMerkleCache, updateMerkleCache, bytesToHex } from '../state/merkle.js';
 import { keccak256 } from '../state/keccak256.js';
+import { computePatchHash } from '../eval/seed-derivation.js';
 import type { MarginalEvaluator, RejectionCode, AcceptedPatch } from './reducer.js';
 import { computePatchSetRoot, stubMarginalEvaluator } from './reducer.js';
 import {
@@ -149,7 +150,7 @@ export function advanceEpochState(
       miner: item.miner.toLowerCase(),
       patch: item.patch,
       patchBytes: item.patchBytes,
-      patchHash: bytesToHex(keccak256(item.patchBytes)),
+      patchHash: computePatchHash(item.patchBytes),
       parentStateRoot: parentRootHex,
       newStateRoot: newStateRootHex,
       marginalGain,

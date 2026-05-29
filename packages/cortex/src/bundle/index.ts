@@ -709,16 +709,20 @@ const DEFAULT_SPEC_FILES = [
   'specs/determinism.md',
 ] as const;
 
+// Launch reference implementation = the TypeScript path ONLY. The TS impl is what the coordinator,
+// scorer, replay watcher, and contract-adjacent code all execute at launch. cortex_py was REMOVED
+// from the attested set (2026-05-29): it does not enforce the current r5 PolicyAtom grammar
+// (no policy_atoms_mode; validate.py leaves 896-991 / PolicyAtom regions unconstrained), so
+// attesting it as a launch reference impl would falsely claim a second r5-correct implementation.
+// Per the "current launch grammar only, no r4-compat surface" rule, Python is quarantined to
+// dev-only tooling and is NOT part of launch attestation/reference claims. (Re-add ONLY if/when
+// cortex_py is brought to full r5 parity with cross-impl byte-exact tests.)
 const DEFAULT_IMPL_FILES = [
   'packages/cortex/src/state/codec.ts',
   'packages/cortex/src/state/merkle.ts',
   'packages/cortex/src/state/patch.ts',
   'packages/cortex/src/state/types.ts',
   'packages/cortex/src/state/validate.ts',
-  'packages/cortex-py/cortex_py/codec.py',
-  'packages/cortex-py/cortex_py/merkle.py',
-  'packages/cortex-py/cortex_py/patch.py',
-  'packages/cortex-py/cortex_py/types.py',
 ] as const;
 
 const DEFAULT_EVALUATOR_FILES = [
@@ -737,6 +741,7 @@ const DEFAULT_EVALUATOR_FILES = [
   'packages/cortex/src/coordinator/patch-received-notice.ts',
   'packages/cortex/src/coordinator/per-patch-evaluator.ts',
   'packages/cortex/src/coordinator/retrieval-data-source.ts',
+  'packages/cortex/src/coordinator/epoch-frontier.ts',
   'packages/cortex/src/replay/per-patch.ts',
   'packages/cortex/src/substrate/retrieval-decoder.ts',
   'packages/cortex/src/substrate/structural-validity.ts',
@@ -936,6 +941,7 @@ export function scoringOptionsFromProfile(
     anchorWeight: profile.anchorWeight ?? 0.15,
     relationExpansionBudget: profile.relationExpansionBudget ?? 50,
     ...(profile.categoryLensExpansionBudget !== undefined ? { categoryLensExpansionBudget: profile.categoryLensExpansionBudget } : {}),
+    ...(profile.lensDiversityFloor !== undefined ? { lensDiversityFloor: profile.lensDiversityFloor } : {}),
     temporalCurrentBoost: profile.temporalCurrentBoost ?? 0.1,
     temporalStaleSuppression: profile.temporalStaleSuppression ?? 0.1,
     // ─── V2 launch-lane knobs (the winning config the profile must express) ───

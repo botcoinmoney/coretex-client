@@ -7,6 +7,7 @@ import {
   merkleizeState,
   bytesToHex,
   keccak256,
+  computePatchHash,
   PATCH_TYPE,
   V4_EVENT_TOPICS,
   replayV4TransitionsFromLogs,
@@ -52,7 +53,7 @@ describe('CoreTex v4 replay', () => {
       newWords: [12345n],
     };
     const patchBytes = encodePatch(patch);
-    const patchHash = bytesToHex(keccak256(patchBytes));
+    const patchHash = computePatchHash(patchBytes); // domain-prefixed (matches on-chain + replay/v4)
     const applied = applyPatch(parent, patch);
     assert.equal(applied.ok, true);
     const newStateRoot = bytesToHex(merkleizeState(applied.state));
@@ -102,7 +103,7 @@ describe('CoreTex v4 replay', () => {
       newWords: [12345n],
     };
     const patchBytes = encodePatch(patch);
-    const patchHash = bytesToHex(keccak256(patchBytes));
+    const patchHash = computePatchHash(patchBytes); // domain-prefixed (matches on-chain + replay/v4)
     patchBytes[patchBytes.length - 1] ^= 1;
     const logs = [
       {
@@ -143,7 +144,7 @@ describe('CoreTex v4 replay', () => {
       newWords: [12345n],
     };
     const patchABytes = encodePatch(patchA);
-    const patchAHash = bytesToHex(keccak256(patchABytes));
+    const patchAHash = computePatchHash(patchABytes);
     const appliedA = applyPatch(parent, patchA);
     assert.equal(appliedA.ok, true);
     const patchB = {
@@ -155,7 +156,7 @@ describe('CoreTex v4 replay', () => {
       newWords: [67890n],
     };
     const patchBBytes = encodePatch(patchB);
-    const patchBHash = bytesToHex(keccak256(patchBBytes));
+    const patchBHash = computePatchHash(patchBBytes);
     const appliedB = applyPatch(appliedA.state, patchB);
     assert.equal(appliedB.ok, true);
 

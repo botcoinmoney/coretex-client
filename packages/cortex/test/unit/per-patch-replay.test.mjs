@@ -45,7 +45,7 @@ async function buildAcceptedReceipt(overrideScorer) {
   // signed-shape receipt that the verifier should accept.
   const targetBlock = 1030;
   const rpcClient = makeRpcClient(new Map([[targetBlock, BLOCKHASH]]));
-  const scorer = overrideScorer ?? (async () => 50_000);
+  const scorer = overrideScorer ?? (async () => ({ scorePpm: 50_000, accepted: true }));
   return runPerPatchEvaluation(
     {
       normalizedPatchBytes: PATCH_BYTES,
@@ -76,7 +76,7 @@ describe('verifyPerPatchReceipt — happy path', () => {
     const r = await verifyPerPatchReceipt(receipt, {
       rpcClient,
       replayTolerancePpm: 250,
-      scorer: async () => 50_000,  // replay reproduces exactly
+      scorer: async () => ({ scorePpm: 50_000, accepted: true }),  // replay reproduces exactly
       epochSecret: EPOCH_SECRET,
       corpusRoot: CORPUS_ROOT,
       bundleHash: BUNDLE_HASH,
@@ -95,7 +95,7 @@ describe('verifyPerPatchReceipt — happy path', () => {
     const r = await verifyPerPatchReceipt(receipt, {
       rpcClient,
       replayTolerancePpm: 250,
-      scorer: async () => 50_200,  // 200 ppm above coordinator
+      scorer: async () => ({ scorePpm: 50_200, accepted: true }),  // 200 ppm above coordinator
       epochSecret: EPOCH_SECRET,
       corpusRoot: CORPUS_ROOT,
       bundleHash: BUNDLE_HASH,
@@ -117,7 +117,7 @@ describe('verifyPerPatchReceipt — anti-forgery failures', () => {
     const r = await verifyPerPatchReceipt(receipt, {
       rpcClient,
       replayTolerancePpm: 250,
-      scorer: async () => 50_000,
+      scorer: async () => ({ scorePpm: 50_000, accepted: true }),
       epochSecret: EPOCH_SECRET,
       corpusRoot: CORPUS_ROOT,
       bundleHash: BUNDLE_HASH,
@@ -133,7 +133,7 @@ describe('verifyPerPatchReceipt — anti-forgery failures', () => {
     const r = await verifyPerPatchReceipt(receipt, {
       rpcClient,
       replayTolerancePpm: 250,
-      scorer: async () => 50_000,
+      scorer: async () => ({ scorePpm: 50_000, accepted: true }),
       epochSecret: EPOCH_SECRET,
       corpusRoot: CORPUS_ROOT,
       bundleHash: BUNDLE_HASH,
@@ -149,7 +149,7 @@ describe('verifyPerPatchReceipt — anti-forgery failures', () => {
     const r = await verifyPerPatchReceipt(receipt, {
       rpcClient,
       replayTolerancePpm: 250,
-      scorer: async () => 50_000,
+      scorer: async () => ({ scorePpm: 50_000, accepted: true }),
       epochSecret: `0x${'ee'.repeat(32)}`,  // WRONG epoch secret
       corpusRoot: CORPUS_ROOT,
       bundleHash: BUNDLE_HASH,
@@ -165,7 +165,7 @@ describe('verifyPerPatchReceipt — anti-forgery failures', () => {
     const r = await verifyPerPatchReceipt(receipt, {
       rpcClient,
       replayTolerancePpm: 250,
-      scorer: async () => 60_000,  // 10000 ppm above — way beyond tolerance
+      scorer: async () => ({ scorePpm: 60_000, accepted: true }),  // 10000 ppm above — way beyond tolerance
       epochSecret: EPOCH_SECRET,
       corpusRoot: CORPUS_ROOT,
       bundleHash: BUNDLE_HASH,
@@ -181,7 +181,7 @@ describe('verifyPerPatchReceipt — anti-forgery failures', () => {
     const r = await verifyPerPatchReceipt(receipt, {
       rpcClient,
       replayTolerancePpm: 250,
-      scorer: async ({ which }) => (which === 'gate' ? 50_000 : 60_000),
+      scorer: async ({ which }) => ({ scorePpm: which === "gate" ? 50_000 : 60_000, accepted: true }),
       epochSecret: EPOCH_SECRET,
       corpusRoot: CORPUS_ROOT,
       bundleHash: BUNDLE_HASH,
@@ -201,7 +201,7 @@ describe('verifyPerPatchReceipt — anti-forgery failures', () => {
     const r = await verifyPerPatchReceipt(receipt, {
       rpcClient,
       replayTolerancePpm: 250,
-      scorer: async () => 0,
+      scorer: async () => ({ scorePpm: 0, accepted: true }),
       epochSecret: EPOCH_SECRET,
       corpusRoot: CORPUS_ROOT,
       bundleHash: BUNDLE_HASH,
@@ -236,7 +236,7 @@ describe('verifyPerPatchReceipt — pre-RPC rejection receipts', () => {
       },
       {
         rpcClient,
-        scorer: async () => 50_000,
+        scorer: async () => ({ scorePpm: 50_000, accepted: true }),
         targetBlockOffset: 30,
         thresholdPpm: 1_000,
         perMinerCap: 5,
@@ -260,7 +260,7 @@ describe('verifyPerPatchReceipt — pre-RPC rejection receipts', () => {
       },
       {
         rpcClient,
-        scorer: async () => 50_000,
+        scorer: async () => ({ scorePpm: 50_000, accepted: true }),
         targetBlockOffset: 30,
         thresholdPpm: 1_000,
         perMinerCap: 5,
@@ -277,7 +277,7 @@ describe('verifyPerPatchReceipt — pre-RPC rejection receipts', () => {
     const r = await verifyPerPatchReceipt(structurallyBad, {
       rpcClient,
       replayTolerancePpm: 250,
-      scorer: async () => 50_000,
+      scorer: async () => ({ scorePpm: 50_000, accepted: true }),
       epochSecret: EPOCH_SECRET,
       corpusRoot: CORPUS_ROOT,
       bundleHash: BUNDLE_HASH,

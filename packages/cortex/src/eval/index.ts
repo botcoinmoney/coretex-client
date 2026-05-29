@@ -25,8 +25,9 @@ import {
   hasNonZeroReservedBits,
 } from '../state/index.js';
 import { keccak256 } from '../state/keccak256.js';
-import { decodeCortexState } from '../decoder/index.js';
-import type { DecodedCortexState } from '../decoder/index.js';
+import { computePatchHash } from './seed-derivation.js';
+import { decodeSubstrate } from '../substrate/retrieval-decoder.js';
+import type { DecodedSubstrate } from '../substrate/retrieval-decoder.js';
 
 // ─── Phase 4 corpus loader interface contract ─────────────────────────────────
 //
@@ -44,7 +45,7 @@ export interface CorpusLoader {
   /** Corpus Merkle root (0x-prefixed 64-char hex string). */
   readonly corpusRoot: string;
   /** Evaluate a decoded state against the corpus and return a score in [0, 1]. */
-  score(decoded: DecodedCortexState, shardId: Uint8Array): number;
+  score(decoded: DecodedSubstrate, shardId: Uint8Array): number;
 }
 
 export interface StateCorpusLoader extends CorpusLoader {
@@ -63,7 +64,7 @@ export class StubCorpusLoader implements CorpusLoader {
     this.corpusRoot = corpusRoot;
   }
 
-  score(_decoded: DecodedCortexState, _shardId: Uint8Array): number {
+  score(_decoded: DecodedSubstrate, _shardId: Uint8Array): number {
     // Phase 3 stub — deterministic, always 0.5.
     // Phase 4 replaces this with actual benchmark scoring.
     return 0.5;
@@ -141,6 +142,8 @@ export interface EvalOptions {
   shardId?: Uint8Array;
   /** Patch wire bytes (for hash computation). Provide the encoded patch bytes. */
   patchWireBytes: Uint8Array;
+  /** Decode reclaimed r5 regions as PolicyAtoms instead of r4 RetrievalKeys/Codebook. */
+  policyAtomsMode?: boolean;
   /**
    * Optional Merkle cache for `state`.
    *
@@ -176,12 +179,13 @@ export function evalPatch(
   const parentRootBytes = parentCache.root;
   const parentStateRoot = bytesToHex(parentRootBytes);
 
-  // Compute patch hash
-  const patchHash = bytesToHex(keccak256(opts.patchWireBytes));
+  // Compute patch hash — domain-prefixed (matches on-chain + coordinator), not raw keccak256.
+  const patchHash = computePatchHash(opts.patchWireBytes);
 
   // Baseline score
-  const decodeResult = decodeCortexState(state);
-  const baselineScore = scoreWithLoader(loader, state, decodeResult.ok ? decodeResult.decoded : null, shardId);
+  const decoderOptions = opts.policyAtomsMode === true ? { policyAtomsMode: true } : undefined;
+  const decoded = decodeSubstrate(state, decoderOptions);
+  const baselineScore = scoreWithLoader(loader, state, decoded, shardId);
 
   const patchResult = applyPatchWithCachedParent(state, patch, parentRootBytes);
 
@@ -195,8 +199,8 @@ export function evalPatch(
     accepted = true;
     const nextCache = updateMerkleCache(parentCache, patchResult.updates);
     newStateRoot = bytesToHex(nextCache.root);
-    const candidateDecodeResult = decodeCortexState(patchResult.state);
-    candidateScore = scoreWithLoader(loader, patchResult.state, candidateDecodeResult.ok ? candidateDecodeResult.decoded : null, shardId);
+    const candidateDecoded = decodeSubstrate(patchResult.state, decoderOptions);
+    candidateScore = scoreWithLoader(loader, patchResult.state, candidateDecoded, shardId);
   } else {
     errorCode = patchResult.code;
     errorMessage = patchResult.message;
@@ -298,7 +302,7 @@ function patchError(code: PatchError['code']): PatchError {
 function scoreWithLoader(
   loader: CorpusLoader,
   state: CortexState,
-  decoded: DecodedCortexState | null,
+  decoded: DecodedSubstrate | null,
   shardId: Uint8Array,
 ): bigint {
   const score = hasStateScore(loader)

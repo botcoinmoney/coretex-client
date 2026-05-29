@@ -28,6 +28,25 @@ describe('substrate slot rotation policy', () => {
     });
   });
 
+  test('selects Tier-2 stride-1 MemoryIndex slots across all 352 words', () => {
+    const first = selectSubstrateSlot({ region: 'memory_index', advanceIndex: 0 });
+    assert.deepEqual(first, {
+      region: 'memory_index',
+      slotIndex: 0,
+      wordIndex: 32,
+      capacity: 352,
+      wrapped: false,
+    });
+    const last = selectSubstrateSlot({ region: 'memory_index', advanceIndex: 351 });
+    assert.equal(last.slotIndex, 351);
+    assert.equal(last.wordIndex, 383);
+    assert.equal(last.wrapped, false);
+    const wrapped = selectSubstrateSlot({ region: 'memory_index', advanceIndex: 352 });
+    assert.equal(wrapped.slotIndex, 0);
+    assert.equal(wrapped.wordIndex, 32);
+    assert.equal(wrapped.wrapped, true);
+  });
+
   test('skips protected slots when wrapping or landing directly on one', () => {
     const selected = selectSubstrateSlot({
       region: 'retrieval_keys',
@@ -51,8 +70,9 @@ describe('substrate slot rotation policy', () => {
   });
 
   test('computes stable word indices for both rotating regions', () => {
-    assert.equal(wordIndexForSubstrateSlot('memory_index', 43), 376);
-    assert.equal(wordIndexForSubstrateSlot('memory_index', 43, 7), 383);
+    assert.equal(wordIndexForSubstrateSlot('memory_index', 0), 32);
+    assert.equal(wordIndexForSubstrateSlot('memory_index', 351), 383);
+    assert.throws(() => wordIndexForSubstrateSlot('memory_index', 0, 1), /wordOffset out of range/);
     assert.equal(wordIndexForSubstrateSlot('retrieval_keys', 35), 664);
     assert.equal(wordIndexForSubstrateSlot('retrieval_keys', 35, 7), 671);
   });

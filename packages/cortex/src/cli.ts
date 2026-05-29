@@ -21,7 +21,7 @@ import * as fs from 'node:fs';
 import { unpack, pack } from './state/codec.js';
 import { merkleizeState, bytesToHex, hexToBytes } from './state/merkle.js';
 import { applyPatch, decodePatch, encodePatch } from './state/patch.js';
-import { decodeCortexState } from './decoder/index.js';
+import { decodeSubstrate } from './substrate/retrieval-decoder.js';
 import { evalPatch, StubCorpusLoader } from './eval/index.js';
 import { verifyEpoch } from './verify-epoch/index.js';
 import type {
@@ -87,30 +87,44 @@ if (!cmd) {
 switch (cmd) {
   // ── decode ────────────────────────────────────────────────────────────────
   case 'decode': {
-    // Usage: botcoin-cortex decode [state.bin]
+    // Usage: botcoin-cortex decode [state.bin] [--policy-atoms-mode|--r5]
     // Reads 32768-byte packed state; outputs JSON typed-slot decode.
-    const stateBytes = readFileOrStdin(args[0]);
+    const policyAtomsMode = args.includes('--policy-atoms-mode') || args.includes('--r5');
+    const statePath = args.find((arg) => !arg.startsWith('--'));
+    const stateBytes = readFileOrStdin(statePath);
     if (stateBytes.length !== 32768) {
       die(`decode: expected 32768-byte state, got ${stateBytes.length}`);
     }
     const state = unpack(new Uint8Array(stateBytes));
-    const result = decodeCortexState(state);
-    if (!result.ok) {
-      die(`decode error: ${result.code} — ${result.message}`);
-    }
+    const decoded = decodeSubstrate(state, { policyAtomsMode });
     // Convert Maps/Sets to serializable forms
     const out = {
       ok: true,
-      header: result.decoded.header,
-      memoryIndexCount: result.decoded.memoryIndex.length,
-      memoryIndex: result.decoded.memoryIndex,
-      retrievalKeyCount: result.decoded.retrievalKeys.length,
-      retrievalKeys: result.decoded.retrievalKeys,
-      relationsCount: result.decoded.relations.length,
-      temporalCount: result.decoded.temporal.length,
-      codebookCount: result.decoded.codebook.length,
-      routes: Object.fromEntries(result.decoded.routes),
-      revokedEventIds: [...result.decoded.revokedEventIds].map((id) => id.toString() + 'n'),
+      policyAtomsMode,
+      memoryIndexCount: decoded.memoryIndex.length,
+      memoryIndex: decoded.memoryIndex,
+      retrievalKeyCount: decoded.retrievalKeys.length,
+      retrievalKeys: decoded.retrievalKeys,
+      relationsCount: decoded.relations.length,
+      relations: decoded.relations,
+      categoryLensCount: decoded.categoryLenses.length,
+      categoryLenses: decoded.categoryLenses,
+      temporalCount: decoded.temporal.length,
+      temporal: decoded.temporal,
+      codebookCount: decoded.codebook.length,
+      codebook: decoded.codebook,
+      decodedSlots: decoded.decodedSlots,
+      decodeAttempts: decoded.decodeAttempts,
+      decodeFailures: decoded.decodeFailures,
+      relationsDroppedByDomainPredicate: decoded.relationsDroppedByDomainPredicate,
+      evidenceBundleAtomCount: decoded.evidenceBundleAtoms.length,
+      evidenceBundleAtoms: decoded.evidenceBundleAtoms,
+      conflictLifecycleAtomCount: decoded.conflictLifecycleAtoms.length,
+      conflictLifecycleAtoms: decoded.conflictLifecycleAtoms,
+      abstentionAtomCount: decoded.abstentionAtoms.length,
+      abstentionAtoms: decoded.abstentionAtoms,
+      policyReservedNonZeroWords: decoded.policyReservedNonZeroWords,
+      ...(decoded.lensDiversityCheck ? { lensDiversityCheck: decoded.lensDiversityCheck } : {}),
     };
     process.stdout.write(toJsonOutput(out) + '\n');
     break;

@@ -897,8 +897,9 @@ export async function scoreSubstrateAgainstQuery(
   // reduces the substrate to "additive bias over what bi-encoder found
   // anyway." The G2 funnel-recall gate showed multi_hop_relation /
   // long_horizon recall stuck at 0% because of this gap. Anchor budget is
-  // already capped at 44 MemoryIndex slots — this contributes at most 44
-  // additional truth docs per query, dwarfed by stage-1's firstStageTopK.
+  // bounded by the decoded routing anchors (Tier-2 MemoryIndex has 352 slots,
+  // with current relation/temporal references limited to the uint8-addressable
+  // subset), dwarfed by stage-1's firstStageTopK.
   // Anti-cheat invariant intact: anchors are public; reranker still judges.
   // (policy-only anchors excluded — they don't inject; see routingSlotToEvent.)
   for (const [slot, ev] of routingSlotToEvent) {
@@ -1046,7 +1047,7 @@ export async function scoreSubstrateAgainstQuery(
   // bundles that predate the split.
   //
   // This remains the substrate's corpus-scale retrieval lever that scales
-  // past the 44-anchor cap. Stage-1 surfacing ANY question with the same
+  // past direct anchor selection alone. Stage-1 surfacing ANY question with the same
   // answer-entity reaches that entity's truth doc via category-lens; the
   // reranker scores it. Anti-cheat invariant intact: the substrate only
   // chooses WHICH edgeTypes to follow; it cannot manufacture new edges.
@@ -1400,15 +1401,16 @@ export async function scoreSubstrateAgainstQuery(
   // is low (multi_hop / long_horizon — exactly the families the substrate
   // most needs to route). Anchors are the substrate's strongest "this
   // matters" signal; the reranker MUST see them. Bounded above by the
-  // 44 MemoryIndex slot count, so this contributes at most 44 + truth-doc
-  // multiplicity per query — well under any reasonable cap.
+  // decoded routing-anchor count (Tier-2 MemoryIndex has 352 slots, with
+  // current relation/temporal references limited to the uint8-addressable
+  // subset), so this remains well under any reasonable cap.
   candidates.sort((a, b) => {
     if (b.preRankScore !== a.preRankScore) return b.preRankScore - a.preRankScore;
     return a.record.docId < b.record.docId ? -1 : a.record.docId > b.record.docId ? 1 : 0;
   });
   const rerankerInputCap = Math.max(1, opts.rerankerInputTopK);
 
-  // §6.5+ Anchor-mandatory sub-cap. With 44 MemoryIndex slots and events
+  // §6.5+ Anchor-mandatory sub-cap. With many possible anchors and events
   // possibly carrying multiple truth docs, an unbounded mandatory pool could
   // exceed `rerankerInputTopK` and cause unbounded reranker work per query —
   // a worst-case DoS for the open-source replay validator. We cap mandatory
@@ -1418,7 +1420,7 @@ export async function scoreSubstrateAgainstQuery(
     // Force-include direct anchors (memorySlot set) AND relation-routed docs
     // (anchorBFS) so a substrate-routed answer the bi-encoder ranked far down
     // still reaches the reranker. Both are bounded by relationExpansionBudget +
-    // the 44-slot anchor cap, so this cannot blow up the reranker workload.
+    // the policy/admission caps, so this cannot blow up the reranker workload.
     .filter((c) => c.record.memorySlot !== null || c.record.sources.has('anchorBFS') || c.record.sources.has('policyAdmitted'))
     .sort((a, b) => {
       const sa = a.record.memorySlot ?? 0;
@@ -2296,7 +2298,7 @@ export async function evaluateRetrievalBenchmarkState(
 
     // Abstention decision: under r5 (policyAtomsMode + abstention enabled) the abstain decision is
     // the PolicyAtom decision (public no-evidence-path selector AND operator-calibrated top1 gate);
-    // otherwise the legacy raw top1<abstentionThreshold. `policyFalseAbstain` flags an abstain on an
+    // otherwise the baseline top1<abstentionThreshold. `policyFalseAbstain` flags an abstain on an
     // ANSWERABLE query (the false-abstention risk the operator gated on).
     const r5Abstention = opts.policyAtomsMode === true && opts.enableAbstentionAtoms !== false && decoded.abstentionAtoms.length > 0;
     let abstHit: boolean | null = null;

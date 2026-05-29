@@ -18,6 +18,7 @@ import {
 } from '../state/patch.js';
 import { merkleizeState, bytesToHex } from '../state/merkle.js';
 import { keccak256 } from '../state/keccak256.js';
+import { computePatchHash } from '../eval/seed-derivation.js';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -127,14 +128,13 @@ function comparePatchPriority(
   if (a.patch.wordCount !== b.patch.wordCount) {
     return a.patch.wordCount - b.patch.wordCount;
   }
-  // 3. Lower patchHash (lexicographic) wins — deterministic tiebreak
-  const aHash = keccak256(a.patchBytes);
-  const bHash = keccak256(b.patchBytes);
-  for (let i = 0; i < 32; i++) {
-    const diff = (aHash[i] ?? 0) - (bHash[i] ?? 0);
-    if (diff !== 0) return diff;
-  }
-  return 0;
+  // 3. Lower patchHash (lexicographic) wins — deterministic tiebreak.
+  // Use the DOMAIN-PREFIXED patchHash (computePatchHash) so the live reducer's ordering matches
+  // verify-epoch's "patchHash asc" tiebreak and the on-chain patch id. (0x-hex, fixed length →
+  // lexicographic string compare == byte-wise compare.)
+  const aHash = computePatchHash(a.patchBytes);
+  const bHash = computePatchHash(b.patchBytes);
+  return aHash < bHash ? -1 : aHash > bHash ? 1 : 0;
 }
 
 /**

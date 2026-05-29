@@ -9,7 +9,6 @@ export { CORTEX_CLIENT_VERSION as VERSION } from './version.js';
 export { CORTEX_CLIENT_VERSION } from './version.js';
 
 export * from './state/index.js';
-export * from './decoder/index.js';
 export * from './eval/index.js';
 export * from './workers/pool.js';
 export * from './upgrade/index.js';
@@ -27,6 +26,7 @@ export * from './coordinator/retrieval-data-source.js';
 export * from './coordinator/base-blockhash.js';
 export * from './coordinator/patch-received-notice.js';
 export * from './coordinator/per-patch-evaluator.js';
+export * from './coordinator/epoch-frontier.js';
 export * from './eval/seed-derivation.js';
 export * from './eval/live-eval-admission.js';
 export * from './eval/reranker.js';

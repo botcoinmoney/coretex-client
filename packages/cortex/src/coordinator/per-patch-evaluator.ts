@@ -53,16 +53,26 @@ export interface PerPatchRequest {
  * `scoringOpts`, and any per-host model state in closure; the
  * orchestrator only feeds the per-patch parameters that vary.
  *
- * Production wires `evaluateRetrievalBenchmarkPatch` and projects out
- * `result.deltaPpm` as the score. Tests pass a deterministic fake
- * that maps (patch, seed) → score for reproducibility.
+ * Production wires `evaluateRetrievalBenchmarkPatch` and returns the FLOORS-AWARE verdict
+ * `{ scorePpm: result.deltaPpm, accepted: result.accepted, rejectionReason: result.reason }` —
+ * NOT just the scalar. `runPerPatchEvaluation` gates each pack on `accepted` (which encodes the
+ * structural / protected-regression / family-catastrophic floors + acceptance threshold from
+ * `evaluatePatchAcceptance`) AND the dual-pack `thresholdPpm`, so a high-scoring patch that
+ * breaks structure or catastrophically regresses a family CANNOT be accepted. Tests pass a
+ * deterministic fake returning the same object shape.
  */
+export interface PerPatchScoreResult {
+  readonly scorePpm: number;
+  /** Floors-aware acceptance from the canonical scorer (structural/protected/family + threshold). */
+  readonly accepted: boolean;
+  readonly rejectionReason?: string;
+}
 export type PerPatchScorer = (args: {
   readonly normalizedPatchBytes: Uint8Array;
   readonly parentRoot: string;
   readonly evalSeed: string;          // bytes32 hex
   readonly which: 'gate' | 'confirm'; // tag so the scorer can log / inspect
-}) => Promise<number>;
+}) => Promise<PerPatchScoreResult>;
 
 export interface PerPatchEvaluatorDeps {
   readonly rpcClient: BaseRpcClient;
@@ -115,6 +125,8 @@ export interface PerPatchReceipt {
     | 'per-miner-cap-reached'
     | 'gate-below-threshold'
     | 'confirm-below-threshold'
+    | 'gate-acceptance-floor'            // gate pack failed structural/protected/family acceptance floors
+    | 'confirm-acceptance-floor'         // confirm pack failed structural/protected/family acceptance floors
     | 'admit-malformed-input';
 }
 
@@ -215,13 +227,16 @@ export async function runPerPatchEvaluation(
   // 7 & 8: dual-pack scoring + acceptance. Run sequentially so we can
   // short-circuit on a gate-fail before paying the confirm-pack CPU
   // cost.
-  const gateScorePpm = await deps.scorer({
+  const gate = await deps.scorer({
     normalizedPatchBytes: request.normalizedPatchBytes,
     parentRoot: request.parentRoot,
     evalSeed: gateSeed,
     which: 'gate',
   });
-  const gatePass = gateScorePpm >= deps.thresholdPpm;
+  const gateScorePpm = gate.scorePpm;
+  // A pack passes ONLY if it clears the dual-pack threshold AND the canonical acceptance floors
+  // (structural/protected/family). `accepted` is the authority — never bypass it with score alone.
+  const gatePass = gateScorePpm >= deps.thresholdPpm && gate.accepted;
   if (!gatePass) {
     return {
       patchHash, dedupKey,
@@ -231,17 +246,20 @@ export async function runPerPatchEvaluation(
       gateSeed, confirmSeed,
       gateScorePpm, confirmScorePpm: 0,
       accepted: false,
-      rejectionReason: 'gate-below-threshold',
+      rejectionReason: !gate.accepted ? 'gate-acceptance-floor' : 'gate-below-threshold',
     };
   }
 
-  const confirmScorePpm = await deps.scorer({
+  const confirm = await deps.scorer({
     normalizedPatchBytes: request.normalizedPatchBytes,
     parentRoot: request.parentRoot,
     evalSeed: confirmSeed,
     which: 'confirm',
   });
-  const confirmPass = confirmScorePpm >= deps.thresholdPpm;
+  const confirmScorePpm = confirm.scorePpm;
+  const confirmPass = confirmScorePpm >= deps.thresholdPpm && confirm.accepted;
+  const confirmReason: 'confirm-acceptance-floor' | 'confirm-below-threshold' =
+    !confirm.accepted ? 'confirm-acceptance-floor' : 'confirm-below-threshold';
 
   return {
     patchHash, dedupKey,
@@ -251,7 +269,7 @@ export async function runPerPatchEvaluation(
     gateSeed, confirmSeed,
     gateScorePpm, confirmScorePpm,
     accepted: confirmPass,
-    ...(!confirmPass ? { rejectionReason: 'confirm-below-threshold' as const } : {}),
+    ...(!confirmPass ? { rejectionReason: confirmReason } : {}),
   };
 }
 

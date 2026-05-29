@@ -368,7 +368,9 @@ export function validatePatchType(
   return { ok: true };
 }
 
-function patchTypeRange(patchType: number): { start: number; end: number } | undefined {
+// Exported as the CANONICAL patch-type → writable-word-range authority so harnesses (miner-API
+// challenge, screener allowedPatchTypes) call this instead of hand-mirroring the switch (drift hazard).
+export function patchTypeRange(patchType: number): { start: number; end: number } | undefined {
   switch (patchType) {
     case PATCH_TYPE.KEY_UPDATE:
       return { start: RANGES.RETRIEVAL_KEYS_START, end: RANGES.RETRIEVAL_KEYS_END };

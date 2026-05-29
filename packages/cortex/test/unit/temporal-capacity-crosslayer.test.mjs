@@ -4,9 +4,8 @@
  * For N temporal current/stale PAIRS built the way the eval patch-families build them
  * (each pair = a stale MemoryIndex slot + a current slot + one stride-1 temporal record),
  * the SAME N usable records must be visible through every layer:
- *   1. raw state decoder      (decoder/index.ts:decodeCortexState)
- *   2. retrieval decoder      (substrate/retrieval-decoder.ts:decodeSubstrate)  ← what the scorer iterates
- *   3. reserved-bit validator (state/validate.ts:validateReservedBits)
+ *   1. retrieval decoder      (substrate/retrieval-decoder.ts:decodeSubstrate)  ← what the scorer iterates
+ *   2. reserved-bit validator (state/validate.ts:validateReservedBits)
  *
  * Tier-2 decoupling (TEMPORAL_DECOUPLING_DESIGN.md): the artificial retrievalSlot<36 cap is
  * removed (temporal slots set retrievalSlot=0 — the scorer's §temporal path resolves via
@@ -19,7 +18,6 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { decodeCortexState } from '../../dist/decoder/index.js';
 import {
   decodeSubstrate,
   encodeMemoryIndexSlot,
@@ -60,7 +58,7 @@ function buildTemporalState(N) {
 
 describe('temporal capacity — cross-layer invariant', () => {
   for (const N of [12, 18, 24, 48, 96]) {
-    test(`N=${N} temporal pairs visible identically across all layers (or construction-bounded at ${TEMPORAL_PAIR_CEILING})`, () => {
+    test(`N=${N} temporal pairs visible identically across canonical layers (or construction-bounded at ${TEMPORAL_PAIR_CEILING})`, () => {
       let state;
       try {
         state = buildTemporalState(N);
@@ -71,16 +69,10 @@ describe('temporal capacity — cross-layer invariant', () => {
         return;
       }
 
-      // 3. validator: state must be reserved-bit clean (canonical reserved region 151:0).
+      // 2. validator: state must be reserved-bit clean (canonical reserved region 151:0).
       assert.equal(validateReservedBits(state), null, `N=${N}: reserved-bit validation must pass`);
 
-      // 1. raw decoder sees N stale records.
-      const raw = decodeCortexState(state);
-      assert.equal(raw.ok, true, `N=${N}: raw decode ok`);
-      const rawStale = raw.decoded.temporal.filter((t) => t.currentStaleFlag).length;
-      assert.equal(rawStale, N, `N=${N}: raw decoder must see ${N} stale records, saw ${rawStale}`);
-
-      // 2. retrieval decoder (scorer's view) sees N usable records (post cross-invariant).
+      // 1. retrieval decoder (scorer's view) sees N usable records (post cross-invariant).
       const sub = decodeSubstrate(state);
       assert.equal(sub.temporal.length, N, `N=${N}: retrieval/scorer must see ${N} usable temporal records, saw ${sub.temporal.length}`);
       // Each usable record points at a distinct, valid stale memory slot.

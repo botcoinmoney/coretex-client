@@ -40,11 +40,13 @@ function makeRpcClient(blockhash = BLOCKHASH, head = 1000) {
   };
 }
 
-function makeScorer(scoresBySeed) {
-  // scoresBySeed: Map<seed-prefix, ppm> OR a function (seed, which) => ppm
+function makeScorer(scoresBySeed, { accepted = true } = {}) {
+  // Floors-aware scorer contract: returns { scorePpm, accepted }. The fake reports accepted:true
+  // (floors pass) by default so gating reduces to score>=threshold; pass {accepted:false} to
+  // exercise the structural/protected/family acceptance-floor rejection path.
   return async ({ evalSeed, which }) => {
-    if (typeof scoresBySeed === 'function') return scoresBySeed(evalSeed, which);
-    return scoresBySeed.get(which) ?? 0;
+    const scorePpm = typeof scoresBySeed === 'function' ? scoresBySeed(evalSeed, which) : (scoresBySeed.get(which) ?? 0);
+    return { scorePpm, accepted };
   };
 }
 
@@ -96,7 +98,7 @@ describe('runPerPatchEvaluation — dual-pack rejection branches', () => {
     let confirmCalled = false;
     const scorer = async ({ which }) => {
       if (which === 'confirm') confirmCalled = true;
-      return which === 'gate' ? 500 : 99_999;
+      return { scorePpm: which === 'gate' ? 500 : 99_999, accepted: true };
     };
     const r = await runPerPatchEvaluation(makeRequest(), makeDeps({ scorer }));
     assert.equal(r.accepted, false);
@@ -125,6 +127,16 @@ describe('runPerPatchEvaluation — dual-pack rejection branches', () => {
     const scorer = makeScorer(new Map([['gate', 1_000], ['confirm', 1_000]]));
     const r = await runPerPatchEvaluation(makeRequest(), makeDeps({ scorer, thresholdPpm: 1_000 }));
     assert.equal(r.accepted, true);
+  });
+
+  test('high score but acceptance floors FAIL → rejected (floors cannot be bypassed by score)', async () => {
+    // gate pack scores well above threshold but the canonical scorer reports accepted:false
+    // (e.g. structural/protected/family floor violation). Must NOT be accepted.
+    const scorer = makeScorer(new Map([['gate', 99_000], ['confirm', 99_000]]), { accepted: false });
+    const r = await runPerPatchEvaluation(makeRequest(), makeDeps({ scorer, thresholdPpm: 1_000 }));
+    assert.equal(r.accepted, false);
+    assert.equal(r.rejectionReason, 'gate-acceptance-floor');
+    assert.equal(r.gateScorePpm, 99_000, 'score is recorded even though floors rejected it');
   });
 });
 

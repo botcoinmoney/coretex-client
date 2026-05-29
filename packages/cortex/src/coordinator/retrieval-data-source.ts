@@ -107,27 +107,52 @@ function sanitizeChallengeResponse(raw: unknown, manifestBundleHash: string): Re
     return { error: 'coretex-challenge-malformed' };
   }
   const r = raw as Record<string, unknown>;
-  const lane = r.lane === 'coretex' ? 'coretex' : null;
+  if (hasForbiddenPublicKey(r)) return { error: 'coretex-challenge-malformed' };
+  const lane = r.lane === undefined ? undefined : r.lane === 'coretex' ? 'coretex' : null;
   const challengeId = asBytes32Hex(r.challengeId);
   const expiresAt = asPosInt(r.expiresAt);
   const parentStateRoot = asBytes32Hex(r.parentStateRoot);
+  const currentStateRoot = asBytes32Hex(r.currentStateRoot) ?? parentStateRoot;
   const epochId = asNonNegativeInt(r.epochId);
   const substrate = sanitizeSubstrateEnvelope(r.substrate);
+  const substrateAccess = sanitizeSubstrateAccess(r.substrateAccess);
   const coreVersionHash = asBytes32Hex(r.coreVersionHash) ?? manifestBundleHash.toLowerCase();
   const bundleHash = asBytes32Hex(r.bundleHash) ?? manifestBundleHash.toLowerCase();
-  if (!lane || !challengeId || expiresAt === null || !parentStateRoot || epochId === null || !substrate) {
+  if (lane === null || !parentStateRoot || !currentStateRoot || epochId === null || (!substrate && !substrateAccess)) {
     return { error: 'coretex-challenge-malformed' };
   }
-  return {
-    lane,
-    challengeId,
-    expiresAt,
+  const out: Record<string, unknown> = {
+    ...(lane ? { lane } : {}),
+    ...(challengeId ? { challengeId } : {}),
+    ...(expiresAt !== null ? { expiresAt } : {}),
     epochId,
     parentStateRoot,
+    currentStateRoot,
     coreVersionHash,
     bundleHash,
-    substrate,
+    ...(substrate ? { substrate } : {}),
+    ...(substrateAccess ? { substrateAccess } : {}),
   };
+  copyBytes32Field(out, r, 'corpusRoot');
+  copyNullableBytes32Field(out, r, 'activeFrontierRoot');
+  copySafeStringField(out, r, 'profileName');
+  copySafeStringField(out, r, 'pipelineVersion');
+  copySafeStringField(out, r, 'memoryIRSchemaVersion');
+  copySafeStringField(out, r, 'hiddenEvalWarning', 512);
+  copyNonNegativeIntField(out, r, 'patchWordBudget');
+  copyNonNegativeIntField(out, r, 'minImprovementPpm');
+  copyNonNegativeIntField(out, r, 'replayTolerancePpm');
+  copyNonNegativeIntField(out, r, 'screenerThresholdPpm');
+  copyNonNegativeIntField(out, r, 'perMinerCap');
+  copyNonNegativeIntField(out, r, 'perMinerScreenerCap');
+  copyNonNegativeIntField(out, r, 'perMinerScreenerRemaining');
+  copyStringArrayField(out, r, 'activeSubstrateSurfaces');
+  copyPublicJsonField(out, r, 'allowedPatchTypes');
+  copyPublicJsonField(out, r, 'patchWordRanges');
+  copyPublicJsonField(out, r, 'corpusMeta');
+  copyPublicJsonField(out, r, 'workMultiplierBps');
+  copyPublicJsonField(out, r, 'exampleValidPatch');
+  return out;
 }
 
 function sanitizeSubmitResponse(raw: unknown): Record<string, unknown> {
@@ -211,57 +236,158 @@ function sanitizeStatusResponse(raw: unknown, manifestBundleHash: string): Recor
     return { error: 'coretex-status-malformed' };
   }
   const r = raw as Record<string, unknown>;
-  const lane = r.lane === 'coretex' ? 'coretex' : null;
+  if (hasForbiddenPublicKey(r)) return { error: 'coretex-status-malformed' };
+  const lane = r.lane === undefined ? undefined : r.lane === 'coretex' ? 'coretex' : null;
   const epochId = asNonNegativeInt(r.epochId);
-  const stateRoot = asBytes32Hex(r.stateRoot);
-  const wordCount = asPosInt(r.wordCount);
-  const transitionCount = asNonNegativeInt(r.transitionCount);
-  const rulesVersion = asNonNegativeInt(r.rulesVersion);
-  const workPolicyHash = asBytes32Hex(r.workPolicyHash);
-  const corpusRoot = asBytes32Hex(r.corpusRoot);
+  const currentStateRoot = asBytes32Hex(r.currentStateRoot) ?? asBytes32Hex(r.stateRoot);
+  const stateRoot = asBytes32Hex(r.stateRoot) ?? currentStateRoot;
   const coreVersionHash = asBytes32Hex(r.coreVersionHash) ?? manifestBundleHash.toLowerCase();
   const bundleHash = asBytes32Hex(r.bundleHash) ?? manifestBundleHash.toLowerCase();
-  const minImprovementPpm = asNonNegativeInt(r.minImprovementPpm);
-  const evalSeedCommit = asBytes32Hex(r.evalSeedCommit);
   const substrate = sanitizeUriEnvelope(r.substrate);
   const bundle = sanitizeUriEnvelope(r.bundle);
-  if (
-    !lane
-    || epochId === null
-    || !stateRoot
-    || wordCount === null
-    || transitionCount === null
-    || rulesVersion === null
-    || !workPolicyHash
-    || !corpusRoot
-    || minImprovementPpm === null
-    || !evalSeedCommit
-    || !substrate
-    || !bundle
-  ) {
+  if ((r.substrate !== undefined && !substrate) || (r.bundle !== undefined && !bundle)) {
     return { error: 'coretex-status-malformed' };
   }
-  const out = {
-    lane,
+  if (lane === null || epochId === null || !currentStateRoot || !stateRoot) {
+    return { error: 'coretex-status-malformed' };
+  }
+  const out: Record<string, unknown> = {
+    ...(lane ? { lane } : {}),
     epochId,
+    currentStateRoot,
     stateRoot,
-    wordCount,
-    transitionCount,
-    rulesVersion,
-    workPolicyHash,
-    corpusRoot,
     coreVersionHash,
     bundleHash,
-    minImprovementPpm,
-    evalSeedCommit,
-    substrate,
-    bundle,
+    ...(substrate ? { substrate } : {}),
+    ...(bundle ? { bundle } : {}),
   };
+  copyNonNegativeIntField(out, r, 'wordCount');
+  copyNonNegativeIntField(out, r, 'transitionCount');
+  copyNonNegativeIntField(out, r, 'rulesVersion');
+  copyNonNegativeIntField(out, r, 'minImprovementPpm');
+  copyNonNegativeIntField(out, r, 'replayTolerancePpm');
+  copyNonNegativeIntField(out, r, 'screenerThresholdPpm');
+  copyNonNegativeIntField(out, r, 'baselineScorePpm');
+  copyNonNegativeIntField(out, r, 'recentNoiseFloorPpm');
+  copyNonNegativeIntField(out, r, 'qualifiedScreenerPassesSinceLastStateAdvance');
+  copyNonNegativeIntField(out, r, 'nextStateAdvanceWorkBps');
+  copyBytes32Field(out, r, 'workPolicyHash');
+  copyBytes32Field(out, r, 'corpusRoot');
+  copyBytes32Field(out, r, 'evalSeedCommit');
+  copyNullableBytes32Field(out, r, 'activeFrontierRoot');
+  copyPublicJsonField(out, r, 'activeFrontier');
+  copyPublicJsonField(out, r, 'corpus');
+  copyPublicJsonField(out, r, 'perMiner');
   return {
     ...out,
     // Lightweight poll-friendly change token for clients that can't use ETag.
     statusVersion: stableHashHex(out),
   };
+}
+
+const FORBIDDEN_PUBLIC_KEY_RE = /qrel|truthdoc|hardnegativ|answerid|answer_id|epochsecret|epoch_secret|evalseed(?!commit)|eval_seed(?!_commit)|hiddenpack|hidden_pack|truth|relevance|failurestat/i;
+
+function hasForbiddenPublicKey(raw: unknown): boolean {
+  if (!raw || typeof raw !== 'object') return false;
+  if (Array.isArray(raw)) return raw.some(hasForbiddenPublicKey);
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    if (FORBIDDEN_PUBLIC_KEY_RE.test(k)) return true;
+    if (hasForbiddenPublicKey(v)) return true;
+  }
+  return false;
+}
+
+function copyBytes32Field(out: Record<string, unknown>, src: Record<string, unknown>, key: string): void {
+  const v = asBytes32Hex(src[key]);
+  if (v) out[key] = v;
+}
+
+function copyNullableBytes32Field(out: Record<string, unknown>, src: Record<string, unknown>, key: string): void {
+  if (src[key] === null) {
+    out[key] = null;
+    return;
+  }
+  copyBytes32Field(out, src, key);
+}
+
+function copyNonNegativeIntField(out: Record<string, unknown>, src: Record<string, unknown>, key: string): void {
+  const v = asNonNegativeInt(src[key]);
+  if (v !== null) out[key] = v;
+}
+
+function copySafeStringField(out: Record<string, unknown>, src: Record<string, unknown>, key: string, maxLen = 128): void {
+  const v = asSafeString(src[key], maxLen);
+  if (v !== null) out[key] = v;
+}
+
+function copyStringArrayField(out: Record<string, unknown>, src: Record<string, unknown>, key: string): void {
+  const v = sanitizeStringArray(src[key]);
+  if (v) out[key] = v;
+}
+
+function copyPublicJsonField(out: Record<string, unknown>, src: Record<string, unknown>, key: string): void {
+  const v = sanitizePublicJson(src[key]);
+  if (v !== undefined) out[key] = v;
+}
+
+function sanitizeSubstrateAccess(raw: unknown): { byRoot: string; wordCount?: number; packedBytes?: number } | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+  const byRoot = typeof r.byRoot === 'string' && /^\/coretex\/substrate\/0x[0-9a-fA-F]{64}$/.test(r.byRoot) ? r.byRoot : null;
+  if (!byRoot) return null;
+  const wordCount = asPosInt(r.wordCount);
+  const packedBytes = asPosInt(r.packedBytes);
+  return {
+    byRoot,
+    ...(wordCount !== null ? { wordCount } : {}),
+    ...(packedBytes !== null ? { packedBytes } : {}),
+  };
+}
+
+function sanitizeStringArray(raw: unknown): string[] | null {
+  if (!Array.isArray(raw) || raw.length > 64) return null;
+  const out: string[] = [];
+  for (const v of raw) {
+    const s = asSafeString(v, 128);
+    if (s === null) return null;
+    out.push(s);
+  }
+  return out;
+}
+
+function sanitizePublicJson(raw: unknown, depth = 0): unknown | undefined {
+  if (raw === undefined) return undefined;
+  if (raw === null) return null;
+  if (typeof raw === 'string') return raw.length <= 4096 ? raw : undefined;
+  if (typeof raw === 'number') return Number.isFinite(raw) ? raw : undefined;
+  if (typeof raw === 'boolean') return raw;
+  if (typeof raw === 'bigint') return raw.toString();
+  if (depth >= 8 || typeof raw !== 'object') return undefined;
+  if (Array.isArray(raw)) {
+    if (raw.length > 256) return undefined;
+    const arr = [];
+    for (const v of raw) {
+      const sv = sanitizePublicJson(v, depth + 1);
+      if (sv === undefined) return undefined;
+      arr.push(sv);
+    }
+    return arr;
+  }
+  const obj = raw as Record<string, unknown>;
+  const keys = Object.keys(obj);
+  if (keys.length > 128) return undefined;
+  const out: Record<string, unknown> = {};
+  for (const k of keys) {
+    if (FORBIDDEN_PUBLIC_KEY_RE.test(k)) return undefined;
+    const sv = sanitizePublicJson(obj[k], depth + 1);
+    if (sv === undefined) return undefined;
+    out[k] = sv;
+  }
+  return out;
+}
+
+function asSafeString(v: unknown, maxLen: number): string | null {
+  return typeof v === 'string' && v.length > 0 && v.length <= maxLen ? v : null;
 }
 
 function sanitizeSubstrateEnvelope(raw: unknown): { encoding: 'coretex-packed-substrate-v1'; bytes?: string; uri?: string } | null {

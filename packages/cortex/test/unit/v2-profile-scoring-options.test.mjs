@@ -35,6 +35,7 @@ describe('V2 profile → ScoringOptions', () => {
     assert.equal(opts.categoryLensFinalBonusWeight, 0, 'inclusion-only (no final lens bonus)');
     assert.equal(opts.categoryLensScoreInheritance, 0.3, 'score-inheritance alpha expressed');
     assert.equal(opts.categoryLensExpansionBudget, 50, 'lens expansion on');
+    assert.equal(opts.lensDiversityFloor, DEFAULT_PROFILE.lensDiversityFloor, 'lens-diversity floor expressed');
     // runtime deps injected
     assert.equal(opts.biEncoderHash, '0xabc');
     assert.ok(typeof opts.reranker.score === 'function');

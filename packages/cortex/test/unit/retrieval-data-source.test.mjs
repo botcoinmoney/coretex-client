@@ -115,6 +115,72 @@ describe('createRetrievalDataSource', () => {
     assert.ok(typeof st.statusVersion === 'string' && st.statusVersion.startsWith('0x'));
   });
 
+  test('preserves launch-shaped public challenge/status fields through the sanitizer', async () => {
+    const parent = `0x${'12'.repeat(32)}`;
+    const corpusRoot = `0x${'34'.repeat(32)}`;
+    const frontierRoot = `0x${'56'.repeat(32)}`;
+    const ds = createRetrievalDataSource(makeFactoryOpts({
+      getChallenge: () => ({
+        epochId: 11,
+        parentStateRoot: parent,
+        currentStateRoot: parent,
+        bundleHash: BUNDLE_HASH,
+        coreVersionHash: BUNDLE_HASH,
+        profileName: 'coretex-retrieval-v2-policy-r5',
+        pipelineVersion: 'coretex-retrieval-v2-policy-r5',
+        corpusRoot,
+        corpusMeta: { biEncoderModel: 'BAAI/bge-m3', biEncoderRevision: 'rev-pinned' },
+        activeFrontierRoot: frontierRoot,
+        substrateAccess: { byRoot: `/coretex/substrate/${parent}`, wordCount: 1024, packedBytes: 32768 },
+        allowedPatchTypes: [{ name: 'POLICY_UPDATE', byte: 7, wordIndexRange: [384, 671] }],
+        patchWordRanges: { POLICY_UPDATE: [[384, 671]] },
+        patchWordBudget: 4,
+        minImprovementPpm: 2500,
+        replayTolerancePpm: 250,
+        screenerThresholdPpm: 347,
+        perMinerScreenerCap: 50,
+        perMinerScreenerRemaining: 49,
+        memoryIRSchemaVersion: 'memory_ir.v1',
+        activeSubstrateSurfaces: ['temporal', 'evidence_bundle', 'conflict_state'],
+        exampleValidPatch: { patchType: 'POLICY_UPDATE', patchBytesHex: '0x070100' },
+        hiddenEvalWarning: 'hidden qrels / eval pack / epochSecret are NOT public',
+      }),
+      getStatus: () => ({
+        epochId: 11,
+        currentStateRoot: parent,
+        bundleHash: BUNDLE_HASH,
+        corpusRoot,
+        activeFrontierRoot: frontierRoot,
+        activeFrontier: { activeRoot: frontierRoot, churnMode: 'C3' },
+        corpus: { evalHiddenCount: 14_768 },
+        transitionCount: 3,
+        qualifiedScreenerPassesSinceLastStateAdvance: 12,
+        nextStateAdvanceWorkBps: 30_000,
+        minImprovementPpm: 2500,
+        screenerThresholdPpm: 347,
+        baselineScorePpm: 221_822,
+        recentNoiseFloorPpm: 0,
+        perMiner: { cap: 50, remaining: 49 },
+      }),
+    }));
+    const c = await ds.getChallenge();
+    assert.equal(c.currentStateRoot, parent);
+    assert.equal(c.corpusRoot, corpusRoot);
+    assert.equal(c.activeFrontierRoot, frontierRoot);
+    assert.deepEqual(c.substrateAccess, { byRoot: `/coretex/substrate/${parent}`, wordCount: 1024, packedBytes: 32768 });
+    assert.equal(c.allowedPatchTypes[0].byte, 7);
+    assert.equal(c.screenerThresholdPpm, 347);
+    assert.deepEqual(c.activeSubstrateSurfaces, ['temporal', 'evidence_bundle', 'conflict_state']);
+
+    const st = await ds.getStatus();
+    assert.equal(st.currentStateRoot, parent);
+    assert.equal(st.corpusRoot, corpusRoot);
+    assert.equal(st.activeFrontier.activeRoot, frontierRoot);
+    assert.equal(st.corpus.evalHiddenCount, 14_768);
+    assert.equal(st.qualifiedScreenerPassesSinceLastStateAdvance, 12);
+    assert.ok(typeof st.statusVersion === 'string' && st.statusVersion.startsWith('0x'));
+  });
+
   test('fails closed on malformed challenge/status responses', async () => {
     const ds = createRetrievalDataSource(makeFactoryOpts({
       getChallenge: () => ({ lane: 'coretex' }),

@@ -54,14 +54,15 @@ export interface PerPatchVerificationDeps {
   /** Maximum allowed |coordinatorScore - replayScore| in ppm. Pinned
    *  in the bundle as evaluator.profile.replayTolerancePpm. */
   readonly replayTolerancePpm: number;
-  /** Same scorer shape as PerPatchScorer. Production binds to the
-   *  pinned BGE-M3 + Qwen3 pipeline; tests pass a deterministic fake. */
+  /** Same scorer shape as PerPatchScorer (floors-aware result). Production binds the SAME pinned
+   *  BGE-M3 + Qwen3 scorer used by the coordinator; replay only consumes `.scorePpm` for the
+   *  determinism/tolerance check (acceptance was decided + recorded by the coordinator). */
   readonly scorer: (args: {
     readonly normalizedPatchBytes: Uint8Array;
     readonly parentRoot: string;
     readonly evalSeed: string;
     readonly which: 'gate' | 'confirm';
-  }) => Promise<number>;
+  }) => Promise<{ readonly scorePpm: number; readonly accepted: boolean; readonly rejectionReason?: string }>;
   /** Bundle constants the seed derivation needs. */
   readonly epochSecret: string;
   readonly corpusRoot: string;
@@ -166,12 +167,12 @@ export async function verifyPerPatchReceipt(
     evalSeed: receipt.gateSeed,
     which: 'gate',
   });
-  const gateDeltaPpm = Math.abs(gateScoreReplay - receipt.gateScorePpm);
+  const gateDeltaPpm = Math.abs(gateScoreReplay.scorePpm - receipt.gateScorePpm);
   if (gateDeltaPpm > deps.replayTolerancePpm) {
     return {
       ok: false,
       code: 'GATE_SCORE_BEYOND_TOLERANCE',
-      detail: `coordinator=${receipt.gateScorePpm} replay=${gateScoreReplay} delta=${gateDeltaPpm} tolerance=${deps.replayTolerancePpm}`,
+      detail: `coordinator=${receipt.gateScorePpm} replay=${gateScoreReplay.scorePpm} delta=${gateDeltaPpm} tolerance=${deps.replayTolerancePpm}`,
     };
   }
   const confirmScoreReplay = await deps.scorer({
@@ -180,12 +181,12 @@ export async function verifyPerPatchReceipt(
     evalSeed: receipt.confirmSeed,
     which: 'confirm',
   });
-  const confirmDeltaPpm = Math.abs(confirmScoreReplay - receipt.confirmScorePpm);
+  const confirmDeltaPpm = Math.abs(confirmScoreReplay.scorePpm - receipt.confirmScorePpm);
   if (confirmDeltaPpm > deps.replayTolerancePpm) {
     return {
       ok: false,
       code: 'CONFIRM_SCORE_BEYOND_TOLERANCE',
-      detail: `coordinator=${receipt.confirmScorePpm} replay=${confirmScoreReplay} delta=${confirmDeltaPpm} tolerance=${deps.replayTolerancePpm}`,
+      detail: `coordinator=${receipt.confirmScorePpm} replay=${confirmScoreReplay.scorePpm} delta=${confirmDeltaPpm} tolerance=${deps.replayTolerancePpm}`,
     };
   }
 

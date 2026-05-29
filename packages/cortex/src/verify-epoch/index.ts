@@ -35,6 +35,7 @@ import { unpack } from '../state/codec.js';
 import { decodePatch, applyPatchOntoCurrent } from '../state/patch.js';
 import { merkleizeState, bytesToHex, hexToBytes } from '../state/index.js';
 import { keccak256 } from '../state/keccak256.js';
+import { computePatchHash } from '../eval/seed-derivation.js';
 import type { CortexState } from '../state/types.js';
 
 // ─── Chain event types ────────────────────────────────────────────────────────
@@ -189,14 +190,14 @@ function runReducer(
 
     if (!hexEq(bytesToHex(patch.parentStateRoot), parentRoot)) return false;
 
-    const computedPatchHash = bytesToHex(keccak256(p.compactPatchBytes));
+    const computedPatchHash = computePatchHash(p.compactPatchBytes);
     return hexEq(p.patchHash, computedPatchHash);
   });
 
   // Sort: scoreDelta desc, wordCount asc, patchHash asc
   const decoded = eligible.map((ev) => {
     const patch = decodePatch(ev.compactPatchBytes);
-    const computedPatchHash = bytesToHex(keccak256(ev.compactPatchBytes));
+    const computedPatchHash = computePatchHash(ev.compactPatchBytes);
     return { ev, patch, computedPatchHash };
   });
   decoded.sort((a, b) => {

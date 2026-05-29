@@ -10,6 +10,7 @@ import { unpack, pack } from '../state/codec.js';
 import { applyPatch, decodePatch } from '../state/patch.js';
 import { bytesToHex, hexToBytes, merkleizeState } from '../state/merkle.js';
 import { keccak256 } from '../state/keccak256.js';
+import { computePatchHash } from '../eval/seed-derivation.js';
 import type { CortexState } from '../state/types.js';
 
 export interface RpcLog {
@@ -128,7 +129,9 @@ export function replayV4TransitionFromLogs(
       message: `No CoretexPatchBytes event matched state advance patchHash ${advance.patchHash}`,
     };
   }
-  const computedPatchHash = bytesToHex(keccak256(patchEvent.compactPatchBytes));
+  // Domain-prefixed patch hash (keccak256("coretex-patch-hash-v1" || compactBytes)) — MUST match
+  // the on-chain value the contract validates and the coordinator signs. Raw keccak256 would desync.
+  const computedPatchHash = computePatchHash(patchEvent.compactPatchBytes);
   if (!eqHex(computedPatchHash, patchEvent.patchHash) || !eqHex(computedPatchHash, advance.patchHash)) {
     return { ok: false, code: 'PATCH_HASH_MISMATCH', message: 'Patch bytes do not match signed/on-chain patchHash' };
   }

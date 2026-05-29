@@ -31,11 +31,14 @@ export interface SelectedSubstrateSlot {
 }
 
 export const SUBSTRATE_SLOT_CAPACITY = Object.freeze({
-  memory_index: 44,
+  memory_index: 352,
   retrieval_keys: 36,
 } satisfies Record<SubstrateSlotRegion, number>);
 
-export const SUBSTRATE_WORDS_PER_SLOT = 8;
+export const SUBSTRATE_WORDS_PER_SLOT = Object.freeze({
+  memory_index: 1,
+  retrieval_keys: 8,
+} satisfies Record<SubstrateSlotRegion, number>);
 
 export function selectSubstrateSlot(opts: SelectSubstrateSlotOptions): SelectedSubstrateSlot {
   const region = opts.region;
@@ -69,11 +72,12 @@ export function wordIndexForSubstrateSlot(
   if (!Number.isSafeInteger(slotIndex) || slotIndex < 0 || slotIndex >= capacity) {
     throw new Error(`${region} slotIndex out of range: ${slotIndex}`);
   }
-  if (!Number.isSafeInteger(wordOffset) || wordOffset < 0 || wordOffset >= SUBSTRATE_WORDS_PER_SLOT) {
+  const wordsPerSlot = SUBSTRATE_WORDS_PER_SLOT[region];
+  if (!Number.isSafeInteger(wordOffset) || wordOffset < 0 || wordOffset >= wordsPerSlot) {
     throw new Error(`wordOffset out of range: ${wordOffset}`);
   }
   const start = region === 'memory_index' ? RANGES.MEMORY_INDEX_START : RANGES.RETRIEVAL_KEYS_START;
-  return start + slotIndex * SUBSTRATE_WORDS_PER_SLOT + wordOffset;
+  return start + slotIndex * wordsPerSlot + wordOffset;
 }
 
 function normalizeProtectedSlots(
