@@ -215,6 +215,8 @@ export interface EvaluatorProfile {
    *  so it cannot be silently half-enabled. */
   readonly enableAspectConstraintAtoms?: boolean;
   readonly policyAspectIntentAdmission?: boolean;
+  /** Bounded experimental aspect boost weight, (0, 0.5]. Required when enableAspectConstraintAtoms. */
+  readonly policyAspectBoost?: number;
   /** Memory-IR sidecar doc rendering for the reranker ('F2' prefixes the derived lifecycle header).
    *  Pin only with a Memory-IR-tuned reranker (E1); default off → raw doc text. */
   readonly rerankerMemoryIRFormat?: 'off' | 'F2';
@@ -959,6 +961,9 @@ export function scoringOptionsFromProfile(
     ...(profile.policyQueryConditionedAdmission !== undefined ? { policyQueryConditionedAdmission: profile.policyQueryConditionedAdmission } : {}),
     ...(profile.policyRelationTypedAdmission !== undefined ? { policyRelationTypedAdmission: profile.policyRelationTypedAdmission } : {}),
     ...(profile.policyConflictIntentAdmission !== undefined ? { policyConflictIntentAdmission: profile.policyConflictIntentAdmission } : {}),
+    ...(profile.enableAspectConstraintAtoms !== undefined ? { enableAspectConstraintAtoms: profile.enableAspectConstraintAtoms } : {}),
+    ...(profile.policyAspectIntentAdmission !== undefined ? { policyAspectIntentAdmission: profile.policyAspectIntentAdmission } : {}),
+    ...(profile.policyAspectBoost !== undefined ? { policyAspectBoost: profile.policyAspectBoost } : {}),
     ...(profile.rerankerMemoryIRFormat !== undefined ? { rerankerMemoryIRFormat: profile.rerankerMemoryIRFormat } : {}),
     ...(profile.rerankerMemoryIRSource !== undefined ? { rerankerMemoryIRSource: profile.rerankerMemoryIRSource } : {}),
   } as ScoringOptions;
@@ -1311,8 +1316,14 @@ function validateProfile(profile: EvaluatorProfile, errors?: string[]): void {
   if (profile.policyAspectIntentAdmission === true && profile.enableAspectConstraintAtoms !== true) {
     out.push('policyAspectIntentAdmission=true requires enableAspectConstraintAtoms=true');
   }
+  // aspect_constraint is a WIRED but EXPERIMENTAL surface (default-off; A100 candidate). Enabling it
+  // requires a bounded positive boost so it cannot be silently on-with-zero-effect or flood. It is NOT in
+  // the launch profile; the A100 boost-only arm decides promotion (then allocate the r5.1 region).
   if (profile.enableAspectConstraintAtoms === true) {
-    out.push('enableAspectConstraintAtoms is not yet launchable — aspect_constraint is an A100 candidate whose boost hook is unwired (r5.1); do not enable in a signed profile until the A100 boost-only arm passes');
+    const b = profile.policyAspectBoost;
+    if (typeof b !== 'number' || !(b > 0) || b > 0.5) {
+      out.push('enableAspectConstraintAtoms=true requires policyAspectBoost in (0, 0.5] (bounded experimental boost)');
+    }
   }
   // Launch-safety: conflict_lifecycle atoms MUST use the conflict-INTENT selector, never the
   // coarse CONFLICT_SET_MEMBER entity selector (which causes off-family damage). Fail closed.

@@ -61,6 +61,9 @@ export interface TruthDocument {
   readonly id: string;
   readonly text: string;
   readonly isCurrent: boolean;
+  /** PUBLIC multi-aspect tags (aspect_constraint surface, A100 candidate). Construction-time public
+   *  structure, NEVER a qrel. Used only by the default-off aspect-intent boost. Optional/back-compat. */
+  readonly aspectTags?: readonly string[];
 }
 
 export interface QrelEntry {
@@ -133,6 +136,8 @@ export interface HardNegativeRecord {
   readonly id: string;
   readonly text: string;
   readonly category?: HardNegativeCategory;
+  /** PUBLIC multi-aspect tags (see TruthDocument.aspectTags). Optional/back-compat. */
+  readonly aspectTags?: readonly string[];
 }
 
 /**

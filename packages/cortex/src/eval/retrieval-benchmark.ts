@@ -380,6 +380,14 @@ export interface ScoringOptions {
   readonly policyEntityRegistry?: ReadonlyArray<{ readonly id: string; readonly names: readonly string[] }>;
   /** Entity ids treated as too-generic to be a selector key (e.g. the single-universe owner). */
   readonly policyGenericEntityIds?: readonly string[];
+  /** aspect_constraint EXPERIMENTAL surface (A100 candidate; default-off, NOT a launch surface). When ALL
+   *  three are set, a bounded BOOST-ONLY final-reorder bonus is applied to the query's own candidate docs
+   *  whose public `aspectTags` ⊇ the query's parsed intent aspect (parseQueryAspectIntent), subject-scoped
+   *  by construction (only the query's own truths/negs). When any is unset → additive-zero → byte-identical
+   *  no-op. Never suppresses (the prior aspect failure mode was suppressing partial-credit docs). */
+  readonly enableAspectConstraintAtoms?: boolean;
+  readonly policyAspectIntentAdmission?: boolean;
+  readonly policyAspectBoost?: number;
   /**
    * Memory-IR SIDECAR doc rendering for the reranker (Phase-3 reranker-format probe → launch hook).
    * When 'F2', each candidate doc handed to the reranker is prefixed with the substrate's DERIVED
@@ -1282,6 +1290,19 @@ export async function scoreSubstrateAgainstQuery(
     temporalBonus: number;
     evidencePolicyBonus: number;     // CODEBOOK high_density_evidence contribution boost
   }[] = [];
+  // aspect_constraint EXPERIMENTAL (default-off, A100 candidate): parse the public intent aspect once and
+  // build the query's OWN-candidate aspectTags map (subject-scoped by construction — only this query's
+  // truths/negs). BOOST-ONLY. Additive-zero (byte-identical no-op) unless all three gates + a positive
+  // boost are set; never suppresses (the prior aspect failure was suppressing partial-credit docs).
+  const aspectActive = opts.policyAtomsMode === true && opts.enableAspectConstraintAtoms === true && opts.policyAspectIntentAdmission === true;
+  const aspectIntent = aspectActive ? parseQueryAspectIntent(query.queryText ?? '') : null;
+  const aspectBoost = opts.policyAspectBoost ?? 0;
+  let aspectTagsByDoc: Map<string, Set<string>> | null = null;
+  if (aspectIntent && aspectBoost > 0) {
+    aspectTagsByDoc = new Map();
+    for (const td of query.truthDocuments) if (td.aspectTags) aspectTagsByDoc.set(td.id, new Set(td.aspectTags.map((a) => a.toLowerCase())));
+    for (const n of query.hardNegatives) if (n.aspectTags) aspectTagsByDoc.set(n.id, new Set(n.aspectTags.map((a) => a.toLowerCase())));
+  }
   for (const record of pool.values()) {
     const docVec = dequantize(record.embedding, opts.retrievalKeyLayout);
 
@@ -1330,8 +1351,11 @@ export async function scoreSubstrateAgainstQuery(
     // force-floats the whole boosted class into top-10 (flood), so it is excluded from finalBonus.
     const evidencePolicyBonus = evidencePolicyActive ? (contributionBoostByEventId.get(record.eventId) ?? 0) : 0;
 
+    // aspect boost: final-reorder only, on this query's own aspect-matching candidate (boost-only).
+    const aspectBonus = (aspectTagsByDoc && aspectIntent && aspectTagsByDoc.get(record.docId)?.has(aspectIntent)) ? aspectBoost : 0;
+
     const admissionBonus = lensBonus + anchorBonus + temporalBonus + categoryLensBonus + evidencePolicyBonus;
-    const finalBonus = lensBonus + anchorBonus + temporalBonus + categoryLensFinalBonus;
+    const finalBonus = lensBonus + anchorBonus + temporalBonus + categoryLensFinalBonus + aspectBonus;
     const biCosine = cosineSimilarity(docVec, queryVec);
     candidates.push({
       record,
