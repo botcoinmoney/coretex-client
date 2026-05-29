@@ -206,6 +206,13 @@ export function applyPatch(state: CortexState, patch: Patch, policyAtomsMode = f
   if (!validatePatchType(patch.patchType, patch.indices).ok) {
     return patchError('E02');
   }
+  // r5 byte canonicalization: a write touching the reclaimed PolicyAtom region (384-671) MUST be
+  // POLICY_UPDATE (0x07). Otherwise the SAME policy write also validates as KEY_UPDATE (range
+  // [384,671]) or MIXED → three patch types / hashes for one semantic write (dedup + economics
+  // hazard). MIXED stays valid for non-policy cross-region writes (e.g. the temporal pair [32,33,800]).
+  if (policyAtomsMode && !policyWriteIsCanonical(patch)) {
+    return patchError('E02');
+  }
 
   // 3. No-op check
   let anyChange = false;
@@ -285,6 +292,10 @@ export function applyPatchOntoCurrent(current: CortexState, patch: Patch, policy
   }
 
   if (!validatePatchType(patch.patchType, patch.indices).ok) {
+    return patchError('E02');
+  }
+  // r5 byte canonicalization (see applyPatch): policy-region writes must be POLICY_UPDATE.
+  if (policyAtomsMode && !policyWriteIsCanonical(patch)) {
     return patchError('E02');
   }
 
@@ -405,9 +416,29 @@ export function patchTypeRange(patchType: number): { start: number; end: number 
  * (reserved-zero), and MIXED (spans reserved); a miner is advertised only the typed r5 surfaces. This
  * advertises what the GRAMMAR accepts; which surfaces are reward-ACTIVE is separate (activeSubstrateSurfaces).
  */
+/**
+ * r5 byte canonicalization: returns false iff a NON-POLICY_UPDATE patch writes any word in the
+ * reclaimed PolicyAtom region [POLICY_EVIDENCE_START, POLICY_ABSTENTION_END] (384-671). Enforced under
+ * policyAtomsMode in apply/applyOntoCurrent so a PolicyAtom write has ONE canonical patch type (0x07)
+ * and therefore ONE patch hash — no KEY_UPDATE/MIXED aliasing. MIXED remains valid for cross-region
+ * writes that do NOT touch the policy region (e.g. the atomic temporal pair [32,33,800]).
+ */
+export function policyWriteIsCanonical(patch: { readonly patchType: number; readonly indices: readonly number[]; readonly wordCount: number }): boolean {
+  if (patch.patchType === PATCH_TYPE.POLICY_UPDATE) return true;
+  for (let i = 0; i < patch.wordCount; i++) {
+    const idx = patch.indices[i]!;
+    if (idx >= RANGES.POLICY_EVIDENCE_START && idx <= RANGES.POLICY_ABSTENTION_END) return false;
+  }
+  return true;
+}
+
 export function buildAllowedPatchTypes(opts?: { readonly pipelineVersion?: string }): ReadonlyArray<{ readonly name: string; readonly byte: number; readonly wordIndexRange: readonly [number, number] }> {
   const r5 = opts?.pipelineVersion === 'coretex-retrieval-v2-policy-r5';
-  const r5Suppressed = new Set<number>([PATCH_TYPE.KEY_UPDATE, PATCH_TYPE.CODEBOOK_UPDATE, PATCH_TYPE.MIXED]);
+  // r5 suppresses KEY_UPDATE (its entire range IS the reclaimed PolicyAtom region 384-671) and
+  // CODEBOOK_UPDATE (896-991 reserved-zero). MIXED is KEPT — it is the calibration-derived type for
+  // the atomic temporal pair (MemoryIndex+Temporal, e.g. [32,33,800]); its policy/reserved writes are
+  // rejected by validation (assertPolicyByteCanonical), so it cannot alias a PolicyAtom write.
+  const r5Suppressed = new Set<number>([PATCH_TYPE.KEY_UPDATE, PATCH_TYPE.CODEBOOK_UPDATE]);
   const out: Array<{ name: string; byte: number; wordIndexRange: [number, number] }> = [];
   for (const [name, byte] of Object.entries(PATCH_TYPE)) {
     if (r5 && r5Suppressed.has(byte)) continue;

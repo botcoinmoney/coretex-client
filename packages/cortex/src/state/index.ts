@@ -63,6 +63,7 @@ export {
   patchMatchesEpochParent,
   patchTypeRange,
   buildAllowedPatchTypes,
+  policyWriteIsCanonical,
 } from './patch.js';
 
 export { keccak256 } from './keccak256.js';

@@ -15,7 +15,7 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { buildPolicyEntityRegistry, resolveQuerySubjects, POLICY_MAX_SELECTOR_FANOUT, encodePolicyAtom, POLICY_SELECTOR, POLICY_EVIDENCE_FEATURE, assertGradedRelevance, parseQueryAspectIntent } from '../../dist/index.js';
-import { applyPatch, applyPatchOntoCurrent } from '../../dist/state/patch.js';
+import { applyPatch, applyPatchOntoCurrent, policyWriteIsCanonical } from '../../dist/state/patch.js';
 import { merkleizeState } from '../../dist/state/merkle.js';
 import { RANGES, PATCH_TYPE } from '../../dist/state/types.js';
 
@@ -26,6 +26,8 @@ const VALID_EB = encodePolicyAtom({
   targetSlot: 5, budget: 1000, flags: 0, validFromEpoch: 0n, expiryEpoch: 0n,
 });
 const mixed = (idx, word) => ({ patchType: PATCH_TYPE.MIXED, wordCount: 1, scoreDelta: 1, parentStateRoot: new Uint8Array(32), indices: [idx], newWords: [word] });
+// PolicyAtom writes (384-671) MUST be POLICY_UPDATE (0x07) under r5 — byte canonicalization.
+const policy = (idx, word) => ({ patchType: PATCH_TYPE.POLICY_UPDATE, wordCount: 1, scoreDelta: 1, parentStateRoot: new Uint8Array(32), indices: [idx], newWords: [word] });
 
 describe('P1 — buildPolicyEntityRegistry (derive public registry from corpus)', () => {
   const corpus = {
@@ -75,19 +77,37 @@ describe('P2 — apply-path hard-fails r5 forge under policyAtomsMode (r4 path u
     assert.equal(r5.code, 'E04', 'r5: reserved policy region must be zero');
   });
 
-  test('MALFORMED PolicyAtom (384) is ACCEPTED under r4 but REJECTED (E02) under r5', () => {
+  test('MALFORMED PolicyAtom (384) via POLICY_UPDATE is ACCEPTED under r4 but REJECTED (E02) under r5', () => {
     const s = zero();
-    const patch = mixed(RANGES.POLICY_EVIDENCE_START, 1n); // nonzero reserved_pa bits → invalid atom
+    const patch = policy(RANGES.POLICY_EVIDENCE_START, 1n); // nonzero reserved_pa bits → invalid atom
     assert.equal(applyPatchOntoCurrent(s, patch, false).ok, true);
     const r5 = applyPatchOntoCurrent(s, patch, true);
     assert.equal(r5.ok, false);
     assert.equal(r5.code, 'E02', 'r5: malformed atom fails closed');
   });
 
-  test('VALID PolicyAtom (384) is accepted under r5', () => {
+  test('VALID PolicyAtom (384) via POLICY_UPDATE is accepted under r5', () => {
     const s = zero();
-    const patch = mixed(RANGES.POLICY_EVIDENCE_START, VALID_EB);
+    const patch = policy(RANGES.POLICY_EVIDENCE_START, VALID_EB);
     assert.equal(applyPatchOntoCurrent(s, patch, true).ok, true);
+  });
+
+  test('VALID PolicyAtom (384) via MIXED is REJECTED (E02) under r5 — byte canonicalization (no aliasing)', () => {
+    const s = zero();
+    const patch = mixed(RANGES.POLICY_EVIDENCE_START, VALID_EB); // same valid atom, wrong byte (0xff)
+    assert.equal(applyPatchOntoCurrent(s, patch, false).ok, true, 'r4: no canonicalization');
+    const r5 = applyPatchOntoCurrent(s, patch, true);
+    assert.equal(r5.ok, false);
+    assert.equal(r5.code, 'E02', 'r5: a policy-region write must be POLICY_UPDATE (0x07), not MIXED');
+  });
+
+  test('byte canonicalization: MIXED is allowed for a NON-policy cross-region write (temporal pair), rejected when it touches the policy region', () => {
+    // The atomic temporal pair lives in MemoryIndex + Temporal (e.g. [32,33,800]) — NO policy words.
+    assert.equal(policyWriteIsCanonical({ patchType: PATCH_TYPE.MIXED, indices: [RANGES.MEMORY_INDEX_START, RANGES.MEMORY_INDEX_START + 1, RANGES.TEMPORAL_START], wordCount: 3 }), true, 'MIXED temporal pair (no policy words) is canonical');
+    // The SAME valid policy write under MIXED or KEY_UPDATE is NOT canonical — must be POLICY_UPDATE.
+    assert.equal(policyWriteIsCanonical({ patchType: PATCH_TYPE.MIXED, indices: [RANGES.POLICY_EVIDENCE_START], wordCount: 1 }), false, 'policy-region write under MIXED is not canonical');
+    assert.equal(policyWriteIsCanonical({ patchType: PATCH_TYPE.KEY_UPDATE, indices: [RANGES.POLICY_CONFLICT_START], wordCount: 1 }), false, 'policy-region write under KEY_UPDATE is not canonical');
+    assert.equal(policyWriteIsCanonical({ patchType: PATCH_TYPE.POLICY_UPDATE, indices: [RANGES.POLICY_ABSTENTION_START], wordCount: 1 }), true, 'policy write under POLICY_UPDATE is canonical');
   });
 
   test('applyPatch (parent-checked path) also rejects the reserved forge under r5', () => {
