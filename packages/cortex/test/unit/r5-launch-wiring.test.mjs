@@ -14,7 +14,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { buildPolicyEntityRegistry, resolveQuerySubjects, POLICY_MAX_SELECTOR_FANOUT, encodePolicyAtom, POLICY_SELECTOR, POLICY_EVIDENCE_FEATURE, assertGradedRelevance, parseQueryAspectIntent } from '../../dist/index.js';
+import { buildPolicyEntityRegistry, resolveQuerySubjects, POLICY_MAX_SELECTOR_FANOUT, encodePolicyAtom, encodeMemoryIndexSlot, stableRecordIdFor, POLICY_SELECTOR, POLICY_EVIDENCE_FEATURE, assertGradedRelevance, parseQueryAspectIntent } from '../../dist/index.js';
 import { applyPatch, applyPatchOntoCurrent, policyWriteIsCanonical } from '../../dist/state/patch.js';
 import { merkleizeState } from '../../dist/state/merkle.js';
 import { RANGES, PATCH_TYPE } from '../../dist/state/types.js';
@@ -25,6 +25,11 @@ const VALID_EB = encodePolicyAtom({
   evidenceFeature: POLICY_EVIDENCE_FEATURE.SUPPORT_IN_DEGREE, action: 'bundle', scope: 'relation_path',
   targetSlot: 5, budget: 1000, flags: 0, validFromEpoch: 0n, expiryEpoch: 0n,
 });
+const VALID_POLICY_ANCHOR = encodeMemoryIndexSlot({
+  slotIndex: 5, recordId: stableRecordIdFor('mem_policy_anchor'), family: 'multi_hop_relation',
+  domainBits: 1n, valid: true, revoked: false, protected: false, policyAnchor: true,
+  retrievalSlot: 0, expiryEpoch: 0n,
+})[0];
 const mixed = (idx, word) => ({ patchType: PATCH_TYPE.MIXED, wordCount: 1, scoreDelta: 1, parentStateRoot: new Uint8Array(32), indices: [idx], newWords: [word] });
 // PolicyAtom writes (384-671) MUST be POLICY_UPDATE (0x07) under r5 — byte canonicalization.
 const policy = (idx, word) => ({ patchType: PATCH_TYPE.POLICY_UPDATE, wordCount: 1, scoreDelta: 1, parentStateRoot: new Uint8Array(32), indices: [idx], newWords: [word] });
@@ -101,13 +106,44 @@ describe('P2 — apply-path hard-fails r5 forge under policyAtomsMode (r4 path u
     assert.equal(r5.code, 'E02', 'r5: a policy-region write must be POLICY_UPDATE (0x07), not MIXED');
   });
 
-  test('byte canonicalization: MIXED is allowed for a NON-policy cross-region write (temporal pair), rejected when it touches the policy region', () => {
+  test('byte canonicalization: MIXED is allowed for true cross-region writes, rejected for policy-only aliases', () => {
     // The atomic temporal pair lives in MemoryIndex + Temporal (e.g. [32,33,800]) — NO policy words.
     assert.equal(policyWriteIsCanonical({ patchType: PATCH_TYPE.MIXED, indices: [RANGES.MEMORY_INDEX_START, RANGES.MEMORY_INDEX_START + 1, RANGES.TEMPORAL_START], wordCount: 3 }), true, 'MIXED temporal pair (no policy words) is canonical');
-    // The SAME valid policy write under MIXED or KEY_UPDATE is NOT canonical — must be POLICY_UPDATE.
+    // A pure policy write under MIXED or KEY_UPDATE is NOT canonical — it must be POLICY_UPDATE.
     assert.equal(policyWriteIsCanonical({ patchType: PATCH_TYPE.MIXED, indices: [RANGES.POLICY_EVIDENCE_START], wordCount: 1 }), false, 'policy-region write under MIXED is not canonical');
     assert.equal(policyWriteIsCanonical({ patchType: PATCH_TYPE.KEY_UPDATE, indices: [RANGES.POLICY_CONFLICT_START], wordCount: 1 }), false, 'policy-region write under KEY_UPDATE is not canonical');
     assert.equal(policyWriteIsCanonical({ patchType: PATCH_TYPE.POLICY_UPDATE, indices: [RANGES.POLICY_ABSTENTION_START], wordCount: 1 }), true, 'policy write under POLICY_UPDATE is canonical');
+    assert.equal(policyWriteIsCanonical({ patchType: PATCH_TYPE.MIXED, indices: [RANGES.MEMORY_INDEX_START + 5, RANGES.POLICY_EVIDENCE_START], wordCount: 2 }), true, 'MIXED anchor+PolicyAtom compile is canonical');
+    assert.equal(policyWriteIsCanonical({ patchType: PATCH_TYPE.MIXED, indices: [RANGES.POLICY_EVIDENCE_START, RANGES.POLICY_RESERVED_START], wordCount: 2 }), false, 'MIXED policy+reserved padding is not canonical');
+  });
+
+  test('VALID MemoryIndex anchor + PolicyAtom via MIXED is accepted under r5', () => {
+    const s = zero();
+    const patch = {
+      patchType: PATCH_TYPE.MIXED,
+      wordCount: 2,
+      scoreDelta: 1,
+      parentStateRoot: new Uint8Array(32),
+      indices: [RANGES.MEMORY_INDEX_START + 5, RANGES.POLICY_EVIDENCE_START],
+      newWords: [VALID_POLICY_ANCHOR, VALID_EB],
+    };
+    const r5 = applyPatchOntoCurrent(s, patch, true);
+    assert.equal(r5.ok, true, 'r5: reclaimed policy surfaces can bootstrap anchor+atom atomically');
+  });
+
+  test('MIXED PolicyAtom plus unchanged companion padding is rejected under r5', () => {
+    const s = zero();
+    const patch = {
+      patchType: PATCH_TYPE.MIXED,
+      wordCount: 2,
+      scoreDelta: 1,
+      parentStateRoot: new Uint8Array(32),
+      indices: [RANGES.MEMORY_INDEX_START + 5, RANGES.POLICY_EVIDENCE_START],
+      newWords: [0n, VALID_EB],
+    };
+    const r5 = applyPatchOntoCurrent(s, patch, true);
+    assert.equal(r5.ok, false);
+    assert.equal(r5.code, 'E02', 'r5: MIXED policy bootstrap must carry a changed companion word, not no-op padding');
   });
 
   test('applyPatch (parent-checked path) also rejects the reserved forge under r5', () => {
