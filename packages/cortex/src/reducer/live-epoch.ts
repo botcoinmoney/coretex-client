@@ -64,6 +64,9 @@ export interface LiveEpochOutput {
 export interface LiveEpochRewardOptions {
   readonly qualifiedScreenerPassesSinceLastStateAdvance?: string | bigint | number;
   readonly workPolicy?: CoreTexWorkPolicy;
+  /** r5: when true, applyPatchOntoCurrent hard-fails on reserved-region / malformed-PolicyAtom
+   *  writes (validatePolicyRegions). Set from the pinned profile's policyAtomsMode. Default off (r4). */
+  readonly policyAtomsMode?: boolean;
 }
 
 /**
@@ -113,7 +116,7 @@ export function advanceEpochState(
       continue;
     }
 
-    const applyResult = applyPatchOntoCurrent(current, item.patch);
+    const applyResult = applyPatchOntoCurrent(current, item.patch, rewardOptions.policyAtomsMode === true);
     if (!applyResult.ok) {
       const reason: LiveRejectionCode =
         applyResult.code === 'E01' ? 'R03_WRONG_PARENT_ROOT'

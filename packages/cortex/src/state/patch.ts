@@ -10,7 +10,7 @@ import type { CortexState, Patch, PatchError, PatchResult } from './types.js';
 import { ERROR_NAMES, PATCH_TYPE, RANGES } from './types.js';
 import { writeBigEndian32, readBigEndian32 } from './codec.js';
 import { merkleizeState } from './merkle.js';
-import { hasNonZeroReservedBits } from './validate.js';
+import { hasNonZeroReservedBits, validatePolicyRegions } from './validate.js';
 
 // ─── LEB128 varint ────────────────────────────────────────────────────────────
 
@@ -191,7 +191,7 @@ function patchError(code: PatchError['code']): PatchError {
  *   E04 RESERVED_BIT_SET    — resulting state has non-zero reserved bit
  *   E05 NOOP_PATCH          — every new word equals the current word
  */
-export function applyPatch(state: CortexState, patch: Patch): PatchResult {
+export function applyPatch(state: CortexState, patch: Patch, policyAtomsMode = false): PatchResult {
   // 1. Budget check
   if (patch.wordCount < 1 || patch.wordCount > 4) {
     return patchError('E03');
@@ -238,6 +238,13 @@ export function applyPatch(state: CortexState, patch: Patch): PatchResult {
   if (hasNonZeroReservedBits(resultState)) {
     return patchError('E04');
   }
+  // r5 hard-fail: under policyAtomsMode the reclaimed regions are typed PolicyAtoms
+  // (RetrievalKeys/Codebook masks stay 0 for r4-compat, so hasNonZeroReservedBits does
+  // NOT cover the 896–991 reserved-zero region or the per-atom grammar — validatePolicyRegions does).
+  if (policyAtomsMode) {
+    const policyErr = validatePolicyRegions(resultState);
+    if (policyErr) return policyErr;
+  }
 
   return { ok: true, state: resultState };
 }
@@ -272,7 +279,7 @@ function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
  * (the reducer pre-validates parent against the epoch parent root via
  * checkPatchParentRoot or applyPatch on the parent state).
  */
-export function applyPatchOntoCurrent(current: CortexState, patch: Patch): PatchResult {
+export function applyPatchOntoCurrent(current: CortexState, patch: Patch, policyAtomsMode = false): PatchResult {
   if (patch.wordCount < 1 || patch.wordCount > 4) {
     return patchError('E03');
   }
@@ -307,6 +314,10 @@ export function applyPatchOntoCurrent(current: CortexState, patch: Patch): Patch
   const resultState: CortexState = { words: newWords };
   if (hasNonZeroReservedBits(resultState)) {
     return patchError('E04');
+  }
+  if (policyAtomsMode) {
+    const policyErr = validatePolicyRegions(resultState);
+    if (policyErr) return policyErr;
   }
 
   return { ok: true, state: resultState };

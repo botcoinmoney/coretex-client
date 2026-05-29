@@ -805,12 +805,10 @@ export async function scoreSubstrateAgainstQuery(
   if (opts.policyAtomsMode === true && opts.policyQueryConditionedAdmission === true && opts.policyEntityRegistry) {
     const qtext = (query.queryText ?? '').toLowerCase();
     const generic = new Set(opts.policyGenericEntityIds ?? []);
-    // query subjects = public entities whose name/alias appears in the query text (entity parse).
-    const querySubjects = new Set<string>();
-    for (const ent of opts.policyEntityRegistry) {
-      if (generic.has(ent.id)) continue;
-      if (ent.names.some((n) => n.length > 0 && qtext.includes(n))) querySubjects.add(ent.id);
-    }
+    // Resolve the query's subject. PUBLIC exact grounding (query.subjectEntityId) wins; the name-text
+    // fallback is FAIL-CLOSED (word-boundary; admits nothing when > POLICY_MAX_SELECTOR_FANOUT entities
+    // match) so duplicate canonical names at scale (112-way at 300k) cannot flood admission.
+    const querySubjects = resolveQuerySubjects(query.queryText, query.subjectEntityId, opts.policyEntityRegistry, opts.policyGenericEntityIds);
     // Category-B gate: when relation-typed and the query has NO relation intent (e.g. temporal "current
     // X"), inject NOTHING for EVIDENCE-BUNDLE (relation-routing) atoms — entity-only admission flooded these
     // with off-intent bridges and displaced the real answer (the r5.1 −0.14). CONFLICT_LIFECYCLE atoms use a
@@ -2019,6 +2017,87 @@ export function stableRecordIdFor(id: string): bigint {
  * Score the substrate against the entire query pack. Returns the composite
  * score and per-query breakdown.
  */
+/**
+ * Derive the PUBLIC policy entity registry + generic (scope-owner) ids from the corpus.
+ *
+ * The r5 query-conditioned admission block (Category-B relation-typed routing + conflict-intent)
+ * is guarded on `opts.policyEntityRegistry`. The canonical `scoringOptionsFromProfile` path does NOT
+ * carry one, so without this the launch profile can enable `policyAtomsMode` while production scoring
+ * silently loses the routing behaviour. This derives the registry deterministically from the PUBLIC
+ * corpus entity table (canonicalName + aliases, lowercased) so scoring and replay are identical
+ * (same corpus → same registry; the entity table is public construction-time metadata).
+ *
+ * `genericEntityIds` = the scope owners (the distinct public `ownerEntityId` values across events —
+ * e.g. dgen1's single `e_universe`). These are owner/universe scopes, never query subjects, so the
+ * selector must skip them (else they match every query → admission flood). Public field, never from
+ * qrels; shape-independent (correct for single- and multi-universe corpora). Deterministic.
+ */
+export function buildPolicyEntityRegistry(
+  corpus: ProductionCorpus,
+): { readonly registry: ReadonlyArray<{ readonly id: string; readonly names: readonly string[] }>; readonly genericEntityIds: readonly string[] } {
+  const registry = (corpus.entities ?? []).map((e) => ({
+    id: e.id,
+    names: [e.canonicalName, ...(e.aliases ?? [])]
+      .filter((n): n is string => typeof n === 'string' && n.length > 0)
+      .map((n) => n.toLowerCase()),
+  }));
+  const owners = new Set<string>();
+  for (const ev of corpus.events) {
+    if (ev.ownerEntityId) owners.add(ev.ownerEntityId);
+  }
+  // registry-order filter → deterministic, and only ids that are real entities.
+  const genericEntityIds = registry.map((e) => e.id).filter((id) => owners.has(id));
+  return { registry, genericEntityIds };
+}
+
+/**
+ * Max entities a name-text fallback may match before it is treated as AMBIGUOUS and admits nothing.
+ * At 100k/300k, `${first} ${last}` canonical names collide up to 112-way, so naive substring matching
+ * fans a single query out to 100+ subjects and floods r5 policy admission (the 300k "zero signal"
+ * root cause). The public `query.subjectEntityId` is the real fix; this cap makes the fallback
+ * fail-closed instead of flooding.
+ */
+export const POLICY_MAX_SELECTOR_FANOUT = 4;
+
+function nameMatchesQuery(qtextLower: string, name: string): boolean {
+  // word-boundary match (not substring) so "Ana" does not match "Anabel", and "aisha costa"
+  // matches "...aisha costa's..." (apostrophe is a non-word boundary).
+  const esc = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(^|[^a-z0-9])${esc}([^a-z0-9]|$)`, 'i').test(qtextLower);
+}
+
+/**
+ * Resolve a query's subject entity ids for r5 policy admission.
+ *  1. PUBLIC exact grounding: `subjectEntityId` (set at corpus-generation, never from qrels) wins —
+ *     collapses the selector to the one true subject regardless of name collisions.
+ *  2. Fail-closed text fallback (legacy corpora without grounding): word-boundary name match, and
+ *     admit NOTHING when more than `maxFanout` entities match (ambiguous → cannot target).
+ */
+export function resolveQuerySubjects(
+  queryText: string | undefined,
+  subjectEntityId: string | undefined,
+  registry: ReadonlyArray<{ readonly id: string; readonly names: readonly string[] }> | undefined,
+  genericEntityIds: readonly string[] | undefined,
+  maxFanout: number = POLICY_MAX_SELECTOR_FANOUT,
+): Set<string> {
+  const generic = new Set(genericEntityIds ?? []);
+  const out = new Set<string>();
+  if (subjectEntityId && !generic.has(subjectEntityId)) {
+    out.add(subjectEntityId);
+    return out;
+  }
+  const qt = (queryText ?? '').toLowerCase();
+  const matched: string[] = [];
+  for (const ent of registry ?? []) {
+    if (generic.has(ent.id)) continue;
+    if (ent.names.some((n) => n.length > 0 && nameMatchesQuery(qt, n))) matched.push(ent.id);
+  }
+  if (matched.length > 0 && matched.length <= maxFanout) {
+    for (const id of matched) out.add(id);
+  }
+  return out;
+}
+
 export async function evaluateRetrievalBenchmarkState(
   state: CortexState,
   corpus: ProductionCorpus,
@@ -2027,6 +2106,17 @@ export async function evaluateRetrievalBenchmarkState(
 ): Promise<CompositeScore> {
   assertValidWeights(opts.weights);
   assertPipelineVersionMatches(opts.pipelineVersion);
+  // r5: derive the public entity registry from the corpus when query-conditioned admission is on
+  // but no registry was injected (the canonical profile→options path carries none). Explicit opts win.
+  if (opts.policyAtomsMode === true && opts.policyQueryConditionedAdmission === true
+      && !opts.policyEntityRegistry && corpus.entities && corpus.entities.length > 0) {
+    const derived = buildPolicyEntityRegistry(corpus);
+    opts = {
+      ...opts,
+      policyEntityRegistry: derived.registry,
+      ...(opts.policyGenericEntityIds ? {} : { policyGenericEntityIds: derived.genericEntityIds }),
+    };
+  }
   // §6.4 lens-diversity floor — only effective when the bundle pins the
   // floor AND we pass the full retrievalKeyLayout (decoder needs `dim`
   // and quantization to dequantize lens vectors). Without these, the

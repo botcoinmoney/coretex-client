@@ -23,7 +23,14 @@ export type ProductionCorpusFamily =
   | 'near_collision'
   | 'temporal'
   | 'long_horizon'
-  | 'multi_hop_relation';
+  | 'multi_hop_relation'
+  // r5 operation families — first-class buckets (previously collapsed into near_collision) so
+  // per-family quotas/metrics can isolate them. The scorer applies no family-specific behaviour to
+  // these (only temporal / multi_hop_relation have special handling), so de-collapsing changes
+  // metrics/quotas only, not scoring — but it DOES change event.family → corpusRoot (regen-gated).
+  | 'conflict_lifecycle'
+  | 'aspect_constraint'
+  | 'coreference';
 
 export type CorpusSplit = 'train_visible' | 'calibration' | 'eval_hidden' | 'canary';
 
@@ -36,6 +43,19 @@ export type RelationEdgeType =
   | 'co_occurs_with';
 
 export type GradedRelevance = 0.0 | 0.2 | 0.4 | 0.6 | 0.8 | 1.0;
+
+const VALID_GRADED_RELEVANCE: ReadonlySet<number> = new Set([0.0, 0.2, 0.4, 0.6, 0.8, 1.0]);
+/**
+ * Runtime guard for the graded-relevance contract. The TS type does not validate at load time,
+ * so an off-scale grade (e.g. the historical bridge `0.5`) would silently load and feed nDCG with
+ * an out-of-contract gain. Throws on any value not in {0,0.2,0.4,0.6,0.8,1.0}.
+ */
+export function assertGradedRelevance(value: number, ctx = 'qrel'): GradedRelevance {
+  if (!VALID_GRADED_RELEVANCE.has(value)) {
+    throw new RangeError(`${ctx}: relevance ${value} is off the GradedRelevance scale {0,0.2,0.4,0.6,0.8,1.0}`);
+  }
+  return value as GradedRelevance;
+}
 
 export interface TruthDocument {
   readonly id: string;
@@ -164,6 +184,15 @@ export interface ProductionCorpusEvent {
    */
   readonly ownerEntityId?: string;
   readonly ownerScoped?: boolean;
+  /**
+   * PUBLIC subject entity id this query is ABOUT (the one entity the answer concerns), set at
+   * corpus-generation time from generator structure, NEVER from qrels/gold. Distinct from
+   * `ownerEntityId` (the owner/universe scope): at scale a single owner holds many subjects whose
+   * canonical names collide (112-way at 300k), so name-text resolution floods r5 policy admission.
+   * This is the exact, collision-proof grounding the selector uses (see `resolveQuerySubjects`).
+   * Optional/back-compat: absent → fail-closed name-text fallback.
+   */
+  readonly subjectEntityId?: string;
   readonly provenance: Provenance;
   readonly embeddings: EmbeddingPayload;
   /**
@@ -411,6 +440,7 @@ function parseEventLine(line: string): ProductionCorpusEvent {
       perNegative: Record<string, string>;
     };
   } & Omit<ProductionCorpusEvent, 'embeddings'>;
+  for (const q of e.qrels) assertGradedRelevance(q.relevance, `event ${e.id} qrel ${q.documentId}`);
   return {
     ...e,
     embeddings: {
@@ -596,6 +626,7 @@ export function serializeProductionCorpus(corpus: ProductionCorpus): CorpusFileS
     ...(e.entityIds !== undefined ? { entityIds: e.entityIds } : {}),
     ...(e.ownerEntityId !== undefined ? { ownerEntityId: e.ownerEntityId } : {}),
     ...(e.ownerScoped !== undefined ? { ownerScoped: e.ownerScoped } : {}),
+    ...(e.subjectEntityId !== undefined ? { subjectEntityId: e.subjectEntityId } : {}),
     provenance: e.provenance,
     embeddings: {
       modelId: e.embeddings.modelId,

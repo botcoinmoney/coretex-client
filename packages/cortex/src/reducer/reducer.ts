@@ -180,6 +180,7 @@ export function reduce(
   parentState: CortexState,
   patches: ReducerInputPatch[],
   threshold: bigint = 0n,
+  policyAtomsMode = false,
 ): ReducerOutput {
   // The EPOCH parent root: every screener-pass patch must reference this.
   const epochParentRoot = merkleizeState(parentState);
@@ -240,7 +241,7 @@ export function reduce(
     }
 
     // 2c. Apply patch onto current (skips the now-stale parent root check).
-    const applyResult = applyPatchOntoCurrent(current, item.patch);
+    const applyResult = applyPatchOntoCurrent(current, item.patch, policyAtomsMode);
     if (!applyResult.ok) {
       // The only failures here are E02 (invalid target index), E03 (over-budget),
       // E04 (reserved-bit set in resulting state), or E05 (no-op vs current
