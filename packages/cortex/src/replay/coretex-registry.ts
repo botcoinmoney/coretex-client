@@ -147,7 +147,7 @@ export interface CoreTexReplayResult {
 export function replayCoreTexFromLogs(
   parentState: CortexState,
   logs: readonly RpcLog[],
-  opts: { expectedBundleHash?: string } = {},
+  opts: { expectedBundleHash?: string; policyAtomsMode?: boolean } = {},
 ): CoreTexReplayResult {
   const started = logs.map(decodeCoreTexEpochStarted).find((v): v is CoreTexEpochStartedEvent => v !== null);
   const advances = logs.map(decodeCoreTexStateAdvanced).filter((v): v is CoreTexStateAdvancedEvent => v !== null)
@@ -181,7 +181,10 @@ export function replayCoreTexFromLogs(
     if (!eqHex(computePatchHash(adv.compactPatchBytes), adv.patchHash)) {
       return { ok: false, code: 'PATCH_HASH_MISMATCH', message: `advance ${adv.transitionIndex} patchHash mismatch`, transitions: Number(adv.transitionIndex) };
     }
-    const res = applyPatch(state, decodePatch(adv.compactPatchBytes));
+    // r5: enforce the SAME reserved-region / PolicyAtom grammar canonical replay that scoring enforces —
+    // a forged r5 patch (reserved-nonzero / malformed atom) fails apply here (APPLY_FAILED) instead of
+    // silently reconstructing the on-chain root. Default off (r4-safe); the watcher sets it for r5 epochs.
+    const res = applyPatch(state, decodePatch(adv.compactPatchBytes), opts.policyAtomsMode === true);
     if (!res.ok) {
       return { ok: false, code: 'APPLY_FAILED', message: `advance ${adv.transitionIndex} applyPatch ${res.code}`, transitions: Number(adv.transitionIndex) };
     }

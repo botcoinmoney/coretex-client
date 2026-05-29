@@ -267,6 +267,8 @@ switch (cmd) {
       patchEvents: eventsData.patchEvents,
       snapshotEvent: eventsData.snapshotEvent,
       ...(genesisState ? { genesisState } : {}),
+      // r5 epochs: enforce reserved-region / PolicyAtom grammar in canonical reconstruction (same as scoring).
+      ...(args.includes('--policy-atoms-mode') ? { policyAtomsMode: true } : {}),
     });
     process.stdout.write(toJsonOutput(result) + '\n');
     if (result.ok && !result.match) process.exit(3);

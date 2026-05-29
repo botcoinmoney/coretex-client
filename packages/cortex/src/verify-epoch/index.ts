@@ -169,6 +169,7 @@ export function decodeStateSnapshotLog(
 function runReducer(
   parentState: CortexState,
   patches: readonly PatchAcceptedEvent[],
+  policyAtomsMode = false,
 ): { state: CortexState; acceptedHashes: string[] } {
   const parentRoot = bytesToHex(merkleizeState(parentState)); // already '0x...'-prefixed
 
@@ -213,7 +214,7 @@ function runReducer(
 
   for (const { patch, computedPatchHash } of decoded) {
     if (patch.indices.some((i) => usedIndices.has(i))) continue;
-    const result = applyPatchOntoCurrent(currentState, patch);
+    const result = applyPatchOntoCurrent(currentState, patch, policyAtomsMode);
     if (!result.ok) continue;
     for (const i of patch.indices) usedIndices.add(i);
     currentState = result.state;
@@ -253,6 +254,9 @@ export interface VerifyEpochInput {
   readonly patchEvents: readonly PatchAcceptedEvent[];
   readonly snapshotEvent: StateSnapshotEvent | null;
   readonly genesisState?: CortexState;
+  /** r5: enforce the reserved-region / PolicyAtom grammar during canonical replay reconstruction (same as
+   *  scoring) so a forged r5 patch fails to reproduce the root. Default off (r4-safe); set for r5 epochs. */
+  readonly policyAtomsMode?: boolean;
 }
 
 /**
@@ -292,7 +296,7 @@ export function verifyEpoch(input: VerifyEpochInput): VerifyEpochResult {
     };
   }
 
-  const { state: finalState, acceptedHashes } = runReducer(startState, input.patchEvents);
+  const { state: finalState, acceptedHashes } = runReducer(startState, input.patchEvents, input.policyAtomsMode === true);
   const reproducedStateRoot = (bytesToHex(merkleizeState(finalState))).toLowerCase();
   const expectedStateRoot = input.finalizedEvent.newStateRoot.toLowerCase();
 

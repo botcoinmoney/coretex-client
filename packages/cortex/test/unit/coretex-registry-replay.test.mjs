@@ -16,6 +16,10 @@ import {
   CORETEX_EVENT_TOPICS, decodeCoreTexEpochStarted, decodeCoreTexStateAdvanced,
   decodeCoreTexEpochFinalized, replayCoreTexFromLogs,
 } from '../../dist/index.js';
+import { applyPatch, encodePatch } from '../../dist/state/patch.js';
+import { merkleizeState, bytesToHex } from '../../dist/state/merkle.js';
+import { computePatchHash } from '../../dist/eval/seed-derivation.js';
+import { RANGES, PATCH_TYPE } from '../../dist/state/types.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fx = JSON.parse(readFileSync(resolve(here, '../../../../release/calibration/fixtures/state-root-vectors.json'), 'utf8'));
@@ -144,5 +148,34 @@ describe('CoreTexRegistry canonical replay decoder', () => {
     const empty0 = advanceLog({ epoch: 7, idx: 0, miner: MINER, parent: genesis.stateRoot, child: temporalVec.childStateRoot, patchHash: temporalVec.patchHash, evalHash: '0x00', cvh: BUNDLE, corpus: CORPUS, frontier: FRONTIER, credits: 0, wordCount: 0, patchHex: '0x' });
     const r = replayCoreTexFromLogs(empty, [empty0], { expectedBundleHash: BUNDLE });
     assert.equal(r.ok, false); assert.equal(r.code, 'NO_PATCH_BYTES');
+  });
+});
+
+describe('CoreTexRegistry replay — r5 grammar enforcement (canonical replay == scoring)', () => {
+  // A forged r5 advance: a patch writing nonzero into the reserved policy region (896). applyPatch WITHOUT
+  // policyAtomsMode ACCEPTS it (r4 codebook mask = 0), so its child root is internally consistent.
+  const forgedParent = merkleizeState(empty);
+  const forgedPatch = { patchType: PATCH_TYPE.MIXED, wordCount: 1, scoreDelta: 1n, parentStateRoot: forgedParent, indices: [RANGES.CODEBOOK_START], newWords: [1n] };
+  const forgedBytes = encodePatch(forgedPatch);
+  const forgedHex = '0x' + Buffer.from(forgedBytes).toString('hex');
+  const applied = applyPatch(empty, forgedPatch); // ok WITHOUT policyAtomsMode
+  const forgedChildRoot = bytesToHex(merkleizeState(applied.state));
+  const forgedPatchHash = computePatchHash(forgedBytes);
+  const forgedAdv = advanceLog({ epoch: 7, idx: 0, miner: MINER, parent: genesis.stateRoot, child: forgedChildRoot, patchHash: forgedPatchHash, evalHash: '0x' + '11'.repeat(32), cvh: BUNDLE, corpus: CORPUS, frontier: FRONTIER, credits: 30000, wordCount: 1, patchHex: forgedHex });
+
+  test('forged r5 advance (reserved-region nonzero) RECONSTRUCTS without the flag (the gap)', () => {
+    const r = replayCoreTexFromLogs(empty, [forgedAdv], { expectedBundleHash: BUNDLE });
+    assert.equal(r.ok, true, 'without policyAtomsMode, replay silently reconstructs the forged root');
+  });
+
+  test('forged r5 advance is REJECTED (APPLY_FAILED) under policyAtomsMode — canonical replay enforces the grammar', () => {
+    const r = replayCoreTexFromLogs(empty, [forgedAdv], { expectedBundleHash: BUNDLE, policyAtomsMode: true });
+    assert.equal(r.ok, false);
+    assert.equal(r.code, 'APPLY_FAILED');
+  });
+
+  test('a clean (non-forged) advance still replays under policyAtomsMode (no false rejection)', () => {
+    const r = replayCoreTexFromLogs(empty, [adv0], { expectedBundleHash: BUNDLE, policyAtomsMode: true });
+    assert.equal(r.ok, true);
   });
 });

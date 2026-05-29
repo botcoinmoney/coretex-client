@@ -107,6 +107,12 @@ async function main() {
     const registry = opt(args, '--coretex-registry') ?? opt(args, '--registry');
     const addresses = [registry, opt(args, '--v4'), opt(args, '--cortex-state')].filter((v): v is string => v !== undefined);
     const expectedBundleHash = opt(args, '--expected-bundle-hash') ?? opt(args, '--core-version-hash');
+    // r5 epochs: enforce the reserved-region / PolicyAtom grammar during canonical replay (same as scoring),
+    // derived from the pinned bundle's pipelineVersion when a manifest is supplied. Default off (r4-safe).
+    const replayManifestPath = opt(args, '--bundle-manifest');
+    const policyAtomsMode = replayManifestPath
+      ? (JSON.parse(readFileSync(replayManifestPath, 'utf8'))?.evaluator?.profile?.pipelineVersion === 'coretex-retrieval-v2-policy-r5')
+      : false;
     const fromFixed = fromBlockArg === 'latest' ? await latestBlock(rpc) : parseBlock(fromBlockArg);
 
     for (;;) {
@@ -114,9 +120,7 @@ async function main() {
       if (latest >= fromFixed) {
         // cumulative + idempotent: always replay the full range from the pinned start over the empty/parent state.
         const logs = await coretexRangeLogs(rpc, addresses.length > 0 ? addresses : undefined, blockHex(fromFixed), blockHex(latest));
-        const result = expectedBundleHash
-          ? replayCoreTexFromLogs(parentState, logs, { expectedBundleHash })
-          : replayCoreTexFromLogs(parentState, logs);
+        const result = replayCoreTexFromLogs(parentState, logs, { ...(expectedBundleHash ? { expectedBundleHash } : {}), policyAtomsMode });
         print({ fromBlock: blockHex(fromFixed), toBlock: blockHex(latest), logCount: logs.length, ...result });
         if (!result.ok) process.exit(1);
       }
