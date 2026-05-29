@@ -1297,11 +1297,11 @@ export async function scoreSubstrateAgainstQuery(
   const aspectActive = opts.policyAtomsMode === true && opts.enableAspectConstraintAtoms === true && opts.policyAspectIntentAdmission === true;
   const aspectIntent = aspectActive ? parseQueryAspectIntent(query.queryText ?? '') : null;
   const aspectBoost = opts.policyAspectBoost ?? 0;
-  let aspectTagsByDoc: Map<string, Set<string>> | null = null;
+  let aspectMaps: { aspectByDoc: Map<string, Set<string>>; subjectByDoc: Map<string, string> } | null = null;
+  let aspectSubjects: Set<string> | null = null;
   if (aspectIntent && aspectBoost > 0) {
-    aspectTagsByDoc = new Map();
-    for (const td of query.truthDocuments) if (td.aspectTags) aspectTagsByDoc.set(td.id, new Set(td.aspectTags.map((a) => a.toLowerCase())));
-    for (const n of query.hardNegatives) if (n.aspectTags) aspectTagsByDoc.set(n.id, new Set(n.aspectTags.map((a) => a.toLowerCase())));
+    aspectMaps = getPublicAspectMaps(corpus, opts.policyGenericEntityIds);          // PUBLIC memory-doc tags/subjects
+    aspectSubjects = resolveQuerySubjects(query.queryText, query.subjectEntityId, opts.policyEntityRegistry, opts.policyGenericEntityIds);
   }
   for (const record of pool.values()) {
     const docVec = dequantize(record.embedding, opts.retrievalKeyLayout);
@@ -1351,8 +1351,14 @@ export async function scoreSubstrateAgainstQuery(
     // force-floats the whole boosted class into top-10 (flood), so it is excluded from finalBonus.
     const evidencePolicyBonus = evidencePolicyActive ? (contributionBoostByEventId.get(record.eventId) ?? 0) : 0;
 
-    // aspect boost: final-reorder only, on this query's own aspect-matching candidate (boost-only).
-    const aspectBonus = (aspectTagsByDoc && aspectIntent && aspectTagsByDoc.get(record.docId)?.has(aspectIntent)) ? aspectBoost : 0;
+    // aspect boost (final-reorder, boost-only): PUBLIC doc aspect tag matches the parsed intent AND the
+    // doc's PUBLIC subject matches the query subject. Reads only public memory-doc maps + query subject —
+    // never the query's qrels/truths/negs.
+    let aspectBonus = 0;
+    if (aspectMaps && aspectIntent && aspectSubjects) {
+      const subj = aspectMaps.subjectByDoc.get(record.docId);
+      if (aspectMaps.aspectByDoc.get(record.docId)?.has(aspectIntent) && subj && aspectSubjects.has(subj)) aspectBonus = aspectBoost;
+    }
 
     const admissionBonus = lensBonus + anchorBonus + temporalBonus + categoryLensBonus + evidencePolicyBonus;
     const finalBonus = lensBonus + anchorBonus + temporalBonus + categoryLensFinalBonus + aspectBonus;
@@ -2138,6 +2144,32 @@ export function resolveQuerySubjects(
   return out;
 }
 
+const publicAspectMapCache = new WeakMap<ProductionCorpus, { aspectByDoc: Map<string, Set<string>>; subjectByDoc: Map<string, string> }>();
+/**
+ * PUBLIC per-document aspect tags + subject id, derived ONLY from the PUBLIC memory-doc events (the
+ * build-v2 `mem_*` events that form the retrieval store) — NEVER from a query's qrels / truthDocuments /
+ * hardNegatives (that would key the boost off eval structure = leakage). Cached per corpus. Consumed only
+ * by the default-off experimental aspect boost.
+ */
+function getPublicAspectMaps(corpus: ProductionCorpus, genericEntityIds?: readonly string[]): { aspectByDoc: Map<string, Set<string>>; subjectByDoc: Map<string, string> } {
+  const cached = publicAspectMapCache.get(corpus);
+  if (cached) return cached;
+  const generic = new Set(genericEntityIds ?? []);
+  const aspectByDoc = new Map<string, Set<string>>();
+  const subjectByDoc = new Map<string, string>();
+  for (const ev of corpus.events) {
+    if (!ev.id.startsWith('mem_')) continue; // PUBLIC memory-doc events only (not query events)
+    const subj = (ev.entityIds ?? []).find((e) => !generic.has(e));
+    for (const td of ev.truthDocuments) {
+      if (td.aspectTags && td.aspectTags.length > 0) aspectByDoc.set(td.id, new Set(td.aspectTags.map((a) => a.toLowerCase())));
+      if (subj) subjectByDoc.set(td.id, subj);
+    }
+  }
+  const maps = { aspectByDoc, subjectByDoc };
+  publicAspectMapCache.set(corpus, maps);
+  return maps;
+}
+
 export async function evaluateRetrievalBenchmarkState(
   state: CortexState,
   corpus: ProductionCorpus,
@@ -2148,7 +2180,7 @@ export async function evaluateRetrievalBenchmarkState(
   assertPipelineVersionMatches(opts.pipelineVersion);
   // r5: derive the public entity registry from the corpus when query-conditioned admission is on
   // but no registry was injected (the canonical profile→options path carries none). Explicit opts win.
-  if (opts.policyAtomsMode === true && opts.policyQueryConditionedAdmission === true
+  if (opts.policyAtomsMode === true && (opts.policyQueryConditionedAdmission === true || opts.policyAspectIntentAdmission === true)
       && !opts.policyEntityRegistry && corpus.entities && corpus.entities.length > 0) {
     const derived = buildPolicyEntityRegistry(corpus);
     opts = {
