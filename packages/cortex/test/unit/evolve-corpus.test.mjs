@@ -9,7 +9,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { evolveCorpusDelta } from '../../../../scripts/lib/evolve-corpus.mjs';
-import { buildCorpusDelta, applyCorpusDelta, splitForRecord, computeCorpusRoot } from '../../dist/index.js';
+import { buildCorpusDelta, applyCorpusDelta, splitForRecord, expectedSplitForRecord, computeCorpusRoot } from '../../dist/index.js';
 
 // minimal base logical corpus: 1 universe + 40 subjects, each with one prior temporal doc.
 const baseLogical = {
@@ -108,5 +108,47 @@ describe('Fix B — production delta/root path (mock embeddings): logical delta 
     const evolved = applyCorpusDelta(prevCorpus(0), d1);
     assert.equal(evolved.corpusRoot, d1.nextRoot, 'applyCorpusDelta reconstructs the delta nextRoot');
     assert.ok(d1.addedIds.length > 0);
+  });
+
+  // P0: live churn needs NEW PUBLIC MEMORY-DOC events (mem_*) so policy atoms / aspect maps / relations /
+  // retrieval structure can see the updated memories — not only query events. Memory docs are train_visible
+  // (expectedSplitForRecord), queries use splitForRecord; both must pass buildCorpusDelta/applyCorpusDelta.
+  const memId = (id) => `mem_${id}`;
+  function prodMemDocs(logicalDelta) {
+    const relBySrc = new Map();
+    for (const r of logicalDelta.addedRelations) { if (!relBySrc.has(r.src)) relBySrc.set(r.src, []); relBySrc.get(r.src).push(r); }
+    return logicalDelta.addedDocs.map((d) => ({
+      id: memId(d.id), family: 'near_collision', domain: d.lane, split: expectedSplitForRecord(memId(d.id), 0),
+      queryText: d.text,
+      truthDocuments: [{ id: d.id, text: d.text, isCurrent: d.currentStaleFlag === false ? false : true, ...(d.aspectTags ? { aspectTags: d.aspectTags } : {}) }],
+      hardNegatives: [], qrels: [{ documentId: d.id, relevance: 1.0 }], protected: false,
+      relations: (relBySrc.get(d.id) ?? []).map((r) => ({ other_id: memId(r.dst), edgeType: r.type, ...(r.label ? { label: r.label } : {}) })),
+      entityIds: d.entityIds, provenance: { source: 'synthetic_challenge', sourceHash: '0x' + 'aa'.repeat(32) },
+      embeddings: { modelId: BI.modelId, revision: BI.revision, layout: LAYOUT, query: mockEmb(), perTruth: new Map([[d.id, mockEmb()]]), perNegative: new Map() },
+    }));
+  }
+
+  test('LIVE MEMORY-DOC delta: mem_* docs (train_visible) + relations + aspectTags + queries pass buildCorpusDelta→applyCorpusDelta', () => {
+    const ld = evolveCorpusDelta({ baseLogical, epoch: 4, seed: 'frontier', churnFraction: 1.0 });
+    // tag one delta doc with public aspect tags to prove the field flows through the mem-doc delta path.
+    ld.addedDocs[0] = { ...ld.addedDocs[0], aspectTags: ['latency', 'cost'] };
+    const memDocs = prodMemDocs(ld);
+    const queries = prodEvents(ld, 0);
+    assert.ok(memDocs.length > 0, 'live churn must add public memory docs, not only queries');
+    // memory docs are train_visible; queries are splitForRecord — both must equal expectedSplitForRecord.
+    for (const e of memDocs) assert.equal(e.split, 'train_visible');
+    for (const e of [...memDocs, ...queries]) assert.equal(e.split, expectedSplitForRecord(e.id, 0));
+    // the split-authority fix: buildCorpusDelta MUST accept train_visible mem_* docs (previously threw).
+    const mk = () => buildCorpusDelta({ previousCorpus: prevCorpus(0), additions: [...memDocs, ...queries], removals: [], epoch: 4, labelingProvenance });
+    assert.doesNotThrow(mk, 'mem_* train_visible docs must not be rejected by the split validator');
+    const d1 = mk(), d2 = mk();
+    assert.equal(d1.nextRoot, d2.nextRoot, 'replay-stable root');
+    const evolved = applyCorpusDelta(prevCorpus(0), d1);
+    assert.equal(evolved.corpusRoot, d1.nextRoot, 'applyCorpusDelta reconstructs the root with live memory docs');
+    // public memory structure is visible on the merged corpus: aspectTags + the continuity label survive.
+    const memEv = evolved.byId.get(memDocs[0].id);
+    assert.deepEqual(memEv.truthDocuments[0].aspectTags, ['latency', 'cost'], 'public aspectTags survive into the merged corpus');
+    const withLabel = [...memDocs, ...queries].flatMap((e) => e.relations ?? []).filter((r) => r.label);
+    assert.ok(withLabel.some((r) => r.label === 'supersedes' || r.label === 'contradicts'), 'public continuity label (direction) is preserved on live relations');
   });
 });

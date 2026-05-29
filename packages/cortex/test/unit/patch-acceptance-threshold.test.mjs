@@ -28,6 +28,9 @@ import {
   DEFAULT_PROFILE,
   RANGES,
   PATCH_TYPE,
+  encodePolicyAtom,
+  POLICY_SELECTOR,
+  POLICY_EVIDENCE_FEATURE,
 } from '../../dist/index.js';
 
 const LAYOUT = { dim: 8, headerBytes: 9, quantization: 'int8' };
@@ -190,5 +193,48 @@ describe('evaluateRetrievalBenchmarkPatch — acceptance threshold gating', () =
       acceptanceThresholdPpm: deltaPpm,
     });
     assert.equal(accepted.accepted, true);
+  });
+
+  test('r5 profile rejects malformed PolicyAtom patches at apply time', async () => {
+    const state = makeState();
+    const corpus = makeCorpus();
+    const pack = { epochId: 0, evalSeedCommit: '0x' + '55'.repeat(32), events: [] };
+    const badAtomPatch = {
+      patchType: PATCH_TYPE.POLICY_UPDATE,
+      wordCount: 1,
+      scoreDelta: 0n,
+      parentStateRoot: merkleizeState(state),
+      indices: [RANGES.POLICY_EVIDENCE_START],
+      newWords: [1n], // non-zero reserved low bits, invalid r5 atom grammar
+    };
+
+    const result = await evaluateRetrievalBenchmarkPatch(state, badAtomPatch, corpus, pack, { ...opts, policyAtomsMode: true }, {
+      ...PERMISSIVE_GUARDS,
+      minImprovementPpm: Number.MIN_SAFE_INTEGER,
+    });
+    assert.equal(result.accepted, false);
+    assert.equal(result.reason, 'apply_failed:E02');
+
+    const validAtomPatch = {
+      ...badAtomPatch,
+      newWords: [encodePolicyAtom({
+        atomIndex: 0,
+        family: 'evidence_bundle',
+        selector: POLICY_SELECTOR.ANSWER_DENSITY,
+        evidenceFeature: POLICY_EVIDENCE_FEATURE.SUPPORT_IN_DEGREE,
+        action: 'include',
+        scope: 'relation_path',
+        targetSlot: 0,
+        budget: 250,
+        flags: 0,
+        validFromEpoch: 0n,
+        expiryEpoch: 0n,
+      })],
+    };
+    const valid = await evaluateRetrievalBenchmarkPatch(state, validAtomPatch, corpus, pack, { ...opts, policyAtomsMode: true }, {
+      ...PERMISSIVE_GUARDS,
+      minImprovementPpm: Number.MIN_SAFE_INTEGER,
+    });
+    assert.notEqual(valid.reason, 'apply_failed:E02');
   });
 });

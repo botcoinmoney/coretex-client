@@ -381,10 +381,12 @@ export interface ScoringOptions {
   /** Entity ids treated as too-generic to be a selector key (e.g. the single-universe owner). */
   readonly policyGenericEntityIds?: readonly string[];
   /** aspect_constraint EXPERIMENTAL surface (A100 candidate; default-off, NOT a launch surface). When ALL
-   *  three are set, a bounded BOOST-ONLY final-reorder bonus is applied to the query's own candidate docs
-   *  whose public `aspectTags` ⊇ the query's parsed intent aspect (parseQueryAspectIntent), subject-scoped
-   *  by construction (only the query's own truths/negs). When any is unset → additive-zero → byte-identical
-   *  no-op. Never suppresses (the prior aspect failure mode was suppressing partial-credit docs). */
+   *  three are set, a bounded BOOST-ONLY final-reorder bonus is applied to candidates whose PUBLIC
+   *  memory-doc `aspectTags` (from the `mem_*` doc events, via getPublicAspectMaps) ⊇ the query's parsed
+   *  intent aspect (parseQueryAspectIntent) AND whose PUBLIC subject == the query subject. Reads only
+   *  public memory-doc maps + public query subject — NEVER the query's qrels/truthDocuments/hardNegatives.
+   *  When any is unset → additive-zero → byte-identical no-op. Never suppresses (the prior aspect failure
+   *  mode was suppressing partial-credit docs). NOT a miner-malleable atom — a global resolver hook. */
   readonly enableAspectConstraintAtoms?: boolean;
   readonly policyAspectIntentAdmission?: boolean;
   readonly policyAspectBoost?: number;
@@ -2393,7 +2395,7 @@ export async function evaluateRetrievalBenchmarkPatch(
 ): Promise<PatchEvalResult> {
   const acceptanceThresholdPpm = floors.acceptanceThresholdPpm ?? floors.minImprovementPpm;
   const before = await evaluateRetrievalBenchmarkState(parentState, corpus, pack, opts);
-  const applied = applyPatch(parentState, patch);
+  const applied = applyPatch(parentState, patch, opts.policyAtomsMode === true);
   if (!applied.ok) {
     return {
       accepted: false,

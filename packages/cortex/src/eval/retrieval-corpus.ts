@@ -82,6 +82,10 @@ export interface TemporalAnnotation {
 export interface RelationAnnotation {
   readonly other_id: string;
   readonly edgeType: RelationEdgeType;
+  /** PUBLIC continuity label (e.g. `contradicts` / `scope_differs` / `supersedes`) the routing edgeType
+   *  buckets into. Preserved on production relations so conflict DIRECTION is miner-visible + attested
+   *  (in corpusRoot) even when miners receive only production events, not the raw logical corpus. */
+  readonly label?: string;
 }
 
 export type ProvenanceSource = 'dataset_v2_direct' | 'hf_export' | 'synthetic_challenge';
@@ -301,6 +305,21 @@ export function splitForRecord(id: string, corpusEpoch: number, ratios: SplitRat
   if (bucket < ratios.trainVisiblePct + ratios.calibrationPct) return 'calibration';
   if (bucket < ratios.trainVisiblePct + ratios.calibrationPct + ratios.evalHiddenPct) return 'eval_hidden';
   return 'canary';
+}
+
+/**
+ * Canonical EXPECTED split for a production event, the single authority that delta/load validation must
+ * use. The production corpus overloads two event kinds with DIFFERENT split semantics:
+ *   - MEMORY-DOCUMENT events (the public retrieval store; `mem_*` ids) are ALWAYS `train_visible` — they
+ *     are stored memories, never hidden eval queries;
+ *   - QUERY/eval events use the deterministic `splitForRecord` assignment (which queries are hidden).
+ * Validating EVERY event with `splitForRecord` (the prior bug) rejected legitimate `mem_*` docs (they are
+ * train_visible, not their hashed split). The `mem_` prefix is part of the event id (hashed into
+ * corpusRoot), so this rule is deterministic + replay-verifiable. Live-update memory docs added via a
+ * corpus delta must therefore be `mem_*` + `train_visible`.
+ */
+export function expectedSplitForRecord(id: string, corpusEpoch: number, ratios: SplitRatios = DEFAULT_SPLIT_RATIOS): CorpusSplit {
+  return id.startsWith('mem_') ? 'train_visible' : splitForRecord(id, corpusEpoch, ratios);
 }
 
 // ─── Canonical hashing ────────────────────────────────────────────────────────
@@ -587,9 +606,9 @@ export function loadProductionCorpus(path: string, options: LoadProductionCorpus
   if (verifySplits) {
     // Verify per-event split assignment is stable.
     for (const e of events) {
-      const expected = splitForRecord(e.id, raw.corpusEpoch);
+      const expected = expectedSplitForRecord(e.id, raw.corpusEpoch);
       if (e.split !== expected) {
-        throw new Error(`production corpus event ${e.id} declared split ${e.split} but splitForRecord returned ${expected}`);
+        throw new Error(`production corpus event ${e.id} declared split ${e.split} but expectedSplitForRecord returned ${expected}`);
       }
     }
   }

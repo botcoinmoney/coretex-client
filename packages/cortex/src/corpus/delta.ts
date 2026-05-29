@@ -18,7 +18,7 @@ import type {
   ProductionCorpusEventOnDisk,
   RetrievalKeyLayout,
 } from '../eval/retrieval-corpus.js';
-import { computeCorpusRoot, splitForRecord } from '../eval/retrieval-corpus.js';
+import { computeCorpusRoot, expectedSplitForRecord } from '../eval/retrieval-corpus.js';
 
 // ── Delta shape ───────────────────────────────────────────────────────────────
 
@@ -70,7 +70,7 @@ export function buildCorpusDelta(opts: BuildCorpusDeltaOptions): CorpusDelta {
   // Validate per-record: split assignment must be deterministic, embeddings must
   // reference the bundle's bi-encoder.
   for (const e of newAdditions) {
-    const expectedSplit = splitForRecord(e.id, previousCorpus.corpusEpoch);
+    const expectedSplit = expectedSplitForRecord(e.id, previousCorpus.corpusEpoch);
     if (e.split !== expectedSplit) {
       throw new Error(`buildCorpusDelta: record ${e.id} declared split ${e.split}, expected ${expectedSplit}`);
     }
@@ -137,7 +137,7 @@ export function applyCorpusDelta(corpus: ProductionCorpus, delta: CorpusDelta): 
      || e.embeddings.revision !== corpus.biEncoderRevision) {
       throw new Error(`applyCorpusDelta: record ${e.id} embeddings bi-encoder mismatch`);
     }
-    if (splitForRecord(e.id, corpus.corpusEpoch) !== e.split) {
+    if (expectedSplitForRecord(e.id, corpus.corpusEpoch) !== e.split) {
       throw new Error(`applyCorpusDelta: record ${e.id} split assignment mismatch`);
     }
   }
