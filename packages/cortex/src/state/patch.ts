@@ -393,3 +393,27 @@ export function patchTypeRange(patchType: number): { start: number; end: number 
       return undefined;
   }
 }
+
+/**
+ * CANONICAL allowed-patch-type table for the miner-facing challenge: each concrete patch type with
+ * its byte code and writable word-index range, derived from PATCH_TYPE + patchTypeRange (the single
+ * grammar authority). Harnesses (miner-API challenge, screener) MUST call this instead of
+ * hand-mirroring the switch (drift hazard). PIPELINE-AWARE: under r5
+ * (pipelineVersion === 'coretex-retrieval-v2-policy-r5') the RetrievalKeys region 384-671 IS the typed
+ * PolicyAtom region — written via POLICY_UPDATE (0x07), NOT raw KEY_UPDATE (0x01) — and 896-991 is
+ * reserved-zero. So under r5 we SUPPRESS KEY_UPDATE (would alias the policy region), CODEBOOK_UPDATE
+ * (reserved-zero), and MIXED (spans reserved); a miner is advertised only the typed r5 surfaces. This
+ * advertises what the GRAMMAR accepts; which surfaces are reward-ACTIVE is separate (activeSubstrateSurfaces).
+ */
+export function buildAllowedPatchTypes(opts?: { readonly pipelineVersion?: string }): ReadonlyArray<{ readonly name: string; readonly byte: number; readonly wordIndexRange: readonly [number, number] }> {
+  const r5 = opts?.pipelineVersion === 'coretex-retrieval-v2-policy-r5';
+  const r5Suppressed = new Set<number>([PATCH_TYPE.KEY_UPDATE, PATCH_TYPE.CODEBOOK_UPDATE, PATCH_TYPE.MIXED]);
+  const out: Array<{ name: string; byte: number; wordIndexRange: [number, number] }> = [];
+  for (const [name, byte] of Object.entries(PATCH_TYPE)) {
+    if (r5 && r5Suppressed.has(byte)) continue;
+    if (byte === PATCH_TYPE.MIXED) { out.push({ name, byte, wordIndexRange: [0, RANGES.CODEBOOK_END] }); continue; }
+    const r = patchTypeRange(byte);
+    if (r) out.push({ name, byte, wordIndexRange: [r.start, r.end] });
+  }
+  return out;
+}

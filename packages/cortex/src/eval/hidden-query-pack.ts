@@ -185,69 +185,43 @@ export function deriveQueryPack(
     .sort((a, b) => a.id.localeCompare(b.id));
   if (sorted.length === 0) throw new Error('deriveQueryPack: corpus has no eval_hidden records');
 
+  // QUOTA-FIRST derivation (deterministic, replay-reproducible). Quotas are HARD guarantees, not
+  // best-effort fill: reserve each stratum's minCount BEFORE any free sampling. `present` is
+  // RE-DERIVED from the pack every iteration via the predicate matcher (never blindly incremented),
+  // so an event satisfying multiple strata is counted correctly for each — fixing the prior bug where
+  // a blind present++ after eviction over-counted and let the pack fall below quota without throwing.
+  // Then fill the remaining slots to EXACTLY packSize (no off-by-one short pack).
   const pack: ProductionCorpusEvent[] = [];
   const ids = new Set<string>();
-  for (let i = 0; i < profile.packSize; i++) {
-    const idx = digestU256([seed, epochBE, u64BE(i)]) % BigInt(sorted.length);
-    const cand = sorted[Number(idx)]!;
-    if (ids.has(cand.id)) {
-      // Skip duplicate — pack-size will be made up by stratification fill below.
-      continue;
-    }
-    pack.push(cand);
-    ids.add(cand.id);
-  }
-
-  // Stratification fill. Uses the predicate matcher so quotas may be
-  // exact strings (previous: `'family=temporal,bucket=hard'`) or predicates
-  // (`'depth>=3'`, `'family=multi_hop_relation,depth>=3'`). Both forms
-  // are matched by `eventSatisfiesStratum` which evaluates the quota
-  // string against the event's full strata list.
   const enc = new TextEncoder();
+  const satisfies = (e: ProductionCorpusEvent, stratum: string) => eventSatisfiesStratum(e, stratum);
+
+  // 1. quota-first reservation
   for (const quota of profile.quotas) {
-    let present = pack.filter((e) => eventSatisfiesStratum(e, quota.stratum)).length;
     let j = 0;
-    while (present < quota.minCount && j < sorted.length * 4) {
-      const idx = digestU256([seed, epochBE, enc.encode(quota.stratum), u64BE(j)]) % BigInt(sorted.length);
+    while (pack.filter((e) => satisfies(e, quota.stratum)).length < quota.minCount && j < sorted.length * 8) {
+      const idx = digestU256([seed, epochBE, enc.encode(`quota:${quota.stratum}`), u64BE(j)]) % BigInt(sorted.length);
       const cand = sorted[Number(idx)]!;
       j++;
       if (ids.has(cand.id)) continue;
-      if (!eventSatisfiesStratum(cand, quota.stratum)) continue;
-      // Replace lowest-priority pack member: pack member from a stratum that is
-      // already over-quota (or with the lex-largest stratum hash if none).
-      let evictIdx = -1;
-      for (let k = 0; k < pack.length; k++) {
-        const ks = stratumOf(pack[k]!);
-        if (ks === quota.stratum) continue;
-        const ksQuota = profile.quotas.find((q) => q.stratum === ks)?.minCount ?? 0;
-        const ksCount = pack.filter((e) => stratumOf(e) === ks).length;
-        if (ksCount > ksQuota) {
-          evictIdx = k;
-          break;
-        }
-      }
-      if (evictIdx < 0) {
-        // No over-quota member to evict; replace lex-largest stratum hash.
-        let largestHash = '';
-        for (let k = 0; k < pack.length; k++) {
-          const ks = stratumOf(pack[k]!);
-          const h = uint8ToHex(keccak256(enc.encode(ks)));
-          if (h > largestHash) {
-            largestHash = h;
-            evictIdx = k;
-          }
-        }
-      }
-      if (evictIdx < 0) break;
-      const evicted = pack[evictIdx]!;
-      pack[evictIdx] = cand;
-      ids.delete(evicted.id);
+      if (!satisfies(cand, quota.stratum)) continue;
+      if (pack.length >= profile.packSize) break; // never exceed packSize
+      pack.push(cand);
       ids.add(cand.id);
-      present++;
     }
-    if (present < quota.minCount) {
-      throw new Error(`deriveQueryPack: stratum ${quota.stratum} cannot meet quota ${quota.minCount} (got ${present})`);
+    const got = pack.filter((e) => satisfies(e, quota.stratum)).length;
+    if (got < quota.minCount) {
+      throw new Error(`deriveQueryPack: stratum ${quota.stratum} cannot meet quota ${quota.minCount} (got ${got}; eval_hidden too small or quotas sum > packSize)`);
     }
+  }
+
+  // 2. fill remaining slots to EXACTLY packSize with deterministic free sampling (dedup).
+  for (let i = 0; pack.length < profile.packSize && i < sorted.length * 8; i++) {
+    const idx = digestU256([seed, epochBE, u64BE(i)]) % BigInt(sorted.length);
+    const cand = sorted[Number(idx)]!;
+    if (ids.has(cand.id)) continue;
+    pack.push(cand);
+    ids.add(cand.id);
   }
 
   return {
