@@ -209,6 +209,12 @@ export interface EvaluatorProfile {
    *  (parseQueryConflictIntent) instead of the coarse CONFLICT_SET_MEMBER entity selector — eliminates
    *  the off-family damage. MUST be true whenever enableConflictLifecycleAtoms is true at launch. */
   readonly policyConflictIntentAdmission?: boolean;
+  /** aspect_constraint (A100 CANDIDATE — default-off scaffold; NOT a launch surface yet): gate aspect-atom
+   *  admission on a PUBLIC parsed aspect intent (parseQueryAspectIntent). The boost HOOK is not yet wired
+   *  (r5.1, pending the A100 boost-only verdict) — this flag is no-op-safe scaffolding; validated strictly
+   *  so it cannot be silently half-enabled. */
+  readonly enableAspectConstraintAtoms?: boolean;
+  readonly policyAspectIntentAdmission?: boolean;
   /** Memory-IR sidecar doc rendering for the reranker ('F2' prefixes the derived lifecycle header).
    *  Pin only with a Memory-IR-tuned reranker (E1); default off → raw doc text. */
   readonly rerankerMemoryIRFormat?: 'off' | 'F2';
@@ -1295,9 +1301,18 @@ function validateProfile(profile: EvaluatorProfile, errors?: string[]): void {
   }
   // r5 enables only meaningful under the policy-r5 pipeline pin (warn-as-error: prevents
   // accidentally shipping r5 atoms under an r4 profile, where they would be ignored).
-  const r5Enabled = profile.enableEvidenceBundleAtoms || profile.enableConflictLifecycleAtoms || profile.enableAbstentionAtoms;
+  const r5Enabled = profile.enableEvidenceBundleAtoms || profile.enableConflictLifecycleAtoms || profile.enableAbstentionAtoms || profile.enableAspectConstraintAtoms;
   if (r5Enabled && profile.pipelineVersion !== 'coretex-retrieval-v2-policy-r5') {
     out.push('r5 PolicyAtom enables require pipelineVersion = coretex-retrieval-v2-policy-r5');
+  }
+  // aspect_constraint is an A100 CANDIDATE, not a launch surface: its boost hook is not wired (r5.1).
+  // Fail closed so it cannot be silently shipped or half-enabled. Admission requires the enable; the
+  // enable itself is rejected until the r5.1 hook lands (keeps the signed profile honest).
+  if (profile.policyAspectIntentAdmission === true && profile.enableAspectConstraintAtoms !== true) {
+    out.push('policyAspectIntentAdmission=true requires enableAspectConstraintAtoms=true');
+  }
+  if (profile.enableAspectConstraintAtoms === true) {
+    out.push('enableAspectConstraintAtoms is not yet launchable — aspect_constraint is an A100 candidate whose boost hook is unwired (r5.1); do not enable in a signed profile until the A100 boost-only arm passes');
   }
   // Launch-safety: conflict_lifecycle atoms MUST use the conflict-INTENT selector, never the
   // coarse CONFLICT_SET_MEMBER entity selector (which causes off-family damage). Fail closed.

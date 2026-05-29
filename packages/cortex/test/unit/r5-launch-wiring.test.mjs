@@ -14,7 +14,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { buildPolicyEntityRegistry, resolveQuerySubjects, POLICY_MAX_SELECTOR_FANOUT, encodePolicyAtom, POLICY_SELECTOR, POLICY_EVIDENCE_FEATURE, assertGradedRelevance } from '../../dist/index.js';
+import { buildPolicyEntityRegistry, resolveQuerySubjects, POLICY_MAX_SELECTOR_FANOUT, encodePolicyAtom, POLICY_SELECTOR, POLICY_EVIDENCE_FEATURE, assertGradedRelevance, parseQueryAspectIntent } from '../../dist/index.js';
 import { applyPatch, applyPatchOntoCurrent } from '../../dist/state/patch.js';
 import { merkleizeState } from '../../dist/state/merkle.js';
 import { RANGES, PATCH_TYPE } from '../../dist/state/types.js';
@@ -132,6 +132,19 @@ describe('Fix A — resolveQuerySubjects (collision-proof selector; 300k zero-si
     const reg = [{ id: 'e_a', names: ['anabel'] }];
     assert.equal(resolveQuerySubjects('where is Ana?', undefined, reg, []).size, 0);
     assert.deepEqual([...resolveQuerySubjects('where is Anabel?', undefined, reg, [])], ['e_a']);
+  });
+});
+
+describe('Aspect scaffold — parseQueryAspectIntent (A100 candidate selector; fires ONLY on aspect-intent)', () => {
+  test('returns the aspect token on aspect-intent queries', () => {
+    assert.equal(parseQueryAspectIntent('For Aisha Costa, what is the latency detail?'), 'latency');
+    assert.equal(parseQueryAspectIntent('what is the cost note for svc-0?'), 'cost');
+  });
+  test('null on non-aspect families (temporal / conflict / bridge) — no off-family firing', () => {
+    assert.equal(parseQueryAspectIntent("What is Aisha Costa's current city?"), null);
+    assert.equal(parseQueryAspectIntent("For production, what is svc-0's current deployment region?"), null);
+    assert.equal(parseQueryAspectIntent('What datastore does svc-0 depend on?'), null);
+    assert.equal(parseQueryAspectIntent(''), null);
   });
 });
 

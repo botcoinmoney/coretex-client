@@ -9,6 +9,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { evolveCorpusDelta } from '../../../../scripts/lib/evolve-corpus.mjs';
+import { buildCorpusDelta, applyCorpusDelta, splitForRecord, computeCorpusRoot } from '../../dist/index.js';
 
 // minimal base logical corpus: 1 universe + 40 subjects, each with one prior temporal doc.
 const baseLogical = {
@@ -52,5 +53,60 @@ describe('Fix B — evolveCorpusDelta (deterministic live-update churn)', () => 
     // supersedes edges point at a prior (held) doc id from the base corpus
     const baseDocIds = new Set(baseLogical.docs.map((x) => x.id));
     assert.ok(d.addedRelations.filter((r) => r.label === 'supersedes').every((r) => baseDocIds.has(r.dst)), 'supersedes targets a held base fact');
+  });
+});
+
+describe('Fix B — production delta/root path (mock embeddings): logical delta → buildCorpusDelta → applyCorpusDelta → replay same root', () => {
+  const BI = { modelId: 'BAAI/bge-m3', revision: 'a'.repeat(40) };
+  const LAYOUT = { dim: 8, quantization: 'int8', headerBytes: 9 };
+  const labelingProvenance = { modelId: 'memreranker/4B', revision: 'b'.repeat(40), runtime: 'cpu', batchHash: 'c'.repeat(64) };
+  const mockEmb = () => new Uint8Array(LAYOUT.dim + 4); // deterministic mock — proves the delta/root wiring, not lift
+  const prevCorpus = (corpusEpoch = 0) => ({
+    events: [], byId: new Map(), corpusRoot: computeCorpusRoot([]), corpusEpoch,
+    biEncoderModelId: BI.modelId, biEncoderRevision: BI.revision, biEncoderRetrievalKeyLayout: LAYOUT,
+    labelingModelId: labelingProvenance.modelId, labelingModelRevision: labelingProvenance.revision,
+  });
+  const docTextById = (logicalDelta) => new Map(logicalDelta.addedDocs.map((d) => [d.id, d.text]));
+  // Build production events from the live-update logical delta — split assigned by the CANONICAL
+  // splitForRecord (NOT evolveCorpus's local hint), matching what buildCorpusDelta validates.
+  function prodEvents(logicalDelta, corpusEpoch) {
+    const txt = docTextById(logicalDelta);
+    return logicalDelta.addedQueries.map((q) => {
+      const truths = (q.qrels ?? []).filter((r) => r.relevance > 0).map((r) => ({ id: r.docId, text: txt.get(r.docId) ?? '', isCurrent: true }));
+      const negs = (q.hardNegatives ?? []).map((n) => ({ id: n.docId, text: txt.get(n.docId) ?? '' }));
+      return {
+        id: q.id, family: q.family === 'conflict_lifecycle' ? 'conflict_lifecycle' : 'temporal', domain: q.lane, split: splitForRecord(q.id, corpusEpoch),
+        queryText: q.queryText, truthDocuments: truths, hardNegatives: negs,
+        qrels: (q.qrels ?? []).map((r) => ({ documentId: r.docId, relevance: r.relevance })), protected: false,
+        subjectEntityId: q.subjectEntityId, provenance: { source: 'synthetic_challenge', sourceHash: '0x' + 'aa'.repeat(32) },
+        embeddings: { modelId: BI.modelId, revision: BI.revision, layout: LAYOUT, query: mockEmb(),
+          perTruth: new Map(truths.map((t) => [t.id, mockEmb()])), perNegative: new Map(negs.map((n) => [n.id, mockEmb()])) },
+      };
+    });
+  }
+
+  const baseLogical = {
+    entities: [{ id: 'e_universe', canonicalName: 'U', aliases: [] }, ...Array.from({ length: 20 }, (_, i) => ({ id: `e_universe_s${i}`, canonicalName: `First${i} Last${i}`, aliases: [] }))],
+    docs: Array.from({ length: 20 }, (_, i) => ({ id: `d${i}`, kind: 'temporal_city', entityIds: ['e_universe', `e_universe_s${i}`], currentStaleFlag: false, text: 'p' })),
+    relations: [], queries: [],
+  };
+
+  test('split assigned via canonical splitForRecord (buildCorpusDelta does NOT throw)', () => {
+    const ld = evolveCorpusDelta({ baseLogical, epoch: 2, seed: 'frontier', churnFraction: 1.0 });
+    const additions = prodEvents(ld, 0);
+    // every production-record split must equal splitForRecord(id) or buildCorpusDelta throws.
+    for (const e of additions) assert.equal(e.split, splitForRecord(e.id, 0));
+    assert.doesNotThrow(() => buildCorpusDelta({ previousCorpus: prevCorpus(0), additions, removals: [], epoch: 2, labelingProvenance }));
+  });
+
+  test('delta → new corpusRoot, deterministic + replay-identical, applyCorpusDelta reconstructs it', () => {
+    const ld = evolveCorpusDelta({ baseLogical, epoch: 3, seed: 'frontier', churnFraction: 0.5 });
+    const mk = () => buildCorpusDelta({ previousCorpus: prevCorpus(0), additions: prodEvents(ld, 0), removals: [], epoch: 3, labelingProvenance });
+    const d1 = mk(), d2 = mk();
+    assert.equal(d1.nextRoot, d2.nextRoot, 'same logical delta + mock embeddings → identical corpusRoot (replay-stable)');
+    assert.notEqual(d1.nextRoot, d1.previousRoot, 'delta advances the root');
+    const evolved = applyCorpusDelta(prevCorpus(0), d1);
+    assert.equal(evolved.corpusRoot, d1.nextRoot, 'applyCorpusDelta reconstructs the delta nextRoot');
+    assert.ok(d1.addedIds.length > 0);
   });
 });

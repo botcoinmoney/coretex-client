@@ -487,6 +487,22 @@ export function parseQueryConflictIntent(queryText: string, entityNames: Readonl
   return !entityNames.has(scope);             // leading phrase is the SUBJECT (aspect) → not conflict; else a scope condition → conflict
 }
 
+/**
+ * PUBLIC aspect-intent parse for the aspect_constraint surface (A100 CANDIDATE — default-off scaffold; the
+ * aspect analogue of parseQueryConflictIntent). An aspect query asks for ONE facet of a multi-aspect memory:
+ * "… what is the <aspect> detail?". Returns the intent-aspect token (lowercased) or null. Honest: query text
+ * ONLY — no qrels, no family labels. NOTE: the aspect admission/boost HOOK is NOT yet wired into scoring
+ * (aspect_constraint is not a launch surface); this selector + the `policyAspectIntentAdmission` profile flag
+ * are no-op-safe scaffolding so the r5.1 hook can drop in after the A100 boost-only arm confirms lift. See
+ * CHURN_AND_SELECTOR_HARDENING_HANDOFF.md.
+ */
+export function parseQueryAspectIntent(queryText: string): string | null {
+  const m = (queryText ?? '').toLowerCase().match(/what (?:is|are) the ([a-z0-9 _-]+?) (?:detail|note|setting|value|config|spec)\b/);
+  if (!m) return null;
+  const aspect = (m[1] ?? '').trim();
+  return aspect.length > 0 ? aspect : null;
+}
+
 /** r5 PolicyAtom trace receipt (Memory-IR pipeline input; emitted when policyEmitTraces). */
 export interface PolicyAtomTrace {
   readonly atomId: string;
