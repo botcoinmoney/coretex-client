@@ -40,6 +40,7 @@ export * from './eval/hidden-query-pack.js';
 export * from './eval/relation-qrels.js';
 export * from './corpus/admission.js';
 export * from './corpus/delta.js';
+export * from './corpus/logical-delta-bridge.js';
 export * from './corpus/epoch-rotation.js';
 export * from './substrate/slot-policy.js';
 export {
