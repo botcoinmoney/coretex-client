@@ -148,7 +148,50 @@ export function makeEpochFrontier({
     return snapshot(epoch, a, ret, rate);
   }
 
-  return { stepEpoch, order, orderIdx, K, totalUnits: order.length, familyOrder: famNames };
+  /**
+   * Inject NEW eval_hidden ids into the reserve, preserving every prior rotation invariant
+   * (active set, retired set, reservePtr, cumulative counters). The new ids are spliced
+   * INTO order at the current reservePtr position so the next activateNext drains them
+   * BEFORE the remaining genesis reserve — live-update churn gets exercised even when the
+   * genesis reserve is still draining.
+   *
+   * Determinism: the new segment is family-interleaved + seed-sorted within family, using
+   * the same h12(seed:id) ordering as the genesis order, so two calls with the same
+   * (seed, ids, familyOfFn) produce byte-identical state.
+   *
+   * Ids already in active, retired, or order are skipped (idempotent). Returns the count
+   * of NEW ids actually added.
+   */
+  function addReserveIds(newIds: readonly string[], familyOfFn: (id: string) => string): number {
+    const unseen = newIds.filter((id) => !active.has(id) && !retired.has(id) && !orderIdx.has(id));
+    if (unseen.length === 0) return 0;
+    const newByFam = new Map<string, string[]>();
+    for (const id of unseen) {
+      const f = familyOfFn(id) ?? 'unknown';
+      if (!newByFam.has(f)) newByFam.set(f, []);
+      newByFam.get(f)!.push(id);
+    }
+    for (const arr of newByFam.values()) arr.sort((a, b) => (h12(`${seed}:${a}`) - h12(`${seed}:${b}`)) || (a < b ? -1 : 1));
+    const newFamNames = [...newByFam.keys()].sort();
+    const newOrderSegment: string[] = [];
+    for (let i = 0; ; i++) {
+      let any = false;
+      for (const f of newFamNames) { const arr = newByFam.get(f)!; if (i < arr.length) { newOrderSegment.push(arr[i]!); any = true; } }
+      if (!any) break;
+    }
+    order.splice(reservePtr, 0, ...newOrderSegment);
+    orderIdx.clear();
+    for (let i = 0; i < order.length; i++) orderIdx.set(order[i]!, i);
+    for (const f of newFamNames) if (!famNames.includes(f)) famNames.push(f);
+    famNames.sort();
+    for (const [f, ids] of newByFam) {
+      if (!groups.has(f)) groups.set(f, []);
+      for (const id of ids) groups.get(f)!.push(id);
+    }
+    return unseen.length;
+  }
+
+  return { stepEpoch, addReserveIds, order, orderIdx, K, totalUnits: order.length, familyOrder: famNames };
 }
 
 interface CorpusEventLike { readonly id: string; readonly split?: string; readonly logicalFamily?: string; readonly family?: string }
