@@ -191,7 +191,10 @@ export function makeEpochFrontier({
     return unseen.length;
   }
 
-  return { stepEpoch, addReserveIds, order, orderIdx, K, totalUnits: order.length, familyOrder: famNames };
+  // totalUnits is a LIVE getter — addReserveIds mutates `order` post-construction, so a
+  // snapshot literal would go stale. Callers that read frontier.totalUnits get the current
+  // length, not the genesis-time count.
+  return { stepEpoch, addReserveIds, order, orderIdx, K, get totalUnits() { return order.length; }, familyOrder: famNames };
 }
 
 interface CorpusEventLike { readonly id: string; readonly split?: string; readonly logicalFamily?: string; readonly family?: string }
