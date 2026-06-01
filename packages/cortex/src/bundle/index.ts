@@ -226,6 +226,14 @@ export interface EvaluatorProfile {
   /** Stage-1 BGE-M3 first-stage retrieval cap (Run 1; per-stratum worst-case ≥0.90). */
   readonly firstStageTopK?: number;
   /**
+   * Stage-1 retrieval mode. Default 'dense' preserves historical bundles.
+   * 'hybrid' combines public lexical BM25 over doc text with BGE-M3 dense cosine.
+   * Public text is miner-visible corpus content; no qrels/truth labels are exposed.
+   */
+  readonly firstStageMode?: 'dense' | 'lexical' | 'hybrid';
+  readonly firstStageDenseWeight?: number;
+  readonly firstStageLexicalWeight?: number;
+  /**
    * §6.5 reranker-input cap. Number of pool candidates the cross-encoder
    * scores per query, taken from the top of (biCosine + substrateBonus).
    * Without this cap the reranker scores all `firstStageTopK` (~3,200)
@@ -935,6 +943,9 @@ export function scoringOptionsFromProfile(
     rerankerTopK: profile.rerankerTopK,
     retrievalKeyTopK: profile.retrievalKeyTopK,
     firstStageTopK: profile.firstStageTopK ?? 3200,
+    ...(profile.firstStageMode !== undefined ? { firstStageMode: profile.firstStageMode } : {}),
+    ...(profile.firstStageDenseWeight !== undefined ? { firstStageDenseWeight: profile.firstStageDenseWeight } : {}),
+    ...(profile.firstStageLexicalWeight !== undefined ? { firstStageLexicalWeight: profile.firstStageLexicalWeight } : {}),
     rerankerInputTopK: profile.rerankerInputTopK ?? 128,
     lensTopK: profile.lensTopK ?? 36,
     lensWeight: profile.lensWeight ?? 0.1,
@@ -1493,6 +1504,23 @@ function validateProfile(profile: EvaluatorProfile, errors?: string[]): void {
         }
       }
     }
+  }
+
+  if (profile.firstStageMode !== undefined && !['dense', 'lexical', 'hybrid'].includes(profile.firstStageMode)) {
+    out.push("firstStageMode must be 'dense', 'lexical', or 'hybrid'");
+  }
+  for (const [name, val] of [
+    ['firstStageDenseWeight', profile.firstStageDenseWeight],
+    ['firstStageLexicalWeight', profile.firstStageLexicalWeight],
+  ] as const) {
+    if (val !== undefined && (!Number.isFinite(val) || val < 0)) {
+      out.push(`${name} must be a finite number >= 0`);
+    }
+  }
+  if (profile.firstStageMode === 'hybrid') {
+    const dw = profile.firstStageDenseWeight ?? 1;
+    const lw = profile.firstStageLexicalWeight ?? 1;
+    if (dw === 0 && lw === 0) out.push('hybrid firstStageMode requires firstStageDenseWeight or firstStageLexicalWeight > 0');
   }
 
   // §6.5 reranker-input cap. When firstStageTopK is pinned, rerankerInputTopK

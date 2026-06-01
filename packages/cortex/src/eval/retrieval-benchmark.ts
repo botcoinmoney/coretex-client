@@ -26,9 +26,11 @@ import type {
 } from './retrieval-corpus.js';
 import {
   buildPublicCorpusIndex,
-  firstStageCandidates,
+  publicTextTokens,
+  retrieveFirstStageCandidates,
   type PublicCorpusIndex,
   type PublicCorpusDoc,
+  type FirstStageMode,
 } from './public-corpus-index.js';
 import type { QueryPack } from './hidden-query-pack.js';
 import {
@@ -159,6 +161,9 @@ export interface ScoringOptions {
 
   // ─── v2-lens pipeline params (substrate-hardening Phase A) ───
   readonly firstStageTopK: number;             // calibrated per-stratum (Run 1)
+  readonly firstStageMode?: FirstStageMode;
+  readonly firstStageDenseWeight?: number;
+  readonly firstStageLexicalWeight?: number;
   readonly lensTopK: number;                   // how many lens vectors contribute to stage-2 reweighting
   readonly lensWeight: number;                 // stage-2 lens bonus scale (Run 0)
   readonly anchorWeight: number;               // stage-2 anchor bonus scale (Run 0)
@@ -739,15 +744,27 @@ export async function scoreSubstrateAgainstQuery(
   const useOwnerScope =
     (opts.ownerScopeMode ?? 'off') === 'restrict' && query.ownerScoped === true && !!query.ownerEntityId;
   const stage1ScopeTag = useOwnerScope ? `s:${query.ownerEntityId}` : 'p';
-  const stage1Docs = getOrComputeStage1(corpus, query.id, opts.firstStageTopK, stage1ScopeTag, () =>
+  const stage1Mode = opts.firstStageMode ?? 'dense';
+  const stage1DenseWeight = opts.firstStageDenseWeight ?? 1;
+  const stage1LexicalWeight = opts.firstStageLexicalWeight ?? 1;
+  const stage1CacheTag = `${stage1ScopeTag}:${stage1Mode}:${stage1DenseWeight}:${stage1LexicalWeight}`;
+  const stage1Docs = getOrComputeStage1(corpus, query.id, opts.firstStageTopK, stage1CacheTag, () =>
     useOwnerScope
       ? scopedFirstStageCandidates(
+          query.queryText,
           queryVec,
           getOrBuildEntityScopeIndex(corpus).get(query.ownerEntityId!) ?? [],
           opts.firstStageTopK,
           opts.retrievalKeyLayout,
+          { mode: stage1Mode, denseWeight: stage1DenseWeight, lexicalWeight: stage1LexicalWeight },
         )
-      : firstStageCandidates(queryVec, publicIndex, opts.firstStageTopK),
+      : retrieveFirstStageCandidates(
+          query.queryText,
+          queryVec,
+          publicIndex,
+          opts.firstStageTopK,
+          { mode: stage1Mode, denseWeight: stage1DenseWeight, lexicalWeight: stage1LexicalWeight },
+        ),
   );
 
   // Resolve doc text for the reranker pairs (text lives in the labeled corpus).
@@ -1790,18 +1807,69 @@ function getOrBuildSupportsInDegree(corpus: ProductionCorpus): Map<string, numbe
  * by docId for cross-host determinism, matching `firstStageCandidates`.
  */
 function scopedFirstStageCandidates(
+  queryText: string,
   queryVec: Float32Array,
   scopeDocs: readonly PublicCorpusDoc[],
   k: number,
   layout: RetrievalKeyLayout,
+  opts: { readonly mode?: FirstStageMode; readonly denseWeight?: number; readonly lexicalWeight?: number } = {},
 ): readonly PublicCorpusDoc[] {
   if (k <= 0 || scopeDocs.length === 0) return [];
-  const scored = scopeDocs.map((d) => ({ d, cos: cosineSimilarity(queryVec, dequantize(d.embedding, layout)) }));
+  const mode = opts.mode ?? 'dense';
+  const denseWeight = opts.denseWeight ?? 1;
+  const lexicalWeight = opts.lexicalWeight ?? 1;
+  const lexicalScores = mode !== 'dense' ? scopedLexicalScores(queryText, scopeDocs) : new Map<string, number>();
+  const denseVals = mode !== 'lexical'
+    ? scopeDocs.map((d) => ({ id: d.id, cos: cosineSimilarity(queryVec, dequantize(d.embedding, layout)) }))
+    : [];
+  const denseMin = denseVals.length ? Math.min(...denseVals.map((s) => s.cos)) : 0;
+  const denseMax = denseVals.length ? Math.max(...denseVals.map((s) => s.cos)) : 0;
+  const denseById = new Map(denseVals.map((s) => [s.id, denseMax > denseMin ? (s.cos - denseMin) / (denseMax - denseMin) : 1]));
+  const lexVals = [...lexicalScores.values()];
+  const lexMin = lexVals.length ? Math.min(...lexVals) : 0;
+  const lexMax = lexVals.length ? Math.max(...lexVals) : 0;
+  const scored = scopeDocs.map((d) => {
+    const dense = mode === 'lexical' ? 0 : (denseById.get(d.id) ?? 0);
+    const rawLex = lexicalScores.get(d.id) ?? 0;
+    const lex = mode === 'dense' ? 0 : (lexMax > lexMin ? (rawLex - lexMin) / (lexMax - lexMin) : (rawLex > 0 ? 1 : 0));
+    const score = mode === 'dense'
+      ? cosineSimilarity(queryVec, dequantize(d.embedding, layout))
+      : mode === 'lexical'
+        ? rawLex
+        : denseWeight * dense + lexicalWeight * lex;
+    return { d, cos: score };
+  });
   scored.sort((a, b) => {
     if (b.cos !== a.cos) return b.cos - a.cos;
     return a.d.id < b.d.id ? -1 : a.d.id > b.d.id ? 1 : 0;
   });
   return scored.slice(0, k).map((s) => s.d);
+}
+
+function scopedLexicalScores(queryText: string, scopeDocs: readonly PublicCorpusDoc[]): Map<string, number> {
+  const scores = new Map<string, number>();
+  if (scopeDocs.length === 0) return scores;
+  const tokenized = scopeDocs.map((d) => ({ d, toks: publicTextTokens(d.text) }));
+  const avgdl = tokenized.reduce((a, x) => a + x.toks.length, 0) / tokenized.length;
+  const df = new Map<string, number>();
+  for (const x of tokenized) {
+    for (const t of new Set(x.toks)) df.set(t, (df.get(t) ?? 0) + 1);
+  }
+  const k1 = 1.2;
+  const b = 0.75;
+  for (const qt of new Set(publicTextTokens(queryText))) {
+    const n = df.get(qt) ?? 0;
+    if (n === 0) continue;
+    const idf = Math.log(1 + (scopeDocs.length - n + 0.5) / (n + 0.5));
+    for (const x of tokenized) {
+      let tf = 0;
+      for (const t of x.toks) if (t === qt) tf++;
+      if (tf === 0) continue;
+      const denom = tf + k1 * (1 - b + b * x.toks.length / Math.max(1, avgdl));
+      scores.set(x.d.id, (scores.get(x.d.id) ?? 0) + idf * (tf * (k1 + 1)) / denom);
+    }
+  }
+  return scores;
 }
 
 /**
@@ -1827,7 +1895,7 @@ function getOrBuildEntityScopeIndex(corpus: ProductionCorpus): Map<string, Publi
         seen.add(td.id);
         let arr = index.get(entId);
         if (!arr) { arr = []; index.set(entId, arr); }
-        arr.push({ id: td.id, eventId: event.id, embedding: emb });
+        arr.push({ id: td.id, eventId: event.id, embedding: emb, text: td.text });
       }
     }
   }

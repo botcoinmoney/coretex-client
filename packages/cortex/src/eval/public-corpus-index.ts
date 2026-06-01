@@ -6,7 +6,7 @@
  * specs/coretex_memory_control_plane.md.
  *
  * Anti-cheat boundary, by type:
- *   - PublicCorpusIndex contains only doc id + event id + embedding.
+ *   - PublicCorpusIndex contains only doc id + event id + embedding + public doc text.
  *   - No qrels. No truthDocuments-as-answer-set. No relevance labels.
  *   - firstStageCandidates cannot accept ProductionCorpus by type — it only
  *     takes PublicCorpusIndex. Callers wanting to retrieve must build the
@@ -26,6 +26,20 @@ export interface PublicCorpusDoc {
   readonly id: string;
   readonly eventId: string;
   readonly embedding: Uint8Array;
+  readonly text: string;
+}
+
+export type FirstStageMode = 'dense' | 'lexical' | 'hybrid';
+
+export interface FirstStageRetrievalOptions {
+  readonly mode?: FirstStageMode;
+  readonly denseWeight?: number;
+  readonly lexicalWeight?: number;
+}
+
+interface LexicalPosting {
+  readonly idx: number;
+  readonly tf: number;
 }
 
 export interface PublicCorpusIndex {
@@ -40,7 +54,15 @@ export interface PublicCorpusIndex {
   readonly denseEmbeddings: Float32Array;
   /** Inverse L2 norms, one per doc. cos(q,d) = dot(q,d) × invNorms[i] / |q|. */
   readonly denseInvNorms: Float32Array;
+  readonly lexicalPostings: ReadonlyMap<string, readonly LexicalPosting[]>;
+  readonly lexicalIdf: ReadonlyMap<string, number>;
+  readonly lexicalDocLengths: Float32Array;
+  readonly lexicalAvgDocLength: number;
   readonly indexHash: string; // sha256 of canonical id list — for replay attestation
+}
+
+export function publicTextTokens(text: string): readonly string[] {
+  return (text.toLowerCase().match(/[a-z0-9]+/g) ?? []).filter((t) => t.length > 1);
 }
 
 /**
@@ -63,6 +85,10 @@ export function buildPublicCorpusIndex(corpus: ProductionCorpus): PublicCorpusIn
       docs: [],
       denseEmbeddings: new Float32Array(0),
       denseInvNorms: new Float32Array(0),
+      lexicalPostings: new Map(),
+      lexicalIdf: new Map(),
+      lexicalDocLengths: new Float32Array(0),
+      lexicalAvgDocLength: 0,
       indexHash: `0x${'0'.repeat(64)}`,
     };
   }
@@ -78,13 +104,13 @@ export function buildPublicCorpusIndex(corpus: ProductionCorpus): PublicCorpusIn
       if (seen.has(truth.id)) continue;
       const emb = perTruth.get(truth.id);
       if (!emb) continue;
-      seen.set(truth.id, { id: truth.id, eventId: event.id, embedding: emb });
+      seen.set(truth.id, { id: truth.id, eventId: event.id, embedding: emb, text: truth.text });
     }
     for (const neg of event.hardNegatives) {
       if (seen.has(neg.id)) continue;
       const emb = event.embeddings.perNegative.get(neg.id);
       if (!emb) continue;
-      seen.set(neg.id, { id: neg.id, eventId: event.id, embedding: emb });
+      seen.set(neg.id, { id: neg.id, eventId: event.id, embedding: emb, text: neg.text });
     }
   }
 
@@ -104,6 +130,9 @@ export function buildPublicCorpusIndex(corpus: ProductionCorpus): PublicCorpusIn
   const dim = layout.dim;
   const dense = new Float32Array(docs.length * dim);
   const invNorms = new Float32Array(docs.length);
+  const lexicalDocLengths = new Float32Array(docs.length);
+  let lexicalLengthSum = 0;
+  const postingBuilders = new Map<string, LexicalPosting[]>();
   for (let i = 0; i < docs.length; i++) {
     const bytes = docs[i]!.embedding;
     const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
@@ -118,7 +147,25 @@ export function buildPublicCorpusIndex(corpus: ProductionCorpus): PublicCorpusIn
       normSq += v * v;
     }
     invNorms[i] = normSq > 0 ? 1 / Math.sqrt(normSq) : 0;
+
+    const tokens = publicTextTokens(docs[i]!.text);
+    lexicalDocLengths[i] = tokens.length;
+    lexicalLengthSum += tokens.length;
+    const tf = new Map<string, number>();
+    for (const t of tokens) tf.set(t, (tf.get(t) ?? 0) + 1);
+    for (const [t, f] of tf) {
+      let arr = postingBuilders.get(t);
+      if (!arr) { arr = []; postingBuilders.set(t, arr); }
+      arr.push({ idx: i, tf: f });
+    }
   }
+  const lexicalPostings = new Map<string, readonly LexicalPosting[]>();
+  const lexicalIdf = new Map<string, number>();
+  for (const [token, postings] of postingBuilders) {
+    lexicalPostings.set(token, postings);
+    lexicalIdf.set(token, Math.log(1 + (docs.length - postings.length + 0.5) / (postings.length + 0.5)));
+  }
+  const lexicalAvgDocLength = docs.length > 0 ? lexicalLengthSum / docs.length : 0;
 
   const idsConcat = docs.map((d) => d.id).join('\n');
   const indexHash = `0x${createHash('sha256').update(idsConcat).digest('hex')}`;
@@ -130,6 +177,10 @@ export function buildPublicCorpusIndex(corpus: ProductionCorpus): PublicCorpusIn
     docs,
     denseEmbeddings: dense,
     denseInvNorms: invNorms,
+    lexicalPostings,
+    lexicalIdf,
+    lexicalDocLengths,
+    lexicalAvgDocLength,
     indexHash,
   };
 }
@@ -190,6 +241,127 @@ export function firstStageCandidates(
       return docs[a.idx]!.id < docs[b.idx]!.id ? -1 : 1;
     })
     .map((h) => docs[h.idx]!);
+}
+
+export function lexicalFirstStageCandidates(
+  queryText: string,
+  index: PublicCorpusIndex,
+  k: number,
+): readonly PublicCorpusDoc[] {
+  return lexicalFirstStageScored(queryText, index, k).map((s) => index.docs[s.idx]!);
+}
+
+export function retrieveFirstStageCandidates(
+  queryText: string,
+  queryVec: Float32Array,
+  index: PublicCorpusIndex,
+  k: number,
+  opts: FirstStageRetrievalOptions = {},
+): readonly PublicCorpusDoc[] {
+  const mode = opts.mode ?? 'dense';
+  if (mode === 'dense') return firstStageCandidates(queryVec, index, k);
+  if (mode === 'lexical') return lexicalFirstStageCandidates(queryText, index, k);
+  return hybridFirstStageScored(queryText, queryVec, index, k, opts).map((s) => index.docs[s.idx]!);
+}
+
+function lexicalFirstStageScored(
+  queryText: string,
+  index: PublicCorpusIndex,
+  k: number,
+): readonly { idx: number; score: number }[] {
+  if (k <= 0 || index.docs.length === 0) return [];
+  const k1 = 1.2;
+  const b = 0.75;
+  const scores = new Map<number, number>();
+  for (const token of new Set(publicTextTokens(queryText))) {
+    const postings = index.lexicalPostings.get(token);
+    if (!postings) continue;
+    const idf = index.lexicalIdf.get(token) ?? 0;
+    for (const p of postings) {
+      const dl = index.lexicalDocLengths[p.idx] ?? 0;
+      const denom = p.tf + k1 * (1 - b + b * dl / Math.max(1, index.lexicalAvgDocLength));
+      const score = idf * (p.tf * (k1 + 1)) / denom;
+      scores.set(p.idx, (scores.get(p.idx) ?? 0) + score);
+    }
+  }
+  return [...scores.entries()]
+    .sort((a, b) => {
+      if (b[1] !== a[1]) return b[1] - a[1];
+      return index.docs[a[0]]!.id < index.docs[b[0]]!.id ? -1 : 1;
+    })
+    .slice(0, k)
+    .map(([idx, score]) => ({ idx, score }));
+}
+
+function hybridFirstStageScored(
+  queryText: string,
+  queryVec: Float32Array,
+  index: PublicCorpusIndex,
+  k: number,
+  opts: FirstStageRetrievalOptions,
+): readonly { idx: number; score: number }[] {
+  if (k <= 0 || index.docs.length === 0) return [];
+  const denseWeight = opts.denseWeight ?? 1;
+  const lexicalWeight = opts.lexicalWeight ?? 1;
+  const dense = denseFirstStageScored(queryVec, index, k);
+  const lexical = lexicalFirstStageScored(queryText, index, k);
+  const scores = new Map<number, number>();
+  const addNormalized = (items: readonly { idx: number; score: number }[], weight: number) => {
+    if (items.length === 0 || weight === 0) return;
+    const min = items[items.length - 1]!.score;
+    const max = items[0]!.score;
+    const span = max - min;
+    for (const it of items) {
+      const norm = span > 0 ? (it.score - min) / span : 1;
+      scores.set(it.idx, (scores.get(it.idx) ?? 0) + weight * norm);
+    }
+  };
+  addNormalized(dense, denseWeight);
+  addNormalized(lexical, lexicalWeight);
+  return [...scores.entries()]
+    .sort((a, b) => {
+      if (b[1] !== a[1]) return b[1] - a[1];
+      return index.docs[a[0]]!.id < index.docs[b[0]]!.id ? -1 : 1;
+    })
+    .slice(0, k)
+    .map(([idx, score]) => ({ idx, score }));
+}
+
+function denseFirstStageScored(
+  queryVec: Float32Array,
+  index: PublicCorpusIndex,
+  k: number,
+): readonly { idx: number; score: number }[] {
+  if (k <= 0 || index.docs.length === 0) return [];
+  const dim = index.layout.dim;
+  const dense = index.denseEmbeddings;
+  const invNorms = index.denseInvNorms;
+  const docs = index.docs;
+  const n = docs.length;
+  let qNormSq = 0;
+  for (let i = 0; i < queryVec.length; i++) qNormSq += queryVec[i]! * queryVec[i]!;
+  const invQNorm = qNormSq > 0 ? 1 / Math.sqrt(qNormSq) : 0;
+  type Heap = { cos: number; idx: number }[];
+  const heap: Heap = [];
+  for (let i = 0; i < n; i++) {
+    const base = i * dim;
+    let dot = 0;
+    for (let j = 0; j < dim; j++) dot += queryVec[j]! * dense[base + j]!;
+    const cos = dot * invNorms[i]! * invQNorm;
+    if (heap.length < k) {
+      heap.push({ cos, idx: i });
+      heapifyUp(heap, heap.length - 1, docs);
+    } else if (cos > heap[0]!.cos || (cos === heap[0]!.cos && docs[i]!.id < docs[heap[0]!.idx]!.id)) {
+      heap[0] = { cos, idx: i };
+      heapifyDown(heap, 0, docs);
+    }
+  }
+  return heap
+    .sort((a, b) => {
+      if (b.cos !== a.cos) return b.cos - a.cos;
+      return docs[a.idx]!.id < docs[b.idx]!.id ? -1 : 1;
+    })
+    .map((h) => ({ idx: h.idx, score: h.cos }));
 }
 
 // ─── Heap helpers (min-heap over Top-K) ──────────────────────────────────────

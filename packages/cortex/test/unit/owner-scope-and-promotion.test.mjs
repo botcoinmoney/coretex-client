@@ -153,6 +153,24 @@ describe('owner-scoped retrieval', () => {
     const pq = composite.perQuery[0];
     assert.notEqual(pq.cappedDocIds.indexOf('memY1-truth'), -1, 'unscoped query keeps full pool even under restrict');
   });
+
+  test('hybrid first-stage can recover a lexical target that dense-only misses', async () => {
+    const gold = memEvent('memGold', 'alpha bravo target package manager', [0, 1, 0, 0, 0, 0, 0, 0], ['e_x']);
+    const denseDistractor = memEvent('memDense', 'unrelated dense distractor', [1, 0, 0, 0, 0, 0, 0, 0], ['e_x']);
+    const q = queryEvent('qLex', [1, 0, 0, 0, 0, 0, 0, 0], 'e_x', false, [{ documentId: 'memGold-truth', relevance: 1 }]);
+    q.queryText = 'Which record has alpha bravo target package manager?';
+    const corpus = buildCorpus([gold, denseDistractor, q]);
+
+    const denseOnly = await evaluateRetrievalBenchmarkState(emptyState(), corpus, packOf(q),
+      baseOpts({ firstStageTopK: 1, rerankerInputTopK: 1, firstStageMode: 'dense' }));
+    assert.equal(denseOnly.perQuery[0].cappedDocIds.includes('memGold-truth'), false,
+      'dense-only top-1 follows the embedding-nearest distractor');
+
+    const hybrid = await evaluateRetrievalBenchmarkState(emptyState(), corpus, packOf(q),
+      baseOpts({ firstStageTopK: 1, rerankerInputTopK: 1, firstStageMode: 'hybrid', firstStageDenseWeight: 1, firstStageLexicalWeight: 2 }));
+    assert.equal(hybrid.perQuery[0].cappedDocIds.includes('memGold-truth'), true,
+      'hybrid top-1 admits the public-text lexical target');
+  });
 });
 
 // A categoryLens edge tags an IRRELEVANT doc. With a large FINAL bonus it gets a
