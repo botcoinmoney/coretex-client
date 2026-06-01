@@ -167,7 +167,9 @@ export function buildPublicCorpusIndex(corpus: ProductionCorpus): PublicCorpusIn
   }
   const lexicalAvgDocLength = docs.length > 0 ? lexicalLengthSum / docs.length : 0;
 
-  const idsConcat = docs.map((d) => d.id).join('\n');
+  // Hybrid retrieval uses public doc text, so index attestation must bind text bytes
+  // as well as doc ids. This remains label-free: no qrels or relevance enter stage-1.
+  const idsConcat = docs.map((d) => `${d.id}\t${createHash('sha256').update(d.text).digest('hex')}`).join('\n');
   const indexHash = `0x${createHash('sha256').update(idsConcat).digest('hex')}`;
 
   return {
