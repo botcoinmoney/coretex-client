@@ -743,17 +743,20 @@ export async function scoreSubstrateAgainstQuery(
   // PUBLIC retrieval context (query.ownerEntityId), never derived from qrels.
   const useOwnerScope =
     (opts.ownerScopeMode ?? 'off') === 'restrict' && query.ownerScoped === true && !!query.ownerEntityId;
-  const stage1ScopeTag = useOwnerScope ? `s:${query.ownerEntityId}` : 'p';
+  const ownerScopeDocs = useOwnerScope ? (getOrBuildEntityScopeIndex(corpus).get(query.ownerEntityId!) ?? []) : [];
+  const ownerScopeIsPublicCorpus = useOwnerScope && ownerScopeDocs.length >= publicIndex.docs.length;
+  const useScopedStage1 = useOwnerScope && !ownerScopeIsPublicCorpus;
+  const stage1ScopeTag = useScopedStage1 ? `s:${query.ownerEntityId}` : 'p';
   const stage1Mode = opts.firstStageMode ?? 'dense';
   const stage1DenseWeight = opts.firstStageDenseWeight ?? 1;
   const stage1LexicalWeight = opts.firstStageLexicalWeight ?? 1;
   const stage1CacheTag = `${stage1ScopeTag}:${stage1Mode}:${stage1DenseWeight}:${stage1LexicalWeight}`;
   const stage1Docs = getOrComputeStage1(corpus, query.id, opts.firstStageTopK, stage1CacheTag, () =>
-    useOwnerScope
+    useScopedStage1
       ? scopedFirstStageCandidates(
           query.queryText,
           queryVec,
-          getOrBuildEntityScopeIndex(corpus).get(query.ownerEntityId!) ?? [],
+          ownerScopeDocs,
           opts.firstStageTopK,
           opts.retrievalKeyLayout,
           { mode: stage1Mode, denseWeight: stage1DenseWeight, lexicalWeight: stage1LexicalWeight },
@@ -1822,12 +1825,27 @@ function scopedFirstStageCandidates(
   const denseVals = mode !== 'lexical'
     ? scopeDocs.map((d) => ({ id: d.id, cos: cosineSimilarity(queryVec, dequantize(d.embedding, layout)) }))
     : [];
-  const denseMin = denseVals.length ? Math.min(...denseVals.map((s) => s.cos)) : 0;
-  const denseMax = denseVals.length ? Math.max(...denseVals.map((s) => s.cos)) : 0;
+  let denseMin = 0;
+  let denseMax = 0;
+  if (denseVals.length) {
+    denseMin = Infinity;
+    denseMax = -Infinity;
+    for (const s of denseVals) {
+      if (s.cos < denseMin) denseMin = s.cos;
+      if (s.cos > denseMax) denseMax = s.cos;
+    }
+  }
   const denseById = new Map(denseVals.map((s) => [s.id, denseMax > denseMin ? (s.cos - denseMin) / (denseMax - denseMin) : 1]));
-  const lexVals = [...lexicalScores.values()];
-  const lexMin = lexVals.length ? Math.min(...lexVals) : 0;
-  const lexMax = lexVals.length ? Math.max(...lexVals) : 0;
+  let lexMin = 0;
+  let lexMax = 0;
+  if (lexicalScores.size) {
+    lexMin = Infinity;
+    lexMax = -Infinity;
+    for (const v of lexicalScores.values()) {
+      if (v < lexMin) lexMin = v;
+      if (v > lexMax) lexMax = v;
+    }
+  }
   const scored = scopeDocs.map((d) => {
     const dense = mode === 'lexical' ? 0 : (denseById.get(d.id) ?? 0);
     const rawLex = lexicalScores.get(d.id) ?? 0;
