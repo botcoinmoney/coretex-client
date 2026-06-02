@@ -128,6 +128,23 @@ function makeTwoOwnerCorpus() {
 const emptyState = () => ({ words: new Array(1024).fill(0n) });
 const packOf = (q) => ({ epochId: 0, evalSeedCommit: '0x' + 'a1'.repeat(32), events: [q] });
 
+function anchorStateFor(eventId) {
+  const words = new Array(1024).fill(0n);
+  words[RANGES.MEMORY_INDEX_START] = encodeMemoryIndexSlot({
+    slotIndex: 0,
+    recordId: stableRecordIdFor(eventId),
+    family: 'multi_hop_relation',
+    domainBits: 1n,
+    valid: true,
+    revoked: false,
+    protected: false,
+    policyAnchor: false,
+    retrievalSlot: 0,
+    expiryEpoch: 0n,
+  })[0];
+  return { words };
+}
+
 describe('owner-scoped retrieval', () => {
   test("restrict: stage-1 pool excludes a high-cosine doc owned by a different entity", async () => {
     const { corpus, q } = makeTwoOwnerCorpus();
@@ -170,6 +187,28 @@ describe('owner-scoped retrieval', () => {
       baseOpts({ firstStageTopK: 1, rerankerInputTopK: 1, firstStageMode: 'hybrid', firstStageDenseWeight: 1, firstStageLexicalWeight: 2 }));
     assert.equal(hybrid.perQuery[0].cappedDocIds.includes('memGold-truth'), true,
       'hybrid top-1 admits the public-text lexical target');
+  });
+});
+
+describe('subject-scoped routing anchors', () => {
+  test('default MemoryIndex anchors inject globally; subject scope blocks unrelated anchorMandatory injection', async () => {
+    const memX = memEvent('memX', 'TRUTH-X', [1, 0, 0, 0, 0, 0, 0, 0], ['e_x']);
+    const memY = memEvent('memY', 'TRUTH-Y', [0, 1, 0, 0, 0, 0, 0, 0], ['e_y']);
+    const q = queryEvent('qAnchorScope', [1, 0, 0, 0, 0, 0, 0, 0], 'e_x', false, [{ documentId: 'memX-truth', relevance: 1 }]);
+    q.subjectEntityId = 'e_x';
+    const corpus = buildCorpus([memX, memY, q]);
+    const state = anchorStateFor('memY');
+
+    const unscoped = await evaluateRetrievalBenchmarkState(state, corpus, packOf(q),
+      baseOpts({ firstStageTopK: 1, rerankerInputTopK: 10 }));
+    const unscopedY = unscoped.perQuery[0].finalRankingTop20.find((r) => r.docId === 'memY-truth');
+    assert.ok(unscopedY?.sources.includes('anchorMandatory'), 'unscoped routing anchor injects unrelated memY');
+
+    const scoped = await evaluateRetrievalBenchmarkState(state, corpus, packOf(q),
+      baseOpts({ firstStageTopK: 1, rerankerInputTopK: 10, scopeRoutingAnchorsToQuerySubject: true }));
+    const scopedY = scoped.perQuery[0].finalRankingTop20.find((r) => r.docId === 'memY-truth');
+    assert.ok(!scopedY?.sources.includes('anchorMandatory'), 'subject-scoped routing anchor does not inject unrelated memY');
+    assert.ok(scoped.perQuery[0].finalRankingTop20.some((r) => r.docId === 'memX-truth'), 'same-subject stage-1 gold remains present');
   });
 });
 

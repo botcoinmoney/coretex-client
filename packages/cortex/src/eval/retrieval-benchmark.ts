@@ -136,6 +136,16 @@ export interface ScoringOptions {
   readonly ownerScopeMode?: 'off' | 'restrict';
 
   /**
+   * Experimental/default-off routing-anchor safety gate. When enabled, non-policy
+   * MemoryIndex routing anchors only inject/BFS for queries whose PUBLIC
+   * `subjectEntityId` resolves to the anchor event's subject. This is the
+   * MemoryIndex analogue of r5 query-conditioned policy admission: it prevents
+   * a mixed pack's unrelated anchors from being force-included into every
+   * query's reranker cap while still using only public query/corpus entity ids.
+   */
+  readonly scopeRoutingAnchorsToQuerySubject?: boolean;
+
+  /**
    * EvidencePolicy (opt-in, default off). A candidate THIRD miner-facing strategy
    * surface (distinct from temporal records / relation edges / dense lenses): the
    * miner writes compact POLICY atoms to the CODEBOOK region (not data, not answer
@@ -828,8 +838,17 @@ export async function scoreSubstrateAgainstQuery(
     if (ev) anchorSlotToEvent.set(m, ev);
     if (slot.policyAnchor) policyAnchorSlots.add(m);
   }
+  const resolvedQuerySubjects = opts.policyEntityRegistry
+    ? resolveQuerySubjects(query.queryText, query.subjectEntityId, opts.policyEntityRegistry, opts.policyGenericEntityIds)
+    : new Set<string>();
+  const routingAnchorAllowed = (ev: ProductionCorpusEvent): boolean => {
+    if (opts.scopeRoutingAnchorsToQuerySubject !== true) return true;
+    if (resolvedQuerySubjects.size === 0) return false; // fail closed: no public subject, no scoped anchor injection
+    return (ev.entityIds ?? []).some((e) => resolvedQuerySubjects.has(e));
+  };
   // routing anchors = anchors that DO inject (everything except policy-only anchors).
-  const routingSlotToEvent = new Map([...anchorSlotToEvent].filter(([m]) => !policyAnchorSlots.has(m)));
+  const routingSlotToEvent = new Map([...anchorSlotToEvent].filter(([m, ev]) =>
+    !policyAnchorSlots.has(m) && routingAnchorAllowed(ev)));
 
   // ─── r5.1: query-CONDITIONED policy admission (selective-anchor admission) ───
   // A GENERIC PUBLIC selector (entity-mention parse of the query text vs the public entity registry)
@@ -854,7 +873,7 @@ export async function scoreSubstrateAgainstQuery(
     // Resolve the query's subject. PUBLIC exact grounding (query.subjectEntityId) wins; the name-text
     // fallback is FAIL-CLOSED (word-boundary; admits nothing when > POLICY_MAX_SELECTOR_FANOUT entities
     // match) so duplicate canonical names at scale (112-way at 300k) cannot flood admission.
-    const querySubjects = resolveQuerySubjects(query.queryText, query.subjectEntityId, opts.policyEntityRegistry, opts.policyGenericEntityIds);
+    const querySubjects = resolvedQuerySubjects;
     // Category-B gate: when relation-typed and the query has NO relation intent (e.g. temporal "current
     // X"), inject NOTHING for EVIDENCE-BUNDLE (relation-routing) atoms — entity-only admission flooded these
     // with off-intent bridges and displaced the real answer (the r5.1 −0.14). CONFLICT_LIFECYCLE atoms use a
@@ -2268,10 +2287,11 @@ export async function evaluateRetrievalBenchmarkState(
 ): Promise<CompositeScore> {
   assertValidWeights(opts.weights);
   assertPipelineVersionMatches(opts.pipelineVersion);
-  // r5: derive the public entity registry from the corpus when query-conditioned admission is on
-  // but no registry was injected (the canonical profile→options path carries none). Explicit opts win.
-  if (opts.policyAtomsMode === true && (opts.policyQueryConditionedAdmission === true || opts.policyAspectIntentAdmission === true)
-      && !opts.policyEntityRegistry && corpus.entities && corpus.entities.length > 0) {
+  // Derive the public entity registry from the corpus when a scorer path needs
+  // query subject grounding but no registry was injected. Explicit opts win.
+  const needsPolicyEntityRegistry = opts.scopeRoutingAnchorsToQuerySubject === true
+    || (opts.policyAtomsMode === true && (opts.policyQueryConditionedAdmission === true || opts.policyAspectIntentAdmission === true));
+  if (needsPolicyEntityRegistry && !opts.policyEntityRegistry && corpus.entities && corpus.entities.length > 0) {
     const derived = buildPolicyEntityRegistry(corpus);
     opts = {
       ...opts,
