@@ -246,6 +246,8 @@ export interface ProductionCorpusEvent {
 export interface ProductionCorpus {
   readonly events: readonly ProductionCorpusEvent[];
   readonly byId: ReadonlyMap<string, ProductionCorpusEvent>;
+  /** Optional in-memory acceleration cache for live-delta root updates. Not serialized in corpusRoot. */
+  readonly corpusRootCache?: CorpusRootLeafCache;
   /**
    * Proposer-visible entity table (canonicalName + aliases). Optional. Does
    * NOT participate in `corpusRoot` (only events are hashed) — it is public
@@ -260,6 +262,19 @@ export interface ProductionCorpus {
   readonly biEncoderRetrievalKeyLayout: RetrievalKeyLayout;
   readonly labelingModelRevision: string;
   readonly labelingModelId: string;
+}
+
+export interface CorpusRootLeaf {
+  readonly id: string;
+  readonly hash: Uint8Array;
+}
+
+export interface CorpusRootLeafCache {
+  readonly schema: 'coretex.corpus-root-leaf-cache.v1';
+  readonly eventCount: number;
+  readonly root: string;
+  /** Sorted by event id with the same comparator used by computeCorpusRoot. */
+  readonly leaves: readonly CorpusRootLeaf[];
 }
 
 // ─── Split ratios ─────────────────────────────────────────────────────────────
@@ -483,13 +498,20 @@ function parseEventLine(line: string): ProductionCorpusEvent {
  * leaves under keccak256.
  */
 export function computeCorpusRoot(events: readonly ProductionCorpusEvent[]): string {
-  if (events.length === 0) return '0x' + '00'.repeat(32);
-  const sorted = [...events].sort((a, b) => a.id.localeCompare(b.id));
-  let leaves = sorted.map((event) => {
-    // Canonical-JSON of the full event (embeddings serialize as hex strings via canonicalJson).
-    const enc = new TextEncoder();
-    return keccak256(enc.encode(canonicalJson(event)));
-  });
+  return buildCorpusRootLeafCache(events).root;
+}
+
+const corpusEventIdCompare = (a: string, b: string): number => a.localeCompare(b);
+const TEXT_ENCODER = new TextEncoder();
+
+export function computeCorpusEventLeafHash(event: ProductionCorpusEvent): Uint8Array {
+  // Canonical-JSON of the full event (embeddings serialize as hex strings via canonicalJson).
+  return keccak256(TEXT_ENCODER.encode(canonicalJson(event)));
+}
+
+function merkleRootFromLeafHashes(hashes: readonly Uint8Array[]): string {
+  if (hashes.length === 0) return '0x' + '00'.repeat(32);
+  let leaves = hashes.slice();
   const zero = new Uint8Array(32);
   let n = 1;
   while (n < leaves.length) n <<= 1;
@@ -505,6 +527,61 @@ export function computeCorpusRoot(events: readonly ProductionCorpusEvent[]): str
     leaves = next;
   }
   return bytesToHex(leaves[0]!);
+}
+
+export function buildCorpusRootLeafCache(events: readonly ProductionCorpusEvent[]): CorpusRootLeafCache {
+  const sorted = [...events].sort((a, b) => corpusEventIdCompare(a.id, b.id));
+  const leaves = sorted.map((event): CorpusRootLeaf => ({ id: event.id, hash: computeCorpusEventLeafHash(event) }));
+  return buildCorpusRootLeafCacheFromLeaves(leaves);
+}
+
+export function buildCorpusRootLeafCacheFromLeaves(inputLeaves: readonly CorpusRootLeaf[]): CorpusRootLeafCache {
+  const leaves = [...inputLeaves]
+    .map((leaf): CorpusRootLeaf => ({ id: leaf.id, hash: leaf.hash }))
+    .sort((a, b) => corpusEventIdCompare(a.id, b.id));
+  return {
+    schema: 'coretex.corpus-root-leaf-cache.v1',
+    eventCount: leaves.length,
+    root: merkleRootFromLeafHashes(leaves.map((l) => l.hash)),
+    leaves,
+  };
+}
+
+export interface CorpusRootLeafCacheUpdate {
+  readonly additions?: readonly ProductionCorpusEvent[];
+  readonly removals?: readonly string[];
+}
+
+export function updateCorpusRootLeafCache(cache: CorpusRootLeafCache, update: CorpusRootLeafCacheUpdate): CorpusRootLeafCache {
+  const additions = update.additions ?? [];
+  const removals = update.removals ?? [];
+  if (additions.length === 0 && removals.length === 0) return cache;
+
+  const replacedIds = new Set<string>(removals);
+  for (const e of additions) replacedIds.add(e.id);
+
+  const kept = cache.leaves.filter((leaf) => !replacedIds.has(leaf.id));
+  const added = additions
+    .map((event): CorpusRootLeaf => ({ id: event.id, hash: computeCorpusEventLeafHash(event) }))
+    .sort((a, b) => corpusEventIdCompare(a.id, b.id));
+
+  const leaves: CorpusRootLeaf[] = [];
+  let i = 0;
+  let j = 0;
+  while (i < kept.length || j < added.length) {
+    if (j >= added.length || (i < kept.length && corpusEventIdCompare(kept[i]!.id, added[j]!.id) <= 0)) {
+      leaves.push(kept[i++]!);
+    } else {
+      leaves.push(added[j++]!);
+    }
+  }
+
+  return {
+    schema: 'coretex.corpus-root-leaf-cache.v1',
+    eventCount: leaves.length,
+    root: merkleRootFromLeafHashes(leaves.map((l) => l.hash)),
+    leaves,
+  };
 }
 
 // ─── Loader ───────────────────────────────────────────────────────────────────

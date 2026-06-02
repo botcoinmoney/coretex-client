@@ -13,12 +13,13 @@
 import { createHash, createSign, createVerify } from 'node:crypto';
 
 import type {
+  CorpusRootLeafCache,
   ProductionCorpus,
   ProductionCorpusEvent,
   ProductionCorpusEventOnDisk,
   RetrievalKeyLayout,
 } from '../eval/retrieval-corpus.js';
-import { computeCorpusRoot, expectedSplitForRecord } from '../eval/retrieval-corpus.js';
+import { computeCorpusRoot, expectedSplitForRecord, updateCorpusRootLeafCache } from '../eval/retrieval-corpus.js';
 
 // ── Delta shape ───────────────────────────────────────────────────────────────
 
@@ -58,13 +59,15 @@ export interface BuildCorpusDeltaOptions {
   readonly epoch: number;
   readonly labelingProvenance: LabelingProvenance;
   readonly generatedAt?: string;
+  /** Optional acceleration cache. Semantics must match computeCorpusRoot(previous + delta). */
+  readonly previousRootCache?: CorpusRootLeafCache;
 }
 
 export function buildCorpusDelta(opts: BuildCorpusDeltaOptions): CorpusDelta {
   const { previousCorpus, additions, removals, epoch, labelingProvenance } = opts;
   const removalSet = new Set(removals);
-  const remaining = previousCorpus.events.filter((e) => !removalSet.has(e.id));
-  const remainingIds = new Set(remaining.map((e) => e.id));
+  const remaining = removalSet.size > 0 ? previousCorpus.events.filter((e) => !removalSet.has(e.id)) : previousCorpus.events;
+  const remainingIds = removalSet.size > 0 ? new Set(remaining.map((e) => e.id)) : previousCorpus.byId;
   const newAdditions = additions.filter((e) => !remainingIds.has(e.id));
 
   // Validate per-record: split assignment must be deterministic, embeddings must
@@ -80,8 +83,13 @@ export function buildCorpusDelta(opts: BuildCorpusDeltaOptions): CorpusDelta {
     }
   }
 
-  const merged = [...remaining, ...newAdditions];
-  const nextRoot = computeCorpusRoot(merged);
+  const rootCache = opts.previousRootCache ?? previousCorpus.corpusRootCache;
+  if (rootCache && rootCache.root.toLowerCase() !== previousCorpus.corpusRoot.toLowerCase()) {
+    throw new Error(`buildCorpusDelta: previousRootCache root ${rootCache.root} does not match previousCorpus.corpusRoot ${previousCorpus.corpusRoot}`);
+  }
+  const nextRoot = rootCache
+    ? updateCorpusRootLeafCache(rootCache, { additions: newAdditions, removals }).root
+    : computeCorpusRoot([...remaining, ...newAdditions]);
 
   return {
     schemaVersion: 'coretex.corpus-delta.v1',
@@ -104,7 +112,16 @@ export function buildCorpusDelta(opts: BuildCorpusDeltaOptions): CorpusDelta {
 
 // ── Apply delta ───────────────────────────────────────────────────────────────
 
-export function applyCorpusDelta(corpus: ProductionCorpus, delta: CorpusDelta): ProductionCorpus {
+export interface ApplyCorpusDeltaOptions {
+  /** Optional acceleration cache. If provided, full computeCorpusRoot(next) is skipped. */
+  readonly rootCache?: CorpusRootLeafCache;
+  /** Attach the updated cache to the returned ProductionCorpus. Default false. */
+  readonly attachRootCache?: boolean;
+  /** Full-root verification when no cache is available. Default true. */
+  readonly verifyRoot?: boolean;
+}
+
+export function applyCorpusDelta(corpus: ProductionCorpus, delta: CorpusDelta, options: ApplyCorpusDeltaOptions = {}): ProductionCorpus {
   if (delta.schemaVersion !== 'coretex.corpus-delta.v1') {
     throw new Error(`applyCorpusDelta: unsupported schemaVersion ${delta.schemaVersion}`);
   }
@@ -142,16 +159,31 @@ export function applyCorpusDelta(corpus: ProductionCorpus, delta: CorpusDelta): 
     }
   }
 
-  const computed = computeCorpusRoot(next);
-  if (computed.toLowerCase() !== delta.nextRoot.toLowerCase()) {
-    throw new Error(
-      `applyCorpusDelta: computed nextRoot=${computed} does not match delta.nextRoot=${delta.nextRoot}`,
-    );
+  const rootCache = options.rootCache ?? corpus.corpusRootCache;
+  let nextRootCache: CorpusRootLeafCache | undefined;
+  if (rootCache) {
+    if (rootCache.root.toLowerCase() !== corpus.corpusRoot.toLowerCase()) {
+      throw new Error(`applyCorpusDelta: rootCache root ${rootCache.root} does not match corpus.corpusRoot ${corpus.corpusRoot}`);
+    }
+    nextRootCache = updateCorpusRootLeafCache(rootCache, { additions: delta.addedRecords, removals: delta.removedIds });
+    if (nextRootCache.root.toLowerCase() !== delta.nextRoot.toLowerCase()) {
+      throw new Error(
+        `applyCorpusDelta: cached nextRoot=${nextRootCache.root} does not match delta.nextRoot=${delta.nextRoot}`,
+      );
+    }
+  } else if (options.verifyRoot ?? true) {
+    const computed = computeCorpusRoot(next);
+    if (computed.toLowerCase() !== delta.nextRoot.toLowerCase()) {
+      throw new Error(
+        `applyCorpusDelta: computed nextRoot=${computed} does not match delta.nextRoot=${delta.nextRoot}`,
+      );
+    }
   }
 
   return {
     events: next,
     byId: new Map(next.map((e) => [e.id, e])),
+    ...(options.attachRootCache && nextRootCache ? { corpusRootCache: nextRootCache } : {}),
     corpusRoot: delta.nextRoot,
     corpusEpoch: corpus.corpusEpoch,
     biEncoderModelId: corpus.biEncoderModelId,
