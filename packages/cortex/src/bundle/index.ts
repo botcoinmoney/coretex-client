@@ -418,7 +418,8 @@ export interface EvaluatorProfile {
    *
    * Optional for backward compatibility: when omitted, `controllerParamsFromProfile`
    * falls back to the pinned `difficulty.ts` protocol defaults (rampUp 1.5 / decay
-   * 0.85 / drift 1.05 / qualityHighThresholdMult 4) — the pre-pin behaviour.
+   * 0.85 / under-target recovery 0.95 / drift 1.05 / qualityHighThresholdMult
+   * 4) — the pre-pin behaviour plus the production anti-plateau recovery pin.
    *
    * 2026-05-24 launch calibration (`V2_DGEN1_ENDURANCE_FINDINGS.md` §Controller-
    * calibration A/B): `qualityHighThresholdMult=1` so the `decay` branch can engage
@@ -480,8 +481,10 @@ export interface ControllerParamsPin {
   readonly rampUpMaxRatio?: number;
   /** Multiplier when decaying (0 advances AND many quality attempts). difficulty.ts default 0.85. */
   readonly decayRatio?: number;
-  /** Multiplier for slow upward drift (some advances, below target). difficulty.ts default 1.05. */
+  /** Deprecated legacy field for slow upward drift; retained for old signed profiles. */
   readonly smallDriftRatio?: number;
+  /** Multiplier for under-target recovery when real quality attempts are present. difficulty.ts default 0.95. */
+  readonly underTargetRecoveryRatio?: number;
   /** Multiplier on runtime targetAdvances setting the "high quality attempts" threshold. difficulty.ts default 4. */
   readonly qualityHighThresholdMult?: number;
 }
@@ -512,6 +515,7 @@ export const DEFAULT_CONTROLLER_PARAMS: Required<ControllerParamsPin> = {
   rampUpMaxRatio: 1.5,
   decayRatio: 0.85,
   smallDriftRatio: 1.05,
+  underTargetRecoveryRatio: 0.95,
   qualityHighThresholdMult: 4,
 };
 
@@ -756,8 +760,10 @@ const DEFAULT_EVALUATOR_FILES = [
   'packages/cortex/src/substrate/slot-policy.ts',
   'packages/cortex/src/corpus/admission.ts',
   'packages/cortex/src/corpus/delta.ts',
+  'packages/cortex/src/corpus/logical-delta-bridge.ts',
   'packages/cortex/src/corpus/epoch-rotation.ts',
   'packages/cortex/src/rewards/difficulty.ts',
+  'packages/cortex/src/rewards/work-units.ts',
   'packages/cortex/src/coordinator/endpoints.ts',
   'packages/cortex/src/replay/v4.ts',
   'packages/cortex/src/replay-cli.ts',
@@ -1006,6 +1012,7 @@ export function controllerParamsFromProfile(
   readonly rampUpMaxRatio: number;
   readonly decayRatio: number;
   readonly smallDriftRatio: number;
+  readonly underTargetRecoveryRatio: number;
   readonly qualityHighThreshold: number;
 } {
   const cp = profile.controllerParams ?? {};
@@ -1014,6 +1021,7 @@ export function controllerParamsFromProfile(
     rampUpMaxRatio: cp.rampUpMaxRatio ?? DEFAULT_CONTROLLER_PARAMS.rampUpMaxRatio,
     decayRatio: cp.decayRatio ?? DEFAULT_CONTROLLER_PARAMS.decayRatio,
     smallDriftRatio: cp.smallDriftRatio ?? DEFAULT_CONTROLLER_PARAMS.smallDriftRatio,
+    underTargetRecoveryRatio: cp.underTargetRecoveryRatio ?? DEFAULT_CONTROLLER_PARAMS.underTargetRecoveryRatio,
     qualityHighThreshold: mult * targetAdvances,
   };
 }
@@ -1421,6 +1429,8 @@ function validateProfile(profile: EvaluatorProfile, errors?: string[]): void {
       out.push('controllerParams.decayRatio must be a finite number in (0, 1) when present');
     if (cp.smallDriftRatio !== undefined && (!Number.isFinite(cp.smallDriftRatio) || cp.smallDriftRatio < 1))
       out.push('controllerParams.smallDriftRatio must be a finite number >= 1 when present');
+    if (cp.underTargetRecoveryRatio !== undefined && (!Number.isFinite(cp.underTargetRecoveryRatio) || cp.underTargetRecoveryRatio <= 0 || cp.underTargetRecoveryRatio > 1))
+      out.push('controllerParams.underTargetRecoveryRatio must be a finite number in (0, 1] when present');
     if (cp.qualityHighThresholdMult !== undefined && (!Number.isFinite(cp.qualityHighThresholdMult) || cp.qualityHighThresholdMult <= 0))
       out.push('controllerParams.qualityHighThresholdMult must be a finite number > 0 when present');
   }

@@ -43,6 +43,9 @@ export interface CoreTexWorkPolicy {
       readonly minDeltaPpm: string | bigint | number;
       readonly remainingHeadroomBps: string | bigint | number;
       readonly noiseFloorMultiplierBps: string | bigint | number;
+      readonly plateauEasingMaxBps: string | bigint | number;
+      readonly antiGamingProbeMultiplierBps: string | bigint | number;
+      readonly maxAntiGamingPenaltyBps: string | bigint | number;
       readonly maxThresholdPpm: string | bigint | number;
     };
   };
@@ -64,7 +67,7 @@ export interface CoreTexWorkPolicy {
 
 export const DEFAULT_CORETEX_WORK_POLICY: CoreTexWorkPolicy = Object.freeze({
   name: 'botcoin-coretex-work-policy',
-  version: 1,
+  version: 2,
   rulesVersion: CORTEX_RULES_VERSION,
   lane: LANE_CORETEX,
   bpsDivisor: '10000',
@@ -78,6 +81,9 @@ export const DEFAULT_CORETEX_WORK_POLICY: CoreTexWorkPolicy = Object.freeze({
       minDeltaPpm: '50',
       remainingHeadroomBps: '5',
       noiseFloorMultiplierBps: '20000',
+      plateauEasingMaxBps: '5000',
+      antiGamingProbeMultiplierBps: '20000',
+      maxAntiGamingPenaltyBps: '50000',
       maxThresholdPpm: '5000',
     }),
   }),
@@ -113,6 +119,10 @@ export interface CoreTexWorkQualificationInput extends ComputeCoreTexWorkUnitsIn
   readonly deterministicDeltaPpm: string | bigint | number;
   readonly baselineScorePpm?: string | bigint | number;
   readonly recentNoiseFloorPpm?: string | bigint | number;
+  readonly recentScreenerPasses?: string | bigint | number;
+  readonly recentStateAdvances?: string | bigint | number;
+  readonly targetStateAdvances?: string | bigint | number;
+  readonly recentProbePassRatePpm?: string | bigint | number;
   readonly localModelDeltaPpm?: string | bigint | number;
   readonly relevantNearCollisionPpm?: string | bigint | number;
   readonly parentMatchesLiveRoot: boolean;
@@ -135,6 +145,20 @@ export interface CoreTexWorkQualification {
 export interface ComputeCoreTexScreenerThresholdInput {
   readonly baselineScorePpm?: string | bigint | number;
   readonly recentNoiseFloorPpm?: string | bigint | number;
+  /**
+   * Accepted screener passes in the recent controller window. This is used only
+   * as bounded plateau evidence, never as a direct reward shortcut.
+   */
+  readonly recentScreenerPasses?: string | bigint | number;
+  /** Accepted state advances in the same recent controller window. */
+  readonly recentStateAdvances?: string | bigint | number;
+  /** Target state advances for the controller window. */
+  readonly targetStateAdvances?: string | bigint | number;
+  /**
+   * Random/hillclimb/abuse-probe pass rate in ppm. Any nonzero probe pass rate
+   * raises the threshold; clean probes leave the threshold unchanged.
+   */
+  readonly recentProbePassRatePpm?: string | bigint | number;
   readonly policy?: CoreTexWorkPolicy;
 }
 
@@ -184,9 +208,32 @@ export function computeCoreTexScreenerThresholdPpm(input: ComputeCoreTexScreener
   const noiseDelta =
     (toBigInt(input.recentNoiseFloorPpm ?? 0n, 'recentNoiseFloorPpm')
       * toBigInt(calibration.noiseFloorMultiplierBps, 'screenerPass.calibration.noiseFloorMultiplierBps')) / WORK_BPS_DIVISOR;
+  const plateauEasingMaxBps = toBigInt(calibration.plateauEasingMaxBps, 'screenerPass.calibration.plateauEasingMaxBps');
+  let adjustedHeadroomDelta = headroomDelta;
+  const targetStateAdvances = toBigInt(input.targetStateAdvances ?? 0n, 'targetStateAdvances');
+  if (targetStateAdvances > 0n) {
+    const recentStateAdvances = min(toBigInt(input.recentStateAdvances ?? 0n, 'recentStateAdvances'), targetStateAdvances);
+    const recentScreenerPasses = toBigInt(input.recentScreenerPasses ?? 0n, 'recentScreenerPasses');
+    const stateAdvanceGap = targetStateAdvances - recentStateAdvances;
+    const supportedGap = min(recentScreenerPasses, stateAdvanceGap);
+    const easingBps = min(plateauEasingMaxBps, (plateauEasingMaxBps * supportedGap) / targetStateAdvances);
+    adjustedHeadroomDelta = (headroomDelta * (WORK_BPS_DIVISOR - easingBps)) / WORK_BPS_DIVISOR;
+  }
+
+  const probePassRate = clamp(
+    toBigInt(input.recentProbePassRatePpm ?? 0n, 'recentProbePassRatePpm'),
+    0n,
+    scale,
+  );
+  const antiGamingPenaltyBps = min(
+    toBigInt(calibration.maxAntiGamingPenaltyBps, 'screenerPass.calibration.maxAntiGamingPenaltyBps'),
+    (probePassRate * toBigInt(calibration.antiGamingProbeMultiplierBps, 'screenerPass.calibration.antiGamingProbeMultiplierBps')) / scale,
+  );
   const maxThreshold = toBigInt(calibration.maxThresholdPpm, 'screenerPass.calibration.maxThresholdPpm');
 
-  return min(max(minDelta, max(headroomDelta, noiseDelta)), maxThreshold);
+  const rawThreshold = max(minDelta, max(adjustedHeadroomDelta, noiseDelta));
+  const penalizedThreshold = (rawThreshold * (WORK_BPS_DIVISOR + antiGamingPenaltyBps)) / WORK_BPS_DIVISOR;
+  return min(penalizedThreshold, maxThreshold);
 }
 
 export function evaluateCoreTexWorkQualification(input: CoreTexWorkQualificationInput): CoreTexWorkQualification {
@@ -206,10 +253,18 @@ export function evaluateCoreTexWorkQualification(input: CoreTexWorkQualification
   const thresholdInput: {
     baselineScorePpm?: string | bigint | number;
     recentNoiseFloorPpm?: string | bigint | number;
+    recentScreenerPasses?: string | bigint | number;
+    recentStateAdvances?: string | bigint | number;
+    targetStateAdvances?: string | bigint | number;
+    recentProbePassRatePpm?: string | bigint | number;
     policy: CoreTexWorkPolicy;
   } = { policy };
   if (input.baselineScorePpm !== undefined) thresholdInput.baselineScorePpm = input.baselineScorePpm;
   if (input.recentNoiseFloorPpm !== undefined) thresholdInput.recentNoiseFloorPpm = input.recentNoiseFloorPpm;
+  if (input.recentScreenerPasses !== undefined) thresholdInput.recentScreenerPasses = input.recentScreenerPasses;
+  if (input.recentStateAdvances !== undefined) thresholdInput.recentStateAdvances = input.recentStateAdvances;
+  if (input.targetStateAdvances !== undefined) thresholdInput.targetStateAdvances = input.targetStateAdvances;
+  if (input.recentProbePassRatePpm !== undefined) thresholdInput.recentProbePassRatePpm = input.recentProbePassRatePpm;
   const screenerThreshold = computeCoreTexScreenerThresholdPpm(thresholdInput);
   const minDeterministic = isStateAdvance
     ? max(toBigInt(policy.stateAdvance.minDeterministicDeltaPpm, 'stateAdvance.minDeterministicDeltaPpm'), screenerThreshold)
@@ -271,6 +326,8 @@ export function assertValidCoreTexWorkPolicy(policy: CoreTexWorkPolicy): void {
   const scoreScale = toBigInt(calibration.scoreScalePpm, 'screenerPass.calibration.scoreScalePpm');
   const minDelta = toBigInt(calibration.minDeltaPpm, 'screenerPass.calibration.minDeltaPpm');
   const maxThreshold = toBigInt(calibration.maxThresholdPpm, 'screenerPass.calibration.maxThresholdPpm');
+  const plateauEasingMaxBps = toBigInt(calibration.plateauEasingMaxBps, 'screenerPass.calibration.plateauEasingMaxBps');
+  const maxAntiGamingPenaltyBps = toBigInt(calibration.maxAntiGamingPenaltyBps, 'screenerPass.calibration.maxAntiGamingPenaltyBps');
   if (scoreScale !== 1_000_000n) throw new RangeError('scoreScalePpm must be 1000000');
   if (minDelta < 10n) throw new RangeError('screener minimum delta is too low');
   if (maxThreshold < minDelta) throw new RangeError('screener max threshold must be >= min delta');
@@ -279,6 +336,15 @@ export function assertValidCoreTexWorkPolicy(policy: CoreTexWorkPolicy): void {
   }
   if (toBigInt(calibration.noiseFloorMultiplierBps, 'screenerPass.calibration.noiseFloorMultiplierBps') < WORK_BPS_DIVISOR) {
     throw new RangeError('noiseFloorMultiplierBps must be at least 1x');
+  }
+  if (plateauEasingMaxBps > WORK_BPS_DIVISOR) {
+    throw new RangeError('plateauEasingMaxBps must be <= 10000');
+  }
+  if (toBigInt(calibration.antiGamingProbeMultiplierBps, 'screenerPass.calibration.antiGamingProbeMultiplierBps') === 0n) {
+    throw new RangeError('antiGamingProbeMultiplierBps must be positive');
+  }
+  if (maxAntiGamingPenaltyBps > 10n * WORK_BPS_DIVISOR) {
+    throw new RangeError('maxAntiGamingPenaltyBps must be <= 100000');
   }
   if (policy.stateAdvance.outcome !== OUTCOME_CORETEX_STATE_ADVANCE) {
     throw new RangeError('policy.stateAdvance.outcome must be 2');

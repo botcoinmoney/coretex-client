@@ -91,19 +91,47 @@ export interface BridgeLogicalDeltaOptions {
 }
 
 const memId = (id: string): string => `mem_${id}`;
-const liveTailMemId = (id: string): string => `zz_mem_${id}`;
-const liveTailQueryId = (id: string): string => `zz_q_${id}`;
+const legacyLiveTailMemId = (id: string): string => `zz_mem_${id}`;
+
+function epochKey(epoch: number): string {
+  if (!Number.isInteger(epoch) || epoch < 0) throw new Error(`live tail epoch must be a non-negative integer: ${epoch}`);
+  return String(epoch).padStart(12, '0');
+}
+
+function epochFromLogicalId(id: string): number | null {
+  const m = /^[dq]_e(\d+)_/.exec(id);
+  if (!m) return null;
+  const epoch = Number(m[1]);
+  return Number.isInteger(epoch) && epoch >= 0 ? epoch : null;
+}
+
+const liveTailMemId = (id: string, epoch: number): string => `zz_e${epochKey(epoch)}_mem_${id}`;
+const liveTailQueryId = (id: string, epoch: number): string => `zz_e${epochKey(epoch)}_q_${id}`;
+
+function possibleLiveTailMemIds(id: string): string[] {
+  const epoch = epochFromLogicalId(id);
+  return [
+    ...(epoch !== null ? [liveTailMemId(id, epoch)] : []),
+    legacyLiveTailMemId(id),
+  ];
+}
 
 function productionMemIdForAddedDoc(doc: LogicalDeltaDoc): string {
-  return doc.liveUpdateEpoch !== undefined ? liveTailMemId(doc.id) : memId(doc.id);
+  return doc.liveUpdateEpoch !== undefined ? liveTailMemId(doc.id, doc.liveUpdateEpoch) : memId(doc.id);
 }
 
 function productionQueryIdForAddedQuery(query: LogicalDeltaQuery): string {
-  return query.liveUpdateEpoch !== undefined ? liveTailQueryId(query.id) : query.id;
+  return query.liveUpdateEpoch !== undefined ? liveTailQueryId(query.id, query.liveUpdateEpoch) : query.id;
 }
 
 function previousMemoryEventForDocId(previousCorpus: ProductionCorpus, docId: string): ProductionCorpusEvent | undefined {
-  return previousCorpus.byId.get(memId(docId)) ?? previousCorpus.byId.get(liveTailMemId(docId));
+  const staticEvent = previousCorpus.byId.get(memId(docId));
+  if (staticEvent) return staticEvent;
+  for (const id of possibleLiveTailMemIds(docId)) {
+    const liveEvent = previousCorpus.byId.get(id);
+    if (liveEvent) return liveEvent;
+  }
+  return undefined;
 }
 
 function productionMemIdForRelationTarget(
@@ -113,7 +141,7 @@ function productionMemIdForRelationTarget(
 ): string {
   const added = addedProductionIdsByDocId.get(docId);
   if (added) return added;
-  if (previousCorpus.byId.has(liveTailMemId(docId))) return liveTailMemId(docId);
+  for (const id of possibleLiveTailMemIds(docId)) if (previousCorpus.byId.has(id)) return id;
   return memId(docId);
 }
 

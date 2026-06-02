@@ -3,7 +3,9 @@
  *
  * Adjusts the minImprovementPpm threshold for the next epoch based on how
  * many STATE_ADVANCE receipts were accepted and how many elevated (non-bogus)
- * quality attempts were observed in the completed epoch.
+ * quality attempts were observed in the completed epoch. Under-target quality
+ * pressure eases difficulty; the controller should not harden into a plateau
+ * while real work is failing just below the state-advance line.
  *
  * All ppm values entering/leaving this module are bigint. Ratios are computed
  * as floating-point intermediates and then rounded back to bigint.
@@ -37,11 +39,17 @@ export interface DifficultyInputs {
    */
   readonly decayRatio?: number;
   /**
-   * Multiplier applied for a slow upward drift (some advances but below
-   * target, and quality attempts > 0).
+   * Deprecated launch-controller field retained for old signed profiles.
+   * Under-target quality pressure now uses `underTargetRecoveryRatio` instead
+   * so non-advancing real work cannot make the next epoch harder.
    * Default: 1.05.
    */
   readonly smallDriftRatio?: number;
+  /**
+   * Multiplier applied when there are some state advances but fewer than the
+   * target and elevated quality attempts are present. Default: 0.95.
+   */
+  readonly underTargetRecoveryRatio?: number;
   /**
    * Major-delta grace flag. Set true by the calibration / epoch-rotation
    * tooling for exactly one epoch after a corpus delta whose new
@@ -93,6 +101,7 @@ export interface DifficultyOutput {
     | 'no_change'
     | 'small_drift_up'
     | 'small_drift_down'
+    | 'under_target_recovery'
     | 'major_delta_grace';
   /** The ratio that was applied (1.0 = no change). */
   readonly ratioApplied: number;
@@ -113,7 +122,7 @@ export function nextMinImprovementPpm(inputs: DifficultyInputs): DifficultyOutpu
 
   const rampUpMaxRatio = inputs.rampUpMaxRatio ?? 1.5;
   const decayRatio = inputs.decayRatio ?? 0.85;
-  const smallDriftRatio = inputs.smallDriftRatio ?? 1.05;
+  const underTargetRecoveryRatio = inputs.underTargetRecoveryRatio ?? 0.95;
   const qualityHighThreshold = inputs.qualityHighThreshold ?? 4 * targetAdvances;
 
   // CALIBRATION-ONLY effective clamp bounds. Default to the launch-pinned
@@ -165,9 +174,10 @@ export function nextMinImprovementPpm(inputs: DifficultyInputs): DifficultyOutpu
     ratio = 0.95;
     reason = 'small_drift_down';
   } else if (observedAdvances < targetAdvances && qualityAttempts > 0) {
-    // Some activity but below target — nudge difficulty up slowly.
-    ratio = smallDriftRatio;
-    reason = 'small_drift_up';
+    // Some real work is landing, but not enough state advances. Ease the next
+    // epoch instead of raising the bar into a state-advance plateau.
+    ratio = underTargetRecoveryRatio;
+    reason = 'under_target_recovery';
   } else {
     // Exactly at target (or no quality signal): leave unchanged.
     ratio = 1.0;

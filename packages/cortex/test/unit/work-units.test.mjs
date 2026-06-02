@@ -31,6 +31,7 @@ describe('CoreTex V4 work-unit policy', () => {
     assert.equal(OUTCOME_CORETEX_SCREENER_PASS, 1);
     assert.equal(OUTCOME_CORETEX_STATE_ADVANCE, 2);
     assert.equal(CORETEX_WORK_RULES_VERSION, 0xC0);
+    assert.equal(DEFAULT_CORETEX_WORK_POLICY.version, 2);
     assert.doesNotThrow(() => assertValidCoreTexWorkPolicy(DEFAULT_CORETEX_WORK_POLICY));
   });
 
@@ -133,6 +134,59 @@ describe('CoreTex V4 work-unit policy', () => {
     assert.deepEqual([t0, t10, t40, t80, t120], [50n, 50n, 80n, 160n, 240n]);
   });
 
+  test('screener threshold eases only the headroom component under state-advance plateau pressure', () => {
+    assert.equal(
+      computeCoreTexScreenerThresholdPpm({
+        baselineScorePpm: 0,
+        recentNoiseFloorPpm: 0,
+        targetStateAdvances: 2,
+        recentStateAdvances: 0,
+        recentScreenerPasses: 1,
+      }),
+      375n,
+    );
+    assert.equal(
+      computeCoreTexScreenerThresholdPpm({
+        baselineScorePpm: 0,
+        recentNoiseFloorPpm: 0,
+        targetStateAdvances: 2,
+        recentStateAdvances: 0,
+        recentScreenerPasses: 2,
+      }),
+      250n,
+    );
+    assert.equal(
+      computeCoreTexScreenerThresholdPpm({
+        baselineScorePpm: 0,
+        recentNoiseFloorPpm: 300,
+        targetStateAdvances: 2,
+        recentStateAdvances: 0,
+        recentScreenerPasses: 2,
+      }),
+      600n,
+      'clean-noise floor is never eased away',
+    );
+  });
+
+  test('screener threshold hardens when random or hillclimb probes pass', () => {
+    assert.equal(
+      computeCoreTexScreenerThresholdPpm({
+        baselineScorePpm: 0,
+        recentNoiseFloorPpm: 0,
+        recentProbePassRatePpm: 50_000,
+      }),
+      550n,
+    );
+    assert.equal(
+      computeCoreTexScreenerThresholdPpm({
+        baselineScorePpm: 0,
+        recentNoiseFloorPpm: 0,
+        recentProbePassRatePpm: 1_000_000,
+      }),
+      1_500n,
+    );
+  });
+
   test('screener threshold hard-clamps at policy min and max', () => {
     // minDelta clamp (50ppm default)
     assert.equal(
@@ -210,6 +264,19 @@ describe('CoreTex V4 work-unit policy', () => {
     assert.equal(passAtThreshold.requiredDeterministicDeltaPpm, dynamicThreshold);
     assert.equal(failBelowThreshold.reason, 'W03_DETERMINISTIC_DELTA_TOO_LOW');
     assert.equal(failBelowThreshold.requiredDeterministicDeltaPpm, dynamicThreshold);
+
+    const plateauEasedPass = evaluateCoreTexWorkQualification({
+      outcome: OUTCOME_CORETEX_SCREENER_PASS,
+      deterministicDeltaPpm: 250,
+      baselineScorePpm: 0,
+      recentNoiseFloorPpm: 0,
+      targetStateAdvances: 2,
+      recentStateAdvances: 0,
+      recentScreenerPasses: 2,
+      parentMatchesLiveRoot: true,
+    });
+    assert.equal(plateauEasedPass.qualified, true);
+    assert.equal(plateauEasedPass.requiredDeterministicDeltaPpm, 250n);
   });
 
   test('state advance requires live advance and local model no-regression', () => {

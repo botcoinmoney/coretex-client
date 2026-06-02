@@ -6,9 +6,11 @@
  *   1. pinned controllerParams flow through to the nextMinImprovementPpm inputs;
  *   2. absent controllerParams → difficulty.ts protocol defaults (back-compat);
  *   3. validateProfile (via buildBundleManifest) rejects degenerate controllers;
- *   4. DECAY-BRANCH SMOKE — the 2026-05-24 calibration (qualityHighThresholdMult=1)
+ *   4. DECAY / RECOVERY SMOKE — the 2026-05-24 calibration (qualityHighThresholdMult=1)
  *      makes the decay branch reachable at honestAttempts == targetAdvances, where
  *      the pre-calibration mult=4 (and the A/B's mult=2) left it unreachable.
+ *      The hardened default still takes under-target recovery instead of
+ *      ratcheting upward when quality work is present.
  *      (V2_DGEN1_ENDURANCE_FINDINGS.md §Controller-calibration A/B.)
  */
 import { test, describe } from 'node:test';
@@ -34,6 +36,7 @@ const LAUNCH_CONTROLLER = {
   rampUpMaxRatio: 1.1,
   decayRatio: 0.8,
   smallDriftRatio: 1.05,
+  underTargetRecoveryRatio: 0.9,
   qualityHighThresholdMult: 1,
 };
 
@@ -63,6 +66,7 @@ describe('controllerParamsFromProfile', () => {
     assert.equal(cp.rampUpMaxRatio, 1.1);
     assert.equal(cp.decayRatio, 0.8);
     assert.equal(cp.smallDriftRatio, 1.05);
+    assert.equal(cp.underTargetRecoveryRatio, 0.9);
     assert.equal(cp.qualityHighThreshold, 1 * target, 'mult=1 → threshold == target');
   });
 
@@ -72,6 +76,7 @@ describe('controllerParamsFromProfile', () => {
     assert.equal(cp.rampUpMaxRatio, DEFAULT_CONTROLLER_PARAMS.rampUpMaxRatio);
     assert.equal(cp.decayRatio, DEFAULT_CONTROLLER_PARAMS.decayRatio);
     assert.equal(cp.smallDriftRatio, DEFAULT_CONTROLLER_PARAMS.smallDriftRatio);
+    assert.equal(cp.underTargetRecoveryRatio, DEFAULT_CONTROLLER_PARAMS.underTargetRecoveryRatio);
     assert.equal(cp.qualityHighThreshold, DEFAULT_CONTROLLER_PARAMS.qualityHighThresholdMult * target);
   });
 
@@ -79,6 +84,7 @@ describe('controllerParamsFromProfile', () => {
     const cp = controllerParamsFromProfile({ ...DEFAULT_PROFILE, controllerParams: { rampUpMaxRatio: 1.2 } }, 5);
     assert.equal(cp.rampUpMaxRatio, 1.2, 'pinned field used');
     assert.equal(cp.decayRatio, DEFAULT_CONTROLLER_PARAMS.decayRatio, 'unset field defaults');
+    assert.equal(cp.underTargetRecoveryRatio, DEFAULT_CONTROLLER_PARAMS.underTargetRecoveryRatio, 'unset anti-plateau field defaults');
     assert.equal(cp.qualityHighThreshold, DEFAULT_CONTROLLER_PARAMS.qualityHighThresholdMult * 5);
   });
 });
@@ -108,6 +114,12 @@ describe('controllerParams validation (via buildBundleManifest → validateProfi
   test('smallDriftRatio < 1 rejected', () => {
     assert.throws(() => buildWith({ controllerParams: { smallDriftRatio: 0.99 } }), /smallDriftRatio/);
   });
+  test('underTargetRecoveryRatio > 1 rejected', () => {
+    assert.throws(() => buildWith({ controllerParams: { underTargetRecoveryRatio: 1.01 } }), /underTargetRecoveryRatio/);
+  });
+  test('underTargetRecoveryRatio <= 0 rejected', () => {
+    assert.throws(() => buildWith({ controllerParams: { underTargetRecoveryRatio: 0 } }), /underTargetRecoveryRatio/);
+  });
   test('qualityHighThresholdMult <= 0 rejected', () => {
     assert.throws(() => buildWith({ controllerParams: { qualityHighThresholdMult: 0 } }), /qualityHighThresholdMult/);
   });
@@ -127,11 +139,12 @@ describe('decay-branch smoke (the 2026-05-24 calibration fix)', () => {
     assert.ok(out.next < epoch.current, 'threshold decays toward the floor');
   });
 
-  test('PRE-CALIBRATION (mult=4 default): decay is UNREACHABLE at the same signal', () => {
+  test('DEFAULT (mult=4): decay is unreachable, but under-target recovery still eases', () => {
     const cp = controllerParamsFromProfile(DEFAULT_PROFILE, target); // mult=4 → threshold 12 > 3
     const out = nextMinImprovementPpm({ ...epoch, ...cp });
-    assert.notEqual(out.reason, 'decay', 'mult=4 keeps decay unreachable (the bug the calibration fixes)');
-    assert.equal(out.reason, 'small_drift_up', 'instead the bar ratchets UP, rejecting positive-delta pairs');
+    assert.notEqual(out.reason, 'decay', 'mult=4 keeps decay unreachable');
+    assert.equal(out.reason, 'under_target_recovery', 'the hardened default still eases under quality pressure');
+    assert.ok(out.next < epoch.current, 'threshold does not ratchet upward under state-advance shortfall');
   });
 
   test('A/B mult=2 also leaves decay unreachable at honestAttempts=3 (threshold 6 > 3)', () => {

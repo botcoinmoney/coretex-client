@@ -158,8 +158,8 @@ describe('Fix B — production delta/root path (mock embeddings): logical delta 
     const maxPreviousId = [...previousCorpus.byId.keys()].sort().at(-1);
     assert.ok(maxPreviousId, 'previous corpus must have a max id');
     assert.ok(additions.every((e) => e.id > maxPreviousId), 'live additions must tail-sort after existing v15-style ids');
-    assert.ok(additions.filter((e) => isMemoryDocumentEventId(e.id)).every((e) => e.id.startsWith('zz_mem_')), 'live memory docs use tail-sort memory ids');
-    assert.ok(additions.filter((e) => !isMemoryDocumentEventId(e.id)).every((e) => e.id.startsWith('zz_q_')), 'live queries use tail-sort query ids');
+    assert.ok(additions.filter((e) => isMemoryDocumentEventId(e.id)).every((e) => e.id.startsWith('zz_e000000000006_mem_')), 'live memory docs use epoch-prefixed tail-sort memory ids');
+    assert.ok(additions.filter((e) => !isMemoryDocumentEventId(e.id)).every((e) => e.id.startsWith('zz_e000000000006_q_')), 'live queries use epoch-prefixed tail-sort query ids');
     for (const e of additions) assert.equal(e.split, expectedSplitForRecord(e.id, 0));
 
     const delta = buildCorpusDelta({
@@ -173,6 +173,52 @@ describe('Fix B — production delta/root path (mock embeddings): logical delta 
     const evolved = applyCorpusDelta(previousCorpus, delta, { rootCache: previousCorpus.corpusRootCache, attachRootCache: true });
     assert.equal(evolved.corpusRoot, delta.nextRoot);
     assert.equal(evolved.corpusRootCache.root, delta.nextRoot);
+  });
+
+  test('package bridge keeps later live epochs tail-sortable after prior live query ids', () => {
+    let corpus = prevCorpusWithBaseMemory(0);
+    const applyLiveEpoch = (epoch) => {
+      const logical = {
+        ...baseLogical,
+        docs: [...baseLogical.docs, ...[...corpus.byId.values()]
+          .filter((e) => isMemoryDocumentEventId(e.id))
+          .map((e) => ({
+            id: e.truthDocuments[0].id,
+            kind: 'temporal_city',
+            entityIds: e.entityIds ?? ['e_universe'],
+            currentStaleFlag: e.truthDocuments[0].isCurrent !== false,
+            text: e.truthDocuments[0].text,
+          }))],
+      };
+      const ld = evolveCorpusDelta({ baseLogical: logical, epoch, seed: 'frontier', churnFraction: 1.0 });
+      const addedDocEmbeddings = new Map(ld.addedDocs.map((d) => [d.id, mockEmb()]));
+      const addedQueryEmbeddings = new Map(ld.addedQueries.map((q) => [q.id, mockEmb()]));
+      const additions = bridgeLogicalDeltaToProductionEvents({
+        previousCorpus: corpus,
+        logicalDelta: ld,
+        addedDocEmbeddings,
+        addedQueryEmbeddings,
+        biEncoder: { modelId: BI.modelId, revision: BI.revision, layout: LAYOUT },
+      });
+      const maxPreviousId = [...corpus.byId.keys()].sort().at(-1);
+      assert.ok(additions.every((e) => e.id > maxPreviousId), `epoch ${epoch} additions must tail-sort after ${maxPreviousId}`);
+      const delta = buildCorpusDelta({
+        previousCorpus: corpus,
+        previousRootCache: corpus.corpusRootCache,
+        additions,
+        removals: [],
+        epoch,
+        labelingProvenance,
+      });
+      corpus = applyCorpusDelta(corpus, delta, { rootCache: corpus.corpusRootCache, attachRootCache: true });
+      return additions;
+    };
+
+    const e1 = applyLiveEpoch(1);
+    const e2 = applyLiveEpoch(2);
+    assert.ok(e1.some((e) => e.id.startsWith('zz_e000000000001_q_')));
+    assert.ok(e2.some((e) => e.id.startsWith('zz_e000000000002_mem_')));
+    assert.ok(Math.max(...e2.map((e) => e.id.localeCompare('zz_e000000000001_q_'))) > 0);
   });
 
   // P0: live churn needs NEW PUBLIC MEMORY-DOC events (mem_*) so policy atoms / aspect maps / relations /

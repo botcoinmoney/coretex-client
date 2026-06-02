@@ -99,8 +99,8 @@ describe('CoreTex V4 difficulty calculator', () => {
     assert.equal(result.clamped, false);
   });
 
-  test('small drift up: observed < target with some quality attempts nudges up', () => {
-    // observed=2, target=5, qualityAttempts=10 → small_drift_up
+  test('under-target recovery: observed < target with quality attempts eases difficulty', () => {
+    // observed=2, target=5, qualityAttempts=10 → under_target_recovery
     const current = 20_000n;
     const result = nextMinImprovementPpm({
       current,
@@ -108,10 +108,23 @@ describe('CoreTex V4 difficulty calculator', () => {
       targetAdvances: 5,
       qualityAttempts: 10,
     });
-    assert.equal(result.reason, 'small_drift_up');
-    // 20_000 * 1.05 = 21_000
-    assert.equal(result.next, 21_000n);
+    assert.equal(result.reason, 'under_target_recovery');
+    // 20_000 * 0.95 = 19_000
+    assert.equal(result.next, 19_000n);
     assert.equal(result.clamped, false);
+  });
+
+  test('custom underTargetRecoveryRatio is respected', () => {
+    const current = 20_000n;
+    const result = nextMinImprovementPpm({
+      current,
+      observedAdvances: 2,
+      targetAdvances: 5,
+      qualityAttempts: 10,
+      underTargetRecoveryRatio: 0.9,
+    });
+    assert.equal(result.reason, 'under_target_recovery');
+    assert.equal(result.next, 18_000n);
   });
 
   test('ceiling clamp: ramp-up cannot exceed MAX_IMPROVEMENT_PPM', () => {
@@ -174,7 +187,7 @@ describe('CoreTex V4 difficulty calculator', () => {
   test('custom qualityHighThreshold overrides default', () => {
     // qualityHighThreshold=30, qualityAttempts=20 → NOT high enough → no decay
     // Since observedAdvances=0 < targetAdvances=5 AND qualityAttempts(20) > 0,
-    // the small_drift_up branch fires instead.
+    // the under_target_recovery branch fires instead.
     const current = 20_000n;
     const result = nextMinImprovementPpm({
       current,
@@ -185,9 +198,9 @@ describe('CoreTex V4 difficulty calculator', () => {
     });
     // decay branch requires qualityAttempts >= qualityHighThreshold (20 < 30) → no decay
     // small_drift_down requires qualityAttempts === 0 → doesn't apply
-    // small_drift_up requires observedAdvances < targetAdvances AND qualityAttempts > 0 → fires
-    assert.equal(result.reason, 'small_drift_up');
-    assert.equal(result.next, 21_000n); // 20_000 * 1.05
+    // under_target_recovery requires observedAdvances < targetAdvances AND qualityAttempts > 0 → fires
+    assert.equal(result.reason, 'under_target_recovery');
+    assert.equal(result.next, 19_000n); // 20_000 * 0.95
   });
 
   test('custom rampUpMaxRatio is respected', () => {

@@ -334,18 +334,19 @@ export function splitForRecord(id: string, corpusEpoch: number, ratios: SplitRat
 /**
  * Canonical EXPECTED split for a production event, the single authority that delta/load validation must
  * use. The production corpus overloads two event kinds with DIFFERENT split semantics:
- *   - MEMORY-DOCUMENT events (the public retrieval store; `mem_*` / live-tail `zz_mem_*` ids)
+ *   - MEMORY-DOCUMENT events (the public retrieval store; `mem_*` / live-tail `zz_mem_*`
+ *     and epoch-prefixed `zz_e*_mem_*` ids)
  *     are ALWAYS `train_visible` — they
  *     are stored memories, never hidden eval queries;
  *   - QUERY/eval events use the deterministic `splitForRecord` assignment (which queries are hidden).
  * Validating EVERY event with `splitForRecord` (the prior bug) rejected legitimate `mem_*` docs (they are
  * train_visible, not their hashed split). The `mem_` prefix is part of the event id (hashed into
  * corpusRoot), so this rule is deterministic + replay-verifiable. Live-update memory docs added via a
- * corpus delta may use `zz_mem_*` so they tail-sort for incremental Merkle updates without changing the
- * v15 corpus.
+ * corpus delta may use epoch-prefixed `zz_e*_mem_*` so every later live epoch tail-sorts
+ * after prior live queries and avoids a full Merkle rebuild.
  */
 export function isMemoryDocumentEventId(id: string): boolean {
-  return id.startsWith('mem_') || id.startsWith('zz_mem_');
+  return id.startsWith('mem_') || id.startsWith('zz_mem_') || /^zz_e\d+_mem_/.test(id);
 }
 
 export function expectedSplitForRecord(id: string, corpusEpoch: number, ratios: SplitRatios = DEFAULT_SPLIT_RATIOS): CorpusSplit {
