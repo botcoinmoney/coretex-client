@@ -205,6 +205,12 @@ export interface EvaluatorProfile {
   /** Category-B: relation-TYPED admission — restrict admission + evidence boost to the query's
    *  PUBLIC parsed relation-intent edge types (finer than r5.1's entity-only all-edge admission). */
   readonly policyRelationTypedAdmission?: boolean;
+  /** Launch-reduced: raw MemoryIndex anchors are disabled; r5 policy anchors remain usable. */
+  readonly enableRawRoutingAnchors?: boolean;
+  /** Launch-reduced: Phase-A anchor-to-anchor relation edges are disabled; category lenses remain usable. */
+  readonly enableRelationAnchorEdges?: boolean;
+  /** Launch-reduced: evidence_bundle is bundle-only; reach-only boost/include/suppress actions are inert. */
+  readonly policyEvidenceAllowedActions?: readonly ('include' | 'boost' | 'suppress' | 'bundle')[];
   /** conflict_lifecycle: gate conflict-atom admission on a PUBLIC parsed conflict/scope intent
    *  (parseQueryConflictIntent) instead of the coarse CONFLICT_SET_MEMBER entity selector — eliminates
    *  the off-family damage. MUST be true whenever enableConflictLifecycleAtoms is true at launch. */
@@ -983,6 +989,9 @@ export function scoringOptionsFromProfile(
     ...(profile.policyQueryLocalTopK !== undefined ? { policyQueryLocalTopK: profile.policyQueryLocalTopK } : {}),
     ...(profile.policyQueryConditionedAdmission !== undefined ? { policyQueryConditionedAdmission: profile.policyQueryConditionedAdmission } : {}),
     ...(profile.policyRelationTypedAdmission !== undefined ? { policyRelationTypedAdmission: profile.policyRelationTypedAdmission } : {}),
+    ...(profile.enableRawRoutingAnchors !== undefined ? { enableRawRoutingAnchors: profile.enableRawRoutingAnchors } : {}),
+    ...(profile.enableRelationAnchorEdges !== undefined ? { enableRelationAnchorEdges: profile.enableRelationAnchorEdges } : {}),
+    ...(profile.policyEvidenceAllowedActions !== undefined ? { policyEvidenceAllowedActions: profile.policyEvidenceAllowedActions } : {}),
     ...(profile.policyConflictIntentAdmission !== undefined ? { policyConflictIntentAdmission: profile.policyConflictIntentAdmission } : {}),
     ...(profile.enableAspectConstraintAtoms !== undefined ? { enableAspectConstraintAtoms: profile.enableAspectConstraintAtoms } : {}),
     ...(profile.policyAspectIntentAdmission !== undefined ? { policyAspectIntentAdmission: profile.policyAspectIntentAdmission } : {}),
@@ -1324,6 +1333,25 @@ function validateProfile(profile: EvaluatorProfile, errors?: string[]): void {
   for (const k of ['policyMaxBudgetEvidence', 'policyMaxBudgetConflict'] as const) {
     const v = profile[k];
     if (v !== undefined && (!Number.isInteger(v) || v < 0 || v > 0xffff)) out.push(`${k} must be an integer in [0, 65535] when present`);
+  }
+  if (profile.enableRawRoutingAnchors !== undefined && typeof profile.enableRawRoutingAnchors !== 'boolean') {
+    out.push('enableRawRoutingAnchors must be boolean when present');
+  }
+  if (profile.enableRelationAnchorEdges !== undefined && typeof profile.enableRelationAnchorEdges !== 'boolean') {
+    out.push('enableRelationAnchorEdges must be boolean when present');
+  }
+  if (profile.policyEvidenceAllowedActions !== undefined) {
+    const valid = new Set(['include', 'boost', 'suppress', 'bundle']);
+    const seen = new Set<string>();
+    if (!Array.isArray(profile.policyEvidenceAllowedActions) || profile.policyEvidenceAllowedActions.length === 0) {
+      out.push('policyEvidenceAllowedActions must be a non-empty action array when present');
+    } else {
+      for (const action of profile.policyEvidenceAllowedActions) {
+        if (!valid.has(action)) out.push(`policyEvidenceAllowedActions contains invalid action ${action}`);
+        if (seen.has(action)) out.push(`policyEvidenceAllowedActions contains duplicate action ${action}`);
+        seen.add(action);
+      }
+    }
   }
   if (profile.policyAbstentionTop1Threshold !== undefined) {
     const t = profile.policyAbstentionTop1Threshold;

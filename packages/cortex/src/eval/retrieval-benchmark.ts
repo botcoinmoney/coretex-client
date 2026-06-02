@@ -113,6 +113,28 @@ export function computeAcceptanceThresholdPpm(profile: {
        + (profile.baselineVariancePpm ?? 0);
 }
 
+export type EvidencePolicyAction = 'include' | 'boost' | 'suppress' | 'bundle';
+
+export interface RenderedCandidateTrace {
+  readonly docId: string;
+  readonly eventId: string;
+  readonly rank: number;
+  readonly sources: readonly string[];
+  readonly rawText: string;
+  readonly renderedText: string;
+}
+
+export interface RetrievalQueryScoringTelemetry {
+  readonly queryId: string;
+  readonly family: string;
+  readonly candidatePoolSize: number;
+  readonly rerankerInputTopK: number;
+  readonly rerankerPairs: number;
+  readonly candidateRenderingMs: number;
+  readonly rerankerScoringMs: number;
+  readonly queryTotalMs: number;
+}
+
 export interface ScoringOptions {
   readonly weights: CompositeWeights;
   readonly biEncoder: BiEncoder;
@@ -145,6 +167,20 @@ export interface ScoringOptions {
    * query's reranker cap while still using only public query/corpus entity ids.
    */
   readonly scopeRoutingAnchorsToQuerySubject?: boolean;
+  /**
+   * Launch-reduced hard gate. When false, non-policy MemoryIndex slots do not
+   * inject docs through raw anchorMandatory / anchorBFS routing. Policy anchors
+   * remain resolvable for r5 atoms, and temporal MemoryIndex slots still resolve
+   * lifecycle through decoded temporal records. Default true preserves older
+   * calibration bundles.
+   */
+  readonly enableRawRoutingAnchors?: boolean;
+  /**
+   * Launch-reduced hard gate for Phase-A anchor-to-anchor relation edges.
+   * Category-lens routing remains controlled separately by category lenses and
+   * categoryLensExpansionBudget. Default true preserves older bundles.
+   */
+  readonly enableRelationAnchorEdges?: boolean;
 
   /**
    * EvidencePolicy (opt-in, default off). A candidate THIRD miner-facing strategy
@@ -359,6 +395,8 @@ export interface ScoringOptions {
   /** Per-family budget caps (ppm-ish). A miner atom's budget is clamped to these. */
   readonly policyMaxBudgetEvidence?: number;
   readonly policyMaxBudgetConflict?: number;
+  /** Evidence-bundle action allow-list. Launch-reduced pins ['bundle'] so reach-only boost/include/suppress atoms are inert. */
+  readonly policyEvidenceAllowedActions?: readonly EvidencePolicyAction[];
   /** Conflict-INTENT-typed admission: conflict_lifecycle atoms admit ONLY when the query carries public
    * conflict/scope intent (`parseQueryConflictIntent`: a leading "For <scope>," clause whose phrase is not the
    * subject entity), so they fire on conflict queries and stay silent on co-subject aspect/temporal/bridge queries
@@ -440,6 +478,10 @@ export interface ScoringOptions {
   /** (queryId, eventId) → resolved MemoryIR (or null) for `rerankerMemoryIRMode==='full'`. The candidate
    * text rendered is the RAW event text (matching the exporter's `candidate_text`), not the bundled doc. */
   readonly rerankerMemoryIRLookup?: (queryId: string, eventId: string) => import('./memory-ir-render.js').MemoryIR | null;
+  /** Diagnostic-only: surface rendered candidate text in PerQueryBreakdown. Default off. */
+  readonly exposeRenderedCandidates?: boolean;
+  /** Diagnostic-only scoring telemetry sink. Default off and no reward-path effect. */
+  readonly scoringTelemetry?: (event: RetrievalQueryScoringTelemetry) => void;
 }
 
 /** The pipeline version this codebase implements. Bundles that pin a
@@ -635,6 +677,10 @@ export interface PerQueryBreakdown {
    * opt-in is set. Pure diagnostic — does not affect scoring.
    */
   readonly finalRankingFull?: readonly { docId: string; relevance: number; rerankerScore: number }[];
+  /** Diagnostic-only rendered candidate text for the final top-20. Undefined unless exposeRenderedCandidates=true. */
+  readonly renderedCandidatesTop20?: readonly RenderedCandidateTrace[];
+  /** Diagnostic-only rendered candidate text for reranker input cap. Undefined unless exposeRenderedCandidates=true. */
+  readonly rerankerInputCandidates?: readonly RenderedCandidateTrace[];
   /**
    * Diagnostic (temporalStaleContrast mode): recall@rerankerTopK of this temporal query's STALE
    * (contrast) docs — observable but NOT in the reward. Null when off / non-temporal / no stale docs.
@@ -735,9 +781,12 @@ export async function scoreSubstrateAgainstQuery(
   }[];
   answerInCap: boolean;
   finalRankingFull: readonly { docId: string; relevance: number; rerankerScore: number }[] | undefined;
+  renderedCandidatesTop20: readonly RenderedCandidateTrace[] | undefined;
+  rerankerInputCandidates: readonly RenderedCandidateTrace[] | undefined;
   policyTraces: readonly PolicyAtomTrace[];
   policyAbstain: boolean;
 }> {
+  const queryScoreStartMs = Date.now();
   const queryVec = dequantize(query.embeddings.query, opts.retrievalKeyLayout);
   const publicIndex = getOrBuildPublicIndex(corpus);
 
@@ -848,8 +897,15 @@ export async function scoreSubstrateAgainstQuery(
     return (ev.entityIds ?? []).some((e) => resolvedQuerySubjects.has(e));
   };
   // routing anchors = anchors that DO inject (everything except policy-only anchors).
-  const routingSlotToEvent = new Map([...anchorSlotToEvent].filter(([m, ev]) =>
-    !policyAnchorSlots.has(m) && routingAnchorAllowed(ev)));
+  const rawRoutingAnchorsEnabled = opts.enableRawRoutingAnchors !== false;
+  const routingSlotToEvent = rawRoutingAnchorsEnabled
+    ? new Map([...anchorSlotToEvent].filter(([m, ev]) => !policyAnchorSlots.has(m) && routingAnchorAllowed(ev)))
+    : new Map<number, ProductionCorpusEvent>();
+  const relationAnchorEdgesEnabled = opts.enableRelationAnchorEdges !== false;
+  const evidenceActionAllowed = (action: string): action is EvidencePolicyAction => {
+    const allowed = opts.policyEvidenceAllowedActions;
+    return !allowed || allowed.includes(action as EvidencePolicyAction);
+  };
 
   // ─── r5.1: query-CONDITIONED policy admission (selective-anchor admission) ───
   // A GENERIC PUBLIC selector (entity-mention parse of the query text vs the public entity registry)
@@ -881,7 +937,9 @@ export async function scoreSubstrateAgainstQuery(
     // DIFFERENT selector (CONFLICT_SET_MEMBER = the query's subject has a public conflict set) and admit on
     // entity-match alone (scope = the anchor's OWN docs, no typed reach), independent of relation intent —
     // so conflict coexists with live Category-B without being blocked by the no-relation-intent gate.
-    const evidenceAtomsAdm = opts.enableEvidenceBundleAtoms !== false ? decoded.evidenceBundleAtoms : [];
+    const evidenceAtomsAdm = opts.enableEvidenceBundleAtoms !== false
+      ? decoded.evidenceBundleAtoms.filter((a) => evidenceActionAllowed(a.action))
+      : [];
     const conflictAtomsAdm = opts.enableConflictLifecycleAtoms !== false ? decoded.conflictLifecycleAtoms : [];
     const hasConflictAtomsAdm = conflictAtomsAdm.length > 0;
     // CONFLICT-INTENT-typed admission (the conflict analogue of relation-typed): conflict atoms fire only on
@@ -968,7 +1026,7 @@ export async function scoreSubstrateAgainstQuery(
   // Relation adjacency (sourceSlot → [targetSlot]). Decoder has already
   // dropped domain-share-failing edges (substrate-hardening §6.4).
   const relAdj = new Map<number, number[]>();
-  for (const e of decoded.relations) {
+  for (const e of relationAnchorEdgesEnabled ? decoded.relations : []) {
     const arr = relAdj.get(e.sourceSlot) ?? [];
     arr.push(e.targetSlot);
     relAdj.set(e.sourceSlot, arr);
@@ -1028,12 +1086,12 @@ export async function scoreSubstrateAgainstQuery(
   // anchored event + edgeType to follow; it cannot fabricate corpus edges.
   const eventByCorpusIdForPhaseA = corpusByCorpusId(corpus);
   const relEdgeTypesBySlot = new Map<number, Set<string>>();
-  for (const e of decoded.relations) {
+  for (const e of relationAnchorEdgesEnabled ? decoded.relations : []) {
     let s = relEdgeTypesBySlot.get(e.sourceSlot);
     if (!s) { s = new Set<string>(); relEdgeTypesBySlot.set(e.sourceSlot, s); }
     s.add(e.edgeType);
   }
-  for (const [slot, ev] of routingSlotToEvent) {
+  if (relationAnchorEdgesEnabled) for (const [slot, ev] of routingSlotToEvent) {
     if (anchorBfsExpansionAdded >= opts.relationExpansionBudget) break;
     const edgeTypes = relEdgeTypesBySlot.get(slot);
     if (!edgeTypes || !ev.relations) continue;
@@ -1423,7 +1481,17 @@ export async function scoreSubstrateAgainstQuery(
   }
 
   if (candidates.length === 0) {
-    return { ranked: [], top1Score: 0, cappedDocIds: [], cappedDocSources: [], cappedDocComponents: [], finalRankingTop20: [], answerInCap: false, finalRankingFull: opts.exposeFullRanking === true ? [] : undefined, policyTraces: [], policyAbstain: false };
+    opts.scoringTelemetry?.({
+      queryId: query.id,
+      family: query.family,
+      candidatePoolSize: 0,
+      rerankerInputTopK: Math.max(1, opts.rerankerInputTopK),
+      rerankerPairs: 0,
+      candidateRenderingMs: 0,
+      rerankerScoringMs: 0,
+      queryTotalMs: Date.now() - queryScoreStartMs,
+    });
+    return { ranked: [], top1Score: 0, cappedDocIds: [], cappedDocSources: [], cappedDocComponents: [], finalRankingTop20: [], answerInCap: false, finalRankingFull: opts.exposeFullRanking === true ? [] : undefined, renderedCandidatesTop20: opts.exposeRenderedCandidates === true ? [] : undefined, rerankerInputCandidates: opts.exposeRenderedCandidates === true ? [] : undefined, policyTraces: [], policyAbstain: false };
   }
 
   // ─── §6.5 reranker-input cap: take top-N by pre-rank ─────────────────────
@@ -1534,8 +1602,15 @@ export async function scoreSubstrateAgainstQuery(
     const subj = (ev?.entityIds ?? []).find((e) => !(opts.policyGenericEntityIds ?? []).includes(e)) ?? '?';
     return `[lifecycle=${lc} | subject=${subj}] ${base}`;
   };
+  const renderStartMs = Date.now();
   const pairs = rerankerCandidates.map((c) => ({ query: query.queryText, document: mirDoc(c) }));
+  const candidateRenderingMs = Date.now() - renderStartMs;
+  const renderedByDocId = opts.exposeRenderedCandidates === true
+    ? new Map(rerankerCandidates.map((c, i) => [c.record.docId, pairs[i]!.document]))
+    : null;
+  const rerankerStartMs = Date.now();
   const rerankerScoresTopN = pairs.length > 0 ? await opts.reranker.score(pairs) : [];
+  const rerankerScoringMs = Date.now() - rerankerStartMs;
   if (rerankerScoresTopN.length !== pairs.length) {
     throw new Error(
       `retrieval-benchmark: reranker returned ${rerankerScoresTopN.length} scores for ${pairs.length} pairs`,
@@ -1639,6 +1714,7 @@ export async function scoreSubstrateAgainstQuery(
     // Evidence-bundle / answer-density: target = anchor's PUBLIC-edge reach (+ anchor's own docs for bundle/include).
     if (opts.enableEvidenceBundleAtoms !== false) {
       for (const atom of decoded.evidenceBundleAtoms) {
+        if (!evidenceActionAllowed(atom.action)) continue;
         const anchorEv = anchorSlotToEvent.get(atom.targetSlot);
         if (!anchorEv || !policyFires(anchorEv.id)) continue; // r5.1: selector-match (admission) else top-K gate
         const beta = Math.min(atom.budget, opts.policyMaxBudgetEvidence ?? atom.budget) / 1000;
@@ -1795,7 +1871,42 @@ export async function scoreSubstrateAgainstQuery(
   const finalRankingFull = opts.exposeFullRanking === true
     ? ranked.map((r) => ({ docId: r.documentId, relevance: r.relevance, rerankerScore: r.rerankerScore }))
     : undefined;
-  return { ranked, top1Score, cappedDocIds, cappedDocSources, cappedDocComponents, finalRankingTop20, answerInCap, finalRankingFull, policyTraces, policyAbstain };
+  const renderedTrace = (docId: string, rank: number): RenderedCandidateTrace | null => {
+    const c = componentsByDocId.get(docId);
+    if (!c) return null;
+    return {
+      docId,
+      eventId: c.record.eventId,
+      rank,
+      sources: Array.from(c.record.sources),
+      rawText: c.record.text,
+      renderedText: renderedByDocId?.get(docId) ?? c.record.text,
+    };
+  };
+  const renderedCandidatesTop20 = opts.exposeRenderedCandidates === true
+    ? finalRankingTop20.map((r) => renderedTrace(r.docId, r.rank)).filter((x): x is RenderedCandidateTrace => x !== null)
+    : undefined;
+  const rerankerInputCandidates = opts.exposeRenderedCandidates === true
+    ? rerankerCandidates.map((c, idx) => ({
+        docId: c.record.docId,
+        eventId: c.record.eventId,
+        rank: idx + 1,
+        sources: Array.from(c.record.sources),
+        rawText: c.record.text,
+        renderedText: renderedByDocId?.get(c.record.docId) ?? c.record.text,
+      }))
+    : undefined;
+  opts.scoringTelemetry?.({
+    queryId: query.id,
+    family: query.family,
+    candidatePoolSize: candidates.length,
+    rerankerInputTopK: rerankerInputCap,
+    rerankerPairs: pairs.length,
+    candidateRenderingMs,
+    rerankerScoringMs,
+    queryTotalMs: Date.now() - queryScoreStartMs,
+  });
+  return { ranked, top1Score, cappedDocIds, cappedDocSources, cappedDocComponents, finalRankingTop20, answerInCap, finalRankingFull, renderedCandidatesTop20, rerankerInputCandidates, policyTraces, policyAbstain };
 }
 
 // ─── Owner-scoped retrieval (Layer-2 validity fix) ──────────────────────────
@@ -2325,7 +2436,7 @@ export async function evaluateRetrievalBenchmarkState(
 
   // Build the relation graph once.
   const relGraph = new Map<number, number[]>();
-  for (const e of decoded.relations) {
+  for (const e of opts.enableRelationAnchorEdges === false ? [] : decoded.relations) {
     const arr = relGraph.get(e.sourceSlot) ?? [];
     arr.push(e.targetSlot);
     relGraph.set(e.sourceSlot, arr);
@@ -2333,7 +2444,11 @@ export async function evaluateRetrievalBenchmarkState(
 
   for (const query of pack.events) {
     const isAbstentionProbe = query.truthDocuments.length === 0;
-    const { ranked, top1Score, cappedDocIds, cappedDocSources, cappedDocComponents, finalRankingTop20, answerInCap, finalRankingFull, policyTraces, policyAbstain } = await scoreSubstrateAgainstQuery(decoded, query, corpus, opts);
+    const {
+      ranked, top1Score, cappedDocIds, cappedDocSources, cappedDocComponents,
+      finalRankingTop20, answerInCap, finalRankingFull, renderedCandidatesTop20,
+      rerankerInputCandidates, policyTraces, policyAbstain,
+    } = await scoreSubstrateAgainstQuery(decoded, query, corpus, opts);
 
     // nDCG / MRR / Recall over reranked list.
     const idealRels = query.qrels.map((q) => q.relevance);
@@ -2439,6 +2554,8 @@ export async function evaluateRetrievalBenchmarkState(
       finalRankingTop20,
       answerInCap: isAbstentionProbe ? null : answerInCap,
       ...(finalRankingFull !== undefined ? { finalRankingFull } : {}),
+      ...(renderedCandidatesTop20 !== undefined ? { renderedCandidatesTop20 } : {}),
+      ...(rerankerInputCandidates !== undefined ? { rerankerInputCandidates } : {}),
       temporalContrastRecall,
       ...(opts.policyEmitTraces && policyTraces.length > 0 ? { policyTraces } : {}),
       ...(opts.policyAtomsMode === true ? { policyAbstain, policyFalseAbstain } : {}),
