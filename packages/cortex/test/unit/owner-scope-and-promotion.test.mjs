@@ -19,6 +19,7 @@ import {
   computeCorpusRoot,
   splitForRecord,
   encodeMemoryIndexSlot,
+  encodeRelationEdge,
   encodeRelationCategoryLens,
   stableRecordIdFor,
   DEFAULT_PROFILE,
@@ -145,6 +146,29 @@ function anchorStateFor(eventId) {
   return { words };
 }
 
+function anchorWithRelationStateFor(eventId, edgeType = 'supports') {
+  const state = anchorStateFor(eventId);
+  state.words[RANGES.RELATIONS_START] = encodeRelationEdge({
+    entryIndex: 0,
+    sourceSlot: 0,
+    targetSlot: 0,
+    edgeType,
+    weight: 0x8000,
+  });
+  return state;
+}
+
+const registry = [
+  { id: 'e_universe', names: ['deep universe'] },
+  { id: 'e_x', names: ['owner x', 'x'] },
+  { id: 'e_y', names: ['owner y', 'y'] },
+  { id: 'e_amb1', names: ['aisha costa', 'aisha'] },
+  { id: 'e_amb2', names: ['aisha costa', 'aisha'] },
+  { id: 'e_amb3', names: ['aisha costa', 'aisha'] },
+  { id: 'e_amb4', names: ['aisha costa', 'aisha'] },
+  { id: 'e_amb5', names: ['aisha costa', 'aisha'] },
+];
+
 describe('owner-scoped retrieval', () => {
   test("restrict: stage-1 pool excludes a high-cosine doc owned by a different entity", async () => {
     const { corpus, q } = makeTwoOwnerCorpus();
@@ -209,6 +233,60 @@ describe('subject-scoped routing anchors', () => {
     const scopedY = scoped.perQuery[0].finalRankingTop20.find((r) => r.docId === 'memY-truth');
     assert.ok(!scopedY?.sources.includes('anchorMandatory'), 'subject-scoped routing anchor does not inject unrelated memY');
     assert.ok(scoped.perQuery[0].finalRankingTop20.some((r) => r.docId === 'memX-truth'), 'same-subject stage-1 gold remains present');
+  });
+
+  test('same-subject routing anchors still admit under subject scope', async () => {
+    const memX = memEvent('memX', 'TRUTH-X', [0, 1, 0, 0, 0, 0, 0, 0], ['e_x']);
+    const memY = memEvent('memY', 'TRUTH-Y', [1, 0, 0, 0, 0, 0, 0, 0], ['e_y']);
+    const q = queryEvent('qSameSubject', [1, 0, 0, 0, 0, 0, 0, 0], 'e_x', false, [{ documentId: 'memX-truth', relevance: 1 }]);
+    q.subjectEntityId = 'e_x';
+    const corpus = buildCorpus([memX, memY, q]);
+
+    const scoped = await evaluateRetrievalBenchmarkState(anchorStateFor('memX'), corpus, packOf(q),
+      baseOpts({ firstStageTopK: 1, rerankerInputTopK: 10, scopeRoutingAnchorsToQuerySubject: true, policyEntityRegistry: registry, policyGenericEntityIds: ['e_universe'] }));
+    const x = scoped.perQuery[0].finalRankingTop20.find((r) => r.docId === 'memX-truth');
+    assert.ok(x?.sources.includes('anchorMandatory'), 'same-subject anchor remains eligible');
+  });
+
+  test('generic universe subject fails closed instead of admitting every generic anchor', async () => {
+    const memX = memEvent('memX', 'TRUTH-X', [1, 0, 0, 0, 0, 0, 0, 0], ['e_x']);
+    const memGeneric = memEvent('memGeneric', 'GENERIC', [0, 1, 0, 0, 0, 0, 0, 0], ['e_universe']);
+    const q = queryEvent('qGenericSubject', [1, 0, 0, 0, 0, 0, 0, 0], 'e_universe', false, [{ documentId: 'memX-truth', relevance: 1 }]);
+    q.subjectEntityId = 'e_universe';
+    const corpus = buildCorpus([memX, memGeneric, q]);
+
+    const scoped = await evaluateRetrievalBenchmarkState(anchorStateFor('memGeneric'), corpus, packOf(q),
+      baseOpts({ firstStageTopK: 1, rerankerInputTopK: 10, scopeRoutingAnchorsToQuerySubject: true, policyEntityRegistry: registry, policyGenericEntityIds: ['e_universe'] }));
+    assert.equal(scoped.perQuery[0].finalRankingTop20.some((r) => r.sources.includes('anchorMandatory')), false,
+      'generic universe selector must not fan out through routing anchors');
+  });
+
+  test('ambiguous alias fallback fails closed for subject-scoped routing anchors', async () => {
+    const memA = memEvent('memA', 'AISHΑ-ANCHOR', [0, 1, 0, 0, 0, 0, 0, 0], ['e_amb1']);
+    const memX = memEvent('memX', 'TRUTH-X', [1, 0, 0, 0, 0, 0, 0, 0], ['e_x']);
+    const q = queryEvent('qAmbiguousAlias', [1, 0, 0, 0, 0, 0, 0, 0], 'e_x', false, [{ documentId: 'memX-truth', relevance: 1 }]);
+    q.subjectEntityId = undefined;
+    q.queryText = 'What does Aisha Costa prefer?';
+    const corpus = buildCorpus([memA, memX, q]);
+
+    const scoped = await evaluateRetrievalBenchmarkState(anchorStateFor('memA'), corpus, packOf(q),
+      baseOpts({ firstStageTopK: 1, rerankerInputTopK: 10, scopeRoutingAnchorsToQuerySubject: true, policyEntityRegistry: registry, policyGenericEntityIds: ['e_universe'] }));
+    assert.equal(scoped.perQuery[0].finalRankingTop20.some((r) => r.sources.includes('anchorMandatory')), false,
+      'ambiguous alias fallback must not admit anchors');
+  });
+
+  test('relation-edge routing is also subject-scoped', async () => {
+    const memX = memEvent('memX', 'TRUTH-X', [1, 0, 0, 0, 0, 0, 0, 0], ['e_x']);
+    const memYTarget = memEvent('memYTarget', 'Y-TARGET', [0, 0, 1, 0, 0, 0, 0, 0], ['e_y']);
+    const memYAnchor = memEvent('memYAnchor', 'Y-ANCHOR', [0, 1, 0, 0, 0, 0, 0, 0], ['e_y'], [{ other_id: 'memYTarget', edgeType: 'supports' }]);
+    const q = queryEvent('qRelationScope', [1, 0, 0, 0, 0, 0, 0, 0], 'e_x', false, [{ documentId: 'memX-truth', relevance: 1 }]);
+    q.subjectEntityId = 'e_x';
+    const corpus = buildCorpus([memX, memYAnchor, memYTarget, q]);
+
+    const scoped = await evaluateRetrievalBenchmarkState(anchorWithRelationStateFor('memYAnchor'), corpus, packOf(q),
+      baseOpts({ firstStageTopK: 1, rerankerInputTopK: 10, scopeRoutingAnchorsToQuerySubject: true, policyEntityRegistry: registry, policyGenericEntityIds: ['e_universe'] }));
+    assert.equal(scoped.perQuery[0].finalRankingTop20.some((r) => r.sources.includes('anchorBFS')), false,
+      'unrelated-subject relation edges must not route through anchorBFS');
   });
 });
 
