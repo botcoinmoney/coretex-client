@@ -275,6 +275,15 @@ export interface CorpusRootLeafCache {
   readonly root: string;
   /** Sorted by event id with the same comparator used by computeCorpusRoot. */
   readonly leaves: readonly CorpusRootLeaf[];
+  /** Perfect-subtree forest over `leaves`; not serialized, rebuilt from leaf-cache files on load. */
+  readonly forest: readonly CorpusRootTreeNode[];
+}
+
+export interface CorpusRootTreeNode {
+  readonly size: number;
+  readonly root: Uint8Array;
+  readonly left?: CorpusRootTreeNode;
+  readonly right?: CorpusRootTreeNode;
 }
 
 // ─── Split ratios ─────────────────────────────────────────────────────────────
@@ -325,16 +334,22 @@ export function splitForRecord(id: string, corpusEpoch: number, ratios: SplitRat
 /**
  * Canonical EXPECTED split for a production event, the single authority that delta/load validation must
  * use. The production corpus overloads two event kinds with DIFFERENT split semantics:
- *   - MEMORY-DOCUMENT events (the public retrieval store; `mem_*` ids) are ALWAYS `train_visible` — they
+ *   - MEMORY-DOCUMENT events (the public retrieval store; `mem_*` / live-tail `zz_mem_*` ids)
+ *     are ALWAYS `train_visible` — they
  *     are stored memories, never hidden eval queries;
  *   - QUERY/eval events use the deterministic `splitForRecord` assignment (which queries are hidden).
  * Validating EVERY event with `splitForRecord` (the prior bug) rejected legitimate `mem_*` docs (they are
  * train_visible, not their hashed split). The `mem_` prefix is part of the event id (hashed into
  * corpusRoot), so this rule is deterministic + replay-verifiable. Live-update memory docs added via a
- * corpus delta must therefore be `mem_*` + `train_visible`.
+ * corpus delta may use `zz_mem_*` so they tail-sort for incremental Merkle updates without changing the
+ * v15 corpus.
  */
+export function isMemoryDocumentEventId(id: string): boolean {
+  return id.startsWith('mem_') || id.startsWith('zz_mem_');
+}
+
 export function expectedSplitForRecord(id: string, corpusEpoch: number, ratios: SplitRatios = DEFAULT_SPLIT_RATIOS): CorpusSplit {
-  return id.startsWith('mem_') ? 'train_visible' : splitForRecord(id, corpusEpoch, ratios);
+  return isMemoryDocumentEventId(id) ? 'train_visible' : splitForRecord(id, corpusEpoch, ratios);
 }
 
 // ─── Canonical hashing ────────────────────────────────────────────────────────
@@ -509,24 +524,70 @@ export function computeCorpusEventLeafHash(event: ProductionCorpusEvent): Uint8A
   return keccak256(TEXT_ENCODER.encode(canonicalJson(event)));
 }
 
-function merkleRootFromLeafHashes(hashes: readonly Uint8Array[]): string {
-  if (hashes.length === 0) return '0x' + '00'.repeat(32);
-  let leaves = hashes.slice();
-  const zero = new Uint8Array(32);
-  let n = 1;
-  while (n < leaves.length) n <<= 1;
-  while (leaves.length < n) leaves.push(zero);
-  while (leaves.length > 1) {
-    const next: Uint8Array[] = [];
-    for (let i = 0; i < leaves.length; i += 2) {
-      const pair = new Uint8Array(64);
-      pair.set(leaves[i]!, 0);
-      pair.set(leaves[i + 1]!, 32);
-      next.push(keccak256(pair));
-    }
-    leaves = next;
+function combineRoots(left: Uint8Array, right: Uint8Array): Uint8Array {
+  const pair = new Uint8Array(64);
+  pair.set(left, 0);
+  pair.set(right, 32);
+  return keccak256(pair);
+}
+
+function combineNodes(left: CorpusRootTreeNode, right: CorpusRootTreeNode): CorpusRootTreeNode {
+  if (left.size !== right.size) throw new Error(`combineNodes: size mismatch ${left.size} != ${right.size}`);
+  return { size: left.size + right.size, root: combineRoots(left.root, right.root), left, right };
+}
+
+function appendNodeToForest(forest: CorpusRootTreeNode[], node: CorpusRootTreeNode): void {
+  let carry = node;
+  while (forest.length > 0 && forest[forest.length - 1]!.size === carry.size) {
+    carry = combineNodes(forest.pop()!, carry);
   }
-  return bytesToHex(leaves[0]!);
+  forest.push(carry);
+}
+
+function buildForestFromLeaves(leaves: readonly CorpusRootLeaf[]): CorpusRootTreeNode[] {
+  const forest: CorpusRootTreeNode[] = [];
+  for (const leaf of leaves) appendNodeToForest(forest, { size: 1, root: leaf.hash });
+  return forest;
+}
+
+const zeroNodeCache = new Map<number, CorpusRootTreeNode>();
+function zeroNode(size: number): CorpusRootTreeNode {
+  const cached = zeroNodeCache.get(size);
+  if (cached) return cached;
+  let node: CorpusRootTreeNode;
+  if (size === 1) {
+    node = { size, root: new Uint8Array(32) };
+  } else {
+    const child = zeroNode(size / 2);
+    node = { size, root: combineRoots(child.root, child.root), left: child, right: child };
+  }
+  zeroNodeCache.set(size, node);
+  return node;
+}
+
+function largestAlignedBlock(position: number, remaining: number): number {
+  let size = 1;
+  while (size * 2 <= remaining && position % (size * 2) === 0) size *= 2;
+  return size;
+}
+
+function rootFromForest(forest: readonly CorpusRootTreeNode[], eventCount: number): string {
+  if (eventCount === 0) return '0x' + '00'.repeat(32);
+  const work = forest.slice();
+  let target = 1;
+  while (target < eventCount) target <<= 1;
+  let position = eventCount;
+  let remaining = target - eventCount;
+  while (remaining > 0) {
+    const size = largestAlignedBlock(position, remaining);
+    appendNodeToForest(work, zeroNode(size));
+    position += size;
+    remaining -= size;
+  }
+  if (work.length !== 1) {
+    throw new Error(`rootFromForest: forest did not reduce to one root (chunks=${work.length}, eventCount=${eventCount})`);
+  }
+  return bytesToHex(work[0]!.root);
 }
 
 export function buildCorpusRootLeafCache(events: readonly ProductionCorpusEvent[]): CorpusRootLeafCache {
@@ -539,11 +600,13 @@ export function buildCorpusRootLeafCacheFromLeaves(inputLeaves: readonly CorpusR
   const leaves = [...inputLeaves]
     .map((leaf): CorpusRootLeaf => ({ id: leaf.id, hash: leaf.hash }))
     .sort((a, b) => corpusEventIdCompare(a.id, b.id));
+  const forest = buildForestFromLeaves(leaves);
   return {
     schema: 'coretex.corpus-root-leaf-cache.v1',
     eventCount: leaves.length,
-    root: merkleRootFromLeafHashes(leaves.map((l) => l.hash)),
+    root: rootFromForest(forest, leaves.length),
     leaves,
+    forest,
   };
 }
 
@@ -560,28 +623,50 @@ export function updateCorpusRootLeafCache(cache: CorpusRootLeafCache, update: Co
   const replacedIds = new Set<string>(removals);
   for (const e of additions) replacedIds.add(e.id);
 
-  const kept = cache.leaves.filter((leaf) => !replacedIds.has(leaf.id));
   const added = additions
     .map((event): CorpusRootLeaf => ({ id: event.id, hash: computeCorpusEventLeafHash(event) }))
     .sort((a, b) => corpusEventIdCompare(a.id, b.id));
 
+  const maxOldId = cache.leaves.at(-1)?.id;
+  const isTailAppend = removals.length === 0
+    && (maxOldId === undefined || added.every((leaf) => corpusEventIdCompare(maxOldId, leaf.id) < 0));
+  if (isTailAppend) {
+    const leaves = [...cache.leaves, ...added];
+    const forest = cache.forest.slice();
+    for (const leaf of added) appendNodeToForest(forest, { size: 1, root: leaf.hash });
+    return {
+      schema: 'coretex.corpus-root-leaf-cache.v1',
+      eventCount: leaves.length,
+      root: rootFromForest(forest, leaves.length),
+      leaves,
+      forest,
+    };
+  }
+
   const leaves: CorpusRootLeaf[] = [];
   let i = 0;
   let j = 0;
-  while (i < kept.length || j < added.length) {
-    if (j >= added.length || (i < kept.length && corpusEventIdCompare(kept[i]!.id, added[j]!.id) <= 0)) {
-      leaves.push(kept[i++]!);
+  while (i < cache.leaves.length || j < added.length) {
+    while (i < cache.leaves.length && replacedIds.has(cache.leaves[i]!.id)) i++;
+    if (i >= cache.leaves.length) {
+      leaves.push(...added.slice(j));
+      break;
+    }
+    if (j >= added.length) {
+      while (i < cache.leaves.length) {
+        if (!replacedIds.has(cache.leaves[i]!.id)) leaves.push(cache.leaves[i]!);
+        i++;
+      }
+      break;
+    }
+    const cmp = corpusEventIdCompare(cache.leaves[i]!.id, added[j]!.id);
+    if (cmp <= 0) {
+      leaves.push(cache.leaves[i++]!);
     } else {
       leaves.push(added[j++]!);
     }
   }
-
-  return {
-    schema: 'coretex.corpus-root-leaf-cache.v1',
-    eventCount: leaves.length,
-    root: merkleRootFromLeafHashes(leaves.map((l) => l.hash)),
-    leaves,
-  };
+  return buildCorpusRootLeafCacheFromLeaves(leaves);
 }
 
 // ─── Loader ───────────────────────────────────────────────────────────────────

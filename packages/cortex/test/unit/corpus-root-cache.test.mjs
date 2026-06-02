@@ -8,6 +8,8 @@ import {
   applyCorpusDelta,
   buildCorpusDelta,
   buildCorpusRootLeafCache,
+  buildCorpusRootLeafCacheFromLeaves,
+  computeCorpusEventLeafHash,
   computeCorpusRoot,
   expectedSplitForRecord,
   updateCorpusRootLeafCache,
@@ -82,6 +84,27 @@ describe('corpus root leaf cache', () => {
     assert.equal(next.corpusRoot, uncached.nextRoot);
     assert.equal(next.corpusRootCache.root, next.corpusRoot);
     assert.equal(next.corpusRootCache.eventCount, base.events.length + additions.length);
+  });
+
+  test('tail-sort additions use the Merkle forest fast path without changing root semantics', () => {
+    const baseLeaves = Array.from({ length: 32768 }, (_, i) => {
+      const hash = new Uint8Array(32);
+      hash[0] = i & 0xff;
+      hash[1] = (i >>> 8) & 0xff;
+      return { id: `aa_${String(i).padStart(6, '0')}`, hash };
+    });
+    const base = buildCorpusRootLeafCacheFromLeaves(baseLeaves);
+    const addition = { ...memEvent(999999), id: 'zz_mem_tail_000001', split: expectedSplitForRecord('zz_mem_tail_000001', 0) };
+    const additionLeaf = { id: addition.id, hash: computeCorpusEventLeafHash(addition) };
+
+    const t0 = Date.now();
+    const updated = updateCorpusRootLeafCache(base, { additions: [addition], removals: [] });
+    const elapsedMs = Date.now() - t0;
+
+    const expected = buildCorpusRootLeafCacheFromLeaves([...baseLeaves, additionLeaf]);
+    assert.equal(updated.root, expected.root);
+    assert.equal(updated.eventCount, baseLeaves.length + 1);
+    assert.ok(elapsedMs < 250, `tail-sort cached root update should avoid full Merkle rebuild; got ${elapsedMs}ms`);
   });
 
   test('v15 materialized slice cache update equals full recompute and stays sub-second scale', (t) => {

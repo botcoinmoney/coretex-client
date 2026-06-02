@@ -9,7 +9,16 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { evolveCorpusDelta } from '../../../../scripts/lib/evolve-corpus.mjs';
-import { buildCorpusDelta, applyCorpusDelta, splitForRecord, expectedSplitForRecord, computeCorpusRoot } from '../../dist/index.js';
+import {
+  applyCorpusDelta,
+  bridgeLogicalDeltaToProductionEvents,
+  buildCorpusDelta,
+  buildCorpusRootLeafCache,
+  computeCorpusRoot,
+  expectedSplitForRecord,
+  isMemoryDocumentEventId,
+  splitForRecord,
+} from '../../dist/index.js';
 
 // minimal base logical corpus: 1 universe + 40 subjects, each with one prior temporal doc.
 const baseLogical = {
@@ -66,6 +75,29 @@ describe('Fix B — production delta/root path (mock embeddings): logical delta 
     biEncoderModelId: BI.modelId, biEncoderRevision: BI.revision, biEncoderRetrievalKeyLayout: LAYOUT,
     labelingModelId: labelingProvenance.modelId, labelingModelRevision: labelingProvenance.revision,
   });
+  const prevCorpusWithBaseMemory = (corpusEpoch = 0) => {
+    const memEvents = baseLogical.docs.map((d) => ({
+      id: `mem_${d.id}`, family: 'near_collision', domain: 'deep', split: 'train_visible',
+      queryText: d.text, truthDocuments: [{ id: d.id, text: d.text, isCurrent: d.currentStaleFlag !== false }],
+      hardNegatives: [], qrels: [{ documentId: d.id, relevance: 1.0 }], protected: false,
+      entityIds: d.entityIds, provenance: { source: 'synthetic_challenge', sourceHash: '0x' + 'aa'.repeat(32) },
+      embeddings: { modelId: BI.modelId, revision: BI.revision, layout: LAYOUT, query: mockEmb(), perTruth: new Map([[d.id, mockEmb()]]), perNegative: new Map() },
+    }));
+    const existingQuery = {
+      id: 'q_existing_tail_guard', family: 'temporal', domain: 'deep', split: splitForRecord('q_existing_tail_guard', corpusEpoch),
+      queryText: 'existing query for tail-sort guard', truthDocuments: [{ id: 'd0', text: 'p', isCurrent: false }],
+      hardNegatives: [], qrels: [{ documentId: 'd0', relevance: 1.0 }], protected: false,
+      provenance: { source: 'synthetic_challenge', sourceHash: '0x' + 'aa'.repeat(32) },
+      embeddings: { modelId: BI.modelId, revision: BI.revision, layout: LAYOUT, query: mockEmb(), perTruth: new Map([['d0', mockEmb()]]), perNegative: new Map() },
+    };
+    const events = [...memEvents, existingQuery];
+    return {
+      events, byId: new Map(events.map((e) => [e.id, e])), corpusRoot: computeCorpusRoot(events),
+      corpusRootCache: buildCorpusRootLeafCache(events), corpusEpoch,
+      biEncoderModelId: BI.modelId, biEncoderRevision: BI.revision, biEncoderRetrievalKeyLayout: LAYOUT,
+      labelingModelId: labelingProvenance.modelId, labelingModelRevision: labelingProvenance.revision,
+    };
+  };
   const docTextById = (logicalDelta) => new Map(logicalDelta.addedDocs.map((d) => [d.id, d.text]));
   // Build production events from the live-update logical delta — split assigned by the CANONICAL
   // splitForRecord (NOT evolveCorpus's local hint), matching what buildCorpusDelta validates.
@@ -108,6 +140,39 @@ describe('Fix B — production delta/root path (mock embeddings): logical delta 
     const evolved = applyCorpusDelta(prevCorpus(0), d1);
     assert.equal(evolved.corpusRoot, d1.nextRoot, 'applyCorpusDelta reconstructs the delta nextRoot');
     assert.ok(d1.addedIds.length > 0);
+  });
+
+  test('package bridge emits tail-sortable live memory/query ids for incremental roots', () => {
+    const previousCorpus = prevCorpusWithBaseMemory(0);
+    const ld = evolveCorpusDelta({ baseLogical, epoch: 6, seed: 'frontier', churnFraction: 1.0 });
+    const addedDocEmbeddings = new Map(ld.addedDocs.map((d) => [d.id, mockEmb()]));
+    const addedQueryEmbeddings = new Map(ld.addedQueries.map((q) => [q.id, mockEmb()]));
+    const additions = bridgeLogicalDeltaToProductionEvents({
+      previousCorpus,
+      logicalDelta: ld,
+      addedDocEmbeddings,
+      addedQueryEmbeddings,
+      biEncoder: { modelId: BI.modelId, revision: BI.revision, layout: LAYOUT },
+    });
+
+    const maxPreviousId = [...previousCorpus.byId.keys()].sort().at(-1);
+    assert.ok(maxPreviousId, 'previous corpus must have a max id');
+    assert.ok(additions.every((e) => e.id > maxPreviousId), 'live additions must tail-sort after existing v15-style ids');
+    assert.ok(additions.filter((e) => isMemoryDocumentEventId(e.id)).every((e) => e.id.startsWith('zz_mem_')), 'live memory docs use tail-sort memory ids');
+    assert.ok(additions.filter((e) => !isMemoryDocumentEventId(e.id)).every((e) => e.id.startsWith('zz_q_')), 'live queries use tail-sort query ids');
+    for (const e of additions) assert.equal(e.split, expectedSplitForRecord(e.id, 0));
+
+    const delta = buildCorpusDelta({
+      previousCorpus,
+      previousRootCache: previousCorpus.corpusRootCache,
+      additions,
+      removals: [],
+      epoch: 6,
+      labelingProvenance,
+    });
+    const evolved = applyCorpusDelta(previousCorpus, delta, { rootCache: previousCorpus.corpusRootCache, attachRootCache: true });
+    assert.equal(evolved.corpusRoot, delta.nextRoot);
+    assert.equal(evolved.corpusRootCache.root, delta.nextRoot);
   });
 
   // P0: live churn needs NEW PUBLIC MEMORY-DOC events (mem_*) so policy atoms / aspect maps / relations /

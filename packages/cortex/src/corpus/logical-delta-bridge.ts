@@ -59,6 +59,7 @@ export interface LogicalDeltaQuery {
   readonly subjectEntityId?: string;
   readonly ownerEntityId?: string;
   readonly ownerScoped?: boolean;
+  readonly liveUpdateEpoch?: number;
 }
 
 export interface LogicalDelta {
@@ -90,6 +91,31 @@ export interface BridgeLogicalDeltaOptions {
 }
 
 const memId = (id: string): string => `mem_${id}`;
+const liveTailMemId = (id: string): string => `zz_mem_${id}`;
+const liveTailQueryId = (id: string): string => `zz_q_${id}`;
+
+function productionMemIdForAddedDoc(doc: LogicalDeltaDoc): string {
+  return doc.liveUpdateEpoch !== undefined ? liveTailMemId(doc.id) : memId(doc.id);
+}
+
+function productionQueryIdForAddedQuery(query: LogicalDeltaQuery): string {
+  return query.liveUpdateEpoch !== undefined ? liveTailQueryId(query.id) : query.id;
+}
+
+function previousMemoryEventForDocId(previousCorpus: ProductionCorpus, docId: string): ProductionCorpusEvent | undefined {
+  return previousCorpus.byId.get(memId(docId)) ?? previousCorpus.byId.get(liveTailMemId(docId));
+}
+
+function productionMemIdForRelationTarget(
+  previousCorpus: ProductionCorpus,
+  addedProductionIdsByDocId: ReadonlyMap<string, string>,
+  docId: string,
+): string {
+  const added = addedProductionIdsByDocId.get(docId);
+  if (added) return added;
+  if (previousCorpus.byId.has(liveTailMemId(docId))) return liveTailMemId(docId);
+  return memId(docId);
+}
 
 const PROVENANCE = { source: 'synthetic_challenge', sourceHash: '0x' + '00'.repeat(32) } as const;
 
@@ -108,7 +134,7 @@ export function bucketLogicalFamily(f: string): ProductionCorpusFamily {
 
 /**
  * Resolve a doc id to {text, isCurrent} by looking in the live-update added docs first,
- * then falling back to the previousCorpus mem_<id> event's truthDocuments[0].
+ * then falling back to the previousCorpus memory-doc event's truthDocuments[0].
  */
 function resolveDocMeta(
   docId: string,
@@ -119,7 +145,7 @@ function resolveDocMeta(
   if (added) {
     return { text: added.text, isCurrent: added.currentStaleFlag === false ? false : true };
   }
-  const memEv = previousCorpus.byId.get(memId(docId));
+  const memEv = previousMemoryEventForDocId(previousCorpus, docId);
   if (memEv && memEv.truthDocuments.length > 0) {
     const t = memEv.truthDocuments[0]!;
     return { text: t.text, isCurrent: t.isCurrent !== false };
@@ -129,7 +155,7 @@ function resolveDocMeta(
 
 /**
  * Resolve a doc id's int8 embedding bytes from either the per-epoch addedDocEmbeddings map
- * OR the previousCorpus's existing mem_<id> event's perTruth map.
+ * OR the previousCorpus's existing memory-doc event's perTruth map.
  */
 function resolveDocEmbeddingBytes(
   docId: string,
@@ -138,7 +164,7 @@ function resolveDocEmbeddingBytes(
 ): Uint8Array | null {
   const added = addedDocEmbeddings.get(docId);
   if (added) return added;
-  const memEv = previousCorpus.byId.get(memId(docId));
+  const memEv = previousMemoryEventForDocId(previousCorpus, docId);
   const fromCorpus = memEv?.embeddings?.perTruth?.get(docId);
   return fromCorpus ?? null;
 }
@@ -165,6 +191,7 @@ export function bridgeLogicalDeltaToProductionEvents(
     throw new Error(`bridgeLogicalDeltaToProductionEvents: biEncoder pin mismatch — opts ${biEncoder.modelId}@${biEncoder.revision} vs previousCorpus ${previousCorpus.biEncoderModelId}@${previousCorpus.biEncoderRevision}`);
   }
   const addedDocsById = new Map(logicalDelta.addedDocs.map((d) => [d.id, d] as const));
+  const addedProductionIdsByDocId = new Map(logicalDelta.addedDocs.map((d) => [d.id, productionMemIdForAddedDoc(d)] as const));
   const relsBySrc = new Map<string, LogicalDeltaRelation[]>();
   for (const r of logicalDelta.addedRelations) {
     if (!relsBySrc.has(r.src)) relsBySrc.set(r.src, []);
@@ -179,7 +206,7 @@ export function bridgeLogicalDeltaToProductionEvents(
     const e = addedDocEmbeddings.get(d.id);
     if (!e) throw new Error(`bridgeLogicalDeltaToProductionEvents: missing addedDocEmbeddings entry for ${d.id}`);
     const memEvent: ProductionCorpusEvent = {
-      id: memId(d.id),
+      id: productionMemIdForAddedDoc(d),
       family: 'near_collision' as ProductionCorpusFamily,
       domain: d.lane,
       split: 'train_visible' as CorpusSplit,
@@ -187,9 +214,13 @@ export function bridgeLogicalDeltaToProductionEvents(
       truthDocuments: [{ id: d.id, text: d.text, isCurrent: d.currentStaleFlag === false ? false : true,
         ...(d.aspectTags && d.aspectTags.length > 0 ? { aspectTags: [...d.aspectTags] } : {}) }],
       hardNegatives: [],
-      qrels: [{ documentId: d.id, relevance: assertGradedRelevance(1.0, `mem_${d.id} qrel`) }],
+      qrels: [{ documentId: d.id, relevance: assertGradedRelevance(1.0, `${productionMemIdForAddedDoc(d)} qrel`) }],
       protected: false,
-      relations: (relsBySrc.get(d.id) ?? []).map((r): RelationAnnotation => ({ other_id: memId(r.dst), edgeType: r.type as RelationEdgeType, ...(r.label ? { label: r.label } : {}) })),
+      relations: (relsBySrc.get(d.id) ?? []).map((r): RelationAnnotation => ({
+        other_id: productionMemIdForRelationTarget(previousCorpus, addedProductionIdsByDocId, r.dst),
+        edgeType: r.type as RelationEdgeType,
+        ...(r.label ? { label: r.label } : {}),
+      })),
       ...(d.entityIds && d.entityIds.length > 0 ? { entityIds: [...d.entityIds] } : {}),
       provenance: PROVENANCE,
       embeddings: { modelId: biEncoder.modelId, revision: biEncoder.revision, layout, query: e,
@@ -226,11 +257,12 @@ export function bridgeLogicalDeltaToProductionEvents(
       perNegativeEntries.push([n.id, bytes]);
     }
     const bucketed = bucketLogicalFamily(q.family);
+    const eventId = productionQueryIdForAddedQuery(q);
     const qEventBase = {
-      id: q.id,
+      id: eventId,
       family: bucketed,
       domain: q.lane,
-      split: splitForRecord(q.id, previousCorpus.corpusEpoch) as CorpusSplit,
+      split: splitForRecord(eventId, previousCorpus.corpusEpoch) as CorpusSplit,
       queryText: q.queryText,
       truthDocuments: truths,
       hardNegatives: negs,

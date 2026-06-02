@@ -24,6 +24,7 @@ import type {
   ProductionCorpusEvent,
   RetrievalKeyLayout,
 } from './retrieval-corpus.js';
+import { isMemoryDocumentEventId } from './retrieval-corpus.js';
 import {
   buildPublicCorpusIndex,
   publicTextTokens,
@@ -2256,7 +2257,7 @@ export function resolveQuerySubjects(
 const publicAspectMapCache = new WeakMap<ProductionCorpus, { aspectByDoc: Map<string, Set<string>>; subjectByDoc: Map<string, string> }>();
 /**
  * PUBLIC per-document aspect tags + subject id, derived ONLY from the PUBLIC memory-doc events (the
- * build-v2 `mem_*` events that form the retrieval store) — NEVER from a query's qrels / truthDocuments /
+ * build-v2 memory-doc events that form the retrieval store) — NEVER from a query's qrels / truthDocuments /
  * hardNegatives (that would key the boost off eval structure = leakage). Cached per corpus. Consumed only
  * by the default-off experimental aspect boost.
  */
@@ -2267,7 +2268,7 @@ function getPublicAspectMaps(corpus: ProductionCorpus, genericEntityIds?: readon
   const aspectByDoc = new Map<string, Set<string>>();
   const subjectByDoc = new Map<string, string>();
   for (const ev of corpus.events) {
-    if (!ev.id.startsWith('mem_')) continue; // PUBLIC memory-doc events only (not query events)
+    if (!isMemoryDocumentEventId(ev.id)) continue; // PUBLIC memory-doc events only (not query events)
     const subj = (ev.entityIds ?? []).find((e) => !generic.has(e));
     for (const td of ev.truthDocuments) {
       if (td.aspectTags && td.aspectTags.length > 0) aspectByDoc.set(td.id, new Set(td.aspectTags.map((a) => a.toLowerCase())));
