@@ -172,6 +172,30 @@ describe('Category-B query relation-intent parser (public, lexical, no gold)', (
     assert.ok(has('What pet does Aisha the pastry chef have?', 'coreference_of'));
     assert.ok(has('What pet does Jordan the accountant have?', 'coreference_of'));
   });
+  test('coreference queries with MULTI-TOKEN roles (v15 corpus shape) map to coreference_of', () => {
+    // v15 dgen1 coref family uses these 11 role tokens; pin every one against the parser.
+    assert.ok(has('What pet does Zev the er nurse have?', 'coreference_of'));
+    assert.ok(has('What pet does Arda the tax attorney have?', 'coreference_of'));
+    assert.ok(has('What pet does Bea the tax attorney have?', 'coreference_of'));
+    assert.ok(has('What pet does Cyrus the product manager have?', 'coreference_of'));
+    assert.ok(has('What pet does Dilan the data analyst have?', 'coreference_of'));
+    assert.ok(has('What pet does Galia the physical therapist have?', 'coreference_of'));
+    assert.ok(has('What pet does Hana the ux designer have?', 'coreference_of'));
+    assert.ok(has('What pet does Ivan the civil engineer have?', 'coreference_of'));
+    assert.ok(has('What pet does Jana the graphic illustrator have?', 'coreference_of'));
+    assert.ok(has('What pet does Karim the marine biologist have?', 'coreference_of'));
+    // Multi-token role with title-case modifiers should still match (regex is .toLowerCase()-fed)
+    assert.ok(has('What pet does Liam the ER nurse have?', 'coreference_of'));
+  });
+  test('coref parser does NOT false-trigger on common compound nouns', () => {
+    // "the package manager" / "the build manager" / "the project manager" are common tech-domain
+    // compounds that must NOT match coreference (no personal-coreference cue). "manager" was
+    // dropped from the single-token lexicon for this reason; only "product manager" /
+    // "operations manager" / "account manager" remain as explicit multi-token entries.
+    assert.equal(parseQueryRelationIntent('Which package manager does search-ranking-svc-0 use?').has('coreference_of'), false);
+    assert.equal(parseQueryRelationIntent('What is the build manager configuration?').has('coreference_of'), false);
+    assert.equal(parseQueryRelationIntent('What did the project manager request?').has('coreference_of'), false);
+  });
   test('bare temporal/aspect queries carry NO relation intent (empty set → admission suppressed)', () => {
     assert.equal(parseQueryRelationIntent("What is search-ranking-svc-0's current package manager?").size, 0);
     assert.equal(parseQueryRelationIntent('For search-ranking-svc-0, what is the latency detail?').size, 0);

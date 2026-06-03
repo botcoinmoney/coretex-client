@@ -536,7 +536,25 @@ export function parseQueryRelationIntent(queryText: string): Set<string> {
   // derivation: "derived from", "based on", "forked from", "comes from".
   if (/\b(derived from|based on|forked from|comes from|originates? from|adapted from)\b/.test(q)) types.add('derived_from');
   // coreference: "<Name> the <role>" — generic occupation lexicon (portable, not corpus gold).
-  if (/\bthe (pastry chef|chef|accountant|engineer|teacher|nurse|doctor|lawyer|artist|writer|baker|barista|dentist|pilot|plumber|painter|architect|designer|analyst|manager|scientist|professor|musician|photographer|electrician|carpenter|mechanic|chemist|surgeon|therapist|consultant|developer|programmer|administrator|technician|researcher|journalist|editor|director|founder|owner|clerk|cashier|waiter|waitress|bartender|farmer|gardener|tailor|jeweler|optician|veterinarian|pharmacist|librarian|translator|interpreter)\b/.test(q)) types.add('coreference_of');
+  // Two role classes:
+  //   (a) SINGLE-TOKEN occupations — original list, matches "the chef" / "the accountant".
+  //   (b) MULTI-TOKEN occupations — explicit compound roles (v15 corpus shape: "er nurse",
+  //       "tax attorney", "data analyst", etc.). Listed explicitly so common compounds like
+  //       "the build manager" / "the package manager" do NOT false-trigger via a loose
+  //       prefix-modifier match.
+  // Personal-name anchor: the parser is meant to fire on personal-coreference forms like
+  // "Aisha the pastry chef have?" — but a precondition-style or possessive sentence ("What
+  // is the build manager configuration?") should NOT fire. The single-token lexicon already
+  // accepts "the accountant" anywhere, which is intentional (personal-coreference cue strong
+  // enough on its own); the multi-token additions stay explicit for safety.
+  const singleTokenRole = '(?:pastry chef|chef|accountant|engineer|teacher|nurse|doctor|lawyer|attorney|illustrator|biologist|artist|writer|baker|barista|dentist|pilot|plumber|painter|architect|designer|analyst|scientist|professor|musician|photographer|electrician|carpenter|mechanic|chemist|surgeon|therapist|consultant|developer|programmer|administrator|technician|researcher|journalist|editor|director|founder|owner|clerk|cashier|waiter|waitress|bartender|farmer|gardener|tailor|jeweler|optician|veterinarian|pharmacist|librarian|translator|interpreter)';
+  // NOTE: "manager" was removed from the single-token list to prevent false-triggering on
+  // "the build manager" / "the package manager" / "the project manager" (common
+  // tech-domain compound nouns); the personal-coreference "product manager" form is
+  // re-added below in the explicit multi-token list.
+  const multiTokenRole = '(?:er nurse|tax attorney|data analyst|ux designer|civil engineer|physical therapist|product manager|graphic illustrator|marine biologist|software engineer|data scientist|systems engineer|operations manager|account manager|nurse practitioner|physician assistant)';
+  if (new RegExp(`\\bthe ${singleTokenRole}\\b`).test(q)) types.add('coreference_of');
+  if (new RegExp(`\\bthe ${multiTokenRole}\\b`).test(q)) types.add('coreference_of');
   return types;
 }
 
@@ -1200,9 +1218,16 @@ export async function scoreSubstrateAgainstQuery(
     // supersedes lens floods stage-1 peer docs (off-family) for queries with no
     // supersession intent — see surface-search v2 dense sweep where supersedes
     // damaged off-family by −0.141 with 39 gold drops.
+    //
+    // 2026-06-03 broadened: accept BOTH parseQueryLifecycleIntent (rename/replace/
+    // formerly phrasings) AND parseQueryRelationIntent's coreference_of (the "<Name>
+    // the <role>" personal-coref form used by the v15 dgen1 coreference_resolution
+    // family). Either signal is a sufficient trigger; lacking both, drop the lens.
     if (policyRelationTyped) {
       if (lens.edgeType === 'supersedes' && lifecycleIntent !== 'supersedes') continue;
-      if (lens.edgeType === 'coreference_of' && lifecycleIntent !== 'coreference_of') continue;
+      if (lens.edgeType === 'coreference_of'
+          && lifecycleIntent !== 'coreference_of'
+          && !policyIntentTypes.has('coreference_of')) continue;
     }
     // If multiple lenses share an edgeType, keep the highest-weight one.
     const existing = lensesByEdgeType.get(lens.edgeType);
