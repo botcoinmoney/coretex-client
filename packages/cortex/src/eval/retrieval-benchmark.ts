@@ -1194,6 +1194,16 @@ export async function scoreSubstrateAgainstQuery(
   const categoryLensExpansionBudget = opts.categoryLensExpansionBudget ?? opts.relationExpansionBudget;
   const lensesByEdgeType = new Map<string, RelationCategoryLens>();
   for (const lens of decoded.categoryLenses) {
+    // r5 lifecycle intent gate (extended to categoryLensBFS): supersedes and
+    // coreference_of category-lens entries are dropped when the query does NOT
+    // carry an explicit lifecycle / coreference phrase. Without this gate, a
+    // supersedes lens floods stage-1 peer docs (off-family) for queries with no
+    // supersession intent — see surface-search v2 dense sweep where supersedes
+    // damaged off-family by −0.141 with 39 gold drops.
+    if (policyRelationTyped) {
+      if (lens.edgeType === 'supersedes' && lifecycleIntent !== 'supersedes') continue;
+      if (lens.edgeType === 'coreference_of' && lifecycleIntent !== 'coreference_of') continue;
+    }
     // If multiple lenses share an edgeType, keep the highest-weight one.
     const existing = lensesByEdgeType.get(lens.edgeType);
     if (!existing || lens.weight > existing.weight) lensesByEdgeType.set(lens.edgeType, lens);
