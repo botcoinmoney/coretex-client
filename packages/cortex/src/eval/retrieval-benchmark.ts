@@ -571,6 +571,40 @@ export function parseQueryAspectIntent(queryText: string): string | null {
   return aspect.length > 0 ? aspect : null;
 }
 
+/**
+ * PUBLIC lifecycle-intent parse for the relation_lifecycle surface (supersedes /
+ * coreference_of category-lens admission). A lifecycle/coref question asks "what
+ * REPLACED / SUPERSEDED / IS THE CANONICAL FORM OF X?" — i.e. it carries supersession
+ * or alias-resolution intent, NOT pure causal/decision intent. Returns 'supersedes' or
+ * 'coreference_of' or null. Honest: query text + entity-name set only.
+ *
+ * Mirrors parseQueryConflictIntent: the gate is the LEADING phrasing or a verb-phrase
+ * trigger that signals lifecycle intent, NOT a free-form bag-of-words match.
+ *
+ * Default-off scaffold: relation_lifecycle is sandbox per the reduced launch profile.
+ * The relation/category lens scorer can gate `supersedes` / `coreference_of` admission
+ * on this parser the same way `parseQueryRelationIntent` gates `supports`/`causes`.
+ *
+ * Example matches:
+ *   - "What replaced X's old Y?"          → 'supersedes'
+ *   - "What superseded the previous Y?"   → 'supersedes'
+ *   - "What is the new Y after the old Y was retired?" → 'supersedes'
+ *   - "Who is the canonical alias of X?"  → 'coreference_of'
+ *   - "What is X also known as?"          → 'coreference_of'
+ *   - "Which name refers to the same entity as X?" → 'coreference_of'
+ */
+export function parseQueryLifecycleIntent(queryText: string): 'supersedes' | 'coreference_of' | null {
+  const t = (queryText ?? '').toLowerCase();
+  // supersession intent: "replaced", "superseded", "retired", "old", "previous"
+  if (/\b(?:replaced|superseded|supersedes|retired)\b/.test(t)) return 'supersedes';
+  if (/(?:what|which) (?:is the )?(?:new|current) [a-z ]+ (?:after|since|now that) (?:the )?(?:old|previous|prior)/.test(t)) return 'supersedes';
+  // coreference / alias intent
+  if (/\b(?:canonical|alias(?:es)?|also known as|aka)\b/.test(t)) return 'coreference_of';
+  if (/\b(?:which name|what name)\b.*\b(?:refer|same entity|same person|same project)\b/.test(t)) return 'coreference_of';
+  if (/\b(?:rename|renamed|formerly known as|previously known as)\b/.test(t)) return 'coreference_of';
+  return null;
+}
+
 /** r5 PolicyAtom trace receipt (Memory-IR pipeline input; emitted when policyEmitTraces). */
 export interface PolicyAtomTrace {
   readonly atomId: string;
