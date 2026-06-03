@@ -955,6 +955,14 @@ export async function scoreSubstrateAgainstQuery(
   // admission block (below) and the evidence-bundle boost (later) so both filter on the same typed reach.
   const policyRelationTyped = opts.policyRelationTypedAdmission === true;
   const policyIntentTypes: Set<string> = policyRelationTyped ? parseQueryRelationIntent(query.queryText ?? '') : new Set();
+  // r5 lifecycle intent gate: when the query carries an explicit lifecycle phrase ("was replaced",
+  // "superseded", "renamed", "also known as"), the `supersedes` / `coreference_of` edges become
+  // admissible alongside the relation-typed set. This prevents the supersedes-flood failure mode
+  // measured in the prior surface-search v2 sweep where relation_lifecycle admission damaged
+  // off-family without an intent gate. Honest: query text only, no qrels/labels.
+  const lifecycleIntent = policyRelationTyped ? parseQueryLifecycleIntent(query.queryText ?? '') : null;
+  if (lifecycleIntent === 'supersedes') policyIntentTypes.add('supersedes');
+  else if (lifecycleIntent === 'coreference_of') policyIntentTypes.add('coreference_of');
   // when relation-typed admission is on, an edge is admissible only if its type is in the parsed intent.
   const edgeAdmissible = (edgeType: string): boolean =>
     POLICY_PUBLIC_EDGES.has(edgeType) && (!policyRelationTyped || policyIntentTypes.has(edgeType));
