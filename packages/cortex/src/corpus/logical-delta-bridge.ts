@@ -12,7 +12,7 @@
  * int8-encoded Uint8Array). The package cannot spawn the Python bi-encoder runner; the
  * harness owns that step and feeds the int8 bytes in.
  */
-import type { ProductionCorpus, ProductionCorpusEvent, ProductionCorpusFamily, CorpusSplit, RelationAnnotation, HardNegativeRecord, RelationEdgeType, HardNegativeCategory } from '../eval/retrieval-corpus.js';
+import type { ProductionCorpus, ProductionCorpusEvent, ProductionCorpusFamily, CorpusSplit, RelationAnnotation, HardNegativeRecord, RelationEdgeType, HardNegativeCategory, PublicScopeMetadata, PublicValidityMetadata, PublicQueryIntent } from '../eval/retrieval-corpus.js';
 import { assertGradedRelevance, splitForRecord } from '../eval/retrieval-corpus.js';
 
 export interface LogicalDeltaDoc {
@@ -24,6 +24,10 @@ export interface LogicalDeltaDoc {
   readonly currentStaleFlag?: boolean;
   readonly aspectTags?: readonly string[];
   readonly entityIds?: readonly string[];
+  readonly scope?: PublicScopeMetadata;
+  readonly validity?: PublicValidityMetadata;
+  readonly aliases?: readonly string[];
+  readonly roleAliases?: readonly string[];
   readonly lifecycleState?: string;
   readonly lifecycleScope?: string;
   readonly liveUpdateEpoch?: number;
@@ -59,6 +63,8 @@ export interface LogicalDeltaQuery {
   readonly subjectEntityId?: string;
   readonly ownerEntityId?: string;
   readonly ownerScoped?: boolean;
+  readonly scope?: PublicScopeMetadata;
+  readonly publicIntent?: PublicQueryIntent;
   readonly liveUpdateEpoch?: number;
 }
 
@@ -250,6 +256,10 @@ export function bridgeLogicalDeltaToProductionEvents(
         ...(r.label ? { label: r.label } : {}),
       })),
       ...(d.entityIds && d.entityIds.length > 0 ? { entityIds: [...d.entityIds] } : {}),
+      ...(d.scope ? { scope: d.scope } : {}),
+      ...(d.validity ? { validity: d.validity } : {}),
+      ...(d.aliases && d.aliases.length > 0 ? { aliases: [...d.aliases] } : {}),
+      ...(d.roleAliases && d.roleAliases.length > 0 ? { roleAliases: [...d.roleAliases] } : {}),
       provenance: PROVENANCE,
       embeddings: { modelId: biEncoder.modelId, revision: biEncoder.revision, layout, query: e,
         perTruth: new Map([[d.id, e]]), perNegative: new Map() },
@@ -307,6 +317,8 @@ export function bridgeLogicalDeltaToProductionEvents(
       q.band ? { band: q.band } : {},
       q.ownerEntityId !== undefined ? { ownerEntityId: q.ownerEntityId, ownerScoped: q.ownerScoped !== false } : {},
       q.subjectEntityId !== undefined ? { subjectEntityId: q.subjectEntityId } : {},
+      q.scope ? { scope: q.scope } : {},
+      q.publicIntent ? { publicIntent: q.publicIntent } : {},
     ) as ProductionCorpusEvent;
     if (bucketed === 'temporal') {
       (qEvent as { temporal?: unknown }).temporal = { validFromEpoch: 1, validUntilEpoch: Number.MAX_SAFE_INTEGER, currentStaleFlag: false };

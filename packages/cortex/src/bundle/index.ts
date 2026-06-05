@@ -188,9 +188,17 @@ export interface EvaluatorProfile {
   readonly enableEvidenceBundleAtoms?: boolean;
   readonly enableConflictLifecycleAtoms?: boolean;
   readonly enableAbstentionAtoms?: boolean;
+  readonly enableValidityAtoms?: boolean;
+  readonly enableEntityResolutionAtoms?: boolean;
+  readonly enableScopeAtoms?: boolean;
   /** Per-family budget caps; a miner atom's budget is clamped to these (anti-flood). */
   readonly policyMaxBudgetEvidence?: number;
   readonly policyMaxBudgetConflict?: number;
+  readonly policyMaxBudgetEntity?: number;
+  readonly policyMaxBudgetScope?: number;
+  readonly policyEntityMaxDocs?: number;
+  readonly policyScopeMaxDocs?: number;
+  readonly policyScopeMaxSuppress?: number;
   /** Operator-calibrated abstention confidence gate (NOT hardcoded; Qwen top1 is saturated).
    *  Abstain fires only when the atom's no-evidence-path selector matches AND top1 < this. */
   readonly policyAbstentionTop1Threshold?: number;
@@ -981,8 +989,16 @@ export function scoringOptionsFromProfile(
     ...(profile.enableEvidenceBundleAtoms !== undefined ? { enableEvidenceBundleAtoms: profile.enableEvidenceBundleAtoms } : {}),
     ...(profile.enableConflictLifecycleAtoms !== undefined ? { enableConflictLifecycleAtoms: profile.enableConflictLifecycleAtoms } : {}),
     ...(profile.enableAbstentionAtoms !== undefined ? { enableAbstentionAtoms: profile.enableAbstentionAtoms } : {}),
+    ...(profile.enableValidityAtoms !== undefined ? { enableValidityAtoms: profile.enableValidityAtoms } : {}),
+    ...(profile.enableEntityResolutionAtoms !== undefined ? { enableEntityResolutionAtoms: profile.enableEntityResolutionAtoms } : {}),
+    ...(profile.enableScopeAtoms !== undefined ? { enableScopeAtoms: profile.enableScopeAtoms } : {}),
     ...(profile.policyMaxBudgetEvidence !== undefined ? { policyMaxBudgetEvidence: profile.policyMaxBudgetEvidence } : {}),
     ...(profile.policyMaxBudgetConflict !== undefined ? { policyMaxBudgetConflict: profile.policyMaxBudgetConflict } : {}),
+    ...(profile.policyMaxBudgetEntity !== undefined ? { policyMaxBudgetEntity: profile.policyMaxBudgetEntity } : {}),
+    ...(profile.policyMaxBudgetScope !== undefined ? { policyMaxBudgetScope: profile.policyMaxBudgetScope } : {}),
+    ...(profile.policyEntityMaxDocs !== undefined ? { policyEntityMaxDocs: profile.policyEntityMaxDocs } : {}),
+    ...(profile.policyScopeMaxDocs !== undefined ? { policyScopeMaxDocs: profile.policyScopeMaxDocs } : {}),
+    ...(profile.policyScopeMaxSuppress !== undefined ? { policyScopeMaxSuppress: profile.policyScopeMaxSuppress } : {}),
     ...(profile.policyAbstentionTop1Threshold !== undefined ? { policyAbstentionTop1Threshold: profile.policyAbstentionTop1Threshold } : {}),
     ...(profile.policyAbstentionMarginThreshold !== undefined ? { policyAbstentionMarginThreshold: profile.policyAbstentionMarginThreshold } : {}),
     ...(profile.policyEmitTraces !== undefined ? { policyEmitTraces: profile.policyEmitTraces } : {}),
@@ -1330,9 +1346,13 @@ function validateProfile(profile: EvaluatorProfile, errors?: string[]): void {
     }
   }
   // ─── r5 PolicyAtom knob validation ───
-  for (const k of ['policyMaxBudgetEvidence', 'policyMaxBudgetConflict'] as const) {
+  for (const k of ['policyMaxBudgetEvidence', 'policyMaxBudgetConflict', 'policyMaxBudgetEntity', 'policyMaxBudgetScope'] as const) {
     const v = profile[k];
     if (v !== undefined && (!Number.isInteger(v) || v < 0 || v > 0xffff)) out.push(`${k} must be an integer in [0, 65535] when present`);
+  }
+  for (const k of ['policyEntityMaxDocs', 'policyScopeMaxDocs', 'policyScopeMaxSuppress'] as const) {
+    const v = profile[k];
+    if (v !== undefined && (!Number.isInteger(v) || v < 0 || v > 256)) out.push(`${k} must be an integer in [0, 256] when present`);
   }
   if (profile.enableRawRoutingAnchors !== undefined && typeof profile.enableRawRoutingAnchors !== 'boolean') {
     out.push('enableRawRoutingAnchors must be boolean when present');
@@ -1359,7 +1379,7 @@ function validateProfile(profile: EvaluatorProfile, errors?: string[]): void {
   }
   // r5 enables only meaningful under the policy-r5 pipeline pin (warn-as-error: prevents
   // accidentally shipping r5 atoms under an r4 profile, where they would be ignored).
-  const r5Enabled = profile.enableEvidenceBundleAtoms || profile.enableConflictLifecycleAtoms || profile.enableAbstentionAtoms || profile.enableAspectConstraintAtoms;
+  const r5Enabled = profile.enableEvidenceBundleAtoms || profile.enableConflictLifecycleAtoms || profile.enableAbstentionAtoms || profile.enableAspectConstraintAtoms || profile.enableValidityAtoms || profile.enableEntityResolutionAtoms || profile.enableScopeAtoms;
   if (r5Enabled && profile.pipelineVersion !== 'coretex-retrieval-v2-policy-r5') {
     out.push('r5 PolicyAtom enables require pipelineVersion = coretex-retrieval-v2-policy-r5');
   }

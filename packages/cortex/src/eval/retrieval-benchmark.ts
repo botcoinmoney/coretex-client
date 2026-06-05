@@ -16,12 +16,13 @@ import { decodeSubstrate, type DecodedSubstrate, type RelationCategoryLens, POLI
 import { biEncoderModelIdHash } from '../substrate/retrieval-decoder.js';
 import { structuralValidity } from '../substrate/structural-validity.js';
 import type { CrossEncoderReranker } from './reranker.js';
-import { renderMemoryIRDoc } from './memory-ir-render.js';
+import { renderMemoryIRDoc, type MemoryIR } from './memory-ir-render.js';
 import type { BiEncoder } from './bi-encoder.js';
 import { cosineSimilarity, dequantize } from './bi-encoder.js';
 import type {
   ProductionCorpus,
   ProductionCorpusEvent,
+  PublicScopeMetadata,
   RetrievalKeyLayout,
 } from './retrieval-corpus.js';
 import { isMemoryDocumentEventId } from './retrieval-corpus.js';
@@ -392,9 +393,17 @@ export interface ScoringOptions {
   readonly enableEvidenceBundleAtoms?: boolean;
   readonly enableConflictLifecycleAtoms?: boolean;
   readonly enableAbstentionAtoms?: boolean;
+  readonly enableValidityAtoms?: boolean;
+  readonly enableEntityResolutionAtoms?: boolean;
+  readonly enableScopeAtoms?: boolean;
   /** Per-family budget caps (ppm-ish). A miner atom's budget is clamped to these. */
   readonly policyMaxBudgetEvidence?: number;
   readonly policyMaxBudgetConflict?: number;
+  readonly policyMaxBudgetEntity?: number;
+  readonly policyMaxBudgetScope?: number;
+  readonly policyEntityMaxDocs?: number;
+  readonly policyScopeMaxDocs?: number;
+  readonly policyScopeMaxSuppress?: number;
   /** Evidence-bundle action allow-list. Launch-reduced pins ['bundle'] so reach-only boost/include/suppress atoms are inert. */
   readonly policyEvidenceAllowedActions?: readonly EvidencePolicyAction[];
   /** Conflict-INTENT-typed admission: conflict_lifecycle atoms admit ONLY when the query carries public
@@ -431,7 +440,7 @@ export interface ScoringOptions {
   readonly policyRelationTypedAdmission?: boolean;
   /** Public entity registry (id → lowercased names/aliases) for the entity-parse selector. Corpus-
    *  derived, public; NOT qrels. Provided by the host (runtime), not the signed profile. */
-  readonly policyEntityRegistry?: ReadonlyArray<{ readonly id: string; readonly names: readonly string[] }>;
+  readonly policyEntityRegistry?: ReadonlyArray<{ readonly id: string; readonly names: readonly string[]; readonly roleAliases?: readonly string[] }>;
   /** Entity ids treated as too-generic to be a selector key (e.g. the single-universe owner). */
   readonly policyGenericEntityIds?: readonly string[];
   /** aspect_constraint EXPERIMENTAL surface (A100 candidate; default-off, NOT a launch surface). When ALL
@@ -623,16 +632,99 @@ export function parseQueryLifecycleIntent(queryText: string): 'supersedes' | 'co
   return null;
 }
 
+const PUBLIC_SCOPE_KEYS = ['projectId', 'sessionId', 'topicId', 'taskId', 'userScopeId'] as const;
+
+function publicScopeIntent(query: ProductionCorpusEvent): PublicScopeMetadata | null {
+  const out: Record<string, string> = {};
+  const raw = query.scope ?? query.publicIntent ?? {};
+  for (const k of PUBLIC_SCOPE_KEYS) {
+    const v = raw[k];
+    if (typeof v === 'string' && v.length > 0) out[k] = v;
+  }
+  return Object.keys(out).length > 0 ? out : null;
+}
+
+function scopeMatchPredicates(scope: PublicScopeMetadata | undefined, intent: PublicScopeMetadata | null): string[] {
+  if (!scope || !intent) return [];
+  const matched: string[] = [];
+  for (const k of PUBLIC_SCOPE_KEYS) {
+    const v = intent[k];
+    if (v && scope[k] === v) matched.push(`same_${k.replace(/Id$/, '')}`);
+  }
+  return matched;
+}
+
+function scopeMatches(scope: PublicScopeMetadata | undefined, intent: PublicScopeMetadata | null): boolean {
+  if (!scope || !intent) return false;
+  let required = 0;
+  for (const k of PUBLIC_SCOPE_KEYS) {
+    const v = intent[k];
+    if (!v) continue;
+    required++;
+    if (scope[k] !== v) return false;
+  }
+  return required > 0;
+}
+
+function scopeDiffers(scope: PublicScopeMetadata | undefined, intent: PublicScopeMetadata | null): boolean {
+  if (!scope || !intent) return false;
+  for (const k of PUBLIC_SCOPE_KEYS) {
+    const v = intent[k];
+    if (v && scope[k] !== undefined && scope[k] !== v) return true;
+  }
+  return false;
+}
+
+function lowerList(xs: readonly string[] | undefined): string[] {
+  return (xs ?? []).filter((x): x is string => typeof x === 'string' && x.length > 0).map((x) => x.toLowerCase());
+}
+
+function queryRoleAliasPredicates(
+  query: ProductionCorpusEvent,
+  registry: ReadonlyArray<{ readonly id: string; readonly names: readonly string[]; readonly roleAliases?: readonly string[] }> | undefined,
+): string[] {
+  const out = new Set<string>();
+  const explicit = query.publicIntent?.roleAlias;
+  if (typeof explicit === 'string' && explicit.length > 0) out.add(explicit.toLowerCase());
+  const q = (query.queryText ?? '').toLowerCase();
+  for (const ent of registry ?? []) {
+    for (const role of ent.roleAliases ?? []) {
+      if (role.length > 0 && nameMatchesQuery(q, role.toLowerCase())) out.add(role.toLowerCase());
+    }
+  }
+  return [...out].sort();
+}
+
+function eventRoleAliases(
+  ev: ProductionCorpusEvent,
+  registry: ReadonlyArray<{ readonly id: string; readonly names: readonly string[]; readonly roleAliases?: readonly string[] }> | undefined,
+): Set<string> {
+  const roles = new Set(lowerList(ev.roleAliases));
+  const byId = new Map((registry ?? []).map((e) => [e.id, e]));
+  for (const id of ev.entityIds ?? []) {
+    for (const role of byId.get(id)?.roleAliases ?? []) roles.add(role.toLowerCase());
+  }
+  return roles;
+}
+
 /** r5 PolicyAtom trace receipt (Memory-IR pipeline input; emitted when policyEmitTraces). */
 export interface PolicyAtomTrace {
   readonly atomId: string;
-  readonly atomFamily: 'evidence_bundle' | 'conflict_lifecycle' | 'abstention';
+  readonly atomFamily: 'evidence_bundle' | 'conflict_lifecycle' | 'abstention' | 'entity_resolution_atom' | 'scope_atom';
   readonly selectorMatched: boolean;
   readonly action: string;
   readonly anchorEvent: string | null;
   readonly docsMoved: number;
   readonly evidencePath: readonly string[];
   readonly beta: number;
+  readonly entityResolutionTraceFired?: boolean;
+  readonly scopeTraceFired?: boolean;
+  readonly selectedEntityIds?: readonly string[];
+  readonly selectorPredicatesUsed?: readonly string[];
+  readonly scopePredicatesUsed?: readonly string[];
+  readonly admittedDocIds?: readonly string[];
+  readonly admittedEventIds?: readonly string[];
+  readonly suppressedDocIds?: readonly string[];
 }
 
 export interface PerQueryBreakdown {
@@ -743,6 +835,9 @@ export interface PerQueryBreakdown {
   /** r5: this query's abstain decision + whether it false-abstained (answerable query). */
   readonly policyAbstain?: boolean;
   readonly policyFalseAbstain?: boolean;
+  readonly temporalRecordDriven?: boolean;
+  readonly memoryIRDriven?: boolean;
+  readonly policyTraceDriven?: boolean;
 }
 
 export interface CompositeScore {
@@ -837,6 +932,9 @@ export async function scoreSubstrateAgainstQuery(
   rerankerInputCandidates: readonly RenderedCandidateTrace[] | undefined;
   policyTraces: readonly PolicyAtomTrace[];
   policyAbstain: boolean;
+  temporalRecordDriven: boolean;
+  memoryIRDriven: boolean;
+  policyTraceDriven: boolean;
 }> {
   const queryScoreStartMs = Date.now();
   const queryVec = dequantize(query.embeddings.query, opts.retrievalKeyLayout);
@@ -891,7 +989,7 @@ export async function scoreSubstrateAgainstQuery(
   // AND anchorMandatory); store all that applied. Pure diagnostic — does
   // not affect scoring. Surfaced in PerQueryBreakdown.cappedDocSources so
   // calibration can answer "which mechanism delivered the top-10 docs?"
-  type SourceTag = 'stage1' | 'anchorMandatory' | 'anchorBFS' | 'categoryLensBFS' | 'policyAdmitted';
+  type SourceTag = 'stage1' | 'anchorMandatory' | 'anchorBFS' | 'categoryLensBFS' | 'policyAdmitted' | 'entityResolution' | 'scopeAtom' | 'temporalRecord';
   type CandidateRecord = {
     docId: string;
     embedding: Uint8Array;
@@ -958,6 +1056,110 @@ export async function scoreSubstrateAgainstQuery(
     const allowed = opts.policyEvidenceAllowedActions;
     return !allowed || allowed.includes(action as EvidencePolicyAction);
   };
+  const atomAdmittedEntityDocIds = new Set<string>();
+  const atomAdmittedScopeDocIds = new Set<string>();
+  const atomAdmittedEntityEventIds = new Set<string>();
+  const atomAdmittedScopeEventIds = new Set<string>();
+  const atomEntityTracePredicates = new Set<string>();
+  const atomScopeTracePredicates = new Set<string>();
+  let atomEntitySelectedIds: string[] = [];
+  const atomQueryScope = publicScopeIntent(query);
+  const atomQuerySubjects = resolvedQuerySubjects;
+  const atomHasScopeIntent = query.publicIntent?.atom === 'scope_atom' || query.scope !== undefined;
+  const addAtomEventDocs = (ev: ProductionCorpusEvent, src: SourceTag, cap: number): string[] => {
+    const added: string[] = [];
+    for (const td of ev.truthDocuments) {
+      if (added.length >= cap) break;
+      const existing = pool.get(td.id);
+      if (existing) {
+        addSource(existing, src);
+        added.push(td.id);
+        continue;
+      }
+      const emb = ev.embeddings.perTruth.get(td.id);
+      if (!emb) continue;
+      pool.set(td.id, {
+        docId: td.id,
+        embedding: emb,
+        text: td.text,
+        eventId: ev.id,
+        memorySlot: null,
+        isCurrentTruth: false,
+        isStaleTruth: false,
+        sources: new Set<SourceTag>([src]),
+      });
+      added.push(td.id);
+    }
+    return added;
+  };
+
+  // v16 atom prototype path, package-level and profile-gated:
+  // - entity_resolution_atom: policy-anchor MemoryIndex slots selected by public subject/name/role/scope metadata.
+  // - scope_atom: policy-anchor MemoryIndex slots selected by public subject + orthogonal scope metadata.
+  // No qrels, doc-id allowlists, split/lane/family labels, or header text are read.
+  if (opts.policyAtomsMode === true && (opts.enableEntityResolutionAtoms === true || opts.enableScopeAtoms === true) && opts.policyEntityRegistry) {
+    const generic = new Set(opts.policyGenericEntityIds ?? []);
+    const roleAliases = queryRoleAliasPredicates(query, opts.policyEntityRegistry);
+    const atomAnchorSlots = [...policyAnchorSlots]
+      .filter((slot) => slot >= 128 && slot < 256 && decoded.memoryIndex[slot]?.family === 'multi_hop_relation')
+      .sort((a, b) => a - b);
+    const entityAnchorSlots = atomAnchorSlots.filter((slot) => slot < 192);
+    const scopeAnchorSlots = atomAnchorSlots.filter((slot) => slot >= 192);
+    const hasEntityResolutionIntent =
+      query.publicIntent?.atom === 'entity_resolution_atom'
+      || parseQueryRelationIntent(query.queryText ?? '').has('coreference_of')
+      || parseQueryLifecycleIntent(query.queryText ?? '') === 'coreference_of';
+
+    if (opts.enableEntityResolutionAtoms === true && hasEntityResolutionIntent && atomQuerySubjects.size > 0) {
+      atomEntitySelectedIds = [...atomQuerySubjects].sort();
+      if (query.subjectEntityId) atomEntityTracePredicates.add('subjectEntityId');
+      if (roleAliases.length > 0) atomEntityTracePredicates.add('role_alias_match');
+      if (atomQueryScope) atomEntityTracePredicates.add('same_scope');
+      const maxDocs = Math.max(0, Math.min(opts.policyEntityMaxDocs ?? 4, 256));
+      let remaining = maxDocs;
+      for (const slot of entityAnchorSlots) {
+        if (remaining <= 0) break;
+        const ev = anchorSlotToEvent.get(slot);
+        if (!ev || !isMemoryDocumentEventId(ev.id)) continue;
+        const subjects = (ev.entityIds ?? []).filter((e) => !generic.has(e));
+        if (!subjects.some((e) => atomQuerySubjects.has(e))) continue;
+        if (roleAliases.length > 0) {
+          const roles = eventRoleAliases(ev, opts.policyEntityRegistry);
+          if (!roleAliases.some((r) => roles.has(r))) continue;
+        }
+        if (atomQueryScope && !scopeMatches(ev.scope, atomQueryScope)) continue;
+        // Fail closed on underspecified entity-resolution queries. If the anchor carries a finer
+        // task scope than the query provides, this atom is not allowed to prefer it over another
+        // same-entity/same-role memory.
+        if (ev.scope?.taskId && atomQueryScope && !atomQueryScope.taskId) continue;
+        const docs = addAtomEventDocs(ev, 'entityResolution', remaining);
+        if (docs.length === 0) continue;
+        for (const d of docs) atomAdmittedEntityDocIds.add(d);
+        atomAdmittedEntityEventIds.add(ev.id);
+        remaining -= docs.length;
+      }
+    }
+
+    if (opts.enableScopeAtoms === true && atomHasScopeIntent && atomQuerySubjects.size > 0 && atomQueryScope) {
+      const maxDocs = Math.max(0, Math.min(opts.policyScopeMaxDocs ?? 8, 256));
+      let remaining = maxDocs;
+      for (const slot of scopeAnchorSlots) {
+        if (remaining <= 0) break;
+        const ev = anchorSlotToEvent.get(slot);
+        if (!ev || !isMemoryDocumentEventId(ev.id)) continue;
+        const subjects = (ev.entityIds ?? []).filter((e) => !generic.has(e));
+        if (!subjects.some((e) => atomQuerySubjects.has(e))) continue;
+        const predicates = scopeMatchPredicates(ev.scope, atomQueryScope);
+        if (!scopeMatches(ev.scope, atomQueryScope)) continue;
+        for (const p of predicates) atomScopeTracePredicates.add(p);
+        const docs = addAtomEventDocs(ev, 'scopeAtom', remaining);
+        if (docs.length === 0) continue;
+        for (const d of docs) atomAdmittedScopeDocIds.add(d);
+        atomAdmittedScopeEventIds.add(ev.id);
+        remaining -= docs.length;
+      }
+    }
+  }
 
   // ─── r5.1: query-CONDITIONED policy admission (selective-anchor admission) ───
   // A GENERIC PUBLIC selector (entity-mention parse of the query text vs the public entity registry)
@@ -1353,7 +1555,8 @@ export async function scoreSubstrateAgainstQuery(
     anchorTruthVecs.push(dequantize(emb, opts.retrievalKeyLayout));
   }
 
-  const isTemporalQuery = query.family === 'temporal';
+  const validityAtomEnabled = opts.enableValidityAtoms !== false;
+  const isTemporalQuery = query.family === 'temporal' || (validityAtomEnabled && query.publicIntent?.atom === 'validity_atom');
   // ORACLE scoped-lifecycle (temporalOracleScopePerQuery): the set of doc ids that belong to THIS
   // query's own temporal truth (current + stale). Used to scope temporal modulation to the owning
   // query so one chain's boost can't flood neighbour temporal queries. null = blunt global default.
@@ -1386,6 +1589,27 @@ export async function scoreSubstrateAgainstQuery(
       }
     } else {
       temporalBoostEventIds.add(ev.id); // explicitly-current memory
+    }
+  }
+  const temporalRecordAppliesToQuery = (eventId: string): boolean => {
+    const ev = corpus.byId.get(eventId);
+    if (!ev?.validity) return isTemporalQuery; // pre-v16/back-compat temporal path
+    if (!isTemporalQuery) return false;
+    const intent = query.publicIntent;
+    const subject = intent?.subjectEntityId ?? query.subjectEntityId;
+    const attribute = intent?.attribute;
+    if (!subject || !attribute) return false;
+    return ev.validity.subjectEntityId === subject && ev.validity.attribute === attribute;
+  };
+  if (validityAtomEnabled && query.publicIntent?.atom === 'validity_atom') {
+    let remaining = 4;
+    for (const eventId of [...temporalBoostEventIds, ...temporalSuppressEventIds].sort()) {
+      if (remaining <= 0) break;
+      if (!temporalRecordAppliesToQuery(eventId)) continue;
+      const ev = corpus.byId.get(eventId);
+      if (!ev?.validity || !isMemoryDocumentEventId(ev.id)) continue;
+      const docs = addAtomEventDocs(ev, 'temporalRecord', remaining);
+      remaining -= docs.length;
     }
   }
 
@@ -1501,7 +1725,7 @@ export async function scoreSubstrateAgainstQuery(
     // Temporal bonus driven by the miner's decoded Temporal records, event-scoped
     // (reaches stage1-retrieved docs of marked events), NOT corpus labels.
     let temporalBonus = 0;
-    if (isTemporalQuery && (ownTemporalTruthIds === null || ownTemporalTruthIds.has(record.docId))) {
+    if (isTemporalQuery && temporalRecordAppliesToQuery(record.eventId) && (ownTemporalTruthIds === null || ownTemporalTruthIds.has(record.docId))) {
       if (temporalSuppressEventIds.has(record.eventId)) temporalBonus = -opts.temporalStaleSuppression;
       else if (temporalBoostEventIds.has(record.eventId)) temporalBonus = opts.temporalCurrentBoost;
     }
@@ -1568,7 +1792,7 @@ export async function scoreSubstrateAgainstQuery(
       rerankerScoringMs: 0,
       queryTotalMs: Date.now() - queryScoreStartMs,
     });
-    return { ranked: [], top1Score: 0, cappedDocIds: [], cappedDocSources: [], cappedDocComponents: [], finalRankingTop20: [], answerInCap: false, finalRankingFull: opts.exposeFullRanking === true ? [] : undefined, renderedCandidatesTop20: opts.exposeRenderedCandidates === true ? [] : undefined, rerankerInputCandidates: opts.exposeRenderedCandidates === true ? [] : undefined, policyTraces: [], policyAbstain: false };
+    return { ranked: [], top1Score: 0, cappedDocIds: [], cappedDocSources: [], cappedDocComponents: [], finalRankingTop20: [], answerInCap: false, finalRankingFull: opts.exposeFullRanking === true ? [] : undefined, renderedCandidatesTop20: opts.exposeRenderedCandidates === true ? [] : undefined, rerankerInputCandidates: opts.exposeRenderedCandidates === true ? [] : undefined, policyTraces: [], policyAbstain: false, temporalRecordDriven: false, memoryIRDriven: false, policyTraceDriven: false };
   }
 
   // ─── §6.5 reranker-input cap: take top-N by pre-rank ─────────────────────
@@ -1606,7 +1830,12 @@ export async function scoreSubstrateAgainstQuery(
     // (anchorBFS) so a substrate-routed answer the bi-encoder ranked far down
     // still reaches the reranker. Both are bounded by relationExpansionBudget +
     // the policy/admission caps, so this cannot blow up the reranker workload.
-    .filter((c) => c.record.memorySlot !== null || c.record.sources.has('anchorBFS') || c.record.sources.has('policyAdmitted'))
+    .filter((c) => c.record.memorySlot !== null
+      || c.record.sources.has('anchorBFS')
+      || c.record.sources.has('policyAdmitted')
+      || c.record.sources.has('entityResolution')
+      || c.record.sources.has('scopeAtom')
+      || c.record.sources.has('temporalRecord'))
     .sort((a, b) => {
       const sa = a.record.memorySlot ?? 0;
       const sb = b.record.memorySlot ?? 0;
@@ -1652,7 +1881,12 @@ export async function scoreSubstrateAgainstQuery(
   // FULL multi-field Memory-IR render (shared protocol renderer): byte-identical to the exporter/trainer.
   // The harness supplies the resolved IR per (queryId, eventId); we render header + RAW event text so the
   // served document matches the trained `candidate_text` exactly. Takes precedence over the legacy F2 path.
-  const mirFull = opts.rerankerMemoryIRMode === 'full' && typeof opts.rerankerMemoryIRLookup === 'function';
+  const atomMemoryIRActive = opts.policyAtomsMode === true
+    && (opts.enableEntityResolutionAtoms === true || opts.enableScopeAtoms === true)
+    && (atomAdmittedEntityDocIds.size > 0 || atomAdmittedScopeDocIds.size > 0);
+  const temporalMemoryIRActive = temporalBoostEventIds.size > 0 || temporalSuppressEventIds.size > 0;
+  const mirFull = opts.rerankerMemoryIRMode === 'full'
+    && (typeof opts.rerankerMemoryIRLookup === 'function' || atomMemoryIRActive || temporalMemoryIRActive);
   // Memory-IR sidecar doc rendering (F2): prefix the substrate's DERIVED lifecycle header so a
   // Memory-IR-tuned reranker consumes the currency it cannot infer from text. Default off → raw text.
   const mirF2 = opts.rerankerMemoryIRFormat === 'F2';
@@ -1660,10 +1894,27 @@ export async function scoreSubstrateAgainstQuery(
   // RESOLVED-state lifecycle (launch form): from the substrate's decoded temporal records (the miner's
   // compiled state), NOT corpus labels. temporalBoost/Suppress are resolved above from decoded.temporal.
   const mirResolved = opts.rerankerMemoryIRSource === 'resolved';
+  const atomMemoryIR = (c: typeof rerankerCandidates[number]): MemoryIR | null => {
+    const ev = corpus.byId.get(c.record.eventId);
+    if (!ev || !isMemoryDocumentEventId(ev.id)) return null;
+    const ir: MemoryIR = {};
+    if (temporalRecordAppliesToQuery(c.record.eventId) && temporalBoostEventIds.has(c.record.eventId)) ir.lifecycle = 'current';
+    else if (temporalRecordAppliesToQuery(c.record.eventId) && temporalSuppressEventIds.has(c.record.eventId)) ir.lifecycle = 'superseded';
+    if (atomAdmittedEntityDocIds.has(c.record.docId)) {
+      ir.evidence_role = 'answer';
+      ir.relation_path = ['coreference_of'];
+      if (atomQueryScope) ir.scope_match = scopeMatches(ev.scope, atomQueryScope);
+    }
+    if (atomHasScopeIntent && atomQueryScope && atomQuerySubjects.size > 0 && (ev.entityIds ?? []).some((id) => atomQuerySubjects.has(id))) {
+      ir.scope_match = scopeMatches(ev.scope, atomQueryScope);
+    }
+    return Object.keys(ir).length > 0 ? ir : null;
+  };
   const mirDoc = (c: typeof rerankerCandidates[number]): string => {
     if (mirFull) {
       // FULL IR: render the protocol header over the resolved IR + RAW event text (train==serve).
-      const ir = opts.rerankerMemoryIRLookup!(query.id, c.record.eventId);
+      const ir = (typeof opts.rerankerMemoryIRLookup === 'function' ? opts.rerankerMemoryIRLookup(query.id, c.record.eventId) : null)
+        ?? ((atomMemoryIRActive || temporalMemoryIRActive) ? atomMemoryIR(c) : null);
       return renderMemoryIRDoc(ir, c.record.text);
     }
     const base = bundleDoc(c);
@@ -1682,6 +1933,7 @@ export async function scoreSubstrateAgainstQuery(
   const renderStartMs = Date.now();
   const pairs = rerankerCandidates.map((c) => ({ query: query.queryText, document: mirDoc(c) }));
   const candidateRenderingMs = Date.now() - renderStartMs;
+  const memoryIRDriven = pairs.some((p) => p.document.includes('[memory_ir') || p.document.startsWith('[lifecycle='));
   const renderedByDocId = opts.exposeRenderedCandidates === true
     ? new Map(rerankerCandidates.map((c, i) => [c.record.docId, pairs[i]!.document]))
     : null;
@@ -1782,6 +2034,60 @@ export async function scoreSubstrateAgainstQuery(
     }
     const sign = (action: string): number => (action === 'suppress' ? -1 : 1);
     const addBonus = (docId: string, delta: number) => policyBonusByDocId.set(docId, (policyBonusByDocId.get(docId) ?? 0) + delta);
+    if (opts.enableEntityResolutionAtoms === true && atomAdmittedEntityDocIds.size > 0) {
+      const beta = Math.min(opts.policyMaxBudgetEntity ?? 300, 0xffff) / 1000;
+      for (const docId of atomAdmittedEntityDocIds) addBonus(docId, beta * UNIT);
+      if (opts.policyEmitTraces) {
+        policyTraces.push({
+          atomId: 'er#implicit',
+          atomFamily: 'entity_resolution_atom',
+          selectorMatched: true,
+          action: 'prefer',
+          anchorEvent: [...atomAdmittedEntityEventIds][0] ?? null,
+          docsMoved: atomAdmittedEntityDocIds.size,
+          evidencePath: [],
+          beta,
+          entityResolutionTraceFired: true,
+          selectedEntityIds: atomEntitySelectedIds,
+          selectorPredicatesUsed: [...atomEntityTracePredicates].sort(),
+          admittedDocIds: [...atomAdmittedEntityDocIds].sort(),
+          admittedEventIds: [...atomAdmittedEntityEventIds].sort(),
+        });
+      }
+    }
+    if (opts.enableScopeAtoms === true && atomAdmittedScopeDocIds.size > 0 && atomHasScopeIntent && atomQueryScope && atomQuerySubjects.size > 0) {
+      const beta = Math.min(opts.policyMaxBudgetScope ?? 300, 0xffff) / 1000;
+      for (const docId of atomAdmittedScopeDocIds) addBonus(docId, beta * UNIT);
+      const suppressed = new Set<string>();
+      const maxSuppress = Math.max(0, Math.min(opts.policyScopeMaxSuppress ?? 4, 256));
+      for (const c of [...candidates].sort((a, b) => a.record.docId < b.record.docId ? -1 : a.record.docId > b.record.docId ? 1 : 0)) {
+        if (suppressed.size >= maxSuppress) break;
+        if (atomAdmittedScopeDocIds.has(c.record.docId)) continue;
+        const ev = corpus.byId.get(c.record.eventId);
+        if (!ev || !isMemoryDocumentEventId(ev.id)) continue;
+        if (!(ev.entityIds ?? []).some((id) => atomQuerySubjects.has(id))) continue;
+        if (!scopeDiffers(ev.scope, atomQueryScope)) continue;
+        suppressed.add(c.record.docId);
+      }
+      for (const docId of suppressed) addBonus(docId, -beta * UNIT);
+      if ((atomAdmittedScopeDocIds.size > 0 || suppressed.size > 0) && opts.policyEmitTraces) {
+        policyTraces.push({
+          atomId: 'scope#implicit',
+          atomFamily: 'scope_atom',
+          selectorMatched: atomAdmittedScopeDocIds.size > 0,
+          action: 'constrain',
+          anchorEvent: [...atomAdmittedScopeEventIds][0] ?? null,
+          docsMoved: atomAdmittedScopeDocIds.size + suppressed.size,
+          evidencePath: [],
+          beta,
+          scopeTraceFired: true,
+          scopePredicatesUsed: [...atomScopeTracePredicates].sort(),
+          admittedDocIds: [...atomAdmittedScopeDocIds].sort(),
+          admittedEventIds: [...atomAdmittedScopeEventIds].sort(),
+          suppressedDocIds: [...suppressed].sort(),
+        });
+      }
+    }
     // (edge admissibility — POLICY_PUBLIC_EDGES + Category-B intent typing — is `edgeAdmissible`, defined above.)
     // r5.1: when query-conditioned admission is on, the boost/suppress fires for the SELECTOR-MATCHED
     // anchors (the same generic public selector that admitted them), NOT the top-K biCosine gate.
@@ -1897,7 +2203,7 @@ export async function scoreSubstrateAgainstQuery(
   const finalRankingTop20 = ranked.slice(0, 20).map((r, idx) => {
     const c = componentsByDocId.get(r.documentId);
     const cs = c?.record.sources;
-    const finalReorderingScore = effRerank(r.documentId, r.rerankerScore ?? 0) + (c?.finalBonus ?? 0);
+    const finalReorderingScore = effRerank(r.documentId, r.rerankerScore ?? 0) + (c?.finalBonus ?? 0) + (policyBonusByDocId.get(r.documentId) ?? 0);
     return {
       docId: r.documentId,
       rank: idx + 1,
@@ -1983,7 +2289,10 @@ export async function scoreSubstrateAgainstQuery(
     rerankerScoringMs,
     queryTotalMs: Date.now() - queryScoreStartMs,
   });
-  return { ranked, top1Score, cappedDocIds, cappedDocSources, cappedDocComponents, finalRankingTop20, answerInCap, finalRankingFull, renderedCandidatesTop20, rerankerInputCandidates, policyTraces, policyAbstain };
+  const temporalRecordDriven = [...temporalBoostEventIds, ...temporalSuppressEventIds]
+    .some((eventId) => temporalRecordAppliesToQuery(eventId));
+  const policyTraceDriven = policyTraces.length > 0;
+  return { ranked, top1Score, cappedDocIds, cappedDocSources, cappedDocComponents, finalRankingTop20, answerInCap, finalRankingFull, renderedCandidatesTop20, rerankerInputCandidates, policyTraces, policyAbstain, temporalRecordDriven, memoryIRDriven, policyTraceDriven };
 }
 
 // ─── Owner-scoped retrieval (Layer-2 validity fix) ──────────────────────────
@@ -2231,7 +2540,7 @@ function addEventTruthsToPool(
     memorySlot: number | null;
     isCurrentTruth: boolean;
     isStaleTruth: boolean;
-    sources: Set<'stage1' | 'anchorMandatory' | 'anchorBFS' | 'categoryLensBFS' | 'policyAdmitted'>;
+    sources: Set<'stage1' | 'anchorMandatory' | 'anchorBFS' | 'categoryLensBFS' | 'policyAdmitted' | 'entityResolution' | 'scopeAtom' | 'temporalRecord'>;
   }>,
   categoryLensWeightByDocId: Map<string, number>,
   normWeight: number,
@@ -2378,12 +2687,13 @@ export function stableRecordIdFor(id: string): bigint {
  */
 export function buildPolicyEntityRegistry(
   corpus: ProductionCorpus,
-): { readonly registry: ReadonlyArray<{ readonly id: string; readonly names: readonly string[] }>; readonly genericEntityIds: readonly string[] } {
+): { readonly registry: ReadonlyArray<{ readonly id: string; readonly names: readonly string[]; readonly roleAliases?: readonly string[] }>; readonly genericEntityIds: readonly string[] } {
   const registry = (corpus.entities ?? []).map((e) => ({
     id: e.id,
     names: [e.canonicalName, ...(e.aliases ?? [])]
       .filter((n): n is string => typeof n === 'string' && n.length > 0)
       .map((n) => n.toLowerCase()),
+    roleAliases: (e.roleAliases ?? []).filter((n): n is string => typeof n === 'string' && n.length > 0).map((n) => n.toLowerCase()),
   }));
   const owners = new Set<string>();
   for (const ev of corpus.events) {
@@ -2420,7 +2730,7 @@ function nameMatchesQuery(qtextLower: string, name: string): boolean {
 export function resolveQuerySubjects(
   queryText: string | undefined,
   subjectEntityId: string | undefined,
-  registry: ReadonlyArray<{ readonly id: string; readonly names: readonly string[] }> | undefined,
+  registry: ReadonlyArray<{ readonly id: string; readonly names: readonly string[]; readonly roleAliases?: readonly string[] }> | undefined,
   genericEntityIds: readonly string[] | undefined,
   maxFanout: number = POLICY_MAX_SELECTOR_FANOUT,
 ): Set<string> {
@@ -2479,7 +2789,7 @@ export async function evaluateRetrievalBenchmarkState(
   // Derive the public entity registry from the corpus when a scorer path needs
   // query subject grounding but no registry was injected. Explicit opts win.
   const needsPolicyEntityRegistry = opts.scopeRoutingAnchorsToQuerySubject === true
-    || (opts.policyAtomsMode === true && (opts.policyQueryConditionedAdmission === true || opts.policyAspectIntentAdmission === true));
+    || (opts.policyAtomsMode === true && (opts.policyQueryConditionedAdmission === true || opts.policyAspectIntentAdmission === true || opts.enableEntityResolutionAtoms === true || opts.enableScopeAtoms === true));
   if (needsPolicyEntityRegistry && !opts.policyEntityRegistry && corpus.entities && corpus.entities.length > 0) {
     const derived = buildPolicyEntityRegistry(corpus);
     opts = {
@@ -2525,6 +2835,7 @@ export async function evaluateRetrievalBenchmarkState(
       ranked, top1Score, cappedDocIds, cappedDocSources, cappedDocComponents,
       finalRankingTop20, answerInCap, finalRankingFull, renderedCandidatesTop20,
       rerankerInputCandidates, policyTraces, policyAbstain,
+      temporalRecordDriven, memoryIRDriven, policyTraceDriven,
     } = await scoreSubstrateAgainstQuery(decoded, query, corpus, opts);
 
     // nDCG / MRR / Recall over reranked list.
@@ -2636,6 +2947,9 @@ export async function evaluateRetrievalBenchmarkState(
       temporalContrastRecall,
       ...(opts.policyEmitTraces && policyTraces.length > 0 ? { policyTraces } : {}),
       ...(opts.policyAtomsMode === true ? { policyAbstain, policyFalseAbstain } : {}),
+      temporalRecordDriven,
+      memoryIRDriven,
+      policyTraceDriven,
     });
   }
 
