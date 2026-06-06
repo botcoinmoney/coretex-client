@@ -19,7 +19,13 @@ import {
   RANGES,
   PATCH_TYPE,
 } from '../../dist/index.js';
-import { atomAnchorUnits, buildMemoryEventByDocId } from '../../../../scripts/lib/v2-patch-families.mjs';
+import {
+  atomAnchorUnits,
+  buildMemoryEventByDocId,
+  evidenceBundleUnits,
+  noiseSuppressionUnits,
+  relationUnitsForEdges,
+} from '../../../../scripts/lib/v2-patch-families.mjs';
 import { baselineAtomHardness } from '../../../../scripts/lib/atom-hardness.mjs';
 
 const repoRoot = fileURLToPath(new URL('../../../..', import.meta.url));
@@ -265,6 +271,81 @@ describe('atom v16 lockdown wiring', () => {
       assert.equal(slot.policyAnchor, true);
       assert.equal(slot.recordId, stableRecordIdFor(units.eventIds[i]));
     }
+  });
+
+  test('runway patch helpers keep relation/evidence/noise slots disjoint', () => {
+    const relationA = relationUnitsForEdges(['supports', 'causes'], 0);
+    const relationB = relationUnitsForEdges(['supersedes'], 2);
+    assert.equal(new Set([...relationA.indices, ...relationB.indices]).size, 3);
+
+    const relationQuery = event({
+      id: 'q_relation',
+      family: 'multi_hop_relation',
+      logicalFamily: 'multi_hop_relation',
+      split: 'eval_hidden',
+      truthDocuments: [{ id: 'd_relation', text: 'relation doc', isCurrent: true }],
+      hardNegatives: [{ id: 'd_noise', text: 'noise doc', category: 'wrong_relation' }],
+      qrels: [
+        { documentId: 'd_relation', relevance: 1, role: 'direct' },
+        { documentId: 'd_noise', relevance: 0, role: 'wrong_relation' },
+      ],
+    });
+    const logicalQById = new Map([['q_relation', {
+      id: 'q_relation',
+      family: 'multi_hop_relation',
+      qrels: [
+        { docId: 'd_relation', relevance: 1, role: 'direct' },
+        { docId: 'd_noise', relevance: 0, role: 'wrong_relation' },
+      ],
+    }]]);
+    const memRelation = event({
+      id: 'mem_d_relation',
+      truthDocuments: [{ id: 'd_relation', text: 'relation doc', isCurrent: true }],
+      qrels: [{ documentId: 'd_relation', relevance: 1 }],
+    });
+    const memNoise = event({
+      id: 'mem_d_noise',
+      truthDocuments: [{ id: 'd_noise', text: 'noise doc', isCurrent: true }],
+      qrels: [{ documentId: 'd_noise', relevance: 1 }],
+    });
+    const eventByDocId = buildMemoryEventByDocId({ events: [memRelation, memNoise] });
+
+    const evidence = evidenceBundleUnits({
+      pack: { events: [relationQuery] },
+      logicalQById,
+      eventByDocId,
+      memorySlot: 224,
+      skipDocIds: new Set(),
+    });
+    const noise = noiseSuppressionUnits({
+      pack: { events: [relationQuery] },
+      logicalQById,
+      eventByDocId,
+      memorySlot: 240,
+      skipDocIds: new Set(),
+    });
+
+    assert.deepEqual(evidence.indices, [RANGES.MEMORY_INDEX_START + 224, RANGES.POLICY_EVIDENCE_START]);
+    assert.deepEqual(noise.indices, [RANGES.MEMORY_INDEX_START + 240, RANGES.POLICY_EVIDENCE_START + 16]);
+    assert.equal(evidence.minedDocId, 'd_relation');
+    assert.equal(noise.minedDocId, 'd_noise');
+    assert.equal(new Set([...evidence.indices, ...noise.indices]).size, 4);
+
+    const state = { words: new Array(RANGES.WORD_COUNT).fill(0n) };
+    const applied = applyPatch(state, {
+      patchType: PATCH_TYPE.MIXED,
+      wordCount: 4,
+      scoreDelta: 0n,
+      parentStateRoot: merkleizeState(state),
+      indices: [...evidence.indices, ...noise.indices],
+      newWords: [...evidence.newWords, ...noise.newWords],
+    }, true);
+    assert.equal(applied.ok, true);
+    const decoded = decodeSubstrate(applied.state, { policyAtomsMode: true });
+    assert.equal(decoded.memoryIndex[224].recordId, stableRecordIdFor('mem_d_relation'));
+    assert.equal(decoded.memoryIndex[240].recordId, stableRecordIdFor('mem_d_noise'));
+    assert.equal(decoded.evidenceBundleAtoms.find((a) => a.atomIndex === 0)?.action, 'bundle');
+    assert.equal(decoded.evidenceBundleAtoms.find((a) => a.atomIndex === 16)?.action, 'suppress');
   });
 
   test('atom anchor compiler refuses slots outside the atom family range', () => {
