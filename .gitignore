@@ -123,3 +123,4 @@ release/calibration/2026-05-21-memory-corpus-v2/dgen1-rework/tier2-g2-traces.jso
 # Handoff docs are working-session scratch, except the canonical zero-context handoff.
 docs/HANDOFFS/*
 !docs/HANDOFFS/NEW_CORPUS_HANDOFF.md
+!docs/HANDOFFS/PRODUCTION_LAUNCH_HARDENING_HANDOFF.md
