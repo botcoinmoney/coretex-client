@@ -106,6 +106,8 @@ release/calibration/a100-2026-05-15/*.log
 # synced to the A100 for runs, kept out of git).
 release/calibration/2026-05-21-memory-corpus-v2/dgen1*corpus.json
 release/calibration/2026-05-21-memory-corpus-v2/dgen1*embeddings.json
+release/calibration/2026-06-04-memory-atom-v16/dgen1-r5-synth-300k-atom-v16-corpus.json
+release/calibration/2026-06-04-memory-atom-v16/dgen1-r5-synth-300k-atom-v16-embeddings.json
 release/calibration/**/materialized/
 **/qwen-score-cache.jsonl
 
