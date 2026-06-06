@@ -91,6 +91,7 @@ venv/
 .python-version
 
 # Local/generated experiment scratch outputs
+.local-wip/
 experiments/results/phase7-real-smoke/
 experiments/results/synthetic-dryrun/winner.json
 
@@ -105,6 +106,8 @@ release/calibration/a100-2026-05-15/*.log
 # synced to the A100 for runs, kept out of git).
 release/calibration/2026-05-21-memory-corpus-v2/dgen1*corpus.json
 release/calibration/2026-05-21-memory-corpus-v2/dgen1*embeddings.json
+release/calibration/**/materialized/
+**/qwen-score-cache.jsonl
 
 # Probe/run result artifacts + checkpoints + logs under dgen1-rework/ (raw outputs of calibration
 # probes/endurance runs; the FINDINGS .md docs + ledger are the canonical record, not these). Kept local.
