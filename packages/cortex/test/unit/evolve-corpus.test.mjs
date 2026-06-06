@@ -63,6 +63,68 @@ describe('Fix B — evolveCorpusDelta (deterministic live-update churn)', () => 
     const baseDocIds = new Set(baseLogical.docs.map((x) => x.id));
     assert.ok(d.addedRelations.filter((r) => r.label === 'supersedes').every((r) => baseDocIds.has(r.dst)), 'supersedes targets a held base fact');
   });
+
+  test('validity_atom churn is semantically honest about stale vs query-time current records', () => {
+    const d = evolveCorpusDelta({ baseLogical: { ...baseLogical, queries: [{ id: 'q_atom_seed', family: 'validity_atom' }] }, epoch: 5, seed: 's', churnFraction: 1.0 });
+    const stale = d.addedDocs.filter((doc) => doc.kind === 'atom_validity_fact' && doc.currentStaleFlag === false);
+    const current = d.addedDocs.filter((doc) => doc.kind === 'atom_validity_fact' && doc.currentStaleFlag === true);
+    assert.ok(stale.length > 0, 'test fixture must generate validity_atom stale records');
+    assert.equal(stale.length, current.length * 5);
+    for (const doc of stale) {
+      assert.ok(doc.validity.validUntil, 'stale validity records must carry a closed valid-time interval');
+      assert.ok(doc.validity.supersededBy, 'stale validity records must point at the superseding current doc');
+      assert.ok(doc.validity.observedAt > doc.validity.validUntil, 'stale record should be an observed-time trap, not text-obvious stale data');
+      assert.doesNotMatch(doc.text, /at query time/i);
+      assert.doesNotMatch(doc.text, /current .* should be/i);
+      assert.doesNotMatch(doc.text, /previously|ended before/i);
+    }
+    for (const doc of current) {
+      assert.equal(doc.validity.validUntil, undefined);
+      assert.ok(doc.validity.observedAt < doc.validity.validFrom, 'current record should be valid-time driven, not simply latest-observed text');
+      assert.doesNotMatch(doc.text, /legacy|previously|ended before/i);
+    }
+    const docsById = new Map(d.addedDocs.map((doc) => [doc.id, doc]));
+    for (const q of d.addedQueries.filter((query) => query.family === 'validity_atom')) {
+      const queryTime = q.publicIntent.queryTime;
+      const currentDoc = docsById.get(q.qrels.find((r) => r.role === 'direct').docId);
+      const staleDoc = docsById.get(q.qrels.find((r) => r.role === 'stale').docId);
+      const distractorDoc = docsById.get(q.qrels.find((r) => r.role === 'stale_distractor').docId);
+      assert.equal(q.hardNegatives.length, 5, 'validity query should carry enough stale public distractors to be a real retrieval trap');
+      assert.ok(currentDoc.validity.validFrom <= queryTime, 'current record must be valid at query time');
+      assert.ok(!currentDoc.validity.validUntil || currentDoc.validity.validUntil >= queryTime, 'current record must not end before query time');
+      assert.ok(staleDoc.validity.validUntil < queryTime, 'stale record must end before query time');
+      assert.ok(distractorDoc.validity.validUntil < queryTime, 'stale distractor must also be invalid at query time');
+    }
+  });
+
+  test('entity_resolution_atom churn grounds duplicate-name queries to the target entity id', () => {
+    const duplicateBase = {
+      ...baseLogical,
+      entities: [
+        ...baseLogical.entities,
+        { id: 'e_dup_backend', canonicalName: 'Jordan Vale', aliases: ['Jordan Vale the API migration lead'], roleAliases: ['API migration lead', 'backend lead'] },
+        { id: 'e_dup_design', canonicalName: 'Jordan Vale', aliases: ['Jordan Vale the design lead'], roleAliases: ['design lead'] },
+      ],
+      queries: [{ id: 'q_atom_seed', family: 'entity_resolution_atom' }],
+    };
+    let found = null;
+    for (let epoch = 1; epoch <= 12 && !found; epoch++) {
+      const d = evolveCorpusDelta({ baseLogical: duplicateBase, epoch, seed: 'entity-grounding', churnFraction: 1.0 });
+      found = d.addedQueries.find((q) => q.family === 'entity_resolution_atom') ?? null;
+      if (found) {
+        const directId = found.qrels.find((r) => r.role === 'direct').docId;
+        const wrongId = found.qrels.find((r) => r.role === 'wrong_entity_same_name').docId;
+        const direct = d.addedDocs.find((doc) => doc.id === directId);
+        const wrong = d.addedDocs.find((doc) => doc.id === wrongId);
+        assert.equal(found.subjectEntityId, 'e_dup_backend');
+        assert.equal(found.publicIntent.subjectEntityId, 'e_dup_backend');
+        assert.ok(direct.entityIds.includes('e_dup_backend'));
+        assert.ok(wrong.entityIds.includes('e_dup_design'));
+        assert.ok(!wrong.entityIds.includes(found.subjectEntityId));
+      }
+    }
+    assert.ok(found, 'test fixture must generate at least one entity_resolution_atom query');
+  });
 });
 
 describe('Fix B — production delta/root path (mock embeddings): logical delta → buildCorpusDelta → applyCorpusDelta → replay same root', () => {

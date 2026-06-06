@@ -12,8 +12,15 @@ import {
   memRerankerManifest,
   serializeProductionCorpus,
   bridgeLogicalDeltaToProductionEvents,
+  decodeSubstrate,
+  applyPatch,
+  merkleizeState,
+  stableRecordIdFor,
+  RANGES,
+  PATCH_TYPE,
 } from '../../dist/index.js';
-import { buildMemoryEventByDocId } from '../../../../scripts/lib/v2-patch-families.mjs';
+import { atomAnchorUnits, buildMemoryEventByDocId } from '../../../../scripts/lib/v2-patch-families.mjs';
+import { baselineAtomHardness } from '../../../../scripts/lib/atom-hardness.mjs';
 
 const repoRoot = fileURLToPath(new URL('../../../..', import.meta.url));
 
@@ -200,5 +207,105 @@ describe('atom v16 lockdown wiring', () => {
     assert.equal(index.get('d_live').id, mem.id);
     assert.equal(index.get('mem_d_live').id, mem.id);
     assert.equal(index.get(query.id).id, query.id);
+  });
+
+  test('multi-anchor atom patches compile disjoint in-family MemoryIndex slots', () => {
+    const scope = { projectId: 'proj-a', sessionId: 'sess-a', topicId: 'topic-a', taskId: 'task-a', userScopeId: 'user-a' };
+    const queries = Array.from({ length: 4 }, (_, i) => event({
+      id: `q_scope_${i}`,
+      family: 'scope_atom',
+      logicalFamily: 'scope_atom',
+      split: 'eval_hidden',
+      queryText: `scope query ${i}`,
+      truthDocuments: [{ id: `d_scope_${i}`, text: `scope doc ${i}`, isCurrent: true }],
+      qrels: [{ documentId: `d_scope_${i}`, relevance: 1 }],
+      scope,
+    }));
+    const logicalQById = new Map(queries.map((q, i) => [q.id, {
+      id: q.id,
+      family: 'scope_atom',
+      qrels: [{ docId: `d_scope_${i}`, relevance: 1, role: 'direct' }],
+      liveUpdateEpoch: i,
+    }]));
+    const memEvents = queries.map((q, i) => event({
+      id: `mem_d_scope_${i}`,
+      split: 'train_visible',
+      truthDocuments: [{ id: `d_scope_${i}`, text: `scope doc ${i}`, isCurrent: true }],
+      qrels: [{ documentId: `d_scope_${i}`, relevance: 1 }],
+      scope,
+    }));
+    const units = atomAnchorUnits({
+      pack: { events: queries },
+      logicalQById,
+      eventByDocId: buildMemoryEventByDocId({ events: memEvents }),
+      atomFamily: 'scope_atom',
+      memorySlot: 220,
+      skipDocIds: new Set(),
+      maxRecords: 4,
+    });
+
+    assert.equal(units.recordsCompiled, 4);
+    assert.deepEqual(units.slots, [220, 221, 222, 223]);
+    assert.equal(new Set(units.indices).size, 4);
+    assert.ok(units.indices.every((idx) => idx >= RANGES.MEMORY_INDEX_START + 192 && idx < RANGES.MEMORY_INDEX_START + 256));
+
+    const state = { words: new Array(RANGES.WORD_COUNT).fill(0n) };
+    const applied = applyPatch(state, {
+      patchType: PATCH_TYPE.MIXED,
+      wordCount: units.indices.length,
+      scoreDelta: 0n,
+      parentStateRoot: merkleizeState(state),
+      indices: units.indices,
+      newWords: units.newWords,
+    }, true);
+    assert.equal(applied.ok, true);
+    const decoded = decodeSubstrate(applied.state, { policyAtomsMode: true });
+    for (let i = 0; i < units.slots.length; i++) {
+      const slot = decoded.memoryIndex[units.slots[i]];
+      assert.equal(slot.policyAnchor, true);
+      assert.equal(slot.recordId, stableRecordIdFor(units.eventIds[i]));
+    }
+  });
+
+  test('atom anchor compiler refuses slots outside the atom family range', () => {
+    const units = atomAnchorUnits({
+      pack: { events: [] },
+      logicalQById: new Map(),
+      eventByDocId: new Map(),
+      atomFamily: 'entity_resolution_atom',
+      memorySlot: 192,
+      skipDocIds: new Set(),
+      maxRecords: 4,
+    });
+    assert.equal(units.reason, 'entity_resolution_atom_slot_exhausted');
+    assert.deepEqual(units.indices, []);
+  });
+
+  test('atom hardness filter distinguishes solved from hard active targets', () => {
+    const pack = { events: [event({
+      id: 'q_atom',
+      family: 'validity_atom',
+      logicalFamily: 'validity_atom',
+      split: 'eval_hidden',
+      truthDocuments: [{ id: 'd_current', text: 'current', isCurrent: true }],
+      hardNegatives: [{ id: 'd_stale', text: 'stale' }],
+      qrels: [{ documentId: 'd_current', relevance: 1 }, { documentId: 'd_stale', relevance: 0 }],
+    })] };
+    const solved = baselineAtomHardness({
+      targetDocIds: ['d_current'],
+      pack,
+      baselineScore: { perQuery: [{ recordId: 'q_atom', nDCG10: 1, finalRankingTop20: [{ docId: 'd_current', rank: 1 }, { docId: 'd_stale', rank: 2 }] }] },
+    });
+    assert.equal(solved.hard, false);
+    assert.equal(solved.reason, 'already_solved_by_qwen');
+
+    const hard = baselineAtomHardness({
+      targetDocIds: ['d_current'],
+      pack,
+      baselineScore: { perQuery: [{ recordId: 'q_atom', nDCG10: 0.5, finalRankingTop20: [{ docId: 'd_stale', rank: 1 }, { docId: 'd_current', rank: 2 }] }] },
+    });
+    assert.equal(hard.hard, true);
+    assert.equal(hard.reason, 'hard_candidate');
+    assert.equal(hard.rows[0].hardNegativeAboveTarget, true);
   });
 });

@@ -3009,9 +3009,10 @@ export async function evaluateRetrievalBenchmarkPatch(
   pack: QueryPack,
   opts: ScoringOptions,
   floors: PatchAcceptanceFloors,
+  precomputedBefore?: CompositeScore,
 ): Promise<PatchEvalResult> {
   const acceptanceThresholdPpm = floors.acceptanceThresholdPpm ?? floors.minImprovementPpm;
-  const before = await evaluateRetrievalBenchmarkState(parentState, corpus, pack, opts);
+  const before = precomputedBefore ?? await evaluateRetrievalBenchmarkState(parentState, corpus, pack, opts);
   const applied = applyPatch(parentState, patch, opts.policyAtomsMode === true);
   if (!applied.ok) {
     return {

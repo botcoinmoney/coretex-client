@@ -23,6 +23,7 @@ import assert from 'node:assert/strict';
 
 import {
   evaluateRetrievalBenchmarkPatch,
+  evaluateRetrievalBenchmarkState,
   computeCorpusRoot,
   merkleizeState,
   DEFAULT_PROFILE,
@@ -169,6 +170,25 @@ describe('evaluateRetrievalBenchmarkPatch — acceptance threshold gating', () =
     });
     assert.equal(rejected.accepted, false, 'fallback path must reject when delta < minImprovementPpm');
     assert.equal(rejected.reason, 'no_retrieval_improvement');
+  });
+
+  test('precomputed-before path matches canonical patch evaluation', async () => {
+    const { state, patch, corpus, pack } = await probeDelta();
+    const floors = {
+      ...PERMISSIVE_GUARDS,
+      minImprovementPpm: Number.MIN_SAFE_INTEGER,
+      acceptanceThresholdPpm: Number.MIN_SAFE_INTEGER,
+    };
+    const canonical = await evaluateRetrievalBenchmarkPatch(state, patch, corpus, pack, opts, floors);
+    const before = await evaluateRetrievalBenchmarkState(state, corpus, pack, opts);
+    const cached = await evaluateRetrievalBenchmarkPatch(state, patch, corpus, pack, opts, floors, before);
+
+    assert.equal(cached.accepted, canonical.accepted);
+    assert.equal(cached.reason, canonical.reason);
+    assert.equal(cached.deltaPpm, canonical.deltaPpm);
+    assert.deepEqual(cached.perFamilyDelta, canonical.perFamilyDelta);
+    assert.deepEqual(cached.before, canonical.before);
+    assert.deepEqual(cached.after, canonical.after);
   });
 
   test('acceptanceThresholdPpm overrides minImprovementPpm in BOTH directions', async () => {

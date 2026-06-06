@@ -84,6 +84,7 @@ export function makeEpochFrontier({
   const active = new Map<string, number>();
   const retired = new Set<string>();
   let cumulativeActivated = 0, cumulativeRetired = 0, initialized = false;
+  let injectedSinceLastStep = 0;
   let ewmaAccepts: number | null = null;
   const ewmaAlpha = 1 - Math.pow(0.5, 1 / Math.max(0.5, ewmaHalfLife));
 
@@ -110,7 +111,7 @@ export function makeEpochFrontier({
   });
 
   function stepEpoch(epoch: number, prevHonestAccepts: number | null, prevQualityAttempts: number | null = null): EpochFrontierSnapshot {
-    if (!initialized) { initialized = true; const a = activateNext(K, epoch); return snapshot(epoch, a, 0, 0); }
+    if (!initialized) { initialized = true; const a = activateNext(K, epoch); injectedSinceLastStep = 0; return snapshot(epoch, a, 0, 0); }
     let ret = 0;
     if (Number.isFinite(maxAge)) {
       const aged = [...active.entries()].filter(([, ae]) => epoch - ae >= maxAge).map(([id]) => id);
@@ -118,6 +119,7 @@ export function makeEpochFrontier({
     }
     if (mode === 'off' || mode === 'C0') {
       const a = activateNext(ret, epoch);
+      injectedSinceLastStep = 0;
       return snapshot(epoch, a, ret, 0);
     }
     if (prevHonestAccepts !== null) ewmaAccepts = (ewmaAccepts === null) ? prevHonestAccepts : ewmaAlpha * prevHonestAccepts + (1 - ewmaAlpha) * ewmaAccepts;
@@ -129,7 +131,7 @@ export function makeEpochFrontier({
     } else if (mode === 'C4') {
       rate = minChurn;
     } else if (mode === 'C3' && prevQualityAttempts === 0) {
-      rate = 0;
+      rate = injectedSinceLastStep > 0 ? Math.min(maxChurn, Math.max(minChurn, injectedSinceLastStep)) : 0;
     } else {
       const recent = ewmaAccepts ?? targetAccepts;
       const deficit = targetAccepts - recent;
@@ -145,6 +147,7 @@ export function makeEpochFrontier({
     rate = Math.min(rate, Math.max(0, order.length - reservePtr));
     ret += retireOldest(rate);
     const a = activateNext(ret, epoch);
+    injectedSinceLastStep = 0;
     return snapshot(epoch, a, ret, rate);
   }
 
@@ -180,6 +183,7 @@ export function makeEpochFrontier({
       if (!any) break;
     }
     order.splice(reservePtr, 0, ...newOrderSegment);
+    injectedSinceLastStep += unseen.length;
     orderIdx.clear();
     for (let i = 0; i < order.length; i++) orderIdx.set(order[i]!, i);
     for (const f of newFamNames) if (!famNames.includes(f)) famNames.push(f);

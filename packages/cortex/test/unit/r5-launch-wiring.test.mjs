@@ -50,7 +50,7 @@ describe('P1 — buildPolicyEntityRegistry (derive public registry from corpus)'
   test('registry lowercases canonicalName + aliases, preserves entity order', () => {
     const { registry } = buildPolicyEntityRegistry(corpus);
     assert.equal(registry.length, 3);
-    assert.deepEqual(registry[1], { id: 'e_s0', names: ['aisha costa', 'aisha', 'aisha the er nurse'] });
+    assert.deepEqual(registry[1], { id: 'e_s0', names: ['aisha costa', 'aisha', 'aisha the er nurse'], roleAliases: [] });
     // canonicalName + aliases are concatenated as-is (no dedup — matches the probe builder).
     assert.deepEqual(registry[2].names, ['image-pipeline-svc-0', 'image-pipeline-svc-0']);
   });
