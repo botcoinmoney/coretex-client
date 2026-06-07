@@ -1,12 +1,22 @@
 /**
- * Coordinator data-source contract test  (Launch hardening L20).
+ * v0 launch coordinator data-source contract test.
  *
- * The production coordinator server is external, but every route delegates to a
- * CoreTexCoordinatorDataSource (endpoints.ts). This pins the CONTRACT a production
- * data source must satisfy: each launch endpoint returns a well-formed shape through
- * the real route handler, AND no response leaks hidden qrels / eval-pack / answer IDs /
- * epochSecret / evalSeed. A representative data source (canonical launch shapes) is
- * wired through createCoreTexCoordinatorRouteHandler exactly as a server would.
+ * Every public CoreTex route delegates to a CoreTexCoordinatorDataSource
+ * (`packages/cortex/src/coordinator/endpoints.ts`). This test pins the CONTRACT
+ * a production data source must satisfy:
+ *
+ *  - the canonical 5 endpoints (health, status, substrate/:root, submit,
+ *    receipt/:hash) return 200 + structured responses;
+ *  - no response leaks hidden qrels / eval-pack / answer IDs / epochSecret /
+ *    evalSeed;
+ *  - removed v0 routes (`/coretex/challenge`, `/coretex/patch/:hash`,
+ *    `/coretex/patch-received/:hash`, `/coretex/eval-report/:hash`,
+ *    `/coretex/corpus-delta/:epoch`, `/coretex/bundle/*`) consistently return
+ *    404 `coretex-not-found`.
+ *
+ * The status payload now folds in every field the legacy `/coretex/challenge`
+ * exposed, plus per-miner counters; the canonical naming is
+ * `perMinerScreenerCap` (the legacy `perMinerCap` alias has been removed).
  */
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
@@ -16,41 +26,43 @@ const PARENT_ROOT = '0x04d107ad97465d9fbdb448d4ff2d21131bf2ee38ce72de641b7c17ded
 const BUNDLE_HASH = '0x474cd8851eebd097a7f1480818c1ccdb0dd473c5da08cd6909b071ac8c101715';
 const CORPUS_ROOT = '0x15bab3a8e0d6fdb8df4d525e49aa7e22c815e749c8d95301a89e54de933beb33';
 const PATCH_HASH = '0x82a2e24dc19e166c4a12f2c86b73cb3bde3f54b6cc9f4479a9a392aec45b1573';
+const MINER = '0x' + '11'.repeat(20);
 
-// A representative production data source returning canonical launch shapes (public-only).
 const ds = {
-  getChallenge: () => ({
-    epochId: 0, parentStateRoot: PARENT_ROOT, currentStateRoot: PARENT_ROOT,
-    bundleHash: BUNDLE_HASH, coreVersionHash: BUNDLE_HASH, pipelineVersion: 'coretex-retrieval-v2-policy-r5',
-    corpusRoot: CORPUS_ROOT, activeFrontierRoot: '0x9150a9aaee8d4dea',
-    allowedPatchTypes: ['TEMPORAL_UPDATE', 'RELATION_UPDATE', 'POLICY_UPDATE'], patchWordBudget: 4,
-    minImprovementPpm: 2500, replayTolerancePpm: 250, screenerThresholdPpm: 347, perMinerCap: 8,
+  health: () => ({
+    ok: true, service: 'coretex', version: 'v0',
+    epoch: 106, chainId: 8453, confirmationDepth: 4,
+    chainLiveRoot: PARENT_ROOT, confirmedLiveRoot: PARENT_ROOT,
+    finalityLagBlocks: 0, acceptingSubmissions: true,
+    epochPins: { parentStateRoot: PARENT_ROOT, coreVersionHash: BUNDLE_HASH, corpusRoot: CORPUS_ROOT,
+                 activeFrontierRoot: '0x' + '09'.repeat(32), baselineManifestHash: '0x' + 'ba'.repeat(32),
+                 hiddenSeedCommit: '0x' + 'cc'.repeat(32) },
+  }),
+  // status folds in challenge content + per-miner counters
+  getStatus: (query) => ({
+    epochId: 0, currentStateRoot: PARENT_ROOT, confirmedTransitionCount: 7,
+    bundleHash: BUNDLE_HASH, coreVersionHash: BUNDLE_HASH, corpusRoot: CORPUS_ROOT,
+    activeFrontierRoot: '0x' + '09'.repeat(32),
+    pipelineVersion: 'coretex-retrieval-v2-policy-r5-atom-v16-300k',
+    allowedPatchTypes: [{ name: 'MEMORY_INDEX_UPDATE', byte: 2, wordIndexRange: [32, 383] }],
+    patchWordBudget: 4,
+    minImprovementPpm: 2500, replayTolerancePpm: 250, screenerThresholdPpm: 347,
+    perMinerScreenerCap: 50, qualifiedScreenerPassesSinceLastStateAdvance: 0,
     memoryIRSchemaVersion: 'memory_ir.v1',
-    activeSubstrateSurfaces: ['temporal', 'relation_typed_routing', 'evidence_bundle', 'guarded_abstention', 'conflict_state'],
+    activeSubstrateSurfaces: ['temporal_update', 'conflict_lifecycle', 'relation_category_routing',
+                              'abstention_top1', 'evidence_bundle', 'validity_atom', 'scope_atom',
+                              'entity_resolution_atom'],
+    acceptingSubmissions: true,
+    perMiner: query.miner ? {
+      address: query.miner, screenersThisEpoch: 0, remaining: 50, cap: 50,
+      nextIndex: 0, lastReceiptHash: '0x' + '00'.repeat(32),
+    } : null,
     hiddenEvalWarning: 'hidden qrels/pack/epochSecret are NOT public',
   }),
-  // current state + active frontier / corpus metadata
-  getStatus: () => ({
-    epochId: 0, currentStateRoot: PARENT_ROOT, corpusRoot: CORPUS_ROOT, bundleHash: BUNDLE_HASH,
-    activeFrontier: { activeRoot: '0x9150a9aaee8d4dea', activeEvalHiddenCount: 141, reserveRemaining: 0, churnMode: 'C3' },
-    corpus: { evalHiddenCount: 141, familyCounts: { near_collision: 46, temporal: 61, multi_hop_relation: 34 } },
-    minImprovementPpm: 2500, screenerThresholdPpm: 347,
-  }),
-  // current substrate by root — full 1024 words (public; the state IS public by root)
-  getSubstrate: (root) => ({ stateRoot: root, wordCount: 1024, packedBytes: 32768, wordsHex: '0x' + '00'.repeat(32) }),
-  getPatch: (hash) => ({ patchHash: hash, patchBytesHex: '0x07010000', wordCount: 1 }),
-  getPatchReceivedNotice: (hash) => ({ patchHash: hash, receivedAtBlock: 21_000_000, epochId: 0, noticeHash: '0xabc' }),
-  // screener result + state-advance receipt (post-reveal-safe; no qrels)
-  getEvalReport: (hash) => ({
-    patchHash: hash, outcome: 'state_advance', accepted: true,
-    gateScorePpm: 310158, confirmScorePpm: 309758, parentStateRoot: PARENT_ROOT, childStateRoot: '0xbbbf82a2',
-    workUnitsBps: 30000, blockhash: '0x' + 'bb'.repeat(32),
-  }),
-  submit: (body) => ({ accepted: true, patchHash: PATCH_HASH, dedupKey: '0xdedup', receivedAtBlock: 21_000_000, echo: body ? 'ok' : 'empty' }),
-  getCorpusDelta: (epoch) => ({ epoch: Number(epoch), corpusRootChanged: false, addedEvalHidden: 0 }),
-  getBundle: (h) => ({ bundleHash: h, schemaVersion: 'coretex.client-bundle.v2' }),
-  getBundleByCoreVersionHash: (h) => ({ coreVersionHash: h, bundleHash: BUNDLE_HASH }),
-  health: () => ({ ok: true, service: 'coretex' }),
+  getSubstrate: (root) => ({ stateRoot: root, wordCount: 1024, packedBytes: 32768, packedHex: '0x' + '00'.repeat(32768) }),
+  submit: (body) => ({ status: 'accepted', patchHash: PATCH_HASH, evalReportHash: '0x' + 'ef'.repeat(32),
+                       echo: body ? 'ok' : 'empty' }),
+  getReceipt: (hash) => ({ status: 200, body: { status: 'accepted', patchHash: hash, confirmedOnChain: true } }),
 };
 
 const handle = createCoreTexCoordinatorRouteHandler(ds);
@@ -64,57 +76,85 @@ function scanLeak(obj, path = '') {
   return hits;
 }
 
-describe('coordinator data-source contract', () => {
-  const cases = [
+describe('v0 coordinator data-source contract', () => {
+  const canonical = [
     ['GET', '/coretex/health'],
-    ['GET', '/coretex/challenge'],
     ['GET', '/coretex/status'],
     ['GET', `/coretex/substrate/${PARENT_ROOT}`],
-    ['GET', `/coretex/patch/${PATCH_HASH}`],
-    ['GET', `/coretex/patch-received/${PATCH_HASH}`],
-    ['GET', `/coretex/eval-report/${PATCH_HASH}`],
-    ['GET', '/coretex/corpus-delta/0'],
-    ['GET', `/coretex/bundle/${BUNDLE_HASH}`],
     ['POST', '/coretex/submit'],
+    ['GET', `/coretex/receipt/${PATCH_HASH}`],
   ];
 
-  for (const [method, path] of cases) {
+  for (const [method, path] of canonical) {
     test(`${method} ${path} → 200 + handled + no hidden leakage`, async () => {
-      const res = await handle({ method, path, body: method === 'POST' ? { patchBytesHex: '0x07010000', minerAddress: '0x' + '11'.repeat(20) } : undefined });
+      const res = await handle({
+        method, path, query: { miner: MINER },
+        body: method === 'POST' ? { patchBytesHex: '0xff010000', parentStateRoot: PARENT_ROOT, minerAddress: MINER } : undefined,
+      });
       assert.equal(res.handled, true, 'route handled');
-      assert.equal(res.status, 200, 'status 200');
+      assert.equal(res.status, 200, `expected 200, got ${res.status} body=${JSON.stringify(res.body)}`);
       const leaks = scanLeak(res.body);
       assert.equal(leaks.length, 0, `no hidden leakage, got: ${leaks.join(',')}`);
     });
   }
 
-  test('challenge exposes required public fields + active surfaces incl conflict_state', async () => {
-    const r = await handle({ method: 'GET', path: '/coretex/challenge' });
-    for (const k of ['epochId', 'parentStateRoot', 'bundleHash', 'corpusRoot', 'pipelineVersion', 'allowedPatchTypes', 'minImprovementPpm', 'screenerThresholdPpm', 'activeSubstrateSurfaces', 'hiddenEvalWarning']) {
-      assert.ok(r.body[k] !== undefined, `challenge.${k} present`);
+  test('status carries every legacy-challenge field + per-miner counters', async () => {
+    const r = await handle({ method: 'GET', path: '/coretex/status', query: { miner: MINER } });
+    for (const k of [
+      'epochId', 'currentStateRoot', 'bundleHash', 'coreVersionHash', 'corpusRoot',
+      'activeFrontierRoot', 'pipelineVersion', 'allowedPatchTypes', 'patchWordBudget',
+      'minImprovementPpm', 'screenerThresholdPpm', 'perMinerScreenerCap',
+      'qualifiedScreenerPassesSinceLastStateAdvance', 'activeSubstrateSurfaces',
+      'acceptingSubmissions', 'perMiner',
+    ]) {
+      assert.ok(r.body[k] !== undefined, `status.${k} present`);
     }
-    assert.ok(r.body.activeSubstrateSurfaces.includes('conflict_state'), 'conflict_state is an active launch surface');
-  });
-
-  test('status exposes active-frontier + corpus metadata (no eval pack)', async () => {
-    const r = await handle({ method: 'GET', path: '/coretex/status' });
-    assert.ok(r.body.activeFrontier?.activeRoot, 'activeFrontier.activeRoot present');
-    assert.equal(r.body.corpus?.evalHiddenCount, 141);
-    assert.ok(!('events' in r.body) && !('pack' in r.body) && !('qrels' in r.body), 'no eval pack embedded');
-  });
-
-  test('eval-report is replay-sufficient without leaking qrels', async () => {
-    const r = await handle({ method: 'GET', path: `/coretex/eval-report/${PATCH_HASH}` });
-    for (const k of ['patchHash', 'outcome', 'gateScorePpm', 'confirmScorePpm', 'childStateRoot', 'blockhash']) {
-      assert.ok(r.body[k] !== undefined, `eval-report.${k} present`);
+    for (const k of ['address', 'screenersThisEpoch', 'remaining', 'cap', 'nextIndex', 'lastReceiptHash']) {
+      assert.ok(r.body.perMiner[k] !== undefined, `status.perMiner.${k} present`);
     }
-    assert.equal(scanLeak(r.body).length, 0);
+    assert.equal(r.body.perMinerScreenerCap, r.body.perMiner.cap, 'cap matches across status surfaces');
   });
 
-  test('unconfigured endpoint returns a stable not-configured (not a crash)', async () => {
+  test('status NEVER exposes the legacy perMinerCap alias', async () => {
+    const r = await handle({ method: 'GET', path: '/coretex/status', query: { miner: MINER } });
+    assert.equal(r.body.perMinerCap, undefined, 'no perMinerCap key in status body');
+  });
+
+  test('health exposes coord version + epoch + chain + pins (no miner-specific data)', async () => {
+    const r = await handle({ method: 'GET', path: '/coretex/health' });
+    for (const k of ['version', 'epoch', 'chainId', 'confirmationDepth', 'chainLiveRoot',
+                     'confirmedLiveRoot', 'finalityLagBlocks', 'acceptingSubmissions', 'epochPins']) {
+      assert.ok(r.body[k] !== undefined, `health.${k} present`);
+    }
+    for (const pin of ['parentStateRoot', 'coreVersionHash', 'corpusRoot', 'activeFrontierRoot',
+                       'baselineManifestHash', 'hiddenSeedCommit']) {
+      assert.ok(r.body.epochPins[pin] !== undefined, `health.epochPins.${pin} present`);
+    }
+    assert.equal(r.body.perMiner, undefined, 'no miner-specific data on /health');
+  });
+
+  test('removed v0 routes all 404 with coretex-not-found', async () => {
+    for (const stale of [
+      ['GET', '/coretex/challenge'],
+      ['GET', `/coretex/patch/${PATCH_HASH}`],
+      ['GET', `/coretex/patch-received/${PATCH_HASH}`],
+      ['GET', `/coretex/eval-report/${PATCH_HASH}`],
+      ['GET', '/coretex/corpus-delta/0'],
+      ['GET', `/coretex/bundle/${BUNDLE_HASH}`],
+      ['GET', `/coretex/bundle/by-core-version/${BUNDLE_HASH}`],
+    ]) {
+      const r = await handle({ method: stale[0], path: stale[1] });
+      assert.equal(r.handled, true);
+      assert.equal(r.status, 404, `${stale.join(' ')} should 404`);
+      assert.deepEqual(r.body, { error: 'coretex-not-found' });
+    }
+  });
+
+  test('unconfigured endpoint returns a stable 503 not-configured (not a crash)', async () => {
     const empty = createCoreTexCoordinatorRouteHandler({});
-    const r = await empty({ method: 'GET', path: '/coretex/challenge' });
+    const r = await empty({ method: 'GET', path: '/coretex/status' });
     assert.equal(r.handled, true);
-    assert.notEqual(r.status, 200);
+    assert.equal(r.status, 503);
+    assert.deepEqual(r.body, { error: 'coretex-route-not-configured', route: 'status' });
   });
 });

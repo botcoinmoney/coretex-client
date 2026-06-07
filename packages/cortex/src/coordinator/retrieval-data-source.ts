@@ -1,21 +1,19 @@
 /**
- * Coordinator data-source factory for the retrieval-benchmark endpoints.
+ * v0 launch CoreTex coordinator data-source factory.
  *
- * Spec: plan §Phase F.
+ * Wires the canonical 5-endpoint surface (`endpoints.ts`):
  *
- * Wires:
- *   - GET /coretex/challenge
- *   - POST /coretex/submit
- *   - GET /coretex/status
- *   - GET /coretex/bundle/by-core-version/:coreVersionHash
- *   - GET /coretex/bundle/:bundleHash
- *   - immutable artifact reads (substrate/patch/patch-received/eval-report/corpus-delta)
+ *   GET  /coretex/health
+ *   GET  /coretex/status?miner=0x…
+ *   GET  /coretex/substrate/:stateRoot
+ *   POST /coretex/submit
+ *   GET  /coretex/receipt/:hash
  *
- * Production wiring expects:
- *   - the loaded CoreTexBundleManifest
- *   - a challenge callback (dynamic packet)
- *   - a submit callback (single write-path)
- *   - a status callback (non-secret dynamic context)
+ * The status response folds in everything the legacy `/coretex/challenge` payload
+ * carried (epoch pins, allowed patch types, screener threshold, etc.) PLUS the
+ * miner-specific counters (perMinerScreenerCap, screenersThisEpoch, nextIndex,
+ * lastReceiptHash, acceptingSubmissions). There is no separate challenge endpoint
+ * in v0.
  */
 
 import { createHash } from 'node:crypto';
@@ -30,15 +28,15 @@ import type { CoreTexBundleManifest } from '../bundle/index.js';
 export interface RetrievalDataSourceOptions {
   readonly bundleManifest: CoreTexBundleManifest;
   readonly bundleHash: string;
-  readonly getChallenge: () => Promise<unknown> | unknown;
+  /** Per-miner dynamic context (`query.miner` is the miner address). Folds in every
+   *  field the legacy challenge payload exposed. */
+  readonly getStatus: (query: Record<string, string | readonly string[] | undefined>) => Promise<unknown> | unknown;
+  /** POST /coretex/submit handler. */
   readonly submit: (body: unknown) => Promise<unknown> | unknown;
-  readonly getStatus: () => Promise<unknown> | unknown;
+  /** Optional packed-substrate-by-root reader. */
   readonly getSubstrate?: (stateRoot: string) => Promise<unknown> | unknown;
-  readonly getPatch?: (hash: string) => Promise<unknown> | unknown;
-  readonly getPatchReceivedNotice?: (hash: string) => Promise<unknown> | unknown;
-  readonly getEvalReport?: (hash: string) => Promise<unknown> | unknown;
-  readonly getCorpusDelta?: (epoch: bigint) => Promise<unknown> | unknown;
-  readonly getBundleByCoreVersionHash?: (coreVersionHash: string) => Promise<unknown> | unknown;
+  /** Receipt lookup by patchHash (returns `{status, body}` envelope or null). */
+  readonly getReceipt?: (hash: string) => Promise<{ readonly status: number; readonly body: unknown } | null> | { readonly status: number; readonly body: unknown } | null;
   readonly authorize?: (context: CoreTexRouteGuardContext) => Promise<CoreTexRouteGuardResult> | CoreTexRouteGuardResult;
   readonly rateLimit?: (context: CoreTexRouteGuardContext) => Promise<CoreTexRouteGuardResult> | CoreTexRouteGuardResult;
   readonly health?: () => Promise<unknown> | unknown;
@@ -51,30 +49,11 @@ export function createRetrievalDataSource(opts: RetrievalDataSourceOptions): Cor
   }
 
   const ds: CoreTexCoordinatorDataSource = {
-    async getChallenge() {
-      return sanitizeChallengeResponse(await opts.getChallenge(), manifest.bundleHash);
-    },
     async submit(body) {
       return sanitizeSubmitResponse(await opts.submit(body));
     },
-    async getStatus() {
-      return sanitizeStatusResponse(await opts.getStatus(), manifest.bundleHash);
-    },
-    async getBundleByCoreVersionHash(coreVersionHash: string) {
-      if (opts.getBundleByCoreVersionHash) return opts.getBundleByCoreVersionHash(coreVersionHash);
-      // Default coreVersionHash -> bundleHash mapping in v2 bundles:
-      // assertBundleBindingAtStartup enforces on-chain coreVersionHash equals
-      // bundleHash; expose this direct alias for watcher/miner compatibility.
-      if (coreVersionHash.toLowerCase() !== manifest.bundleHash.toLowerCase()) {
-        return { error: 'coretex-bundle-not-found', coreVersionHash };
-      }
-      return manifest;
-    },
-    async getBundle(bundleHash: string) {
-      if (bundleHash.toLowerCase() !== manifest.bundleHash.toLowerCase()) {
-        return { error: 'coretex-bundle-not-found', bundleHash };
-      }
-      return manifest;
+    async getStatus(query) {
+      return sanitizeStatusResponse(await opts.getStatus(query), manifest.bundleHash);
     },
     async health() {
       if (opts.health) return opts.health();
@@ -87,14 +66,7 @@ export function createRetrievalDataSource(opts: RetrievalDataSourceOptions): Cor
     },
   };
   if (opts.getSubstrate) (ds as Mutable).getSubstrate = opts.getSubstrate;
-  if (opts.getPatch) (ds as Mutable).getPatch = opts.getPatch;
-  if (opts.getPatchReceivedNotice) {
-    const inner = opts.getPatchReceivedNotice;
-    (ds as Mutable).getPatchReceivedNotice = async (hash: string) => sanitizePatchReceivedNotice(await inner(hash));
-  }
-  if (opts.getEvalReport) (ds as Mutable).getEvalReport = opts.getEvalReport;
-  if (opts.getCorpusDelta) (ds as Mutable).getCorpusDelta = opts.getCorpusDelta;
-  if (opts.getBundleByCoreVersionHash) (ds as Mutable).getBundleByCoreVersionHash = opts.getBundleByCoreVersionHash;
+  if (opts.getReceipt) (ds as Mutable).getReceipt = opts.getReceipt;
   if (opts.rateLimit) (ds as Mutable).rateLimit = opts.rateLimit;
   if (opts.authorize) (ds as Mutable).authorize = opts.authorize;
   return ds;
@@ -143,7 +115,9 @@ function sanitizeChallengeResponse(raw: unknown, manifestBundleHash: string): Re
   copyNonNegativeIntField(out, r, 'minImprovementPpm');
   copyNonNegativeIntField(out, r, 'replayTolerancePpm');
   copyNonNegativeIntField(out, r, 'screenerThresholdPpm');
-  copyNonNegativeIntField(out, r, 'perMinerCap');
+  // v0 canonical: perMinerScreenerCap only. The legacy `perMinerCap` alias is
+  // intentionally dropped here so a coordinator that still emits it will not have
+  // it propagated to the public response.
   copyNonNegativeIntField(out, r, 'perMinerScreenerCap');
   copyNonNegativeIntField(out, r, 'perMinerScreenerRemaining');
   copyStringArrayField(out, r, 'activeSubstrateSurfaces');
