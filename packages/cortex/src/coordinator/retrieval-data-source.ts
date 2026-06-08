@@ -177,6 +177,9 @@ function sanitizeStatusResponse(raw: unknown, manifestBundleHash: string): Recor
   copyNonNegativeIntField(out, r, 'currentEpoch');
   copySafeStringField(out, r, 'rotationManifestUrl', 1024);
   copySafeStringField(out, r, 'corpusDeltaUrl', 1024);
+  copySafeStringField(out, r, 'epochSigningPublicKeyId', 128);
+  copySafeStringField(out, r, 'epochSigningPublicKeyUrl', 1024);
+  copyBytes32Field(out, r, 'epochSigningPublicKeyFingerprint');
   copySafeStringField(out, r, 'pipelineVersion');
   copySafeStringField(out, r, 'memoryIRSchemaVersion');
   copySafeStringField(out, r, 'hiddenEvalWarning', 512);

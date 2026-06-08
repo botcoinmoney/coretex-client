@@ -41,6 +41,8 @@ function makeFactoryOpts(overrides = {}) {
       corpusDeltaHash: `0x${'7a'.repeat(32)}`,
       rotationManifestUrl: 'https://coretex-launch-artifacts-429971482539-us-east-2-an.s3.us-east-2.amazonaws.com/coretex/launch/v16/epoch-rotations/epoch-rotation-7.json',
       corpusDeltaUrl: 'https://coretex-launch-artifacts-429971482539-us-east-2-an.s3.us-east-2.amazonaws.com/coretex/launch/v16/epoch-rotations/corpus-delta-epoch-7.json',
+      epochSigningPublicKeyId: 'coretex-epoch-operator',
+      epochSigningPublicKeyFingerprint: `0x${'7b'.repeat(32)}`,
       currentEpoch: 7,
       bundleHash: BUNDLE_HASH,
       coreVersionHash: BUNDLE_HASH,
@@ -159,6 +161,8 @@ describe('createRetrievalDataSource — v0 canonical surface', () => {
     assert.equal(st.corpusDeltaHash, `0x${'7a'.repeat(32)}`);
     assert.match(st.rotationManifestUrl, /epoch-rotation-7\.json$/);
     assert.match(st.corpusDeltaUrl, /corpus-delta-epoch-7\.json$/);
+    assert.equal(st.epochSigningPublicKeyId, 'coretex-epoch-operator');
+    assert.equal(st.epochSigningPublicKeyFingerprint, `0x${'7b'.repeat(32)}`);
     assert.equal(st.confirmedTransitionCount, 12);
     assert.equal(st.transitionCount, undefined);
     assert.equal(st.patchWordBudget, 4);

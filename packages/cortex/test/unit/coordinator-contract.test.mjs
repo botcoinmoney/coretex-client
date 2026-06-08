@@ -220,4 +220,23 @@ describe('v0 coordinator data-source contract', () => {
     }
     assert.deepEqual(hits, [], 'stress-harness caps/classifiers must not become production rejection logic');
   });
+
+  test('validator sync CLI does not import coordinator-only control-plane modules', () => {
+    const body = readFileSync(new URL('../../../../scripts/coretex-validator-sync.mjs', import.meta.url), 'utf8');
+    const imports = body.split('\n').filter((line) => /^\s*import\s/.test(line)).join('\n');
+    for (const forbidden of [
+      'coretex-coordinator',
+      '/coordinator/',
+      '@aws-sdk',
+      'child_process',
+      'coretex-start-epoch',
+      'coretex-epoch-evolve',
+    ]) {
+      assert.equal(
+        imports.includes(forbidden),
+        false,
+        `validator sync import boundary must not include ${forbidden}`,
+      );
+    }
+  });
 });
