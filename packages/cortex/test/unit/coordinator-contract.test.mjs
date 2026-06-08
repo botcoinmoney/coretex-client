@@ -19,6 +19,7 @@
  */
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
+import { readdirSync, readFileSync } from 'node:fs';
 import { createCoreTexCoordinatorRouteHandler } from '../../dist/coordinator/endpoints.js';
 
 const PARENT_ROOT = '0x04d107ad97465d9fbdb448d4ff2d21131bf2ee38ce72de641b7c17dedec72146';
@@ -96,6 +97,18 @@ function scanLeak(obj, path = '') {
     hits.push(...scanLeak(v, `${path}${k}.`));
   }
   return hits;
+}
+
+function scanSourceFiles(dirUrl, out = []) {
+  for (const entry of readdirSync(dirUrl, { withFileTypes: true })) {
+    const url = new URL(entry.name, dirUrl);
+    if (entry.isDirectory()) {
+      scanSourceFiles(new URL(`${entry.name}/`, dirUrl), out);
+    } else if (entry.isFile() && entry.name.endsWith('.ts')) {
+      out.push(url);
+    }
+  }
+  return out;
 }
 
 describe('v0 coordinator data-source contract', () => {
@@ -182,5 +195,29 @@ describe('v0 coordinator data-source contract', () => {
     assert.equal(r.handled, true);
     assert.equal(r.status, 503);
     assert.deepEqual(r.body, { error: 'coretex-route-not-configured', route: 'status' });
+  });
+
+  test('production source does not contain harness-only runway acceptance caps', () => {
+    const forbidden = [
+      'weak-family',
+      'weakFamily',
+      'fingerprint-quota',
+      'fingerprintQuota',
+      'slot-pacing',
+      'slotPacing',
+      'hardness-conditioned',
+      'hardnessConditioned',
+      'already_solved',
+      'too_hard',
+      'qwen_no_recovery',
+    ];
+    const hits = [];
+    for (const url of scanSourceFiles(new URL('../../src/', import.meta.url))) {
+      const body = readFileSync(url, 'utf8');
+      for (const token of forbidden) {
+        if (body.includes(token)) hits.push(`${url.pathname}:${token}`);
+      }
+    }
+    assert.deepEqual(hits, [], 'stress-harness caps/classifiers must not become production rejection logic');
   });
 });
