@@ -180,6 +180,7 @@ function sanitizeStatusResponse(raw: unknown, manifestBundleHash: string): Recor
   copyPublicJsonField(out, r, 'allowedPatchTypes');
   copyPublicJsonField(out, r, 'patchWordRanges');
   copyPublicJsonField(out, r, 'exampleValidPatch');
+  copyRunwayTelemetryField(out, r);
   if (typeof r.acceptingSubmissions === 'boolean') out.acceptingSubmissions = r.acceptingSubmissions;
   copySafeStringField(out, r, 'reason', 256);
   return {
@@ -267,6 +268,68 @@ function copyStringArrayField(out: Record<string, unknown>, src: Record<string, 
 function copyPublicJsonField(out: Record<string, unknown>, src: Record<string, unknown>, key: string): void {
   const v = sanitizePublicJson(src[key]);
   if (v !== undefined) out[key] = v;
+}
+
+function copyRunwayTelemetryField(out: Record<string, unknown>, src: Record<string, unknown>): void {
+  const v = sanitizeRunwayTelemetry(src.runwayTelemetry);
+  if (v) out.runwayTelemetry = v;
+}
+
+function sanitizeRunwayTelemetry(raw: unknown): Record<string, unknown> | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const r = raw as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  for (const key of [
+    'updatedAtEpoch',
+    'strictMinableRatioPpm',
+    'alreadySolvedRatioPpm',
+    'tooHardRatioPpm',
+    'acceptedFamilyEntropyPpm',
+    'acceptedFingerprintReusePpm',
+    'acceptedSelectorReusePpm',
+    'randomControlAccepts',
+    'randomControlAttempts',
+    'noopControlAccepts',
+    'noopControlAttempts',
+    'hillControlAccepts',
+    'hillControlAttempts',
+    'reserveRemaining',
+    'reserveAdded',
+    'activeChurn',
+    'oldCorpusDamageRejects',
+    'goldDamageRejects',
+    'acceptedOldCorpusDamageCount',
+    'acceptedGoldDamageCount',
+  ]) {
+    copyNonNegativeIntField(out, r, key);
+  }
+  for (const key of [
+    'activeLivePackFamilyDistribution',
+    'familyAttempts',
+    'familyAccepts',
+    'familyRejects',
+    'familyFirstRejectBuckets',
+    'fingerprintAttempts',
+    'fingerprintAccepts',
+  ]) {
+    const m = sanitizeTelemetryCountMap(r[key]);
+    if (m) out[key] = m;
+  }
+  return Object.keys(out).length > 0 ? out : null;
+}
+
+function sanitizeTelemetryCountMap(raw: unknown): Record<string, number> | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const keys = Object.keys(raw as Record<string, unknown>);
+  if (keys.length > 256) return null;
+  const out: Record<string, number> = {};
+  for (const key of keys) {
+    if (!/^[a-zA-Z0-9_:.:-]{1,96}$/.test(key) || FORBIDDEN_PUBLIC_KEY_RE.test(key)) return null;
+    const v = asNonNegativeInt((raw as Record<string, unknown>)[key]);
+    if (v === null) return null;
+    out[key] = v;
+  }
+  return Object.keys(out).length > 0 ? out : null;
 }
 
 function sanitizeStringArray(raw: unknown): string[] | null {

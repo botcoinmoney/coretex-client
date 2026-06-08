@@ -197,6 +197,7 @@ export interface CoreTexCoordinatorConfig {
   readonly activeSubstrateSurfaces?: readonly string[];
   readonly pipelineVersion?: string;
   readonly memoryIRSchemaVersion?: string;
+  readonly runwayTelemetry?: Record<string, unknown>;
   readonly baselineScorePpm?: number;
   readonly recentNoiseFloorPpm?: number;
   readonly rulesVersion?: number;
@@ -680,6 +681,7 @@ export class CoreTexCoordinatorCore {
       ...(this.unhealthyReason ? { reason: this.unhealthyReason } : {}),
       ...(this.config.pipelineVersion ? { pipelineVersion: this.config.pipelineVersion } : {}),
       ...(this.config.memoryIRSchemaVersion ? { memoryIRSchemaVersion: this.config.memoryIRSchemaVersion } : {}),
+      ...(this.config.runwayTelemetry ? { runwayTelemetry: this.config.runwayTelemetry } : {}),
       hiddenEvalWarning: 'hidden qrels / eval pack / epochSecret are NOT public',
       perMiner,
     };

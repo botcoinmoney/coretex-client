@@ -51,6 +51,29 @@ const ds = {
     activeSubstrateSurfaces: ['temporal_update', 'conflict_lifecycle', 'relation_category_routing',
                               'abstention_top1', 'evidence_bundle', 'validity_atom', 'scope_atom',
                               'entity_resolution_atom'],
+    runwayTelemetry: {
+      updatedAtEpoch: 0,
+      activeLivePackFamilyDistribution: { temporal_update: 12, validity_atom: 8, scope_atom: 6 },
+      strictMinableRatioPpm: 528000,
+      alreadySolvedRatioPpm: 250000,
+      tooHardRatioPpm: 222000,
+      acceptedFamilyEntropyPpm: 812000,
+      acceptedFingerprintReusePpm: 675000,
+      acceptedSelectorReusePpm: 640000,
+      familyAttempts: { temporal_update: 24, validity_atom: 18 },
+      familyAccepts: { temporal_update: 14, validity_atom: 7 },
+      randomControlAccepts: 0,
+      randomControlAttempts: 32,
+      hillControlAccepts: 0,
+      hillControlAttempts: 16,
+      reserveRemaining: 6909,
+      reserveAdded: 98,
+      activeChurn: 12,
+      oldCorpusDamageRejects: 4,
+      goldDamageRejects: 5,
+      acceptedOldCorpusDamageCount: 0,
+      acceptedGoldDamageCount: 0,
+    },
     acceptingSubmissions: true,
     perMiner: query.miner ? {
       address: query.miner, screenersThisEpoch: 0, remaining: 50, cap: 50,
@@ -104,10 +127,12 @@ describe('v0 coordinator data-source contract', () => {
       'activeFrontierRoot', 'pipelineVersion', 'allowedPatchTypes', 'patchWordBudget',
       'minImprovementPpm', 'screenerThresholdPpm', 'perMinerScreenerCap',
       'qualifiedScreenerPassesSinceLastStateAdvance', 'activeSubstrateSurfaces',
-      'acceptingSubmissions', 'perMiner',
+      'runwayTelemetry', 'acceptingSubmissions', 'perMiner',
     ]) {
       assert.ok(r.body[k] !== undefined, `status.${k} present`);
     }
+    assert.equal(r.body.runwayTelemetry.strictMinableRatioPpm, 528000);
+    assert.equal(r.body.runwayTelemetry.activeLivePackFamilyDistribution.validity_atom, 8);
     for (const k of ['address', 'screenersThisEpoch', 'remaining', 'cap', 'nextIndex', 'lastReceiptHash']) {
       assert.ok(r.body.perMiner[k] !== undefined, `status.perMiner.${k} present`);
     }

@@ -46,6 +46,34 @@ function makeFactoryOpts(overrides = {}) {
       nextStateAdvanceWorkBps: 30_000,
       activeSubstrateSurfaces: ['temporal_update', 'evidence_bundle'],
       allowedPatchTypes: [{ name: 'MEMORY_INDEX_UPDATE', byte: 2, wordIndexRange: [32, 383] }],
+      runwayTelemetry: {
+        updatedAtEpoch: 7,
+        activeLivePackFamilyDistribution: { temporal_update: 12, validity_atom: 8, scope_atom: 6 },
+        strictMinableRatioPpm: 528_000,
+        alreadySolvedRatioPpm: 250_000,
+        tooHardRatioPpm: 222_000,
+        acceptedFamilyEntropyPpm: 812_000,
+        acceptedFingerprintReusePpm: 675_000,
+        acceptedSelectorReusePpm: 640_000,
+        familyAttempts: { temporal_update: 24, validity_atom: 18 },
+        familyAccepts: { temporal_update: 14, validity_atom: 7 },
+        familyRejects: { threshold_block: 3, qwen_no_recovery: 5 },
+        fingerprintAttempts: { 'temporal_update:current_stale': 12 },
+        fingerprintAccepts: { 'temporal_update:current_stale': 7 },
+        randomControlAccepts: 0,
+        randomControlAttempts: 32,
+        noopControlAccepts: 0,
+        noopControlAttempts: 8,
+        hillControlAccepts: 0,
+        hillControlAttempts: 16,
+        reserveRemaining: 6909,
+        reserveAdded: 98,
+        activeChurn: 12,
+        oldCorpusDamageRejects: 4,
+        goldDamageRejects: 5,
+        acceptedOldCorpusDamageCount: 0,
+        acceptedGoldDamageCount: 0,
+      },
       acceptingSubmissions: true,
       substrate: { uri: `/coretex/substrate/${ROOT}` },
       perMiner: {
@@ -118,6 +146,11 @@ describe('createRetrievalDataSource — v0 canonical surface', () => {
     assert.equal(st.perMinerCap, undefined);
     assert.equal(st.allowedPatchTypes[0].byte, 2);
     assert.deepEqual(st.activeSubstrateSurfaces, ['temporal_update', 'evidence_bundle']);
+    assert.equal(st.runwayTelemetry.strictMinableRatioPpm, 528_000);
+    assert.deepEqual(st.runwayTelemetry.activeLivePackFamilyDistribution, { temporal_update: 12, validity_atom: 8, scope_atom: 6 });
+    assert.equal(st.runwayTelemetry.familyAttempts.validity_atom, 18);
+    assert.equal(st.runwayTelemetry.randomControlAccepts, 0);
+    assert.equal(st.runwayTelemetry.acceptedOldCorpusDamageCount, 0);
     assert.equal(st.acceptingSubmissions, true);
     assert.deepEqual(st.substrate, { uri: `/coretex/substrate/${ROOT}` });
     assert.ok(typeof st.statusVersion === 'string' && st.statusVersion.startsWith('0x'));
