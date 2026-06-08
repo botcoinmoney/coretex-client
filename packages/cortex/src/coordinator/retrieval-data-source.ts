@@ -168,8 +168,15 @@ function sanitizeStatusResponse(raw: unknown, manifestBundleHash: string): Recor
   copyNonNegativeIntField(out, r, 'nextStateAdvanceWorkBps');
   copyBytes32Field(out, r, 'workPolicyHash');
   copyBytes32Field(out, r, 'corpusRoot');
+  copyBytes32Field(out, r, 'parentStateRoot');
+  copyBytes32Field(out, r, 'baselineManifestHash');
+  copyBytes32Field(out, r, 'rotationManifestHash');
+  copyBytes32Field(out, r, 'corpusDeltaHash');
   copyBytes32Field(out, r, 'evalSeedCommit');
   copyNullableBytes32Field(out, r, 'activeFrontierRoot');
+  copyNonNegativeIntField(out, r, 'currentEpoch');
+  copySafeStringField(out, r, 'rotationManifestUrl', 1024);
+  copySafeStringField(out, r, 'corpusDeltaUrl', 1024);
   copySafeStringField(out, r, 'pipelineVersion');
   copySafeStringField(out, r, 'memoryIRSchemaVersion');
   copySafeStringField(out, r, 'hiddenEvalWarning', 512);
@@ -180,6 +187,8 @@ function sanitizeStatusResponse(raw: unknown, manifestBundleHash: string): Recor
   copyPublicJsonField(out, r, 'allowedPatchTypes');
   copyPublicJsonField(out, r, 'patchWordRanges');
   copyPublicJsonField(out, r, 'exampleValidPatch');
+  copyPublicJsonField(out, r, 'nextEpochReadiness');
+  copyPublicJsonField(out, r, 'lastEvolveDecision');
   copyRunwayTelemetryField(out, r);
   if (typeof r.acceptingSubmissions === 'boolean') out.acceptingSubmissions = r.acceptingSubmissions;
   copySafeStringField(out, r, 'reason', 256);

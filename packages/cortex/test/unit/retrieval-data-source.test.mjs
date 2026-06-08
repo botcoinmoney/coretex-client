@@ -33,8 +33,15 @@ function makeFactoryOpts(overrides = {}) {
       confirmedTransitionCount: 12,
       rulesVersion: 192,
       workPolicyHash: `0x${'66'.repeat(32)}`,
+      parentStateRoot: `0x${'21'.repeat(32)}`,
       corpusRoot: `0x${'77'.repeat(32)}`,
       activeFrontierRoot: `0x${'78'.repeat(32)}`,
+      baselineManifestHash: `0x${'79'.repeat(32)}`,
+      rotationManifestHash: `0x${'79'.repeat(32)}`,
+      corpusDeltaHash: `0x${'7a'.repeat(32)}`,
+      rotationManifestUrl: 'https://coretex-launch-artifacts-429971482539-us-east-2-an.s3.us-east-2.amazonaws.com/coretex/launch/v16/epoch-rotations/epoch-rotation-7.json',
+      corpusDeltaUrl: 'https://coretex-launch-artifacts-429971482539-us-east-2-an.s3.us-east-2.amazonaws.com/coretex/launch/v16/epoch-rotations/corpus-delta-epoch-7.json',
+      currentEpoch: 7,
       bundleHash: BUNDLE_HASH,
       coreVersionHash: BUNDLE_HASH,
       minImprovementPpm: 2500,
@@ -73,6 +80,12 @@ function makeFactoryOpts(overrides = {}) {
         goldDamageRejects: 5,
         acceptedOldCorpusDamageCount: 0,
         acceptedGoldDamageCount: 0,
+      },
+      nextEpochReadiness: { ready: true, blockers: [], checked: ['signed_corpus_delta'] },
+      lastEvolveDecision: {
+        chosenChurnFraction: 0.15,
+        reasons: ['base_churn', 'high_fingerprint_reuse'],
+        metrics: { strictMinableRatioPpm: 528_000, acceptedFingerprintReusePpm: 780_000 },
       },
       acceptingSubmissions: true,
       substrate: { uri: `/coretex/substrate/${ROOT}` },
@@ -136,9 +149,16 @@ describe('createRetrievalDataSource — v0 canonical surface', () => {
     const st = await ds.getStatus({ miner: `0x${'11'.repeat(20)}` });
 
     assert.equal(st.currentStateRoot, ROOT);
+    assert.equal(st.currentEpoch, 7);
     assert.equal(st.stateRoot, undefined);
+    assert.equal(st.parentStateRoot, `0x${'21'.repeat(32)}`);
     assert.equal(st.corpusRoot, `0x${'77'.repeat(32)}`);
     assert.equal(st.activeFrontierRoot, `0x${'78'.repeat(32)}`);
+    assert.equal(st.baselineManifestHash, `0x${'79'.repeat(32)}`);
+    assert.equal(st.rotationManifestHash, `0x${'79'.repeat(32)}`);
+    assert.equal(st.corpusDeltaHash, `0x${'7a'.repeat(32)}`);
+    assert.match(st.rotationManifestUrl, /epoch-rotation-7\.json$/);
+    assert.match(st.corpusDeltaUrl, /corpus-delta-epoch-7\.json$/);
     assert.equal(st.confirmedTransitionCount, 12);
     assert.equal(st.transitionCount, undefined);
     assert.equal(st.patchWordBudget, 4);
@@ -151,6 +171,8 @@ describe('createRetrievalDataSource — v0 canonical surface', () => {
     assert.equal(st.runwayTelemetry.familyAttempts.validity_atom, 18);
     assert.equal(st.runwayTelemetry.randomControlAccepts, 0);
     assert.equal(st.runwayTelemetry.acceptedOldCorpusDamageCount, 0);
+    assert.equal(st.nextEpochReadiness.ready, true);
+    assert.equal(st.lastEvolveDecision.chosenChurnFraction, 0.15);
     assert.equal(st.acceptingSubmissions, true);
     assert.deepEqual(st.substrate, { uri: `/coretex/substrate/${ROOT}` });
     assert.ok(typeof st.statusVersion === 'string' && st.statusVersion.startsWith('0x'));
