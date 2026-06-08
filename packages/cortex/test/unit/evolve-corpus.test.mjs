@@ -8,6 +8,7 @@
  */
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
+import { generateKeyPairSync } from 'node:crypto';
 import { evolveCorpusDelta } from '../../../../scripts/lib/evolve-corpus.mjs';
 import {
   applyCorpusDelta,
@@ -17,7 +18,11 @@ import {
   computeCorpusRoot,
   expectedSplitForRecord,
   isMemoryDocumentEventId,
+  parseCorpusDelta,
+  serializeCorpusDelta,
+  signCorpusDelta,
   splitForRecord,
+  verifyCorpusDeltaSignature,
 } from '../../dist/index.js';
 
 // minimal base logical corpus: 1 universe + 40 subjects, each with one prior temporal doc.
@@ -244,6 +249,40 @@ describe('Fix B — production delta/root path (mock embeddings): logical delta 
     const evolved = applyCorpusDelta(prevCorpus(0), d1);
     assert.equal(evolved.corpusRoot, d1.nextRoot, 'applyCorpusDelta reconstructs the delta nextRoot');
     assert.ok(d1.addedIds.length > 0);
+  });
+
+  test('signed corpus delta preserves live metadata through disk round-trip', () => {
+    const previousCorpus = prevCorpusWithBaseMemory(0);
+    const ld = evolveCorpusDelta({ baseLogical, epoch: 7, seed: 'frontier', churnFraction: 1.0 });
+    const additions = bridgeLogicalDeltaToProductionEvents({
+      previousCorpus,
+      logicalDelta: ld,
+      addedDocEmbeddings: new Map(ld.addedDocs.map((d) => [d.id, mockEmb()])),
+      addedQueryEmbeddings: new Map(ld.addedQueries.map((q) => [q.id, mockEmb()])),
+      biEncoder: { modelId: BI.modelId, revision: BI.revision, layout: LAYOUT },
+    });
+    const liveQuery = additions.find((e) => e.logicalFamily && e.band);
+    assert.ok(liveQuery, 'bridge must emit live query metadata');
+    const unsigned = buildCorpusDelta({
+      previousCorpus,
+      previousRootCache: previousCorpus.corpusRootCache,
+      additions,
+      removals: [],
+      epoch: 7,
+      labelingProvenance,
+    });
+    const kp = generateKeyPairSync('rsa', { modulusLength: 2048 });
+    const privateKeyPem = kp.privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
+    const publicKeyPem = kp.publicKey.export({ type: 'spki', format: 'pem' }).toString();
+    const signed = signCorpusDelta(unsigned, privateKeyPem, 'unit-key');
+    const parsed = parseCorpusDelta(serializeCorpusDelta(signed));
+    const parsedLiveQuery = parsed.addedRecords.find((e) => e.id === liveQuery.id);
+
+    assert.equal(parsedLiveQuery.logicalFamily, liveQuery.logicalFamily);
+    assert.equal(parsedLiveQuery.band, liveQuery.band);
+    assert.equal(verifyCorpusDeltaSignature(parsed, publicKeyPem), true);
+    const evolved = applyCorpusDelta(previousCorpus, parsed, { rootCache: previousCorpus.corpusRootCache, attachRootCache: true });
+    assert.equal(evolved.corpusRoot, signed.nextRoot);
   });
 
   test('package bridge emits tail-sortable live memory/query ids for incremental roots', () => {

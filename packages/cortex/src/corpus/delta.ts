@@ -245,19 +245,10 @@ export function parseCorpusDelta(raw: CorpusDeltaFileShape): CorpusDelta {
 }
 
 function eventToDisk(e: ProductionCorpusEvent): ProductionCorpusEventOnDisk {
+  const out = { ...e } as unknown as Record<string, unknown>;
+  delete out.embeddings;
   return {
-    id: e.id,
-    family: e.family,
-    domain: e.domain,
-    split: e.split,
-    queryText: e.queryText,
-    truthDocuments: e.truthDocuments,
-    hardNegatives: e.hardNegatives,
-    qrels: e.qrels,
-    protected: e.protected,
-    ...(e.temporal !== undefined ? { temporal: e.temporal } : {}),
-    ...(e.relations !== undefined ? { relations: e.relations } : {}),
-    provenance: e.provenance,
+    ...out,
     embeddings: {
       modelId: e.embeddings.modelId,
       revision: e.embeddings.revision,
@@ -266,7 +257,7 @@ function eventToDisk(e: ProductionCorpusEvent): ProductionCorpusEventOnDisk {
       perTruth: Object.fromEntries(Array.from(e.embeddings.perTruth.entries()).map(([k, v]) => [k, uint8ToHex(v)])),
       perNegative: Object.fromEntries(Array.from(e.embeddings.perNegative.entries()).map(([k, v]) => [k, uint8ToHex(v)])),
     },
-  };
+  } as unknown as ProductionCorpusEventOnDisk;
 }
 
 function eventFromDisk(e: ProductionCorpusEventOnDisk): ProductionCorpusEvent {

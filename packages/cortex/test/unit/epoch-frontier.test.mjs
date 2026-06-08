@@ -68,4 +68,40 @@ describe('epoch frontier live reserve injection', () => {
     assert.ok(s1.activeIds.has('scope_atom:2'));
     assert.ok(s1.activeIds.has('entity_resolution_atom:2'));
   });
+
+  test('C3 runtime state restores active/reserve continuity across process restarts', () => {
+    const ids0 = ['base:a', 'base:b', 'base:c', 'base:d', 'base:e', 'base:f'];
+    const f0 = makeEpochFrontier({
+      evalHiddenIds: ids0,
+      familyOf,
+      mode: 'C3',
+      activeWindow: 4,
+      minChurn: 2,
+      maxChurn: 4,
+      seed: 'frontier-test',
+    });
+    const s0 = f0.stepEpoch(0, null, null);
+    const state = f0.exportState();
+
+    const ids1 = [...ids0, 'validity_atom:3', 'scope_atom:3', 'entity_resolution_atom:3'];
+    const restored = makeEpochFrontier({
+      evalHiddenIds: ids1,
+      familyOf,
+      mode: 'C3',
+      activeWindow: 4,
+      minChurn: 2,
+      maxChurn: 4,
+      seed: 'frontier-test',
+      initialState: state,
+    });
+    assert.deepEqual([...restored.exportState().active].sort(), [...state.active].sort());
+    assert.equal(restored.addReserveIds(['validity_atom:3', 'scope_atom:3', 'entity_resolution_atom:3'], familyOf), 3);
+    const s1 = restored.stepEpoch(1, 20, 64);
+
+    assert.notEqual(s1.activeRoot, s0.activeRoot);
+    assert.equal(s1.churnRate, 3);
+    assert.ok(s1.activeIds.has('validity_atom:3'));
+    assert.ok(s1.activeIds.has('scope_atom:3'));
+    assert.ok(s1.activeIds.has('entity_resolution_atom:3'));
+  });
 });

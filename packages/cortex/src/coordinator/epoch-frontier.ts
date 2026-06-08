@@ -39,6 +39,7 @@ export interface EpochFrontierParams {
   ewmaHalfLife?: number | undefined;
   expectedYieldPerUnit?: number | undefined;
   maxRootDeltaPerEpoch?: number | undefined;
+  initialState?: EpochFrontierRuntimeState | undefined;
 }
 
 export interface EpochFrontierSnapshot {
@@ -57,11 +58,24 @@ export interface EpochFrontierSnapshot {
   retiredRoot: string;
 }
 
+export interface EpochFrontierRuntimeState {
+  readonly schemaVersion: 'coretex.epoch-frontier-state.v1';
+  readonly order: readonly string[];
+  readonly reservePtr: number;
+  readonly active: readonly (readonly [string, number])[];
+  readonly retired: readonly string[];
+  readonly cumulativeActivated: number;
+  readonly cumulativeRetired: number;
+  readonly initialized: boolean;
+  readonly injectedSinceLastStep: number;
+  readonly ewmaAccepts: number | null;
+}
+
 export function makeEpochFrontier({
   evalHiddenIds, familyOf, mode = 'off', activeWindow, churnRate = 4,
   maxAge = Infinity, lowAdvancesThreshold = 1, lowAdvancesBumpRate, seed = 'frontier',
   minChurn = 2, maxChurn = 12, targetAccepts = 2, headroomLowWatermark = 1, headroomHighWatermark = 3,
-  ewmaHalfLife = 3, expectedYieldPerUnit = 0.17, maxRootDeltaPerEpoch = 24,
+  ewmaHalfLife = 3, expectedYieldPerUnit = 0.17, maxRootDeltaPerEpoch = 24, initialState,
 }: EpochFrontierParams) {
   const groups = new Map<string, string[]>();
   for (const id of evalHiddenIds) {
@@ -77,15 +91,34 @@ export function makeEpochFrontier({
     for (const f of famNames) { const arr = groups.get(f)!; if (i < arr.length) { order.push(arr[i]!); any = true; } }
     if (!any) break;
   }
+  if (initialState) {
+    if (initialState.schemaVersion !== 'coretex.epoch-frontier-state.v1') {
+      throw new Error(`makeEpochFrontier: unsupported initialState schema ${initialState.schemaVersion}`);
+    }
+    const known = new Set(evalHiddenIds);
+    for (const id of initialState.order) {
+      if (!known.has(id)) throw new Error(`makeEpochFrontier: initialState order contains unknown id ${id}`);
+    }
+    for (const [id] of initialState.active) {
+      if (!known.has(id)) throw new Error(`makeEpochFrontier: initialState active contains unknown id ${id}`);
+    }
+    for (const id of initialState.retired) {
+      if (!known.has(id)) throw new Error(`makeEpochFrontier: initialState retired contains unknown id ${id}`);
+    }
+    order.length = 0;
+    order.push(...initialState.order);
+  }
   const orderIdx = new Map(order.map((id, i) => [id, i] as const));
   const K = Math.min(activeWindow ?? order.length, order.length);
 
-  let reservePtr = 0;
-  const active = new Map<string, number>();
-  const retired = new Set<string>();
-  let cumulativeActivated = 0, cumulativeRetired = 0, initialized = false;
-  let injectedSinceLastStep = 0;
-  let ewmaAccepts: number | null = null;
+  let reservePtr = initialState?.reservePtr ?? 0;
+  const active = new Map<string, number>(initialState?.active as readonly [string, number][] | undefined);
+  const retired = new Set<string>(initialState?.retired);
+  let cumulativeActivated = initialState?.cumulativeActivated ?? 0;
+  let cumulativeRetired = initialState?.cumulativeRetired ?? 0;
+  let initialized = initialState?.initialized ?? false;
+  let injectedSinceLastStep = initialState?.injectedSinceLastStep ?? 0;
+  let ewmaAccepts: number | null = initialState?.ewmaAccepts ?? null;
   const ewmaAlpha = 1 - Math.pow(0.5, 1 / Math.max(0.5, ewmaHalfLife));
 
   const activateNext = (n: number, epoch: number): number => {
@@ -198,10 +231,25 @@ export function makeEpochFrontier({
     return unseen.length;
   }
 
+  function exportState(): EpochFrontierRuntimeState {
+    return {
+      schemaVersion: 'coretex.epoch-frontier-state.v1',
+      order: [...order],
+      reservePtr,
+      active: [...active.entries()],
+      retired: [...retired],
+      cumulativeActivated,
+      cumulativeRetired,
+      initialized,
+      injectedSinceLastStep,
+      ewmaAccepts,
+    };
+  }
+
   // totalUnits is a LIVE getter — addReserveIds mutates `order` post-construction, so a
   // snapshot literal would go stale. Callers that read frontier.totalUnits get the current
   // length, not the genesis-time count.
-  return { stepEpoch, addReserveIds, order, orderIdx, K, get totalUnits() { return order.length; }, familyOrder: famNames };
+  return { stepEpoch, addReserveIds, exportState, order, orderIdx, K, get totalUnits() { return order.length; }, familyOrder: famNames };
 }
 
 interface CorpusEventLike { readonly id: string; readonly split?: string; readonly logicalFamily?: string; readonly family?: string }
