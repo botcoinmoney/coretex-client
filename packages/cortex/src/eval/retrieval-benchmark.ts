@@ -1204,12 +1204,15 @@ export async function scoreSubstrateAgainstQuery(
       : [];
     const conflictAtomsAdm = opts.enableConflictLifecycleAtoms !== false ? decoded.conflictLifecycleAtoms : [];
     const hasConflictAtomsAdm = conflictAtomsAdm.length > 0;
+    const hasNoiseSuppressAtomsAdm = evidenceAtomsAdm.some((a) => a.selector === POLICY_SELECTOR.ANSWER_DENSITY && a.action === 'suppress');
+    const hasNoiseSuppressionIntent = query.publicIntent?.atom === 'noise_suppression'
+      || /\b(?:retired draft|lexical noise|noise|distractor)\b/.test(qtext);
     // CONFLICT-INTENT-typed admission (the conflict analogue of relation-typed): conflict atoms fire only on
     // queries carrying public conflict/scope intent, so they stay silent on co-subject aspect/temporal queries.
     const conflictIntentGate = opts.policyConflictIntentAdmission === true;
     const queryHasConflictIntent = !conflictIntentGate
       || parseQueryConflictIntent(query.queryText ?? '', new Set((opts.policyEntityRegistry ?? []).flatMap((e) => e.names)));
-    if (querySubjects.size > 0 && (!policyRelationTyped || policyIntentTypes.size > 0 || hasConflictAtomsAdm)) {
+    if (querySubjects.size > 0 && (!policyRelationTyped || policyIntentTypes.size > 0 || hasConflictAtomsAdm || (hasNoiseSuppressAtomsAdm && hasNoiseSuppressionIntent))) {
       const eventByCorpusIdAdmit = corpusByCorpusId(corpus);
       const admitDocs = (ev: ProductionCorpusEvent) => {
         for (const td of ev.truthDocuments) {
@@ -1220,7 +1223,7 @@ export async function scoreSubstrateAgainstQuery(
           pool.set(td.id, { docId: td.id, embedding: emb, text: td.text, eventId: ev.id, memorySlot: null, isCurrentTruth: td.isCurrent, isStaleTruth: !td.isCurrent, sources: new Set<SourceTag>(['policyAdmitted']) });
         }
       };
-      const taggedSets: ReadonlyArray<{ conflict: boolean; atoms: ReadonlyArray<{ targetSlot: number }> }> = [
+      const taggedSets: ReadonlyArray<{ conflict: boolean; atoms: ReadonlyArray<{ targetSlot: number; selector?: number; action?: string }> }> = [
         { conflict: false, atoms: evidenceAtomsAdm },
         { conflict: true, atoms: conflictAtomsAdm },
       ];
@@ -1231,14 +1234,15 @@ export async function scoreSubstrateAgainstQuery(
           if (!eA) continue;
           const anchorSubjects = (eA.entityIds ?? []).filter((e) => !generic.has(e));
           if (!anchorSubjects.some((e) => querySubjects.has(e))) continue; // SELECTOR: entity match
+          const noiseSuppressAtom = atom.selector === POLICY_SELECTOR.ANSWER_DENSITY && atom.action === 'suppress' && hasNoiseSuppressionIntent;
           if (!conflict) {
             // Category-B (evidence routing): require the anchor to carry an intent-matched edge.
             const anchorEdges = (eA.relations ?? []).filter((rel) => edgeAdmissible(rel.edgeType));
-            if (policyRelationTyped && anchorEdges.length === 0) continue;
+            if (policyRelationTyped && anchorEdges.length === 0 && !noiseSuppressAtom) continue;
           }
           if (!selectorMatchedAnchorEvents.has(eA.id)) { selectorMatchedAnchorEvents.add(eA.id); policyAnchorsAdmitted++; }
           admitDocs(eA);                                  // admit the anchor itself (the conflict doc / bridge)
-          if (!conflict) {                                 // evidence routing admits its typed PUBLIC-edge reach
+          if (!conflict && !noiseSuppressAtom) {            // evidence routing admits its typed PUBLIC-edge reach
             for (const rel of eA.relations ?? []) {        // (conflict scope = the anchor's OWN docs only)
               if (!edgeAdmissible(rel.edgeType)) continue;
               const tgt = eventByCorpusIdAdmit.get(rel.other_id);
@@ -2109,6 +2113,9 @@ export async function scoreSubstrateAgainstQuery(
           if (!tgt || !docsByEventLocal.has(tgt.id)) continue;
           for (const d of docsByEventLocal.get(tgt.id)!) target.add(d);
           evidencePath.push(`${rel.edgeType}->${tgt.id}`);
+        }
+        if (atom.selector === POLICY_SELECTOR.ANSWER_DENSITY && atom.action === 'suppress') {
+          for (const d of docsByEventLocal.get(anchorEv.id) ?? []) target.add(d);
         }
         if (atom.action === 'bundle' || atom.action === 'include') for (const d of docsByEventLocal.get(anchorEv.id) ?? []) target.add(d);
         if (target.size === 0) continue;

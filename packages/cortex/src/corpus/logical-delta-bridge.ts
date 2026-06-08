@@ -162,7 +162,7 @@ export function bucketLogicalFamily(f: string): ProductionCorpusFamily {
   if (f === 'multi_session_bridge' || f === 'causal_memory_chain' || f === 'decision_provenance') return 'multi_hop_relation';
   if (f === 'conflict_lifecycle') return 'conflict_lifecycle';
   if (f === 'aspect_constraint') return 'aspect_constraint';
-  if (f === 'coreference_resolution') return 'coreference';
+  if (f === 'coreference' || f === 'coreference_resolution') return 'coreference';
   return 'near_collision';
 }
 

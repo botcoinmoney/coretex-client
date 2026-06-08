@@ -46,4 +46,26 @@ describe('epoch frontier live reserve injection', () => {
     assert.ok(s1.activeIds.has('scope_atom:1'));
     assert.ok(s1.activeIds.has('entity_resolution_atom:1'));
   });
+
+  test('C3 high-accept epochs still rotate newly injected live evals', () => {
+    const f = makeEpochFrontier({
+      evalHiddenIds: ['base:a', 'base:b', 'base:c', 'base:d', 'base:e', 'base:f'],
+      familyOf,
+      mode: 'C3',
+      activeWindow: 4,
+      minChurn: 2,
+      maxChurn: 4,
+      seed: 'frontier-test',
+    });
+    f.stepEpoch(0, null, null);
+    assert.equal(f.addReserveIds(['validity_atom:2', 'scope_atom:2', 'entity_resolution_atom:2'], familyOf), 3);
+    const s1 = f.stepEpoch(1, 20, 64);
+
+    assert.equal(s1.churnRate, 3);
+    assert.equal(s1.activated, 3);
+    assert.equal(s1.retired, 3);
+    assert.ok(s1.activeIds.has('validity_atom:2'));
+    assert.ok(s1.activeIds.has('scope_atom:2'));
+    assert.ok(s1.activeIds.has('entity_resolution_atom:2'));
+  });
 });

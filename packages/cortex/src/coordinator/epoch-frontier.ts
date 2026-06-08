@@ -143,6 +143,9 @@ export function makeEpochFrontier({
         rate = minChurn;
       }
     }
+    if (mode === 'C3' && injectedSinceLastStep > 0) {
+      rate = Math.max(rate, Math.min(maxChurn, Math.max(minChurn, injectedSinceLastStep)));
+    }
     rate = Math.min(rate, maxRootDeltaPerEpoch);
     rate = Math.min(rate, Math.max(0, order.length - reservePtr));
     ret += retireOldest(rate);

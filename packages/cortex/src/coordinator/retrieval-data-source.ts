@@ -9,11 +9,9 @@
  *   POST /coretex/submit
  *   GET  /coretex/receipt/:hash
  *
- * The status response folds in everything the legacy `/coretex/challenge` payload
- * carried (epoch pins, allowed patch types, screener threshold, etc.) PLUS the
- * miner-specific counters (perMinerScreenerCap, screenersThisEpoch, nextIndex,
- * lastReceiptHash, acceptingSubmissions). There is no separate challenge endpoint
- * in v0.
+ * The status response is the sole dynamic miner context surface: epoch pins,
+ * allowed patch types, screener threshold, miner counters, and
+ * acceptingSubmissions. There is no separate challenge endpoint in v0.
  */
 
 import { createHash } from 'node:crypto';
@@ -28,8 +26,7 @@ import type { CoreTexBundleManifest } from '../bundle/index.js';
 export interface RetrievalDataSourceOptions {
   readonly bundleManifest: CoreTexBundleManifest;
   readonly bundleHash: string;
-  /** Per-miner dynamic context (`query.miner` is the miner address). Folds in every
-   *  field the legacy challenge payload exposed. */
+  /** Per-miner dynamic context (`query.miner` is the miner address). */
   readonly getStatus: (query: Record<string, string | readonly string[] | undefined>) => Promise<unknown> | unknown;
   /** POST /coretex/submit handler. */
   readonly submit: (body: unknown) => Promise<unknown> | unknown;
@@ -56,13 +53,13 @@ export function createRetrievalDataSource(opts: RetrievalDataSourceOptions): Cor
       return sanitizeStatusResponse(await opts.getStatus(query), manifest.bundleHash);
     },
     async health() {
-      if (opts.health) return opts.health();
-      return {
+      const raw = opts.health ? await opts.health() : {
         ok: true,
         service: 'coretex',
         bundleHash: manifest.bundleHash.toLowerCase(),
         serverTime: new Date().toISOString(),
       };
+      return sanitizeHealthResponse(raw, manifest.bundleHash);
     },
   };
   if (opts.getSubstrate) (ds as Mutable).getSubstrate = opts.getSubstrate;
@@ -73,61 +70,6 @@ export function createRetrievalDataSource(opts: RetrievalDataSourceOptions): Cor
 }
 
 type Mutable = { -readonly [K in keyof CoreTexCoordinatorDataSource]: CoreTexCoordinatorDataSource[K] };
-
-function sanitizeChallengeResponse(raw: unknown, manifestBundleHash: string): Record<string, unknown> {
-  if (!raw || typeof raw !== 'object') {
-    return { error: 'coretex-challenge-malformed' };
-  }
-  const r = raw as Record<string, unknown>;
-  if (hasForbiddenPublicKey(r)) return { error: 'coretex-challenge-malformed' };
-  const lane = r.lane === undefined ? undefined : r.lane === 'coretex' ? 'coretex' : null;
-  const challengeId = asBytes32Hex(r.challengeId);
-  const expiresAt = asPosInt(r.expiresAt);
-  const parentStateRoot = asBytes32Hex(r.parentStateRoot);
-  const currentStateRoot = asBytes32Hex(r.currentStateRoot) ?? parentStateRoot;
-  const epochId = asNonNegativeInt(r.epochId);
-  const substrate = sanitizeSubstrateEnvelope(r.substrate);
-  const substrateAccess = sanitizeSubstrateAccess(r.substrateAccess);
-  const coreVersionHash = asBytes32Hex(r.coreVersionHash) ?? manifestBundleHash.toLowerCase();
-  const bundleHash = asBytes32Hex(r.bundleHash) ?? manifestBundleHash.toLowerCase();
-  if (lane === null || !parentStateRoot || !currentStateRoot || epochId === null || (!substrate && !substrateAccess)) {
-    return { error: 'coretex-challenge-malformed' };
-  }
-  const out: Record<string, unknown> = {
-    ...(lane ? { lane } : {}),
-    ...(challengeId ? { challengeId } : {}),
-    ...(expiresAt !== null ? { expiresAt } : {}),
-    epochId,
-    parentStateRoot,
-    currentStateRoot,
-    coreVersionHash,
-    bundleHash,
-    ...(substrate ? { substrate } : {}),
-    ...(substrateAccess ? { substrateAccess } : {}),
-  };
-  copyBytes32Field(out, r, 'corpusRoot');
-  copyNullableBytes32Field(out, r, 'activeFrontierRoot');
-  copySafeStringField(out, r, 'profileName');
-  copySafeStringField(out, r, 'pipelineVersion');
-  copySafeStringField(out, r, 'memoryIRSchemaVersion');
-  copySafeStringField(out, r, 'hiddenEvalWarning', 512);
-  copyNonNegativeIntField(out, r, 'patchWordBudget');
-  copyNonNegativeIntField(out, r, 'minImprovementPpm');
-  copyNonNegativeIntField(out, r, 'replayTolerancePpm');
-  copyNonNegativeIntField(out, r, 'screenerThresholdPpm');
-  // v0 canonical: perMinerScreenerCap only. The legacy `perMinerCap` alias is
-  // intentionally dropped here so a coordinator that still emits it will not have
-  // it propagated to the public response.
-  copyNonNegativeIntField(out, r, 'perMinerScreenerCap');
-  copyNonNegativeIntField(out, r, 'perMinerScreenerRemaining');
-  copyStringArrayField(out, r, 'activeSubstrateSurfaces');
-  copyPublicJsonField(out, r, 'allowedPatchTypes');
-  copyPublicJsonField(out, r, 'patchWordRanges');
-  copyPublicJsonField(out, r, 'corpusMeta');
-  copyPublicJsonField(out, r, 'workMultiplierBps');
-  copyPublicJsonField(out, r, 'exampleValidPatch');
-  return out;
-}
 
 function sanitizeSubmitResponse(raw: unknown): Record<string, unknown> {
   if (!raw || typeof raw !== 'object') {
@@ -142,11 +84,13 @@ function sanitizeSubmitResponse(raw: unknown): Record<string, unknown> {
   }
   const evalReportHash = asBytes32Hex(r.evalReportHash);
   const receipt = sanitizeReceiptEnvelope(r.receipt);
+  const transaction = sanitizeTransactionEnvelope(r.transaction);
   return {
     status: 'accepted',
     ...(patchHash ? { patchHash } : {}),
     ...(evalReportHash ? { evalReportHash } : {}),
     ...(receipt ? { receipt } : {}),
+    ...(transaction ? { transaction } : {}),
   };
 }
 
@@ -164,8 +108,7 @@ function sanitizeReceiptEnvelope(raw: unknown): Record<string, unknown> | undefi
   if (typeof r.keyId === 'string' && r.keyId.length <= 128) out.keyId = r.keyId;
   if (r.algorithm === 'RSA-SHA256' || r.algorithm === 'ECDSA-SHA256') out.algorithm = r.algorithm;
   if (typeof r.signature === 'string' && /^0x[0-9a-fA-F]+$/.test(r.signature)) out.signature = r.signature.toLowerCase();
-  // 'sig' is a common shortcut for {signature}; keep for backward-compat
-  // but only when it looks like a hex signature.
+  // Optional compact alias used by some signers; only hex signatures pass.
   if (typeof r.sig === 'string' && /^0x[0-9a-fA-F]+$/.test(r.sig)) out.sig = r.sig.toLowerCase();
   if (Array.isArray(r.signedFields) && r.signedFields.every((f) => typeof f === 'string')) {
     out.signedFields = r.signedFields.slice();
@@ -173,36 +116,15 @@ function sanitizeReceiptEnvelope(raw: unknown): Record<string, unknown> | undefi
   return Object.keys(out).length > 0 ? out : undefined;
 }
 
-/**
- * Strict-shape projection of a PatchReceivedNotice (see
- * `packages/cortex/src/coordinator/patch-received-notice.ts`). The notice
- * is the only seed-input artifact the coordinator publishes off-chain;
- * replay watchers depend on the exact field set. Refuse to pass through
- * anything else.
- */
-function sanitizePatchReceivedNotice(raw: unknown): Record<string, unknown> {
-  if (!raw || typeof raw !== 'object') {
-    return { error: 'coretex-patch-received-notice-malformed' };
-  }
+function sanitizeTransactionEnvelope(raw: unknown): { to: string; chainId: number; value: string; data: string } | null {
+  if (!raw || typeof raw !== 'object') return null;
   const r = raw as Record<string, unknown>;
-  const patchHash = asBytes32Hex(r.patchHash);
-  const receivedAtBlock = asNonNegativeInt(r.receivedAtBlock);
-  const receivedAtTimestamp = asNonNegativeInt(r.receivedAtTimestamp);
-  const coordinatorAddress =
-    typeof r.coordinatorAddress === 'string' && /^0x[0-9a-f]{40}$/.test(r.coordinatorAddress.toLowerCase())
-      ? r.coordinatorAddress.toLowerCase()
-      : null;
-  const signer = sanitizeReceiptEnvelope(r.signer);
-  if (!patchHash || receivedAtBlock === null || receivedAtTimestamp === null || !coordinatorAddress) {
-    return { error: 'coretex-patch-received-notice-malformed' };
-  }
-  return {
-    patchHash,
-    receivedAtBlock,
-    receivedAtTimestamp,
-    coordinatorAddress,
-    ...(signer ? { signer } : {}),
-  };
+  const to = typeof r.to === 'string' && /^0x[0-9a-fA-F]{40}$/i.test(r.to) ? r.to.toLowerCase().replace(/^0x/i, '0x') : null;
+  const chainId = asPosInt(r.chainId);
+  const value = typeof r.value === 'string' && /^(0|[1-9][0-9]*)$/.test(r.value) ? r.value : null;
+  const data = typeof r.data === 'string' && /^0x[0-9a-fA-F]*$/i.test(r.data) ? r.data.toLowerCase().replace(/^0x/i, '0x') : null;
+  if (!to || chainId === null || value === null || data === null) return null;
+  return { to, chainId, value, data };
 }
 
 function sanitizeStatusResponse(raw: unknown, manifestBundleHash: string): Record<string, unknown> {
@@ -211,36 +133,35 @@ function sanitizeStatusResponse(raw: unknown, manifestBundleHash: string): Recor
   }
   const r = raw as Record<string, unknown>;
   if (hasForbiddenPublicKey(r)) return { error: 'coretex-status-malformed' };
+  if (r.stateRoot !== undefined || r.transitionCount !== undefined) return { error: 'coretex-status-malformed' };
   const lane = r.lane === undefined ? undefined : r.lane === 'coretex' ? 'coretex' : null;
   const epochId = asNonNegativeInt(r.epochId);
-  const currentStateRoot = asBytes32Hex(r.currentStateRoot) ?? asBytes32Hex(r.stateRoot);
-  const stateRoot = asBytes32Hex(r.stateRoot) ?? currentStateRoot;
+  const currentStateRoot = asBytes32Hex(r.currentStateRoot);
   const coreVersionHash = asBytes32Hex(r.coreVersionHash) ?? manifestBundleHash.toLowerCase();
   const bundleHash = asBytes32Hex(r.bundleHash) ?? manifestBundleHash.toLowerCase();
   const substrate = sanitizeUriEnvelope(r.substrate);
-  const bundle = sanitizeUriEnvelope(r.bundle);
-  if ((r.substrate !== undefined && !substrate) || (r.bundle !== undefined && !bundle)) {
+  if (r.substrate !== undefined && !substrate) {
     return { error: 'coretex-status-malformed' };
   }
-  if (lane === null || epochId === null || !currentStateRoot || !stateRoot) {
+  if (lane === null || epochId === null || !currentStateRoot) {
     return { error: 'coretex-status-malformed' };
   }
   const out: Record<string, unknown> = {
     ...(lane ? { lane } : {}),
     epochId,
     currentStateRoot,
-    stateRoot,
     coreVersionHash,
     bundleHash,
     ...(substrate ? { substrate } : {}),
-    ...(bundle ? { bundle } : {}),
   };
   copyNonNegativeIntField(out, r, 'wordCount');
-  copyNonNegativeIntField(out, r, 'transitionCount');
+  copyNonNegativeIntField(out, r, 'confirmedTransitionCount');
   copyNonNegativeIntField(out, r, 'rulesVersion');
   copyNonNegativeIntField(out, r, 'minImprovementPpm');
   copyNonNegativeIntField(out, r, 'replayTolerancePpm');
   copyNonNegativeIntField(out, r, 'screenerThresholdPpm');
+  copyNonNegativeIntField(out, r, 'patchWordBudget');
+  copyNonNegativeIntField(out, r, 'perMinerScreenerCap');
   copyNonNegativeIntField(out, r, 'baselineScorePpm');
   copyNonNegativeIntField(out, r, 'recentNoiseFloorPpm');
   copyNonNegativeIntField(out, r, 'qualifiedScreenerPassesSinceLastStateAdvance');
@@ -249,14 +170,58 @@ function sanitizeStatusResponse(raw: unknown, manifestBundleHash: string): Recor
   copyBytes32Field(out, r, 'corpusRoot');
   copyBytes32Field(out, r, 'evalSeedCommit');
   copyNullableBytes32Field(out, r, 'activeFrontierRoot');
+  copySafeStringField(out, r, 'pipelineVersion');
+  copySafeStringField(out, r, 'memoryIRSchemaVersion');
+  copySafeStringField(out, r, 'hiddenEvalWarning', 512);
+  copyStringArrayField(out, r, 'activeSubstrateSurfaces');
   copyPublicJsonField(out, r, 'activeFrontier');
   copyPublicJsonField(out, r, 'corpus');
   copyPublicJsonField(out, r, 'perMiner');
+  copyPublicJsonField(out, r, 'allowedPatchTypes');
+  copyPublicJsonField(out, r, 'patchWordRanges');
+  copyPublicJsonField(out, r, 'exampleValidPatch');
+  if (typeof r.acceptingSubmissions === 'boolean') out.acceptingSubmissions = r.acceptingSubmissions;
+  copySafeStringField(out, r, 'reason', 256);
   return {
     ...out,
     // Lightweight poll-friendly change token for clients that can't use ETag.
     statusVersion: stableHashHex(out),
   };
+}
+
+function sanitizeHealthResponse(raw: unknown, manifestBundleHash: string): Record<string, unknown> {
+  if (!raw || typeof raw !== 'object') return { error: 'coretex-health-malformed' };
+  const r = raw as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  if (typeof r.ok === 'boolean') out.ok = r.ok;
+  copySafeStringField(out, r, 'service');
+  copySafeStringField(out, r, 'version');
+  copyNonNegativeIntField(out, r, 'epoch');
+  copyNonNegativeIntField(out, r, 'chainId');
+  copyNonNegativeIntField(out, r, 'confirmationDepth');
+  copyNonNegativeIntField(out, r, 'finalityLagBlocks');
+  copyBytes32Field(out, r, 'chainLiveRoot');
+  copyBytes32Field(out, r, 'confirmedLiveRoot');
+  copyBytes32Field(out, r, 'bundleHash');
+  if (!out.bundleHash && manifestBundleHash) out.bundleHash = manifestBundleHash.toLowerCase();
+  if (typeof r.acceptingSubmissions === 'boolean') out.acceptingSubmissions = r.acceptingSubmissions;
+  copySafeStringField(out, r, 'reason', 256);
+  copySafeStringField(out, r, 'serverTime', 64);
+
+  const pins = sanitizeEpochPins(r.epochPins);
+  if (pins) out.epochPins = pins;
+  return Object.keys(out).length > 0 ? out : { error: 'coretex-health-malformed' };
+}
+
+function sanitizeEpochPins(raw: unknown): Record<string, string> | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+  const out: Record<string, string> = {};
+  for (const k of ['parentStateRoot', 'coreVersionHash', 'corpusRoot', 'activeFrontierRoot', 'baselineManifestHash', 'hiddenSeedCommit']) {
+    const v = asBytes32Hex(r[k]);
+    if (v) out[k] = v;
+  }
+  return Object.keys(out).length > 0 ? out : null;
 }
 
 const FORBIDDEN_PUBLIC_KEY_RE = /qrel|truthdoc|hardnegativ|answerid|answer_id|epochsecret|epoch_secret|evalseed(?!commit)|eval_seed(?!_commit)|hiddenpack|hidden_pack|truth|relevance|failurestat/i;
@@ -302,20 +267,6 @@ function copyStringArrayField(out: Record<string, unknown>, src: Record<string, 
 function copyPublicJsonField(out: Record<string, unknown>, src: Record<string, unknown>, key: string): void {
   const v = sanitizePublicJson(src[key]);
   if (v !== undefined) out[key] = v;
-}
-
-function sanitizeSubstrateAccess(raw: unknown): { byRoot: string; wordCount?: number; packedBytes?: number } | null {
-  if (!raw || typeof raw !== 'object') return null;
-  const r = raw as Record<string, unknown>;
-  const byRoot = typeof r.byRoot === 'string' && /^\/coretex\/substrate\/0x[0-9a-fA-F]{64}$/.test(r.byRoot) ? r.byRoot : null;
-  if (!byRoot) return null;
-  const wordCount = asPosInt(r.wordCount);
-  const packedBytes = asPosInt(r.packedBytes);
-  return {
-    byRoot,
-    ...(wordCount !== null ? { wordCount } : {}),
-    ...(packedBytes !== null ? { packedBytes } : {}),
-  };
 }
 
 function sanitizeStringArray(raw: unknown): string[] | null {
@@ -364,27 +315,11 @@ function asSafeString(v: unknown, maxLen: number): string | null {
   return typeof v === 'string' && v.length > 0 && v.length <= maxLen ? v : null;
 }
 
-function sanitizeSubstrateEnvelope(raw: unknown): { encoding: 'coretex-packed-substrate-v1'; bytes?: string; uri?: string } | null {
-  if (!raw || typeof raw !== 'object') return null;
-  const r = raw as Record<string, unknown>;
-  if (r.encoding !== 'coretex-packed-substrate-v1') return null;
-  const bytes = typeof r.bytes === 'string' && /^0x[0-9a-fA-F]*$/.test(r.bytes) ? r.bytes.toLowerCase() : null;
-  const uri = typeof r.uri === 'string' && r.uri.startsWith('/coretex/substrate/') ? r.uri : null;
-  if (!bytes && !uri) return null;
-  return {
-    encoding: 'coretex-packed-substrate-v1',
-    ...(bytes ? { bytes } : {}),
-    ...(uri ? { uri } : {}),
-  };
-}
-
 function sanitizeUriEnvelope(raw: unknown): { uri: string } | null {
   if (!raw || typeof raw !== 'object') return null;
   const r = raw as Record<string, unknown>;
   if (typeof r.uri !== 'string') return null;
-  // Restrict to the immutable artifact endpoint shapes. A misbehaving host
-  // can't redirect clients at arbitrary /coretex/* paths (e.g. dashboards).
-  const allowed = /^\/coretex\/(substrate|bundle|patch|eval-report|corpus-delta)\/[0-9a-fA-Fx]+$/;
+  const allowed = /^\/coretex\/substrate\/0x[0-9a-fA-F]{64}$/;
   return allowed.test(r.uri) ? { uri: r.uri } : null;
 }
 

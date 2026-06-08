@@ -9,7 +9,7 @@
  */
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { deriveQueryPack, eventSatisfiesStratum, splitForRecord } from '../../dist/index.js';
+import { admitActiveLiveEvalEvents, deriveQueryPack, eventSatisfiesStratum, splitForRecord, verifyQueryPack } from '../../dist/index.js';
 
 const LAYOUT = { dim: 8, headerBytes: 9, quantization: 'int8' };
 function ev(id, family, ownerEntityId, ownerScoped) {
@@ -59,5 +59,42 @@ describe('deriveQueryPack on V2 families', () => {
     const pack = deriveQueryPack(3, '0x' + 'b7'.repeat(32), corpus, V2_PROFILE);
     const scoped = pack.events.filter((e) => e.ownerScoped === true && e.ownerEntityId);
     assert.ok(scoped.length > 0, 'pack carries owner-scoped events with ownerEntityId');
+  });
+
+  test('active live eval overlay admits newest active rows replayably', () => {
+    const seed = '0x' + 'c3'.repeat(32);
+    const activeProfile = { packSize: 0, quotas: [] };
+    const live = [
+      ev('zz_e000000000001_q_coref_old', 'coreference', 'e_u_live', true),
+      ev('zz_e000000000003_q_coref_new', 'coreference', 'e_u_live', true),
+      ev('zz_e000000000002_q_relation_mid', 'relation_lifecycle', 'e_u_live', true),
+      ev('zz_e000000000004_q_scope_new', 'scope_atom', 'e_u_live', true),
+    ].map((e) => ({ ...e, logicalFamily: e.family }));
+    const corpus2 = {
+      ...corpus,
+      events: [...corpus.events, ...live],
+      byId: new Map([...corpus.events, ...live].map((e) => [e.id, e])),
+    };
+    const basePack = deriveQueryPack(9, seed, corpus2, activeProfile);
+    const activeIds = new Set(live.map((e) => e.id));
+    const overlay = admitActiveLiveEvalEvents(basePack, corpus2, {
+      activeIds,
+      limit: 3,
+      familyPriority: ['coreference', 'relation_lifecycle', 'scope_atom'],
+    });
+
+    assert.deepEqual(overlay.pack.events.slice(0, 3).map((e) => e.id), [
+      'zz_e000000000003_q_coref_new',
+      'zz_e000000000002_q_relation_mid',
+      'zz_e000000000004_q_scope_new',
+    ]);
+    assert.equal(overlay.added, 3);
+    assert.equal(overlay.liveEvalInPack, 3);
+    assert.deepEqual(overlay.familyCounts, { coreference: 1, relation_lifecycle: 1, scope_atom: 1 });
+    assert.deepEqual(verifyQueryPack(overlay.pack, corpus2, activeProfile, {
+      activeIds,
+      limit: 3,
+      familyPriority: ['coreference', 'relation_lifecycle', 'scope_atom'],
+    }), { ok: true });
   });
 });

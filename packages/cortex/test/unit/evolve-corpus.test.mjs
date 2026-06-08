@@ -125,6 +125,48 @@ describe('Fix B — evolveCorpusDelta (deterministic live-update churn)', () => 
     }
     assert.ok(found, 'test fixture must generate at least one entity_resolution_atom query');
   });
+
+  test('v16 live churn supplies low-runway surface hard cases', () => {
+    const atomBase = { ...baseLogical, queries: [{ id: 'q_atom_seed', family: 'validity_atom' }] };
+    const totals = { coreference: 0, relation_lifecycle: 0, noise_suppression: 0, scope_atom: 0 };
+    const samples = {};
+    const relations = [];
+    for (let epoch = 1; epoch <= 4; epoch++) {
+      const d = evolveCorpusDelta({ baseLogical: atomBase, epoch, seed: 'low-surface-supply', churnFraction: 1.0 });
+      relations.push(...d.addedRelations);
+      for (const q of d.addedQueries) {
+        if (!(q.family in totals)) continue;
+        totals[q.family]++;
+        samples[q.family] ??= { query: q, delta: d };
+      }
+    }
+
+    for (const [family, count] of Object.entries(totals)) {
+      assert.ok(count > 0, `${family} should have live evolve query supply`);
+    }
+
+    const coref = samples.coreference;
+    assert.ok(coref.query.hardNegatives.length > 0, 'coreference query should have a plausible wrong-alias distractor');
+    assert.ok(coref.query.qrels.some((r) => r.role === 'alias_bridge' && r.relevance === 0.6));
+    assert.ok(relations.some((r) => r.type === 'coreference_of'), 'coreference docs should expose public coreference_of edges');
+
+    const lifecycle = samples.relation_lifecycle;
+    assert.ok(lifecycle.query.hardNegatives.some((n) => n.category === 'stale_relation_high_overlap'));
+    assert.ok(relations.some((r) => r.type === 'supersedes'), 'relation_lifecycle docs should expose public supersedes edges');
+
+    const noise = samples.noise_suppression;
+    assert.ok(noise.query.hardNegatives.some((n) => n.category === 'lexical_distractor_exact_terms'));
+    const noiseDocs = new Map(noise.delta.addedDocs.map((d) => [d.id, d]));
+    const noiseHard = noiseDocs.get(noise.query.hardNegatives[0].docId);
+    assert.match(noiseHard.text, /exact query wording|current approved owner/i);
+
+    const scope = samples.scope_atom;
+    const scopeDocs = new Map(scope.delta.addedDocs.map((d) => [d.id, d]));
+    const wrongScopeDoc = scopeDocs.get(scope.query.hardNegatives[0].docId);
+    assert.match(scope.query.queryText, /math project scope/);
+    assert.match(wrongScopeDoc.text, /math project from last week/);
+    assert.notEqual(scope.query.scope.projectId, wrongScopeDoc.scope.projectId);
+  });
 });
 
 describe('Fix B — production delta/root path (mock embeddings): logical delta → buildCorpusDelta → applyCorpusDelta → replay same root', () => {

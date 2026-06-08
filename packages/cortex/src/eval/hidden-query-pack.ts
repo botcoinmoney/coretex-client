@@ -30,6 +30,12 @@ export interface QueryPack {
   readonly events: readonly ProductionCorpusEvent[];
 }
 
+export interface ActiveLiveEvalPackOptions {
+  readonly activeIds: ReadonlySet<string>;
+  readonly limit: number;
+  readonly familyPriority?: readonly string[];
+}
+
 /**
  * Compute the hardness bucket for a corpus event.
  *
@@ -232,6 +238,83 @@ export function deriveQueryPack(
   };
 }
 
+function liveEpochFromEventId(id: string): number {
+  const m = /^zz_e(\d+)_/.exec(id);
+  return m ? Number(m[1]) : -1;
+}
+
+/**
+ * Canonical active-live overlay for measured packs.
+ *
+ * `deriveQueryPack` remains the deterministic base hidden pack. This helper is the
+ * replayable frontier-aware overlay: given the public/reconstructable active frontier
+ * set, it prepends newest active live eval queries before scoring. This replaces
+ * harness-only active live injection while keeping qrels/doc ids out of selection.
+ */
+export function admitActiveLiveEvalEvents(
+  pack: QueryPack,
+  corpus: ProductionCorpus,
+  opts: ActiveLiveEvalPackOptions,
+): { pack: QueryPack; added: number; liveEvalInPack: number; familyCounts: Record<string, number> } {
+  if (!opts.limit || opts.limit <= 0) return { pack, added: 0, liveEvalInPack: 0, familyCounts: {} };
+  const existing = new Set(pack.events.map((e) => e.id));
+  const activeIds = opts.activeIds;
+  const isActiveLiveEval = (e: ProductionCorpusEvent): boolean => activeIds.has(e.id)
+    && e.split === 'eval_hidden'
+    && e.id.startsWith('zz_e')
+    && !e.id.includes('_mem_');
+  const alreadyLive = pack.events.filter(isActiveLiveEval).length;
+  const priority = new Map((opts.familyPriority ?? []).map((f, i) => [f, i] as const));
+  const familyOf = (e: ProductionCorpusEvent): string => (e as ProductionCorpusEvent & { logicalFamily?: string }).logicalFamily ?? e.family ?? 'unknown';
+  const byFamily = new Map<string, ProductionCorpusEvent[]>();
+  for (const e of corpus.events) {
+    if (!isActiveLiveEval(e) || existing.has(e.id)) continue;
+    const fam = familyOf(e);
+    const rows = byFamily.get(fam) ?? [];
+    rows.push(e);
+    byFamily.set(fam, rows);
+  }
+  for (const rows of byFamily.values()) {
+    rows.sort((a, b) => {
+      const ea = liveEpochFromEventId(a.id);
+      const eb = liveEpochFromEventId(b.id);
+      if (ea !== eb) return eb - ea;
+      return a.id.localeCompare(b.id);
+    });
+  }
+  const familyOrder = [...byFamily.keys()].sort((a, b) => {
+    const pa = priority.get(a) ?? 999;
+    const pb = priority.get(b) ?? 999;
+    if (pa !== pb) return pa - pb;
+    return a.localeCompare(b);
+  });
+  const live: ProductionCorpusEvent[] = [];
+  for (let advanced = true; live.length < opts.limit && advanced;) {
+    advanced = false;
+    for (const fam of familyOrder) {
+      if (live.length >= opts.limit) break;
+      const rows = byFamily.get(fam);
+      const next = rows?.shift();
+      if (!next) continue;
+      live.push(next);
+      advanced = true;
+    }
+  }
+  const finalEvents = live.length ? [...live, ...pack.events] : pack.events;
+  const familyCounts: Record<string, number> = {};
+  for (const e of finalEvents) {
+    if (!isActiveLiveEval(e)) continue;
+    const fam = familyOf(e);
+    familyCounts[fam] = (familyCounts[fam] ?? 0) + 1;
+  }
+  return {
+    pack: { ...pack, events: finalEvents },
+    added: live.length,
+    liveEvalInPack: alreadyLive + live.length,
+    familyCounts,
+  };
+}
+
 function uint8ToHex(bytes: Uint8Array): string {
   let hex = '';
   for (const b of bytes) hex += b.toString(16).padStart(2, '0');
@@ -245,6 +328,7 @@ export function verifyQueryPack(
   pack: QueryPack,
   corpus: ProductionCorpus,
   profile: HiddenPackProfile,
+  activeLiveEval?: ActiveLiveEvalPackOptions,
 ): { ok: true } | { ok: false; reason: string } {
   if (pack.corpusRoot.toLowerCase() !== corpus.corpusRoot.toLowerCase()) {
     return { ok: false, reason: 'corpusRoot mismatch' };
@@ -252,6 +336,9 @@ export function verifyQueryPack(
   let recomputed: QueryPack;
   try {
     recomputed = deriveQueryPack(pack.epochId, pack.evalSeedHex, corpus, profile);
+    if (activeLiveEval) {
+      recomputed = admitActiveLiveEvalEvents(recomputed, corpus, activeLiveEval).pack;
+    }
   } catch (err) {
     return { ok: false, reason: `deriveQueryPack failed: ${(err as Error).message}` };
   }

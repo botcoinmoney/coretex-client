@@ -24,6 +24,7 @@ import {
   buildMemoryEventByDocId,
   evidenceBundleUnits,
   noiseSuppressionUnits,
+  relationLensUnitsForPackQuery,
   relationUnitsForEdges,
 } from '../../../../scripts/lib/v2-patch-families.mjs';
 import { baselineAtomHardness } from '../../../../scripts/lib/atom-hardness.mjs';
@@ -213,6 +214,119 @@ describe('atom v16 lockdown wiring', () => {
     assert.equal(index.get('d_live').id, mem.id);
     assert.equal(index.get('mem_d_live').id, mem.id);
     assert.equal(index.get(query.id).id, query.id);
+  });
+
+  test('pack-mined relation lens selects the active query target without encoding doc ids', () => {
+    const query = event({
+      id: 'q_coref',
+      family: 'coreference',
+      logicalFamily: 'coreference',
+      split: 'eval_hidden',
+      queryText: 'Which plan did the alias refer to?',
+      truthDocuments: [{ id: 'd_coref_target', text: 'target', isCurrent: true }],
+      hardNegatives: [{ id: 'd_coref_wrong', text: 'wrong alias', category: 'wrong_alias' }],
+      qrels: [
+        { documentId: 'd_coref_target', relevance: 1, role: 'direct' },
+        { documentId: 'd_coref_wrong', relevance: 0, role: 'wrong_alias' },
+      ],
+    });
+    const logicalQById = new Map([['q_coref', {
+      id: 'q_coref',
+      family: 'coreference',
+      qrels: [
+        { docId: 'd_coref_target', relevance: 1, role: 'direct' },
+        { docId: 'd_coref_wrong', relevance: 0, role: 'wrong_alias' },
+      ],
+      liveUpdateEpoch: 7,
+    }]]);
+    const direct = event({
+      id: 'mem_d_coref_target',
+      truthDocuments: [{ id: 'd_coref_target', text: 'target', isCurrent: true }],
+      relations: [{ edgeType: 'coreference_of', src: 'd_coref_target', dst: 'd_alias' }],
+    });
+    const hard = event({
+      id: 'mem_d_coref_wrong',
+      truthDocuments: [{ id: 'd_coref_wrong', text: 'wrong alias', isCurrent: true }],
+      relations: [{ edgeType: 'coreference_of', src: 'd_coref_wrong', dst: 'd_other_alias' }],
+    });
+    const units = relationLensUnitsForPackQuery({
+      pack: { events: [query] },
+      logicalQById,
+      eventByDocId: buildMemoryEventByDocId({ events: [direct, hard] }),
+      families: ['coreference'],
+      edgeTypes: ['coreference_of'],
+      entryOffset: 80,
+      skipDocIds: new Set(),
+    });
+
+    assert.equal(units.minedDocId, 'd_coref_target');
+    assert.equal(units.hardNegativeDocId, 'd_coref_wrong');
+    assert.equal(units.sourceQueryId, 'q_coref');
+    assert.deepEqual(units.directRelationEdges, ['coreference_of']);
+    assert.deepEqual({ indices: units.indices, newWords: units.newWords }, relationUnitsForEdges(['coreference_of'], 80));
+
+    const skipped = relationLensUnitsForPackQuery({
+      pack: { events: [query] },
+      logicalQById,
+      eventByDocId: buildMemoryEventByDocId({ events: [direct, hard] }),
+      families: ['coreference'],
+      edgeTypes: ['coreference_of'],
+      entryOffset: 81,
+      skipDocIds: new Set(['d_coref_target']),
+    });
+    assert.equal(skipped.indices.length, 0);
+    assert.equal(skipped.reason, 'no_relation_pack_query_available');
+  });
+
+  test('pack-mined relation lens supports relation_causal logical families', () => {
+    const query = event({
+      id: 'q_relation',
+      family: 'multi_hop_relation',
+      logicalFamily: 'decision_provenance',
+      split: 'eval_hidden',
+      queryText: 'Which evidence supports the decision?',
+      truthDocuments: [{ id: 'd_relation_target', text: 'target support', isCurrent: true }],
+      hardNegatives: [{ id: 'd_relation_wrong', text: 'plausible wrong cause', category: 'wrong_relation' }],
+      qrels: [
+        { documentId: 'd_relation_target', relevance: 1, role: 'direct' },
+        { documentId: 'd_relation_wrong', relevance: 0, role: 'wrong_relation' },
+      ],
+    });
+    const logicalQById = new Map([['q_relation', {
+      id: 'q_relation',
+      family: 'decision_provenance',
+      qrels: [
+        { docId: 'd_relation_target', relevance: 1, role: 'direct' },
+        { docId: 'd_relation_wrong', relevance: 0, role: 'wrong_relation' },
+      ],
+      liveUpdateEpoch: 11,
+    }]]);
+    const direct = event({
+      id: 'mem_d_relation_target',
+      truthDocuments: [{ id: 'd_relation_target', text: 'target support', isCurrent: true }],
+      relations: [{ edgeType: 'supports', src: 'd_relation_target', dst: 'd_decision' }],
+    });
+    const hard = event({
+      id: 'mem_d_relation_wrong',
+      truthDocuments: [{ id: 'd_relation_wrong', text: 'wrong cause', isCurrent: true }],
+      relations: [{ edgeType: 'causes', src: 'd_relation_wrong', dst: 'd_decision' }],
+    });
+    const units = relationLensUnitsForPackQuery({
+      pack: { events: [query] },
+      logicalQById,
+      eventByDocId: buildMemoryEventByDocId({ events: [direct, hard] }),
+      families: ['multi_session_bridge', 'causal_memory_chain', 'decision_provenance', 'multi_hop_relation'],
+      edgeTypes: ['supports', 'causes'],
+      entryOffset: 4,
+      skipDocIds: new Set(),
+    });
+
+    assert.equal(units.minedDocId, 'd_relation_target');
+    assert.equal(units.hardNegativeDocId, 'd_relation_wrong');
+    assert.equal(units.sourceQueryId, 'q_relation');
+    assert.equal(units.sourceFamily, 'decision_provenance');
+    assert.equal(units.edgeType, 'supports');
+    assert.deepEqual({ indices: units.indices, newWords: units.newWords }, relationUnitsForEdges(['supports'], 4));
   });
 
   test('multi-anchor atom patches compile disjoint in-family MemoryIndex slots', () => {

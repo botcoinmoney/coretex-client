@@ -14,9 +14,8 @@
  *    `/coretex/corpus-delta/:epoch`, `/coretex/bundle/*`) consistently return
  *    404 `coretex-not-found`.
  *
- * The status payload now folds in every field the legacy `/coretex/challenge`
- * exposed, plus per-miner counters; the canonical naming is
- * `perMinerScreenerCap` (the legacy `perMinerCap` alias has been removed).
+ * The status payload carries all dynamic miner context plus per-miner counters;
+ * the canonical naming is `perMinerScreenerCap` (`perMinerCap` is removed).
  */
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
@@ -98,7 +97,7 @@ describe('v0 coordinator data-source contract', () => {
     });
   }
 
-  test('status carries every legacy-challenge field + per-miner counters', async () => {
+  test('status carries dynamic miner context + per-miner counters', async () => {
     const r = await handle({ method: 'GET', path: '/coretex/status', query: { miner: MINER } });
     for (const k of [
       'epochId', 'currentStateRoot', 'bundleHash', 'coreVersionHash', 'corpusRoot',
@@ -115,9 +114,11 @@ describe('v0 coordinator data-source contract', () => {
     assert.equal(r.body.perMinerScreenerCap, r.body.perMiner.cap, 'cap matches across status surfaces');
   });
 
-  test('status NEVER exposes the legacy perMinerCap alias', async () => {
+  test('status NEVER exposes the removed perMinerCap alias', async () => {
     const r = await handle({ method: 'GET', path: '/coretex/status', query: { miner: MINER } });
     assert.equal(r.body.perMinerCap, undefined, 'no perMinerCap key in status body');
+    assert.equal(r.body.stateRoot, undefined, 'no stateRoot alias in status body');
+    assert.equal(r.body.transitionCount, undefined, 'no transitionCount alias in status body');
   });
 
   test('health exposes coord version + epoch + chain + pins (no miner-specific data)', async () => {

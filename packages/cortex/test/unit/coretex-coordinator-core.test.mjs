@@ -28,7 +28,7 @@ import assert from 'node:assert/strict';
 import {
   CoreTexCoordinatorCore,
 } from '../../dist/coordinator/coretex-coordinator-core.js';
-import { merkleizeState, bytesToHex, applyPatch, decodePatch, computePatchHash } from '../../dist/index.js';
+import { merkleizeState, bytesToHex, applyPatch, decodePatch, encodePatch, computePatchHash } from '../../dist/index.js';
 
 // ── helpers ───────────────────────────────────────────────────────────────
 const GENESIS = { words: new Array(1024).fill(0n) };
@@ -59,6 +59,15 @@ const baseConfig = {
   },
   confirmationDepth: 4,
   receiptTtlSec: 60,
+  perMinerScreenerCap: 50,
+  screenerThresholdPpm: 355,
+  minImprovementPpm: 2500,
+  replayTolerancePpm: 200,
+  patchWordBudget: 4,
+  rulesVersion: 192,
+  workPolicyHash: '0x' + '66'.repeat(32),
+  allowedPatchTypes: [{ name: 'MEMORY_INDEX_UPDATE', byte: 255, wordIndexRange: [32, 383] }],
+  activeSubstrateSurfaces: ['temporal_update', 'evidence_bundle'],
 };
 
 class MockChain {
@@ -74,6 +83,8 @@ class MockChain {
     this.blockHashes = opts.blockHashes ?? new Map(); // blockNumber -> hash
     this.regEpoch = opts.regEpoch ?? { liveStateRoot: GENESIS_ROOT, transitionCount: 0 };
     this.epochStartBlock = opts.epochStartBlock ?? 100;
+    this.minerCounters = opts.minerCounters ?? { screenersThisEpoch: 0, nextIndex: 0n, lastReceiptHash: '0x' + '00'.repeat(32) };
+    this.qualified = opts.qualified ?? 0;
   }
   async getBlockNumber() { return this.head; }
   async getBlockHashAt(n) { return this.blockHashes.get(n) ?? null; }
@@ -88,9 +99,17 @@ class MockChain {
   async getV4CoordinatorSigner() { return this.signer; }
   async getV4CoreTexRegistry() { return this.registryAddr; }
   async getChainId() { return this.chainId; }
+  async getMinerCoreTexCounters() { return this.minerCounters; }
+  async getQualifiedScreenerPassesSinceLastStateAdvance() { return this.qualified; }
 }
 function loadGenesis() { return { words: [...GENESIS.words] }; }
 const evaluator = { scorePatch: () => ({ outcome: 'reject', code: 'noop', reason: 'no-op' }) };
+const signer = {
+  signCoreTexReceipt: ({ receipt }) => ({
+    signature: '0x' + '5a'.repeat(65),
+    transactionData: '0x' + receipt.patchHash.slice(2, 10),
+  }),
+};
 
 // Stateful event chain builder. Maintains running state across events so each
 // new event has parent = previous newRoot.
@@ -131,6 +150,18 @@ function buildEvent({ transitionIndex = 0, parent = GENESIS_ROOT, blockNumber, b
   if (parent !== GENESIS_ROOT) throw new Error('buildEvent: use EventChain for non-genesis parent');
   for (let i = 0; i < transitionIndex; i++) c.next({ blockNumber: 0, blockHash: '0x' + 'aa'.repeat(32) });
   return c.next({ blockNumber, blockHash, miner });
+}
+
+function rewritePatchScoreDelta(patchHex, deltaPpm) {
+  const decoded = decodePatch(hexToBytes(patchHex));
+  return bytesToHex(encodePatch({ ...decoded, scoreDelta: BigInt(deltaPpm) }));
+}
+
+function hexToBytes(h) {
+  const s = h.replace(/^0x/, '');
+  const out = new Uint8Array(s.length / 2);
+  for (let i = 0; i < out.length; i++) out[i] = parseInt(s.slice(i * 2, i * 2 + 2), 16);
+  return out;
 }
 
 describe('CoreTexCoordinatorCore — boot wiring gates', () => {
@@ -184,6 +215,24 @@ describe('CoreTexCoordinatorCore — chain-confirmed-only semantics', () => {
     assert.equal(s.unhealthyReason, null);
   });
 
+  test('mid-run epoch rollover disables signing with CoordEpochMismatch', async () => {
+    const chain = new MockChain({ head: 1000 });
+    const coord = new CoreTexCoordinatorCore(baseConfig, chain, loadGenesis, evaluator, signer);
+    await coord.boot();
+    chain.v4Epoch = EPOCH + 1n;
+    await coord.tick();
+    const s = coord.getState();
+    assert.equal(s.signingEnabled, false);
+    assert.match(s.unhealthyReason, /CoordEpochMismatch/);
+    const rejected = await coord.submit({
+      patchBytesHex: buildEvent({ blockNumber: 500, blockHash: '0x' + '55'.repeat(32) }).compactPatchBytes,
+      parentStateRoot: GENESIS_ROOT,
+      minerAddress: '0x' + 'aa'.repeat(20),
+    });
+    assert.equal(rejected.code, 'CoordEpochMismatch');
+    assert.equal(coord.getMetrics().epochMismatchCount >= 1, true);
+  });
+
   test('startup replay applies events through safeHead, not latest', async () => {
     // head = 1000, depth = 4 → safeHead = 996
     // events at blocks 500 (safe), 998 (UNCONFIRMED, > safeHead)
@@ -217,6 +266,37 @@ describe('CoreTexCoordinatorCore — chain-confirmed-only semantics', () => {
     assert.equal(s.transitionCount, 2);
     assert.equal(s.liveRoot.toLowerCase(), ev1.newRoot.toLowerCase());
     assert.equal(s.signingEnabled, true);
+  });
+
+  test('chain-ahead finality lag disables submissions until confirmed replay catches up', async () => {
+    const chainGen = new EventChain();
+    const ev0 = chainGen.next({ blockNumber: 998, blockHash: '0x' + '98'.repeat(32) });
+    const chain = new MockChain({
+      head: 1000,
+      events: [ev0],
+      regEpoch: { liveStateRoot: ev0.newRoot, transitionCount: 1 },
+    });
+    const coord = new CoreTexCoordinatorCore(baseConfig, chain, loadGenesis, evaluator, signer);
+    await coord.boot();
+    let s = coord.getState();
+    assert.equal(s.transitionCount, 0, 'unconfirmed event not applied at boot');
+    assert.equal(s.signingEnabled, false, 'coord refuses to sign while chain root is ahead of confirmed root');
+    assert.match(s.unhealthyReason, /CoordAwaitingFinality/);
+
+    const rejected = await coord.submit({
+      patchBytesHex: ev0.compactPatchBytes,
+      parentStateRoot: GENESIS_ROOT,
+      minerAddress: '0x' + 'aa'.repeat(20),
+    });
+    assert.equal(rejected.code, 'CoordAwaitingFinality');
+
+    chain.head = 1005; // safeHead = 1001, ev0 is now confirmed
+    chain.blockHashes.set(998, ev0.blockHash);
+    await coord.tick();
+    s = coord.getState();
+    assert.equal(s.transitionCount, 1);
+    assert.equal(s.signingEnabled, true);
+    assert.equal(s.unhealthyReason, null);
   });
 });
 
@@ -274,6 +354,56 @@ describe('CoreTexCoordinatorCore — reorg detection + rollback', () => {
     assert.equal(after.snapshotCount, 1);
     assert.equal(after.stateByRootSize, 2, 'reorged-branch substrate pruned');
   });
+
+  test('reorg of first advance rolls back to epoch parent and unconfirms receipt', async () => {
+    const ev = buildEvent({ blockNumber: 500, blockHash: '0x' + '55'.repeat(32) });
+    const rewritten = rewritePatchScoreDelta(ev.compactPatchBytes, 3000);
+    const signedHash = computePatchHash(hexToBytes(rewritten)).toLowerCase();
+    const evalAdvance = {
+      scorePatch: () => ({
+        outcome: 'state_advance',
+        deterministicDeltaPpm: 3000,
+        evalReportHash: '0x' + 'e3'.repeat(32),
+        artifactHash: '0x' + 'a3'.repeat(32),
+        scoreBeforePpm: 100,
+        scoreAfterPpm: 3100,
+        rewrittenPatchBytesHex: rewritten,
+      }),
+    };
+    const chain = new MockChain({
+      head: 200,
+      regEpoch: { liveStateRoot: GENESIS_ROOT, transitionCount: 0 },
+      blockHashes: new Map(),
+    });
+    const coord = new CoreTexCoordinatorCore(baseConfig, chain, loadGenesis, evalAdvance, signer);
+    await coord.boot();
+    const out = await coord.submit({
+      patchBytesHex: ev.compactPatchBytes,
+      parentStateRoot: GENESIS_ROOT,
+      minerAddress: '0x' + 'aa'.repeat(20),
+    });
+
+    const landed = { ...ev, blockNumber: 300n, blockHash: '0x' + '66'.repeat(32),
+      patchHash: signedHash, compactPatchBytes: rewritten, newRoot: out.newStateRoot };
+    chain.events.push(landed);
+    chain.blockHashes.set(300, landed.blockHash);
+    chain.head = 400;
+    chain.regEpoch = { liveStateRoot: out.newStateRoot, transitionCount: 1 };
+    await coord.tick();
+    assert.equal(coord.getReceiptByHash(signedHash).body.confirmedOnChain, true);
+    assert.ok(coord.getSubstrate(out.newStateRoot), 'advanced substrate is cached before reorg');
+
+    chain.blockHashes.set(300, '0x' + 'ff'.repeat(32));
+    chain.events = [];
+    chain.regEpoch = { liveStateRoot: GENESIS_ROOT, transitionCount: 0 };
+    await coord.tick();
+    assert.equal(coord.getState().liveRoot.toLowerCase(), GENESIS_ROOT.toLowerCase());
+    assert.equal(coord.getSubstrate(out.newStateRoot), null, 'reorged root pruned');
+    const lookup = coord.getReceiptByHash(signedHash);
+    assert.equal(lookup.status, 200);
+    assert.equal(lookup.body.pendingState, 'pending');
+    assert.equal(lookup.body.confirmedOnChain, false);
+  });
 });
 
 describe('CoreTexCoordinatorCore — pending receipt lifecycle', () => {
@@ -292,7 +422,7 @@ describe('CoreTexCoordinatorCore — pending receipt lifecycle', () => {
     coord.registerPending(p, env);
     await coord.tick(); // triggers gcPending
     const s = coord.getState();
-    assert.equal(s.pendingCount, 1, 'pending record kept but state moved');
+    assert.equal(s.pendingCount, 0, 'expired pending record swept');
     // Receipt lookup for the now-expired record returns 404
     const lookup = coord.getReceiptByHash(p.signedPatchHash);
     assert.equal(lookup.status, 404);
@@ -337,6 +467,189 @@ describe('CoreTexCoordinatorCore — pending receipt lifecycle', () => {
     assert.equal(r.status, 409);
     assert.equal(r.body.code, 'PendingReceiptStale');
     assert.equal(r.body.transaction, undefined, 'no broadcastable transaction handed back');
+  });
+
+  test('screener receipt cache and dedup expire without lookup', async () => {
+    const ev = buildEvent({ blockNumber: 500, blockHash: '0x' + '55'.repeat(32) });
+    const evalOk = {
+      scorePatch: () => ({
+        outcome: 'screener_pass',
+        deterministicDeltaPpm: 500,
+        evalReportHash: '0x' + 'e1'.repeat(32),
+        artifactHash: '0x' + 'a1'.repeat(32),
+      }),
+    };
+    const chain = new MockChain({ head: 1000 });
+    const coord = new CoreTexCoordinatorCore({ ...baseConfig, receiptTtlSec: 1 }, chain, loadGenesis, evalOk, signer);
+    await coord.boot();
+    const body = {
+      patchBytesHex: ev.compactPatchBytes,
+      parentStateRoot: GENESIS_ROOT,
+      minerAddress: '0x' + 'aa'.repeat(20),
+    };
+    const first = await coord.submit(body);
+    assert.equal(first.status, 'accepted');
+    const duplicate = await coord.submit(body);
+    assert.equal(duplicate.code, 'DuplicateCoreTexPatch');
+    await new Promise((resolve) => setTimeout(resolve, 1100));
+    await coord.tick();
+    assert.equal(coord.getReceiptByHash(first.patchHash).status, 404);
+    const second = await coord.submit(body);
+    assert.equal(second.status, 'accepted');
+    assert.equal(coord.getMetrics().receiptExpiryCount >= 1, true);
+  });
+});
+
+describe('CoreTexCoordinatorCore — production submit path', () => {
+  test('submit runs evaluator + signer, caches screener receipt, and keeps live root unchanged', async () => {
+    const ev = buildEvent({ blockNumber: 500, blockHash: '0x' + '55'.repeat(32) });
+    const calls = [];
+    const evalOk = {
+      scorePatch: (input) => {
+        calls.push(input);
+        return {
+          outcome: 'screener_pass',
+          deterministicDeltaPpm: 500,
+          evalReportHash: '0x' + 'e1'.repeat(32),
+          artifactHash: '0x' + 'a1'.repeat(32),
+        };
+      },
+    };
+    const chain = new MockChain({ head: 1000, minerCounters: { screenersThisEpoch: 2, nextIndex: 9n, lastReceiptHash: '0x' + '09'.repeat(32) } });
+    const coord = new CoreTexCoordinatorCore(baseConfig, chain, loadGenesis, evalOk, signer);
+    await coord.boot();
+    const out = await coord.submit({
+      patchBytesHex: ev.compactPatchBytes,
+      parentStateRoot: GENESIS_ROOT,
+      minerAddress: '0x' + 'aa'.repeat(20),
+    });
+    assert.equal(out.status, 'accepted');
+    assert.equal(out.outcome, 'SCREENER_PASS');
+    assert.equal(out.transaction.to, V4_ADDR.toLowerCase());
+    assert.equal(out.perMinerScreenerCount, 3);
+    assert.equal(coord.getState().liveRoot.toLowerCase(), GENESIS_ROOT.toLowerCase());
+    assert.equal(calls.length, 1);
+    const lookup = coord.getReceiptByHash(out.patchHash);
+    assert.equal(lookup.status, 200);
+    assert.equal(lookup.body.confirmedOnChain, false);
+  });
+
+  test('state advance submit stores pending by original and signed hashes, then confirms from chain event', async () => {
+    const ev = buildEvent({ blockNumber: 500, blockHash: '0x' + '55'.repeat(32) });
+    const rewritten = rewritePatchScoreDelta(ev.compactPatchBytes, 3000);
+    const signedHash = computePatchHash(hexToBytes(rewritten)).toLowerCase();
+    const evalAdvance = {
+      scorePatch: () => ({
+        outcome: 'state_advance',
+        deterministicDeltaPpm: 3000,
+        evalReportHash: '0x' + 'e2'.repeat(32),
+        artifactHash: '0x' + 'a2'.repeat(32),
+        scoreBeforePpm: 100,
+        scoreAfterPpm: 3100,
+        rewrittenPatchBytesHex: rewritten,
+      }),
+    };
+    const chain = new MockChain({ head: 1000, qualified: 25 });
+    const coord = new CoreTexCoordinatorCore(baseConfig, chain, loadGenesis, evalAdvance, signer);
+    await coord.boot();
+    const out = await coord.submit({
+      patchBytesHex: ev.compactPatchBytes,
+      parentStateRoot: GENESIS_ROOT,
+      minerAddress: '0x' + 'aa'.repeat(20),
+    });
+    assert.equal(out.status, 'accepted');
+    assert.equal(out.outcome, 'STATE_ADVANCE');
+    assert.equal(out.patchHash, signedHash);
+    assert.notEqual(out.patchHash, ev.patchHash);
+    assert.equal(coord.getState().liveRoot.toLowerCase(), GENESIS_ROOT.toLowerCase(), 'signing does not roll state forward');
+
+    assert.equal(coord.getReceiptByHash(ev.patchHash).status, 200, 'original hash lookup works');
+    assert.equal(coord.getReceiptByHash(signedHash).status, 200, 'signed hash lookup works');
+
+    const landed = { ...ev, blockNumber: 1001n, blockHash: '0x' + '01'.repeat(32),
+      patchHash: signedHash, compactPatchBytes: rewritten, newRoot: out.newStateRoot };
+    chain.events.push(landed);
+    chain.blockHashes.set(1001, landed.blockHash);
+    chain.head = 1010;
+    chain.regEpoch = { liveStateRoot: out.newStateRoot, transitionCount: 1 };
+    await coord.tick();
+    assert.equal(coord.getState().liveRoot.toLowerCase(), out.newStateRoot.toLowerCase());
+    const confirmed = coord.getReceiptByHash(signedHash);
+    assert.equal(confirmed.status, 200);
+    assert.equal(confirmed.body.confirmedOnChain, true);
+  });
+
+  test('submit rejects unknown body keys before evaluation', async () => {
+    const ev = buildEvent({ blockNumber: 500, blockHash: '0x' + '55'.repeat(32) });
+    const calls = [];
+    const evalOk = { scorePatch: () => { calls.push('eval'); return { outcome: 'reject', code: 'noop', reason: 'noop' }; } };
+    const chain = new MockChain({ head: 1000 });
+    const coord = new CoreTexCoordinatorCore(baseConfig, chain, loadGenesis, evalOk, signer);
+    await coord.boot();
+    const out = await coord.submit({
+      patchBytesHex: ev.compactPatchBytes,
+      parentStateRoot: GENESIS_ROOT,
+      minerAddress: '0x' + 'aa'.repeat(20),
+      junk: 'x',
+    });
+    assert.equal(out.code, 'BODY_UNKNOWN_KEY');
+    assert.deepEqual(calls, []);
+  });
+
+  test('evaluator exceptions and malformed accepted scores become structured rejections', async () => {
+    const ev = buildEvent({ blockNumber: 500, blockHash: '0x' + '55'.repeat(32) });
+    const body = {
+      patchBytesHex: ev.compactPatchBytes,
+      parentStateRoot: GENESIS_ROOT,
+      minerAddress: '0x' + 'aa'.repeat(20),
+    };
+    const chain = new MockChain({ head: 1000 });
+    const throwsEval = { scorePatch: () => { throw new Error('secret detail'); } };
+    const coord = new CoreTexCoordinatorCore(baseConfig, chain, loadGenesis, throwsEval, signer);
+    await coord.boot();
+    const failed = await coord.submit(body);
+    assert.equal(failed.code, 'EvalFailure');
+    assert.equal(failed.reason, 'evaluator failed');
+    assert.equal(coord.getMetrics().evalFailureCount, 1);
+
+    const badDelta = {
+      scorePatch: () => ({
+        outcome: 'state_advance',
+        deterministicDeltaPpm: 5000,
+        evalReportHash: '0x' + 'e2'.repeat(32),
+        artifactHash: '0x' + 'a2'.repeat(32),
+        scoreBeforePpm: 5000,
+        scoreAfterPpm: 4000,
+        rewrittenPatchBytesHex: ev.compactPatchBytes,
+      }),
+    };
+    const coord2 = new CoreTexCoordinatorCore(baseConfig, new MockChain({ head: 1000 }), loadGenesis, badDelta, signer);
+    await coord2.boot();
+    const malformed = await coord2.submit(body);
+    assert.equal(malformed.code, 'EVAL_SCORE_INVALID');
+  });
+
+  test('signer exceptions become structured rejections', async () => {
+    const ev = buildEvent({ blockNumber: 500, blockHash: '0x' + '55'.repeat(32) });
+    const evalOk = {
+      scorePatch: () => ({
+        outcome: 'screener_pass',
+        deterministicDeltaPpm: 500,
+        evalReportHash: '0x' + 'e1'.repeat(32),
+        artifactHash: '0x' + 'a1'.repeat(32),
+      }),
+    };
+    const throwingSigner = { signCoreTexReceipt: () => { throw new Error('key failed'); } };
+    const coord = new CoreTexCoordinatorCore(baseConfig, new MockChain({ head: 1000 }), loadGenesis, evalOk, throwingSigner);
+    await coord.boot();
+    const out = await coord.submit({
+      patchBytesHex: ev.compactPatchBytes,
+      parentStateRoot: GENESIS_ROOT,
+      minerAddress: '0x' + 'aa'.repeat(20),
+    });
+    assert.equal(out.code, 'SignerFailure');
+    assert.equal(out.reason, 'signer failed');
+    assert.equal(coord.getMetrics().signerFailureCount, 1);
   });
 });
 

@@ -5,6 +5,9 @@ import { createRetrievalDataSource } from '../../dist/index.js';
 
 const BUNDLE_HASH = `0x${'ab'.repeat(32)}`;
 const ALT_BUNDLE_HASH = `0x${'cd'.repeat(32)}`;
+const ROOT = `0x${'22'.repeat(32)}`;
+const PATCH_HASH = `0x${'33'.repeat(32)}`;
+const V4 = `0x${'44'.repeat(20)}`;
 
 function fixtureManifest(bundleHash = BUNDLE_HASH) {
   return { bundleHash };
@@ -14,43 +17,55 @@ function makeFactoryOpts(overrides = {}) {
   return {
     bundleManifest: fixtureManifest(),
     bundleHash: BUNDLE_HASH,
-    getChallenge: () => ({
-      lane: 'coretex',
-      challengeId: `0x${'11'.repeat(32)}`,
-      expiresAt: 1_760_000_000,
-      epochId: 7,
-      parentStateRoot: `0x${'22'.repeat(32)}`,
-      substrate: {
-        encoding: 'coretex-packed-substrate-v1',
-        uri: `/coretex/substrate/0x${'22'.repeat(32)}`,
-      },
-    }),
     submit: () => ({
       status: 'accepted',
-      patchHash: `0x${'33'.repeat(32)}`,
-      evalReportHash: `0x${'44'.repeat(32)}`,
+      patchHash: PATCH_HASH,
+      evalReportHash: `0x${'55'.repeat(32)}`,
       receipt: { sig: '0xabc' },
-      scoreAfterPpm: 999_999, // must be stripped by sanitizer
+      transaction: { to: V4, chainId: 8453, value: '0', data: '0x1234' },
+      scoreAfterPpm: 999_999,
     }),
     getStatus: () => ({
       lane: 'coretex',
       epochId: 7,
-      stateRoot: `0x${'55'.repeat(32)}`,
+      currentStateRoot: ROOT,
       wordCount: 1024,
-      transitionCount: 12,
+      confirmedTransitionCount: 12,
       rulesVersion: 192,
       workPolicyHash: `0x${'66'.repeat(32)}`,
       corpusRoot: `0x${'77'.repeat(32)}`,
+      activeFrontierRoot: `0x${'78'.repeat(32)}`,
+      bundleHash: BUNDLE_HASH,
+      coreVersionHash: BUNDLE_HASH,
       minImprovementPpm: 2500,
-      evalSeedCommit: `0x${'88'.repeat(32)}`,
-      substrate: { uri: `/coretex/substrate/0x${'55'.repeat(32)}` },
-      bundle: { uri: `/coretex/bundle/${BUNDLE_HASH}` },
+      replayTolerancePpm: 250,
+      screenerThresholdPpm: 347,
+      patchWordBudget: 4,
+      perMinerScreenerCap: 50,
+      qualifiedScreenerPassesSinceLastStateAdvance: 3,
+      nextStateAdvanceWorkBps: 30_000,
+      activeSubstrateSurfaces: ['temporal_update', 'evidence_bundle'],
+      allowedPatchTypes: [{ name: 'MEMORY_INDEX_UPDATE', byte: 2, wordIndexRange: [32, 383] }],
+      acceptingSubmissions: true,
+      substrate: { uri: `/coretex/substrate/${ROOT}` },
+      perMiner: {
+        address: `0x${'11'.repeat(20)}`,
+        screenersThisEpoch: 1,
+        remaining: 49,
+        cap: 50,
+        nextIndex: 8,
+        lastReceiptHash: `0x${'00'.repeat(32)}`,
+      },
+      hiddenEvalWarning: 'hidden qrels / eval pack / epochSecret are NOT public',
+      perMinerCap: 999,
     }),
+    getSubstrate: (root) => ({ stateRoot: root, wordCount: 1024, packedBytes: 32768, packedHex: '0x' + '00'.repeat(32768) }),
+    getReceipt: (hash) => ({ status: 200, body: { status: 'accepted', patchHash: hash, confirmedOnChain: true } }),
     ...overrides,
   };
 }
 
-describe('createRetrievalDataSource', () => {
+describe('createRetrievalDataSource — v0 canonical surface', () => {
   test('refuses bundle hash that disagrees with manifest', () => {
     assert.throws(
       () => createRetrievalDataSource({
@@ -61,136 +76,83 @@ describe('createRetrievalDataSource', () => {
     );
   });
 
-  test('passes challenge/submit/status through to host callbacks', async () => {
+  test('passes status/submit/substrate/receipt through canonical callbacks', async () => {
     const seen = [];
     const ds = createRetrievalDataSource(makeFactoryOpts({
-      getChallenge: () => {
-        seen.push(['challenge']);
-        return {
-          lane: 'coretex',
-          challengeId: `0x${'aa'.repeat(32)}`,
-          expiresAt: 1_760_000_000,
-          epochId: 8,
-          parentStateRoot: `0x${'bb'.repeat(32)}`,
-          coreVersionHash: BUNDLE_HASH,
-          substrate: {
-            encoding: 'coretex-packed-substrate-v1',
-            bytes: '0x1234',
-          },
-        };
-      },
-      submit: (body) => { seen.push(['submit', body]); return { accepted: false, patchHash: `0x${'cc'.repeat(32)}`, score: 42 }; },
-      getStatus: () => {
-        seen.push(['status']);
-        return {
-          lane: 'coretex',
-          epochId: 8,
-          stateRoot: `0x${'dd'.repeat(32)}`,
-          wordCount: 1024,
-          transitionCount: 13,
-          rulesVersion: 192,
-          workPolicyHash: `0x${'ee'.repeat(32)}`,
-          corpusRoot: `0x${'ff'.repeat(32)}`,
-          coreVersionHash: BUNDLE_HASH,
-          minImprovementPpm: 2500,
-          evalSeedCommit: `0x${'01'.repeat(32)}`,
-          substrate: { uri: `/coretex/substrate/0x${'dd'.repeat(32)}` },
-          bundle: { uri: `/coretex/bundle/${BUNDLE_HASH}` },
-        };
-      },
+      getStatus: (query) => { seen.push(['status', query]); return makeFactoryOpts().getStatus(); },
+      submit: (body) => { seen.push(['submit', body]); return { status: 'rejected', patchHash: PATCH_HASH, score: 42 }; },
+      getSubstrate: (root) => { seen.push(['substrate', root]); return { stateRoot: root }; },
+      getReceipt: (hash) => { seen.push(['receipt', hash]); return { status: 409, body: { code: 'PendingReceiptStale' } }; },
     }));
-    const c = await ds.getChallenge();
-    const s = await ds.submit({ patch: '0x1234' });
-    const st = await ds.getStatus();
+
+    const st = await ds.getStatus({ miner: `0x${'11'.repeat(20)}` });
+    const s = await ds.submit({ patchBytesHex: '0x1234' });
+    const sub = await ds.getSubstrate?.(ROOT);
+    const rec = await ds.getReceipt?.(PATCH_HASH);
+
     assert.deepEqual(seen, [
-      ['challenge'],
-      ['submit', { patch: '0x1234' }],
-      ['status'],
+      ['status', { miner: `0x${'11'.repeat(20)}` }],
+      ['submit', { patchBytesHex: '0x1234' }],
+      ['substrate', ROOT],
+      ['receipt', PATCH_HASH],
     ]);
-    assert.equal(c.bundleHash, BUNDLE_HASH);
-    assert.equal(c.coreVersionHash, BUNDLE_HASH);
-    assert.deepEqual(s, { status: 'rejected', code: 'rejected', patchHash: `0x${'cc'.repeat(32)}` });
     assert.equal(st.bundleHash, BUNDLE_HASH);
     assert.equal(st.coreVersionHash, BUNDLE_HASH);
+    assert.deepEqual(s, { status: 'rejected', code: 'rejected', patchHash: PATCH_HASH });
+    assert.deepEqual(sub, { stateRoot: ROOT });
+    assert.deepEqual(rec, { status: 409, body: { code: 'PendingReceiptStale' } });
+  });
+
+  test('preserves launch-shaped public status fields through the sanitizer', async () => {
+    const ds = createRetrievalDataSource(makeFactoryOpts());
+    const st = await ds.getStatus({ miner: `0x${'11'.repeat(20)}` });
+
+    assert.equal(st.currentStateRoot, ROOT);
+    assert.equal(st.stateRoot, undefined);
+    assert.equal(st.corpusRoot, `0x${'77'.repeat(32)}`);
+    assert.equal(st.activeFrontierRoot, `0x${'78'.repeat(32)}`);
+    assert.equal(st.confirmedTransitionCount, 12);
+    assert.equal(st.transitionCount, undefined);
+    assert.equal(st.patchWordBudget, 4);
+    assert.equal(st.perMinerScreenerCap, 50);
+    assert.equal(st.perMinerCap, undefined);
+    assert.equal(st.allowedPatchTypes[0].byte, 2);
+    assert.deepEqual(st.activeSubstrateSurfaces, ['temporal_update', 'evidence_bundle']);
+    assert.equal(st.acceptingSubmissions, true);
+    assert.deepEqual(st.substrate, { uri: `/coretex/substrate/${ROOT}` });
     assert.ok(typeof st.statusVersion === 'string' && st.statusVersion.startsWith('0x'));
   });
 
-  test('preserves launch-shaped public challenge/status fields through the sanitizer', async () => {
-    const parent = `0x${'12'.repeat(32)}`;
-    const corpusRoot = `0x${'34'.repeat(32)}`;
-    const frontierRoot = `0x${'56'.repeat(32)}`;
+  test('fails closed on malformed status response', async () => {
     const ds = createRetrievalDataSource(makeFactoryOpts({
-      getChallenge: () => ({
-        epochId: 11,
-        parentStateRoot: parent,
-        currentStateRoot: parent,
-        bundleHash: BUNDLE_HASH,
-        coreVersionHash: BUNDLE_HASH,
-        profileName: 'coretex-retrieval-v2-policy-r5',
-        pipelineVersion: 'coretex-retrieval-v2-policy-r5',
-        corpusRoot,
-        corpusMeta: { biEncoderModel: 'BAAI/bge-m3', biEncoderRevision: 'rev-pinned' },
-        activeFrontierRoot: frontierRoot,
-        substrateAccess: { byRoot: `/coretex/substrate/${parent}`, wordCount: 1024, packedBytes: 32768 },
-        allowedPatchTypes: [{ name: 'POLICY_UPDATE', byte: 7, wordIndexRange: [384, 671] }],
-        patchWordRanges: { POLICY_UPDATE: [[384, 671]] },
-        patchWordBudget: 4,
-        minImprovementPpm: 2500,
-        replayTolerancePpm: 250,
-        screenerThresholdPpm: 347,
-        perMinerScreenerCap: 50,
-        perMinerScreenerRemaining: 49,
-        memoryIRSchemaVersion: 'memory_ir.v1',
-        activeSubstrateSurfaces: ['temporal', 'evidence_bundle', 'conflict_state'],
-        exampleValidPatch: { patchType: 'POLICY_UPDATE', patchBytesHex: '0x070100' },
-        hiddenEvalWarning: 'hidden qrels / eval pack / epochSecret are NOT public',
-      }),
-      getStatus: () => ({
-        epochId: 11,
-        currentStateRoot: parent,
-        bundleHash: BUNDLE_HASH,
-        corpusRoot,
-        activeFrontierRoot: frontierRoot,
-        activeFrontier: { activeRoot: frontierRoot, churnMode: 'C3' },
-        corpus: { evalHiddenCount: 14_768 },
-        transitionCount: 3,
-        qualifiedScreenerPassesSinceLastStateAdvance: 12,
-        nextStateAdvanceWorkBps: 30_000,
-        minImprovementPpm: 2500,
-        screenerThresholdPpm: 347,
-        baselineScorePpm: 221_822,
-        recentNoiseFloorPpm: 0,
-        perMiner: { cap: 50, remaining: 49 },
-      }),
-    }));
-    const c = await ds.getChallenge();
-    assert.equal(c.currentStateRoot, parent);
-    assert.equal(c.corpusRoot, corpusRoot);
-    assert.equal(c.activeFrontierRoot, frontierRoot);
-    assert.deepEqual(c.substrateAccess, { byRoot: `/coretex/substrate/${parent}`, wordCount: 1024, packedBytes: 32768 });
-    assert.equal(c.allowedPatchTypes[0].byte, 7);
-    assert.equal(c.screenerThresholdPpm, 347);
-    assert.deepEqual(c.activeSubstrateSurfaces, ['temporal', 'evidence_bundle', 'conflict_state']);
-
-    const st = await ds.getStatus();
-    assert.equal(st.currentStateRoot, parent);
-    assert.equal(st.corpusRoot, corpusRoot);
-    assert.equal(st.activeFrontier.activeRoot, frontierRoot);
-    assert.equal(st.corpus.evalHiddenCount, 14_768);
-    assert.equal(st.qualifiedScreenerPassesSinceLastStateAdvance, 12);
-    assert.ok(typeof st.statusVersion === 'string' && st.statusVersion.startsWith('0x'));
-  });
-
-  test('fails closed on malformed challenge/status responses', async () => {
-    const ds = createRetrievalDataSource(makeFactoryOpts({
-      getChallenge: () => ({ lane: 'coretex' }),
       getStatus: () => ({ lane: 'coretex' }),
     }));
-    assert.deepEqual(await ds.getChallenge(), { error: 'coretex-challenge-malformed' });
-    assert.deepEqual(await ds.getStatus(), { error: 'coretex-status-malformed' });
+    assert.deepEqual(await ds.getStatus({}), { error: 'coretex-status-malformed' });
   });
 
-  test('submit response collapses to opaque rejection/accepted envelope', async () => {
+  test('fails closed if removed status aliases resurface', async () => {
+    const ds = createRetrievalDataSource(makeFactoryOpts({
+      getStatus: () => ({
+        lane: 'coretex',
+        epochId: 9,
+        currentStateRoot: ROOT,
+        stateRoot: ROOT,
+      }),
+    }));
+    assert.deepEqual(await ds.getStatus({}), { error: 'coretex-status-malformed' });
+
+    const ds2 = createRetrievalDataSource(makeFactoryOpts({
+      getStatus: () => ({
+        lane: 'coretex',
+        epochId: 9,
+        currentStateRoot: ROOT,
+        transitionCount: 1,
+      }),
+    }));
+    assert.deepEqual(await ds2.getStatus({}), { error: 'coretex-status-malformed' });
+  });
+
+  test('submit response collapses to opaque rejection/accepted envelope and keeps transaction', async () => {
     const rejected = createRetrievalDataSource(makeFactoryOpts({
       submit: () => ({ status: 'rejected', reason: 'too-low', perFamilyDelta: { temporal: -0.9 } }),
     }));
@@ -202,6 +164,7 @@ describe('createRetrievalDataSource', () => {
         patchHash: `0x${'99'.repeat(32)}`,
         evalReportHash: `0x${'aa'.repeat(32)}`,
         receipt: { sig: '0xdeadbeef' },
+        transaction: { to: V4.toUpperCase(), chainId: 8453, value: '0', data: '0xDEADBEEF' },
         scoreBeforePpm: 10,
         scoreAfterPpm: 999999,
       }),
@@ -211,30 +174,26 @@ describe('createRetrievalDataSource', () => {
       patchHash: `0x${'99'.repeat(32)}`,
       evalReportHash: `0x${'aa'.repeat(32)}`,
       receipt: { sig: '0xdeadbeef' },
+      transaction: { to: V4, chainId: 8453, value: '0', data: '0xdeadbeef' },
     });
   });
 
-  test('receipt envelope strips non-signature fields (anti-leak)', async () => {
+  test('receipt envelope strips non-signature fields', async () => {
     const ds = createRetrievalDataSource(makeFactoryOpts({
       submit: () => ({
         status: 'accepted',
         patchHash: `0x${'99'.repeat(32)}`,
         receipt: {
-          // legitimate signature envelope
           keyId: 'coordinator-mainnet-v1',
           algorithm: 'ECDSA-SHA256',
           signature: '0xdeadbeefcafe',
           signedFields: ['patchHash', 'receivedAtBlock'],
-          // ALL of these must be stripped — they leak retrieval signals
           scoreAfterPpm: 999_999,
           perFamilyDelta: { temporal: -0.9 },
-          rawScore: 0.8732,
-          retrievalConfidence: 0.42,
         },
       }),
     }));
     const out = await ds.submit({});
-    assert.equal(out.status, 'accepted');
     assert.deepEqual(out.receipt, {
       keyId: 'coordinator-mainnet-v1',
       algorithm: 'ECDSA-SHA256',
@@ -243,71 +202,26 @@ describe('createRetrievalDataSource', () => {
     });
   });
 
-  test('receipt with invalid algorithm/signature is dropped (not raw-passthrough)', async () => {
-    const ds = createRetrievalDataSource(makeFactoryOpts({
-      submit: () => ({
-        status: 'accepted',
-        patchHash: `0x${'99'.repeat(32)}`,
-        receipt: {
-          algorithm: 'MD5', // not in allow-list
-          signature: 'not-hex',
-        },
-      }),
-    }));
-    const out = await ds.submit({});
-    assert.equal(out.status, 'accepted');
-    assert.equal(out.receipt, undefined);
-  });
+  test('status URI envelope only allows /coretex/substrate/:root', async () => {
+    const staleRoutes = [
+      `/coretex/bundle/${BUNDLE_HASH}`,
+      `/coretex/patch/${PATCH_HASH}`,
+      `/coretex/eval-report/${PATCH_HASH}`,
+      '/coretex/corpus-delta/7',
+      '/coretex/admin-dashboard',
+    ];
 
-  test('getPatchReceivedNotice enforces strict field shape (replay-watcher safety)', async () => {
-    const goodNotice = {
-      patchHash: `0x${'aa'.repeat(32)}`,
-      receivedAtBlock: 12345,
-      receivedAtTimestamp: 1_760_000_000,
-      coordinatorAddress: `0x${'bb'.repeat(20)}`,
-      // host may attach signer envelope; allowed but limited to sig fields
-      signer: { keyId: 'k1', algorithm: 'ECDSA-SHA256', signature: '0xdead' },
-      // any other field stripped (e.g. score-leaking detail)
-      perFamilyDelta: { temporal: -0.1 },
-    };
-    const ds = createRetrievalDataSource(makeFactoryOpts({
-      getPatchReceivedNotice: () => goodNotice,
-    }));
-    const out = await ds.getPatchReceivedNotice('0x' + '11'.repeat(32));
-    assert.deepEqual(out, {
-      patchHash: `0x${'aa'.repeat(32)}`,
-      receivedAtBlock: 12345,
-      receivedAtTimestamp: 1_760_000_000,
-      coordinatorAddress: `0x${'bb'.repeat(20)}`,
-      signer: { keyId: 'k1', algorithm: 'ECDSA-SHA256', signature: '0xdead' },
-    });
-
-    const dsMalformed = createRetrievalDataSource(makeFactoryOpts({
-      getPatchReceivedNotice: () => ({ patchHash: '0xbad' }),
-    }));
-    const out2 = await dsMalformed.getPatchReceivedNotice('0x' + '11'.repeat(32));
-    assert.deepEqual(out2, { error: 'coretex-patch-received-notice-malformed' });
-  });
-
-  test('status URI envelope rejects arbitrary /coretex/* paths (no host-side redirects)', async () => {
-    const ds = createRetrievalDataSource(makeFactoryOpts({
-      getStatus: () => ({
-        lane: 'coretex',
-        epochId: 9,
-        stateRoot: `0x${'55'.repeat(32)}`,
-        wordCount: 1024,
-        transitionCount: 1,
-        rulesVersion: 192,
-        workPolicyHash: `0x${'66'.repeat(32)}`,
-        corpusRoot: `0x${'77'.repeat(32)}`,
-        minImprovementPpm: 2500,
-        evalSeedCommit: `0x${'88'.repeat(32)}`,
-        substrate: { uri: `/coretex/admin-dashboard` }, // not an immutable artifact
-        bundle: { uri: `/coretex/bundle/${BUNDLE_HASH}` },
-      }),
-    }));
-    const out = await ds.getStatus();
-    assert.deepEqual(out, { error: 'coretex-status-malformed' });
+    for (const uri of staleRoutes) {
+      const ds = createRetrievalDataSource(makeFactoryOpts({
+        getStatus: () => ({
+          lane: 'coretex',
+          epochId: 9,
+          currentStateRoot: ROOT,
+          substrate: { uri },
+        }),
+      }));
+      assert.deepEqual(await ds.getStatus({}), { error: 'coretex-status-malformed' }, uri);
+    }
   });
 
   test('default health response carries bundleHash + serverTime', async () => {
@@ -319,52 +233,37 @@ describe('createRetrievalDataSource', () => {
     assert.ok(typeof out.serverTime === 'string' && out.serverTime.includes('T'));
   });
 
-  test('returns the bundle manifest only for the matching hash', async () => {
-    const ds = createRetrievalDataSource(makeFactoryOpts());
-    const ok = await ds.getBundle(BUNDLE_HASH);
-    assert.equal(ok.bundleHash, BUNDLE_HASH);
-    const ok2 = await ds.getBundle(BUNDLE_HASH.toUpperCase());
-    assert.equal(ok2.bundleHash, BUNDLE_HASH);
-
-    const wrong = await ds.getBundle(ALT_BUNDLE_HASH);
-    assert.deepEqual(wrong, { error: 'coretex-bundle-not-found', bundleHash: ALT_BUNDLE_HASH });
-  });
-
-  test('resolves bundle by coreVersionHash with default alias', async () => {
-    const ds = createRetrievalDataSource(makeFactoryOpts());
-    const ok = await ds.getBundleByCoreVersionHash(BUNDLE_HASH);
-    assert.equal(ok.bundleHash, BUNDLE_HASH);
-    const miss = await ds.getBundleByCoreVersionHash(ALT_BUNDLE_HASH);
-    assert.deepEqual(miss, { error: 'coretex-bundle-not-found', coreVersionHash: ALT_BUNDLE_HASH });
-  });
-
-  test('forwards optional immutable artifact hooks when configured', async () => {
-    const validNoticePatch = `0x${'cc'.repeat(32)}`;
+  test('custom health response is sanitized', async () => {
     const ds = createRetrievalDataSource(makeFactoryOpts({
-      getSubstrate: (root) => ({ stateRoot: root }),
-      getPatch: (h) => ({ patch: h }),
-      getPatchReceivedNotice: (h) => ({
-        patchHash: h,
-        receivedAtBlock: 123,
-        receivedAtTimestamp: 1_760_000_000,
-        coordinatorAddress: `0x${'dd'.repeat(20)}`,
+      health: () => ({
+        ok: false,
+        service: 'coretex',
+        version: 'v0',
+        epoch: 7,
+        chainId: 8453,
+        confirmationDepth: 4,
+        chainLiveRoot: ROOT,
+        confirmedLiveRoot: ROOT,
+        finalityLagBlocks: 3,
+        acceptingSubmissions: false,
+        reason: 'CoordEpochMismatch',
+        epochPins: {
+          parentStateRoot: ROOT,
+          coreVersionHash: BUNDLE_HASH,
+          corpusRoot: `0x${'77'.repeat(32)}`,
+          activeFrontierRoot: `0x${'78'.repeat(32)}`,
+          baselineManifestHash: `0x${'79'.repeat(32)}`,
+          hiddenSeedCommit: `0x${'80'.repeat(32)}`,
+        },
+        hiddenPack: ['leak'],
+        perMiner: { address: `0x${'11'.repeat(20)}` },
       }),
-      getEvalReport: (h) => ({ report: h }),
-      getCorpusDelta: (epoch) => ({ delta: epoch.toString() }),
-      getBundleByCoreVersionHash: (h) => ({ bundleByCoreVersion: h }),
-      health: () => ({ ok: true }),
     }));
-    assert.deepEqual(await ds.getSubstrate('0xabc'), { stateRoot: '0xabc' });
-    assert.deepEqual(await ds.getPatch('0x111'), { patch: '0x111' });
-    assert.deepEqual(await ds.getPatchReceivedNotice(validNoticePatch), {
-      patchHash: validNoticePatch,
-      receivedAtBlock: 123,
-      receivedAtTimestamp: 1_760_000_000,
-      coordinatorAddress: `0x${'dd'.repeat(20)}`,
-    });
-    assert.deepEqual(await ds.getEvalReport('0x222'), { report: '0x222' });
-    assert.deepEqual(await ds.getCorpusDelta(8n), { delta: '8' });
-    assert.deepEqual(await ds.getBundleByCoreVersionHash('0xc0re'), { bundleByCoreVersion: '0xc0re' });
-    assert.deepEqual(await ds.health(), { ok: true });
+    const out = await ds.health();
+    assert.equal(out.ok, false);
+    assert.equal(out.reason, 'CoordEpochMismatch');
+    assert.equal(out.epochPins.hiddenSeedCommit, `0x${'80'.repeat(32)}`);
+    assert.equal(out.hiddenPack, undefined);
+    assert.equal(out.perMiner, undefined);
   });
 });

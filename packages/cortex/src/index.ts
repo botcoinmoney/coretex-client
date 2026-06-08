@@ -23,6 +23,22 @@ export * from './replay/coretex-registry.js';
 export * from './replay/per-patch.js';
 export * from './coordinator/endpoints.js';
 export * from './coordinator/retrieval-data-source.js';
+export {
+  CoreTexCoordinatorCore,
+} from './coordinator/coretex-coordinator-core.js';
+export type {
+  ChainClient as CoreTexCoordinatorChainClient,
+  CoreTexMinerCounters,
+  RegistryEpochPins,
+  ParentSubstrateLoader,
+  RealEvaluator,
+  EvalResult,
+  CoreTexReceiptPayload,
+  CoreTexReceiptSigner,
+  CoreTexCoordinatorConfig,
+  PendingReceipt,
+  ReceiptEnvelope,
+} from './coordinator/coretex-coordinator-core.js';
 export * from './coordinator/base-blockhash.js';
 export * from './coordinator/patch-received-notice.js';
 export * from './coordinator/per-patch-evaluator.js';
