@@ -97,4 +97,47 @@ describe('deriveQueryPack on V2 families', () => {
       familyPriority: ['coreference', 'relation_lifecycle', 'scope_atom'],
     }), { ok: true });
   });
+
+  test('active live eval overlay prefers distinct public intents newest-first', () => {
+    const seed = '0x' + 'd4'.repeat(32);
+    const activeProfile = { packSize: 0, quotas: [] };
+    const intentA = {
+      atom: 'validity_atom',
+      subjectEntityId: 'e_subject_a',
+      attribute: 'api endpoint',
+      queryTime: '2026-06-08',
+      projectId: 'proj_a',
+      sessionId: 'sess_a',
+      topicId: 'topic_api_migration',
+      taskId: 'task_a',
+      userScopeId: 'e_u_live',
+    };
+    const intentB = { ...intentA, subjectEntityId: 'e_subject_b', projectId: 'proj_b', sessionId: 'sess_b', taskId: 'task_b' };
+    const live = [
+      { ...ev('zz_e000000000004_q_validity_a_confirm', 'validity_atom', 'e_u_live', true), logicalFamily: 'validity_atom', subjectEntityId: 'e_subject_a', publicIntent: intentA },
+      { ...ev('zz_e000000000004_q_validity_a_active', 'validity_atom', 'e_u_live', true), logicalFamily: 'validity_atom', subjectEntityId: 'e_subject_a', publicIntent: intentA },
+      { ...ev('zz_e000000000003_q_validity_b', 'validity_atom', 'e_u_live', true), logicalFamily: 'validity_atom', subjectEntityId: 'e_subject_b', publicIntent: intentB },
+    ];
+    const corpus2 = {
+      ...corpus,
+      events: [...corpus.events, ...live],
+      byId: new Map([...corpus.events, ...live].map((e) => [e.id, e])),
+    };
+    const activeIds = new Set(live.map((e) => e.id));
+    const overlay = admitActiveLiveEvalEvents(deriveQueryPack(10, seed, corpus2, activeProfile), corpus2, {
+      activeIds,
+      limit: 2,
+      familyPriority: ['validity_atom'],
+    });
+
+    assert.deepEqual(overlay.pack.events.slice(0, 2).map((e) => e.id), [
+      'zz_e000000000004_q_validity_a_active',
+      'zz_e000000000003_q_validity_b',
+    ]);
+    assert.deepEqual(verifyQueryPack(overlay.pack, corpus2, activeProfile, {
+      activeIds,
+      limit: 2,
+      familyPriority: ['validity_atom'],
+    }), { ok: true });
+  });
 });

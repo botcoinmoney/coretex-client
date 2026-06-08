@@ -164,7 +164,7 @@ describe('Fix B — evolveCorpusDelta (deterministic live-update churn)', () => 
     const scopeDocs = new Map(scope.delta.addedDocs.map((d) => [d.id, d]));
     const wrongScopeDoc = scopeDocs.get(scope.query.hardNegatives[0].docId);
     assert.match(scope.query.queryText, /math project scope/);
-    assert.match(wrongScopeDoc.text, /math project from last week/);
+    assert.match(wrongScopeDoc.text, /math project scope from last week/);
     assert.notEqual(scope.query.scope.projectId, wrongScopeDoc.scope.projectId);
   });
 });

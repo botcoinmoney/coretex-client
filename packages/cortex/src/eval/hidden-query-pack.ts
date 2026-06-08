@@ -34,6 +34,7 @@ export interface ActiveLiveEvalPackOptions {
   readonly activeIds: ReadonlySet<string>;
   readonly limit: number;
   readonly familyPriority?: readonly string[];
+  readonly dedupePublicIntent?: boolean;
 }
 
 /**
@@ -243,6 +244,39 @@ function liveEpochFromEventId(id: string): number {
   return m ? Number(m[1]) : -1;
 }
 
+function stablePublicIntentKey(event: ProductionCorpusEvent): string | null {
+  const e = event as ProductionCorpusEvent & {
+    logicalFamily?: string;
+    subjectEntityId?: string;
+    publicIntent?: Record<string, unknown>;
+    scope?: Record<string, unknown>;
+  };
+  const pi = e.publicIntent ?? {};
+  const scope = e.scope ?? {};
+  const subjectEntityId = e.subjectEntityId ?? pi.subjectEntityId;
+  const keys: Record<string, unknown> = {
+    family: e.logicalFamily ?? e.family ?? 'unknown',
+    epoch: liveEpochFromEventId(e.id),
+    ownerEntityId: e.ownerEntityId,
+    subjectEntityId,
+    atom: pi.atom,
+    attribute: pi.attribute,
+    queryTime: pi.queryTime,
+    roleAlias: pi.roleAlias,
+    name: pi.name,
+    selector: pi.selector,
+    action: pi.action,
+    projectId: pi.projectId ?? scope.projectId,
+    sessionId: pi.sessionId ?? scope.sessionId,
+    topicId: pi.topicId ?? scope.topicId,
+    taskId: pi.taskId ?? scope.taskId,
+    userScopeId: pi.userScopeId ?? scope.userScopeId,
+  };
+  const present = Object.entries(keys).filter(([, value]) => value !== undefined && value !== null && value !== '');
+  if (!present.some(([key]) => key !== 'family' && key !== 'epoch')) return null;
+  return JSON.stringify(Object.fromEntries(present));
+}
+
 /**
  * Canonical active-live overlay for measured packs.
  *
@@ -289,12 +323,45 @@ export function admitActiveLiveEvalEvents(
     return a.localeCompare(b);
   });
   const live: ProductionCorpusEvent[] = [];
+  const dedupePublicIntent = opts.dedupePublicIntent !== false;
+  const usedPublicIntentKeys = new Set<string>();
+  const deferredByFamily = new Map<string, ProductionCorpusEvent[]>();
+  const takeUnique = (fam: string): ProductionCorpusEvent | undefined => {
+    const rows = byFamily.get(fam);
+    while (rows?.length) {
+      const next = rows.shift();
+      if (!next) return undefined;
+      const key = dedupePublicIntent ? stablePublicIntentKey(next) : null;
+      if (!key || !usedPublicIntentKeys.has(key)) {
+        if (key) usedPublicIntentKeys.add(key);
+        return next;
+      }
+      const deferred = deferredByFamily.get(fam) ?? [];
+      deferred.push(next);
+      deferredByFamily.set(fam, deferred);
+    }
+    return undefined;
+  };
+  const takeDeferred = (fam: string): ProductionCorpusEvent | undefined => {
+    const rows = deferredByFamily.get(fam);
+    if (rows?.length) return rows.shift();
+    return byFamily.get(fam)?.shift();
+  };
   for (let advanced = true; live.length < opts.limit && advanced;) {
     advanced = false;
     for (const fam of familyOrder) {
       if (live.length >= opts.limit) break;
-      const rows = byFamily.get(fam);
-      const next = rows?.shift();
+      const next = takeUnique(fam);
+      if (!next) continue;
+      live.push(next);
+      advanced = true;
+    }
+  }
+  for (let advanced = true; live.length < opts.limit && advanced;) {
+    advanced = false;
+    for (const fam of familyOrder) {
+      if (live.length >= opts.limit) break;
+      const next = takeDeferred(fam);
       if (!next) continue;
       live.push(next);
       advanced = true;
