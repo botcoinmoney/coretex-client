@@ -1,7 +1,7 @@
 {
   "name": "@botcoin/cortex",
   "version": "0.0.0",
-  "private": true,
+  "private": false,
   "description": "Botcoin Core decoder, evaluator, and CLI for the Cortex memory codec.",
   "license": "Apache-2.0",
   "type": "module",
@@ -28,7 +28,8 @@
   "bin": {
     "botcoin-cortex": "dist/cli.js",
     "coretex-replay": "dist/replay-cli.js",
-    "coretex-validator-sync": "dist/validator-sync-cli.js"
+    "coretex-validator-sync": "dist/validator-sync-cli.js",
+    "coretex-validator-setup": "dist/validator-setup-cli.js"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
@@ -37,6 +38,7 @@
   },
   "files": [
     "dist",
+    "scripts",
     "README.md"
   ],
   "engines": {

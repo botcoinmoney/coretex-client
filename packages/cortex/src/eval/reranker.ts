@@ -13,6 +13,9 @@
 import { createHash } from 'node:crypto';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createInterface } from 'node:readline';
+import { existsSync, readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { QWEN3_RERANKER_DEFAULT_REVISION } from '../bundle/index.js';
 
 // ─── Public interface ─────────────────────────────────────────────────────────
@@ -29,23 +32,79 @@ export interface CrossEncoderReranker {
   score(pairs: ReadonlyArray<{ query: string; document: string }>): Promise<number[]>;
 }
 
+// ─── Canonical runner script resolution ───────────────────────────────────────
+//
+// The CANONICAL Python runner ships INSIDE this package at
+// packages/cortex/scripts/reranker_runner.py (the repo-root
+// scripts/reranker_runner.py is a forwarding shim). A relative
+// `new URL('../../../../scripts/...', import.meta.url)` default would escape
+// an installed node_modules package, so the default path is resolved by
+// walking up from this module to the nearest package.json whose name is
+// `@botcoin/cortex` — which works in BOTH layouts (repo checkout dist/ and
+// node_modules install). CORETEX_RERANKER_SCRIPT stays the explicit override.
+
+export const CORETEX_PACKAGE_NAME = '@botcoin/cortex';
+
+/**
+ * Resolve the @botcoin/cortex package root by walking up from `fromUrl`
+ * (default: this compiled module) to the nearest package.json named
+ * `@botcoin/cortex`. Hard error when no such ancestor exists — silently
+ * spawning a wrong runner script would desync scores.
+ */
+export function resolveCortexPackageRoot(fromUrl: string = import.meta.url): string {
+  let dir = dirname(fileURLToPath(fromUrl));
+  for (;;) {
+    const pkgPath = join(dir, 'package.json');
+    if (existsSync(pkgPath)) {
+      try {
+        const pkg = JSON.parse(readFileSync(pkgPath, 'utf8')) as { name?: string };
+        if (pkg.name === CORETEX_PACKAGE_NAME) return dir;
+      } catch {
+        /* unreadable/foreign package.json — keep walking */
+      }
+    }
+    const parent = dirname(dir);
+    if (parent === dir) {
+      throw new Error(
+        `resolveCortexPackageRoot: no package.json named ${CORETEX_PACKAGE_NAME} found walking up from ${fromUrl}`,
+      );
+    }
+    dir = parent;
+  }
+}
+
+/**
+ * Default path of the canonical Python reranker runner shipped in-package.
+ * `CORETEX_RERANKER_SCRIPT` remains the explicit override.
+ */
+export function resolveRerankerScriptPath(
+  env: NodeJS.ProcessEnv = process.env,
+  fromUrl: string = import.meta.url,
+): string {
+  const override = env['CORETEX_RERANKER_SCRIPT'];
+  if (override) return override;
+  return join(resolveCortexPackageRoot(fromUrl), 'scripts', 'reranker_runner.py');
+}
+
 // ─── Canonical Qwen reranker prompt template ──────────────────────────────────
 //
-// The Python runner (scripts/reranker_runner.py:_build_qwen3_prompt) is the
-// CANONICAL template — every calibration baseline was derived through it.
-// `renderQwenRerankerPrompt` below MUST build the byte-identical string
-// (system judge instruction, <Instruct>/<Query>/<Document> fields, empty
-// <think> block). A golden test spawns `python3 scripts/reranker_runner.py
-// --print-prompt-template` and asserts TS rendering == Python rendering
-// byte-for-byte (test/unit/qwen-prompt-template-golden.test.mjs).
+// The Python runner (packages/cortex/scripts/reranker_runner.py:
+// _build_qwen3_prompt) is the CANONICAL template — every calibration baseline
+// was derived through it. `renderQwenRerankerPrompt` below MUST build the
+// byte-identical string (system judge instruction, <Instruct>/<Query>/
+// <Document> fields, empty <think> block). A golden test spawns
+// `python3 packages/cortex/scripts/reranker_runner.py --print-prompt-template`
+// and asserts TS rendering == Python rendering byte-for-byte
+// (test/unit/qwen-prompt-template-golden.test.mjs).
 
 /** Default <Instruct> field. MUST stay byte-identical to the
- *  CORETEX_RERANKER_INSTRUCTION default in scripts/reranker_runner.py. */
+ *  CORETEX_RERANKER_INSTRUCTION default in packages/cortex/scripts/reranker_runner.py. */
 export const QWEN_RERANKER_DEFAULT_INSTRUCTION =
   'Given a web search query, retrieve relevant passages that answer the query';
 
 /** Fixed probe pair rendered by `--print-prompt-template` for the golden
- *  TS↔Python parity test. Same literals live in scripts/reranker_runner.py. */
+ *  TS↔Python parity test. Same literals live in
+ *  packages/cortex/scripts/reranker_runner.py. */
 export const QWEN_RERANKER_PROMPT_PROBE = {
   query: 'coretex prompt-template probe query',
   document: 'coretex prompt-template probe document',
@@ -60,7 +119,7 @@ export function resolveQwenRerankerInstruction(env: NodeJS.ProcessEnv = process.
 /**
  * Render the canonical Qwen3 reranker prompt for one (query, document) pair.
  *
- * Byte-identical to scripts/reranker_runner.py:_build_qwen3_prompt — the
+ * Byte-identical to packages/cortex/scripts/reranker_runner.py:_build_qwen3_prompt — the
  * Qwen3-Reranker model-card chat template with the empty <think> block.
  * EVERY TS scoring path must build prompts through this function; the
  * Python streaming path builds the same string from the same fields.
@@ -146,7 +205,8 @@ export interface Qwen3RerankerOptions {
  *
  * Inference path for one pair:
  *   1. Format via `renderQwenRerankerPrompt` (the CANONICAL template —
- *      byte-identical to scripts/reranker_runner.py:_build_qwen3_prompt).
+ *      byte-identical to packages/cortex/scripts/reranker_runner.py:
+ *      _build_qwen3_prompt).
  *   2. Tokenise and run a single forward pass (no generation).
  *   3. Grab logits at the last position.
  *   4. relevance_score = sigmoid(logit[yes_token_id] - logit[no_token_id])
@@ -314,10 +374,7 @@ export function createStreamingQwen3Reranker(
 ): CrossEncoderReranker & { close: () => Promise<void> } {
   refuseGpuForReranker();
   const pythonBin = opts.pythonBin ?? process.env['CORETEX_RERANKER_PYTHON'] ?? 'python3';
-  const scriptPath =
-    opts.scriptPath ??
-    process.env['CORETEX_RERANKER_SCRIPT'] ??
-    new URL('../../../../scripts/reranker_runner.py', import.meta.url).pathname;
+  const scriptPath = opts.scriptPath ?? resolveRerankerScriptPath();
   const batchSize = opts.batchSize ?? 4;
 
   const env: NodeJS.ProcessEnv = {
@@ -626,6 +683,107 @@ export async function rerankerFromEnv(): Promise<CrossEncoderReranker> {
       }
       return createDeterministicReranker();
   }
+}
+
+// ─── Fail-closed validator scorer (score-honesty replay) ─────────────────────
+
+/** Bundle-manifest reranker pins the validator scorer is locked to. */
+export interface ValidatorRerankerPins {
+  readonly modelId: string;
+  readonly revision: string;
+}
+
+/** Env vars a validator host must (not) set for score replay. Named in every
+ *  fail-closed error so a misconfigured host knows exactly what to fix. */
+export const VALIDATOR_RERANKER_REQUIRED_ENV =
+  'CORETEX_RERANKER=qwen3 (or unset — qwen3 is forced), model id + revision come from the bundle manifest '
+  + '(CORETEX_RERANKER_MODEL_ID / CORETEX_RERANKER_REVISION must be unset or equal to the bundle pins); '
+  + 'optional: CORETEX_RERANKER_MODE=streaming|spawn, CORETEX_RERANKER_PYTHON, CORTEX_LOCAL_MODEL_CACHE, '
+  + 'CORTEX_LOCAL_MODEL_LOCAL_ONLY=1, CORETEX_RERANKER_BATCH_SIZE, RERANKER_NUM_THREADS';
+
+/**
+ * Validate the environment for fail-closed validator score replay WITHOUT
+ * constructing the (expensive) reranker. Throws a hard error naming the
+ * required vars when the env would resolve anything other than the pinned
+ * qwen3 production scorer. The deterministic stub and minilm are NEVER valid
+ * for validator rescoring — `--skip-score-replay` is the only way to skip,
+ * and a skipped run cannot attest scores.
+ */
+export function assertValidatorRerankerEnv(
+  pins: ValidatorRerankerPins,
+  env: NodeJS.ProcessEnv = process.env,
+): void {
+  if (!pins.modelId || !pins.revision) {
+    throw new Error('validator score replay is fail-closed: bundle manifest model.reranker.modelId/revision pins are required');
+  }
+  const selector = env['CORETEX_RERANKER'];
+  if (selector !== undefined && selector.toLowerCase() !== 'qwen3') {
+    throw new Error(
+      `validator score replay is fail-closed: CORETEX_RERANKER=${selector} cannot reproduce the pinned production scorer `
+      + `(${pins.modelId}@${pins.revision}). Required env: ${VALIDATOR_RERANKER_REQUIRED_ENV}. `
+      + 'The only way to skip score replay is --skip-score-replay (loud, non-attesting).',
+    );
+  }
+  for (const [envVar, pinned] of [
+    ['CORETEX_RERANKER_MODEL_ID', pins.modelId],
+    ['CORETEX_RERANKER_REVISION', pins.revision],
+  ] as const) {
+    const value = env[envVar];
+    if (value !== undefined && value !== pinned) {
+      throw new Error(
+        `validator score replay is fail-closed: ${envVar}=${value} != bundle manifest pin ${pinned} — `
+        + `unset ${envVar} (the bundle pin is authoritative). Required env: ${VALIDATOR_RERANKER_REQUIRED_ENV}`,
+      );
+    }
+  }
+  const mode = env['CORETEX_RERANKER_MODE'];
+  if (mode !== undefined && mode !== 'streaming' && mode !== 'spawn') {
+    throw new Error(
+      `validator score replay is fail-closed: CORETEX_RERANKER_MODE=${mode} is not a valid qwen3 mode `
+      + `(streaming|spawn). Required env: ${VALIDATOR_RERANKER_REQUIRED_ENV}`,
+    );
+  }
+}
+
+/**
+ * Build the FAIL-CLOSED validator scorer: ALWAYS the pinned qwen3 production
+ * reranker (model id + revision from the bundle manifest), regardless of env.
+ * `rerankerFromEnv` is deliberately not used here — its deterministic-stub
+ * fallback must be unreachable from any validator rescore path.
+ *
+ * Default mode is streaming (the only launch-scale path); CORETEX_RERANKER_MODE=spawn
+ * selects the per-batch spawn variant for tiny/debug workloads.
+ */
+export async function createValidatorReranker(
+  pins: ValidatorRerankerPins,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<CrossEncoderReranker & { close?: () => Promise<void> }> {
+  assertValidatorRerankerEnv(pins, env);
+  const cacheDir = env['CORTEX_LOCAL_MODEL_CACHE'];
+  const localOnly = env['CORTEX_LOCAL_MODEL_LOCAL_ONLY'] === '1';
+  const streaming = (env['CORETEX_RERANKER_MODE'] ?? 'streaming') === 'streaming';
+  const reranker = streaming
+    ? createStreamingQwen3Reranker({
+        model: pins.modelId,
+        revision: pins.revision,
+        ...(cacheDir ? { cacheDir } : {}),
+        localOnly,
+        batchSize: Number(env['CORETEX_RERANKER_BATCH_SIZE'] ?? '8'),
+        ...(Number(env['RERANKER_NUM_THREADS'] ?? '0') ? { numThreads: Number(env['RERANKER_NUM_THREADS']) } : {}),
+      })
+    : await createQwen3Reranker({
+        model: pins.modelId,
+        revision: pins.revision,
+        ...(cacheDir ? { cacheDir } : {}),
+        localOnly,
+      });
+  const expected = `${pins.modelId}@${pins.revision}`;
+  if (reranker.model !== expected) {
+    const closable = reranker as { close?: () => Promise<void> };
+    if (typeof closable.close === 'function') await closable.close();
+    throw new Error(`validator score replay is fail-closed: resolved reranker ${reranker.model} != required ${expected}`);
+  }
+  return reranker;
 }
 
 // ─── LRU memoization wrapper ──────────────────────────────────────────────────

@@ -2,22 +2,42 @@
 /**
  * coretex-validator-sync — one-command validator sync + audit CLI.
  *
- * sync (default):
- *   1. Reads the on-chain epoch pins (registry + V4 mining context) including the
- *      epoch-secret reveal status (`awaiting_epoch_secret_reveal` before reveal).
- *   2. Self version-check: the local bundle manifest's bundleHash MUST equal the
- *      on-chain coreVersionHash (escape: --allow-version-mismatch, read-only).
- *   3. Fetches the signed EpochRotationManifest + signed CorpusDelta and verifies
- *      signatures (MANDATORY — a missing public key is a hard error) under a
- *      TOFU-pinned epoch signing key.
- *   4. Corpus-delta continuity: delta.previousRoot must equal the LOCAL previous
- *      corpus root (validator state file / --previous-corpus-root / bundle corpus.root).
- *   5. Optionally replays the registry logs (paginated + confirmation-depth capped)
- *      against the on-chain liveStateRoot with mode flags derived from the bundle.
+ * sync (default): with only BASE_RPC_URL + CORETEX_REGISTRY_ADDRESS +
+ * BOTCOIN_MINING_CONTRACT_ADDRESS + CORETEX_ARTIFACT_BASE_URL set and
+ * `coretex-validator-setup` completed, a bare `coretex-validator-sync`:
+ *   1. Derives the epoch from V4 `currentEpoch()` on chain (--epoch overrides)
+ *      and reads the on-chain epoch pins (registry + V4 mining context)
+ *      including the epoch-secret reveal status
+ *      (`awaiting_epoch_secret_reveal` before reveal).
+ *   2. Self version-check: the local bundle manifest's bundleHash MUST equal
+ *      the on-chain coreVersionHash (escape: --allow-version-mismatch,
+ *      read-only). Bundle manifest path comes from the validator state file
+ *      written by setup (--bundle-manifest / CORETEX_BUNDLE_MANIFEST override).
+ *   3. Fetches the signed EpochRotationManifest + signed CorpusDelta and
+ *      verifies signatures (MANDATORY — a missing public key is a hard error)
+ *      under a TOFU-pinned epoch signing key.
+ *   4. Corpus-delta continuity: delta.previousRoot must equal the LOCAL
+ *      previous corpus root (validator state file / --previous-corpus-root /
+ *      bundle corpus.root).
+ *   5. Replays the registry logs BY DEFAULT (paginated + confirmation-depth
+ *      capped) against the on-chain liveStateRoot. The parent substrate is
+ *      bootstrapped from the launch/blank substrate when the chain parent root
+ *      equals the launch parent root (or when replaying from the registry
+ *      deploy block), else from the snapshot persisted by the previous sync
+ *      (state dir `substrate-state.bin` + cursor block → incremental syncs).
+ *   6. After replay, if the epoch secret is revealed on chain, AUTOMATICALLY
+ *      fetches the post-reveal eval artifacts for every accepted advance in
+ *      the synced window and verifies each through
+ *      `verifyPostRevealEvalReportArtifact` — INCLUDING score re-scoring with
+ *      the FAIL-CLOSED validator scorer (pinned qwen3 from the bundle
+ *      manifest; the deterministic stub is unreachable). `--skip-score-replay`
+ *      is the only way to skip (loud warning, exit code 3 — distinct from
+ *      success).
  *
  * verify-patch --hash 0x…:
- *   Fetches a post-reveal eval artifact by hash from CORETEX_ARTIFACT_BASE_URL and
- *   replays it through verifyPostRevealEvalReportArtifact (the single entrypoint).
+ *   Fetches a post-reveal eval artifact by hash from CORETEX_ARTIFACT_BASE_URL
+ *   and replays it through verifyPostRevealEvalReportArtifact (the single
+ *   entrypoint) with the same fail-closed scorer gate.
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync, realpathSync } from 'node:fs';
 import { createHash } from 'node:crypto';
@@ -26,29 +46,70 @@ import { pathToFileURL } from 'node:url';
 import http from 'node:http';
 import https from 'node:https';
 
-import { coretexRangeLogs, replayCoreTexFromLogs, type CoreTexRangeLogOptions } from './replay/coretex-registry.js';
+import {
+  coretexRangeLogs,
+  decodeCoreTexStateAdvanced,
+  replayCoreTexFromLogs,
+  CORETEX_DEFAULT_CONFIRMATION_DEPTH,
+  type CoreTexRangeLogOptions,
+  type CoreTexStateAdvancedEvent,
+} from './replay/coretex-registry.js';
 import { loadPackedState, rpcCall } from './replay/v4.js';
 import { bytesToHex, hexToBytes, merkleizeState } from './state/merkle.js';
-import { decodePatch } from './state/patch.js';
+import { pack, unpack, PACKED_SIZE } from './state/codec.js';
+import { applyPatch, decodePatch } from './state/patch.js';
+import type { CortexState } from './state/types.js';
 import { keccak256 } from './state/keccak256.js';
 import { hashCorpusDelta, hashJson, verifyEpochRotationManifestSignature } from './corpus/epoch-rotation.js';
 import { parseCorpusDelta, verifyCorpusDeltaSignature } from './corpus/delta.js';
 import {
+  evalReportArtifactUrl,
   hashPostRevealEvalReportArtifact,
   verifyPostRevealEvalReportArtifact,
   type CoreTexPostRevealEvalReportArtifact,
 } from './replay/eval-report-artifact.js';
 import { DEFAULT_PROFILE, scoringOptionsFromProfile, type CoreTexBundleManifest } from './bundle/index.js';
-import { loadProductionCorpus } from './eval/retrieval-corpus.js';
+import { loadProductionCorpus, type ProductionCorpus } from './eval/retrieval-corpus.js';
 import { deriveQueryPack } from './eval/hidden-query-pack.js';
 import { computeAcceptanceThresholdPpm, evaluateRetrievalBenchmarkPatch } from './eval/retrieval-benchmark.js';
 import { biEncoderFromEnv } from './eval/bi-encoder.js';
-import { rerankerFromEnv } from './eval/reranker.js';
+import {
+  assertValidatorRerankerEnv,
+  createValidatorReranker,
+  type ValidatorRerankerPins,
+} from './eval/reranker.js';
 import { biEncoderModelIdHash } from './substrate/retrieval-decoder.js';
 import { createBaseRpcClient } from './coordinator/base-blockhash.js';
+import { mergeValidatorStateFile } from './validator-setup-cli.js';
 
 const ZERO32 = `0x${'00'.repeat(32)}`;
 const args = process.argv.slice(2);
+
+/** Exit code when score replay was explicitly skipped: the run is NOT a score
+ *  attestation and must be distinguishable from a fully verified sync (0). */
+export const SKIP_SCORE_REPLAY_EXIT_CODE = 3;
+
+const USAGE = `coretex-validator-sync — one-command CoreTex validator sync + audit
+
+Usage:
+  coretex-validator-sync [flags]                 sync (default command)
+  coretex-validator-sync verify-patch --hash 0x… verify one post-reveal eval artifact
+
+One-command sync env (after coretex-validator-setup):
+  BASE_RPC_URL, CORETEX_REGISTRY_ADDRESS, BOTCOIN_MINING_CONTRACT_ADDRESS,
+  CORETEX_ARTIFACT_BASE_URL
+
+Common flags (all optional overrides of setup/state-file/chain defaults):
+  --epoch <n>                  override the chain-derived V4 currentEpoch()
+  --bundle-manifest <path>     override the setup-recorded bundle manifest
+  --previous-corpus-root 0x…   override the state-file previous corpus root
+  --from-block <n>             override the replay window start
+  --parent-state <state.bin>   override the replay parent substrate
+  --corpus <corpus.json>       override the setup-recorded materialized corpus
+  --state-dir <dir>            validator state dir (default .coretex-validator)
+  --skip-score-replay          SKIP post-reveal score re-scoring (loud; exit ${SKIP_SCORE_REPLAY_EXIT_CODE})
+  --allow-version-mismatch     read-only escape for the bundle version check
+  --help                       this text`;
 
 function opt(name: string, fallback?: string): string | undefined {
   const i = args.indexOf(`--${name}`);
@@ -65,6 +126,9 @@ function has(name: string): boolean {
 function die(message: string): never {
   process.stderr.write(`HARD FAIL: ${message}\n`);
   process.exit(1);
+}
+function warn(message: string): void {
+  process.stderr.write(`${message}\n`);
 }
 function isBytes32(value: unknown): value is string {
   return typeof value === 'string' && /^0x[0-9a-fA-F]{64}$/.test(value);
@@ -134,7 +198,7 @@ function download(url: string, redirects = 0): Promise<string> {
 function joinUrl(base: string | undefined, child: string): string | undefined {
   return base ? `${base.replace(/\/+$/, '')}/${child.replace(/^\/+/, '')}` : undefined;
 }
-function stringField(obj: Record<string, unknown> | null, key: string): string | undefined {
+function stringField(obj: Record<string, unknown> | null | undefined, key: string): string | undefined {
   const value = obj?.[key];
   return typeof value === 'string' && value.length > 0 ? value : undefined;
 }
@@ -144,6 +208,7 @@ function blockHex(block: bigint): string {
 async function latestBlock(rpcUrl: string): Promise<bigint> {
   return BigInt(await rpcCall<string>(rpcUrl, 'eth_blockNumber', []));
 }
+function cmpBig(a: bigint, b: bigint): number { return a < b ? -1 : a > b ? 1 : 0; }
 
 // ── exported audit primitives (unit-tested directly) ─────────────────────────
 
@@ -203,12 +268,12 @@ export function checkValidatorBundleVersion(
   localBundleHash: string,
   chainCoreVersionHash: string,
   allowMismatch: boolean,
-  warn: (message: string) => void = (m) => process.stderr.write(`${m}\n`),
+  warnFn: (message: string) => void = (m) => process.stderr.write(`${m}\n`),
 ): { match: boolean } {
   if (localBundleHash.toLowerCase() === chainCoreVersionHash.toLowerCase()) return { match: true };
   const message = `validator client outdated: local bundle ${localBundleHash} != on-chain coreVersionHash ${chainCoreVersionHash}. Required bundle hash: ${chainCoreVersionHash}`;
   if (!allowMismatch) throw new Error(message);
-  warn(`WARNING: ${message} — continuing READ-ONLY because --allow-version-mismatch was passed; do NOT attest from this run`);
+  warnFn(`WARNING: ${message} — continuing READ-ONLY because --allow-version-mismatch was passed; do NOT attest from this run`);
   return { match: false };
 }
 
@@ -230,6 +295,116 @@ export function deriveEpochSecretRevealStatus(hiddenSeedCommit: string, epochSec
 /** Mode flags derive HARD from the chain-pinned bundle manifest — never a silent default. */
 export function policyAtomsModeFromManifest(manifest: { evaluator?: { profile?: { pipelineVersion?: string } } }): boolean {
   return manifest.evaluator?.profile?.pipelineVersion === 'coretex-retrieval-v2-policy-r5';
+}
+
+// ── one-command defaults (unit-tested directly) ───────────────────────────────
+
+export interface ValidatorSyncStateFile {
+  readonly schema?: string;
+  readonly epoch?: number;
+  readonly bundleHash?: string;
+  readonly corpusRoot?: string;
+  readonly registryDeployBlock?: number;
+  readonly setup?: {
+    readonly bundleManifestPath?: string;
+    readonly profilePath?: string;
+    readonly corpusPath?: string;
+    readonly materializedRoot?: string;
+    readonly artifactBaseUrl?: string;
+  };
+  readonly replay?: {
+    readonly stateRoot?: string;
+    readonly cursorBlock?: number;
+    readonly statePath?: string;
+    readonly epochTransitions?: Record<string, number>;
+  };
+}
+
+export function readValidatorStateFile(statePath: string): ValidatorSyncStateFile | null {
+  if (!existsSync(statePath)) return null;
+  try {
+    return JSON.parse(readFileSync(statePath, 'utf8')) as ValidatorSyncStateFile;
+  } catch {
+    return null;
+  }
+}
+
+/** The launch/blank substrate: all-zero packed state (the registry's launch
+ *  epochParentStateRoot is the merkle root of exactly this state). */
+export function blankSubstrateState(): CortexState {
+  return unpack(new Uint8Array(PACKED_SIZE));
+}
+
+export function blankSubstrateStateRoot(): string {
+  return bytesToHex(merkleizeState(blankSubstrateState()));
+}
+
+export type ReplayFromBlockSource = 'flag' | 'env' | 'snapshot-cursor' | 'state-deploy-block' | 'env-deploy-block';
+
+/**
+ * Replay window start, in precedence order: --from-block flag →
+ * CORETEX_REPLAY_FROM_BLOCK → snapshot cursor + 1 (incremental sync) →
+ * state-file registry deploy block (written by setup) →
+ * CORETEX_REGISTRY_DEPLOY_BLOCK. Registry replay is mandatory, so having no
+ * source is a hard error pointing at setup.
+ */
+export function resolveReplayFromBlock(inputs: {
+  readonly flag?: string | undefined;
+  readonly envReplayFromBlock?: string | undefined;
+  readonly envRegistryDeployBlock?: string | undefined;
+  readonly snapshotCursorBlock?: number | undefined;
+  readonly stateRegistryDeployBlock?: number | undefined;
+}): { fromBlock: bigint; source: ReplayFromBlockSource } {
+  if (inputs.flag !== undefined) return { fromBlock: BigInt(inputs.flag), source: 'flag' };
+  if (inputs.envReplayFromBlock !== undefined) return { fromBlock: BigInt(inputs.envReplayFromBlock), source: 'env' };
+  if (inputs.snapshotCursorBlock !== undefined) return { fromBlock: BigInt(inputs.snapshotCursorBlock) + 1n, source: 'snapshot-cursor' };
+  if (inputs.stateRegistryDeployBlock !== undefined) return { fromBlock: BigInt(inputs.stateRegistryDeployBlock), source: 'state-deploy-block' };
+  if (inputs.envRegistryDeployBlock !== undefined) return { fromBlock: BigInt(inputs.envRegistryDeployBlock), source: 'env-deploy-block' };
+  throw new Error(
+    'registry replay needs a from-block: run coretex-validator-setup with --registry-deploy-block (or set CORETEX_REGISTRY_DEPLOY_BLOCK), or pass --from-block',
+  );
+}
+
+export type ReplayParentSource = 'explicit-file' | 'snapshot' | 'blank-substrate';
+
+/**
+ * Parent-substrate bootstrap for the default registry replay:
+ *   1. --parent-state / CORETEX_PARENT_STATE_PATH (explicit override)
+ *   2. the snapshot persisted by the previous sync (incremental)
+ *   3. the launch/blank substrate — valid when the chain parent root equals
+ *      the launch/blank root, or when replaying the FULL history from the
+ *      registry deploy block (per-advance parent continuity then proves the
+ *      chain from genesis).
+ * Anything else is a hard error: silently replaying from a wrong parent would
+ * produce a wrong root and a confusing liveStateRoot mismatch.
+ */
+export function resolveReplayParentBootstrap(inputs: {
+  readonly explicitParentStatePath?: string | undefined;
+  readonly snapshotAvailable: boolean;
+  readonly chainParentStateRoot: string;
+  readonly blankRoot: string;
+  readonly fromBlockSource: ReplayFromBlockSource;
+}): { source: ReplayParentSource } {
+  if (inputs.explicitParentStatePath) return { source: 'explicit-file' };
+  if (inputs.snapshotAvailable) return { source: 'snapshot' };
+  const deployBootstrap = inputs.fromBlockSource === 'state-deploy-block' || inputs.fromBlockSource === 'env-deploy-block';
+  if (inputs.chainParentStateRoot.toLowerCase() === inputs.blankRoot.toLowerCase() || deployBootstrap) {
+    return { source: 'blank-substrate' };
+  }
+  throw new Error(
+    `cannot bootstrap replay parent substrate: chain epochParentStateRoot ${inputs.chainParentStateRoot} != launch/blank substrate root ${inputs.blankRoot}, `
+    + 'no previous-sync snapshot exists, and the from-block is not the registry deploy block — '
+    + 'replay the full history from the deploy block (coretex-validator-setup --registry-deploy-block / CORETEX_REGISTRY_DEPLOY_BLOCK) or pass --parent-state',
+  );
+}
+
+/** Pins for the fail-closed validator scorer, read HARD from the bundle manifest. */
+export function validatorRerankerPinsFromManifest(manifest: CoreTexBundleManifest): ValidatorRerankerPins {
+  const reranker = manifest.model?.reranker;
+  if (!reranker?.modelId || !reranker?.revision) {
+    throw new Error('bundle manifest has no model.reranker.modelId/revision pins — the fail-closed validator scorer cannot be constructed');
+  }
+  return { modelId: reranker.modelId, revision: reranker.revision };
 }
 
 // ── chain context ─────────────────────────────────────────────────────────────
@@ -284,13 +459,64 @@ function rangeLogOptions(): CoreTexRangeLogOptions {
   return out;
 }
 
+interface ValidatorScorerContext {
+  readonly corpus: ProductionCorpus;
+  readonly profile: typeof DEFAULT_PROFILE;
+  readonly scoringOpts: ReturnType<typeof scoringOptionsFromProfile>;
+  readonly thresholdPpm: number;
+  readonly reranker: { model: string; close?: () => Promise<void> };
+}
+
+/** Build the FAIL-CLOSED scorer context shared by sync auto-verify and
+ *  verify-patch: pinned corpus + pinned qwen3 reranker from the bundle. */
+async function buildValidatorScorerContext(
+  bundle: CoreTexBundleManifest,
+  corpusPath: string,
+): Promise<ValidatorScorerContext> {
+  const profile = bundle.evaluator?.profile ?? DEFAULT_PROFILE;
+  const corpus = loadProductionCorpus(corpusPath, { verifyCorpusRoot: true, verifySplits: true });
+  const layout = corpus.biEncoderRetrievalKeyLayout;
+  const biEncoder = biEncoderFromEnv(layout, { modelId: corpus.biEncoderModelId, revision: corpus.biEncoderRevision });
+  const reranker = await createValidatorReranker(validatorRerankerPinsFromManifest(bundle));
+  const scoringOpts = scoringOptionsFromProfile(profile, {
+    biEncoder,
+    reranker,
+    biEncoderHash: biEncoderModelIdHash(corpus.biEncoderModelId, corpus.biEncoderRevision, 'dense'),
+    retrievalKeyLayout: layout,
+  });
+  const thresholdPpm = Math.min(computeAcceptanceThresholdPpm(profile), 355);
+  return { corpus, profile, scoringOpts, thresholdPpm, reranker: reranker as ValidatorScorerContext['reranker'] };
+}
+
+function scorerForParent(ctx: ValidatorScorerContext, parentState: CortexState, epochId: number) {
+  return async ({ normalizedPatchBytes, evalSeed }: { normalizedPatchBytes: Uint8Array; evalSeed: string }) => {
+    const queryPack = deriveQueryPack(epochId, evalSeed, ctx.corpus, ctx.profile.hiddenPack);
+    const scored = await evaluateRetrievalBenchmarkPatch(parentState, decodePatch(normalizedPatchBytes), ctx.corpus, queryPack, ctx.scoringOpts, {
+      ...ctx.profile.patchAcceptanceFloors,
+      acceptanceThresholdPpm: ctx.thresholdPpm,
+    });
+    return {
+      scorePpm: scored.deltaPpm,
+      accepted: scored.accepted,
+      ...(scored.reason ? { rejectionReason: scored.reason } : {}),
+    };
+  };
+}
+
+async function closeReranker(reranker: { close?: () => Promise<void> } | undefined): Promise<void> {
+  if (reranker && typeof reranker.close === 'function') await reranker.close();
+}
+
 async function syncMain() {
+  // ── validator state dir / state file FIRST: setup-written defaults feed everything below ──
+  const stateDir = opt('state-dir', process.env['CORETEX_VALIDATOR_STATE_DIR'] ?? '.coretex-validator')!;
+  const statePath = opt('state', join(stateDir, 'validator-sync-state.json'))!;
+  const pinPath = opt('key-pin-file', process.env['CORETEX_KEY_PIN_PATH'] ?? join(stateDir, 'epoch-signing-key.pin.json'))!;
+  const savedState = readValidatorStateFile(statePath);
+  const setup = savedState?.setup;
+
   const coordinatorStatusUri = opt('from-coordinator', process.env['CORETEX_COORDINATOR_STATUS_URL']);
   const status = coordinatorStatusUri ? await readJsonUri(coordinatorStatusUri) as Record<string, unknown> : null;
-  const epochRaw = opt('epoch', String(status?.epoch ?? status?.currentEpoch ?? process.env['EPOCH_ID'] ?? ''));
-  if (!epochRaw) die('--epoch, EPOCH_ID, or coordinator status epoch is required');
-  const epoch = Number(epochRaw);
-  if (!Number.isSafeInteger(epoch) || epoch < 0) die('epoch must be a non-negative safe integer');
 
   const rpcUrl = opt('rpc-url', process.env['BASE_RPC_URL']);
   const registry = opt('registry', process.env['CORETEX_REGISTRY_ADDRESS']);
@@ -299,21 +525,41 @@ async function syncMain() {
   if (!isAddress(registry)) die('--registry or CORETEX_REGISTRY_ADDRESS is required');
   if (!isAddress(mining)) die('--mining-contract or BOTCOIN_MINING_CONTRACT_ADDRESS is required');
 
-  // ── local preconditions BEFORE any RPC: bundle manifest, artifact URIs, signing key ──
-  const bundleManifestPath = opt('bundle-manifest', process.env['CORETEX_BUNDLE_MANIFEST']);
+  // ── epoch: flag → coordinator status → EPOCH_ID → chain V4.currentEpoch() ──
+  const epochRaw = opt('epoch', String(status?.epoch ?? status?.currentEpoch ?? process.env['EPOCH_ID'] ?? ''));
+  let epoch: number;
+  let epochSource: string;
+  if (epochRaw) {
+    epoch = Number(epochRaw);
+    epochSource = 'flag/status/env';
+  } else {
+    epoch = decodeUint(await ethCall(rpcUrl, mining, 'currentEpoch()'), 'mining.currentEpoch');
+    epochSource = 'chain:V4.currentEpoch()';
+  }
+  if (!Number.isSafeInteger(epoch) || epoch < 0) die('epoch must be a non-negative safe integer');
+
+  // ── local preconditions BEFORE heavy RPC: bundle manifest, artifact URIs, signing key ──
+  const bundleManifestPath = opt('bundle-manifest', process.env['CORETEX_BUNDLE_MANIFEST'] ?? setup?.bundleManifestPath);
   if (!bundleManifestPath) {
-    die('--bundle-manifest or CORETEX_BUNDLE_MANIFEST is required: the validator client version-checks its local bundle against the on-chain coreVersionHash and derives replay mode flags from it (no silent defaults)');
+    die('--bundle-manifest or CORETEX_BUNDLE_MANIFEST is required (or run coretex-validator-setup — its state file records the path): the validator client version-checks its local bundle against the on-chain coreVersionHash and derives replay mode flags from it (no silent defaults)');
   }
   const bundleManifest = JSON.parse(readFileSync(bundleManifestPath, 'utf8')) as CoreTexBundleManifest;
   if (!isBytes32(bundleManifest.bundleHash)) die(`bundle manifest ${bundleManifestPath} has no bundleHash`);
   const policyAtomsMode = policyAtomsModeFromManifest(bundleManifest);
 
-  // ── validator state dir / TOFU pin file ──
-  const stateDir = opt('state-dir', process.env['CORETEX_VALIDATOR_STATE_DIR'] ?? '.coretex-validator')!;
-  const statePath = opt('state', join(stateDir, 'validator-sync-state.json'))!;
-  const pinPath = opt('key-pin-file', process.env['CORETEX_KEY_PIN_PATH'] ?? join(stateDir, 'epoch-signing-key.pin.json'))!;
+  // ── FAIL-CLOSED scorer env gate — BEFORE any expensive work. The deterministic
+  //    stub must be unreachable from the rescore path; a misconfigured env is a
+  //    hard error naming the required vars. --skip-score-replay is the ONLY skip.
+  const skipScoreReplay = has('skip-score-replay');
+  if (!skipScoreReplay) {
+    try {
+      assertValidatorRerankerEnv(validatorRerankerPinsFromManifest(bundleManifest));
+    } catch (err) {
+      die(err instanceof Error ? err.message : String(err));
+    }
+  }
 
-  const artifactBase = opt('artifact-base-url', process.env['CORETEX_ARTIFACT_BASE_URL']);
+  const artifactBase = opt('artifact-base-url', process.env['CORETEX_ARTIFACT_BASE_URL'] ?? setup?.artifactBaseUrl);
   const rotationUri = opt(
     'rotation-manifest',
     stringField(status, 'rotationManifestUrl') ?? joinUrl(artifactBase, `epoch-rotations/epoch-rotation-${epoch}.json`),
@@ -403,35 +649,209 @@ async function syncMain() {
     deltaContinuity: { previousRoot: delta.previousRoot, localPreviousRootSource: previous.source },
   };
 
-  let replay: unknown = null;
-  const parentStatePath = opt('parent-state', process.env['CORETEX_PARENT_STATE_PATH']);
-  const fromBlockRaw = opt('from-block', process.env['CORETEX_REPLAY_FROM_BLOCK'] ?? process.env['CORETEX_REGISTRY_DEPLOY_BLOCK']);
-  if (parentStatePath && fromBlockRaw) {
-    const parent = loadPackedState(parentStatePath);
-    const latest = await latestBlock(rpcUrl);
-    const logs = await coretexRangeLogs(rpcUrl, registry, blockHex(BigInt(fromBlockRaw)), blockHex(latest), {
-      latestBlock: latest,
-      ...rangeLogOptions(),
-    });
-    const result = replayCoreTexFromLogs(parent, logs, {
+  // ── registry log replay (DEFAULT — no longer gated on --parent-state/--from-block) ──
+  const snapshotBinPath = join(stateDir, 'substrate-state.bin');
+  const snapshotAvailable = existsSync(snapshotBinPath)
+    && isBytes32(savedState?.replay?.stateRoot)
+    && Number.isSafeInteger(savedState?.replay?.cursorBlock);
+  const fromBlockResolved = resolveReplayFromBlock({
+    flag: opt('from-block'),
+    envReplayFromBlock: process.env['CORETEX_REPLAY_FROM_BLOCK'],
+    envRegistryDeployBlock: process.env['CORETEX_REGISTRY_DEPLOY_BLOCK'],
+    snapshotCursorBlock: snapshotAvailable ? savedState!.replay!.cursorBlock : undefined,
+    stateRegistryDeployBlock: savedState?.registryDeployBlock,
+  });
+  const blankRoot = blankSubstrateStateRoot();
+  const explicitParentPath = opt('parent-state', process.env['CORETEX_PARENT_STATE_PATH']);
+  const bootstrap = resolveReplayParentBootstrap({
+    explicitParentStatePath: explicitParentPath,
+    snapshotAvailable,
+    chainParentStateRoot: chain.parentStateRoot,
+    blankRoot,
+    fromBlockSource: fromBlockResolved.source,
+  });
+  let parent: CortexState;
+  if (bootstrap.source === 'explicit-file') {
+    parent = loadPackedState(explicitParentPath!);
+  } else if (bootstrap.source === 'snapshot') {
+    parent = loadPackedState(snapshotBinPath);
+    const snapshotRoot = bytesToHex(merkleizeState(parent));
+    if (snapshotRoot.toLowerCase() !== savedState!.replay!.stateRoot!.toLowerCase()) {
+      die(`replay snapshot ${snapshotBinPath} merkles to ${snapshotRoot} != recorded ${savedState!.replay!.stateRoot} — the state dir is corrupt; delete it and re-sync from the deploy block`);
+    }
+  } else {
+    parent = blankSubstrateState();
+  }
+
+  const latest = await latestBlock(rpcUrl);
+  const logOpts = rangeLogOptions();
+  const confirmationDepth = BigInt(logOpts.confirmationDepth ?? CORETEX_DEFAULT_CONFIRMATION_DEPTH);
+  const confirmedHead = latest - confirmationDepth;
+  const fromBlock = fromBlockResolved.fromBlock;
+  const logs = confirmedHead >= fromBlock
+    ? await coretexRangeLogs(rpcUrl, registry, blockHex(fromBlock), blockHex(confirmedHead), { latestBlock: latest, ...logOpts })
+    : [];
+  const advances = logs
+    .map(decodeCoreTexStateAdvanced)
+    .filter((v): v is CoreTexStateAdvancedEvent => v !== null)
+    .sort((a, b) => cmpBig(a.epoch, b.epoch) || cmpBig(a.transitionIndex, b.transitionIndex));
+  const crossEpochWindow = advances.some((a) => a.epoch !== BigInt(epoch));
+
+  const replayResult = replayCoreTexFromLogs(parent, logs, {
+    // A bootstrap window replaying multiple epochs cannot pin every advance to
+    // the CURRENT epoch's context (older epochs legitimately carried older
+    // pins) — root continuity + the final liveStateRoot check still hold.
+    ...(crossEpochWindow ? {} : {
       expectedBundleHash: chain.coreVersionHash,
       expectedCorpusRoot: chain.corpusRoot,
       expectedActiveFrontierRoot: chain.activeFrontierRoot,
       expectedBaselineManifestHash: chain.baselineManifestHash,
       expectedHiddenSeedCommit: chain.hiddenSeedCommit,
-      policyAtomsMode,
-      acknowledgedRevertedEpochs: all('acknowledge-reverted-epoch').map((v) => Number(v)),
-    });
-    if (!result.ok) throw new Error(`registry replay failed: ${result.code} ${result.message ?? ''}`);
-    if (result.reproducedFinalRoot?.toLowerCase() !== chain.liveStateRoot.toLowerCase()) {
-      throw new Error(`registry replay root ${result.reproducedFinalRoot} != chain liveStateRoot ${chain.liveStateRoot}`);
-    }
-    if (result.transitions !== chain.transitionCount) {
-      throw new Error(`registry replay transitions ${result.transitions} != chain transitionCount ${chain.transitionCount}`);
-    }
-    replay = result;
+    }),
+    policyAtomsMode,
+    acknowledgedRevertedEpochs: all('acknowledge-reverted-epoch').map((v) => Number(v)),
+  });
+  if (!replayResult.ok) throw new Error(`registry replay failed: ${replayResult.code} ${replayResult.message ?? ''}`);
+  const reproducedFinalRoot = replayResult.reproducedFinalRoot;
+  if (!reproducedFinalRoot || reproducedFinalRoot.toLowerCase() !== chain.liveStateRoot.toLowerCase()) {
+    throw new Error(`registry replay root ${reproducedFinalRoot} != chain liveStateRoot ${chain.liveStateRoot}`);
   }
 
+  // Per-epoch transition accounting: cumulative across incremental syncs for
+  // managed bootstraps; window-total for explicit --parent-state overrides
+  // (the operator asserts the parent is the epoch parent in that case).
+  const epochTransitions: Record<string, number> = { ...(savedState?.replay?.epochTransitions ?? {}) };
+  if (bootstrap.source !== 'snapshot') for (const k of Object.keys(epochTransitions)) delete epochTransitions[k];
+  for (const adv of advances) {
+    const k = adv.epoch.toString();
+    epochTransitions[k] = (epochTransitions[k] ?? 0) + 1;
+  }
+  if (bootstrap.source === 'explicit-file') {
+    if (replayResult.transitions !== chain.transitionCount) {
+      throw new Error(`registry replay transitions ${replayResult.transitions} != chain transitionCount ${chain.transitionCount}`);
+    }
+  } else {
+    const cumulative = epochTransitions[String(epoch)] ?? 0;
+    if (cumulative !== chain.transitionCount) {
+      throw new Error(`registry replay cumulative transitions for epoch ${epoch}: local ${cumulative} != chain transitionCount ${chain.transitionCount}`);
+    }
+  }
+
+  // ── state walk: recover the per-advance parent substrate (needed for
+  //    post-reveal rescoring) and the final state for the snapshot. ──
+  let walkState = parent;
+  const advanceRecords: { adv: CoreTexStateAdvancedEvent; parentState: CortexState; parentRoot: string }[] = [];
+  for (const adv of advances) {
+    const parentRoot = bytesToHex(merkleizeState(walkState));
+    const applied = applyPatch(walkState, decodePatch(adv.compactPatchBytes), policyAtomsMode);
+    if (!applied.ok) throw new Error(`internal: state walk applyPatch ${applied.code} diverged from canonical replay at epoch ${adv.epoch} transition ${adv.transitionIndex}`);
+    advanceRecords.push({ adv, parentState: walkState, parentRoot });
+    walkState = applied.state;
+  }
+  const finalRoot = bytesToHex(merkleizeState(walkState));
+  if (finalRoot.toLowerCase() !== reproducedFinalRoot.toLowerCase()) {
+    throw new Error(`internal: state walk root ${finalRoot} != canonical replay root ${reproducedFinalRoot}`);
+  }
+  const newCursorBlock = Number(confirmedHead >= fromBlock ? confirmedHead : fromBlock - 1n);
+  mkdirSync(stateDir, { recursive: true });
+  writeFileSync(snapshotBinPath, pack(walkState));
+
+  const replay = {
+    ...replayResult,
+    parentBootstrap: bootstrap.source,
+    fromBlock: fromBlock.toString(),
+    fromBlockSource: fromBlockResolved.source,
+    cursorBlock: newCursorBlock,
+    windowAdvances: advances.length,
+    ...(crossEpochWindow ? { pinScope: 'cross-epoch window — per-advance context pins omitted (root continuity + final liveStateRoot still verified)' } : {}),
+    snapshotPath: snapshotBinPath,
+  };
+
+  // ── post-reveal eval artifact verification (AUTOMATIC, fail-closed scorer) ──
+  type EvalVerification = {
+    artifactHash: string; artifactUrl: string; epoch: string; transitionIndex: string;
+    miner: string; outcome?: string; gateDeltaPpm?: number; confirmDeltaPpm?: number;
+  };
+  const evalReplay: {
+    status: string;
+    verified: EvalVerification[];
+    pending: { artifactHash: string; epoch: string; reason: string }[];
+    skipped: boolean;
+  } = { status: chain.evalReplayStatus, verified: [], pending: [], skipped: false };
+
+  if (skipScoreReplay) {
+    evalReplay.skipped = true;
+    warn('WARNING: --skip-score-replay passed — post-reveal eval artifacts were NOT verified and scores were NOT re-scored. '
+      + `This run does NOT attest score honesty (exit code ${SKIP_SCORE_REPLAY_EXIT_CODE}).`);
+  } else if (chain.epochSecretRevealed && advanceRecords.length > 0) {
+    if (!artifactBase) {
+      die('post-reveal eval verification requires the artifact base URL: set CORETEX_ARTIFACT_BASE_URL, pass --artifact-base-url, or run coretex-validator-setup');
+    }
+    const corpusPath = opt('corpus', process.env['CORETEX_CORPUS_PATH'] ?? setup?.corpusPath);
+    if (!corpusPath) {
+      die('post-reveal eval verification requires the materialized corpus: run coretex-validator-setup or pass --corpus/CORETEX_CORPUS_PATH');
+    }
+    const ctx = await buildValidatorScorerContext(bundleManifest, corpusPath);
+    const rpcClient = createBaseRpcClient(rpcUrl);
+    const epochSecretCache = new Map<string, string | null>();
+    const epochSecretFor = async (e: bigint): Promise<string | null> => {
+      const key = e.toString();
+      if (epochSecretCache.has(key)) return epochSecretCache.get(key)!;
+      const secret = decodeBytes32(await ethCall(rpcUrl, mining!, 'epochSecret(uint64)', [e]), 'mining.epochSecret');
+      let value: string | null = null;
+      if (secret.toLowerCase() !== ZERO32) {
+        const commit = decodeBytes32(await ethCall(rpcUrl, registry!, 'epochHiddenSeedCommit(uint64)', [e]), 'registry.epochHiddenSeedCommit');
+        const recomputed = bytesToHex(keccak256(hexToBytes(secret))).toLowerCase();
+        if (recomputed !== commit.toLowerCase()) throw new Error(`epoch ${e} epochSecret commit ${recomputed} != registry hiddenSeedCommit ${commit}`);
+        value = secret;
+      }
+      epochSecretCache.set(key, value);
+      return value;
+    };
+    try {
+      for (const rec of advanceRecords) {
+        const artifactHash = rec.adv.evalReportHash.toLowerCase();
+        const secret = await epochSecretFor(rec.adv.epoch);
+        if (!secret) {
+          evalReplay.pending.push({ artifactHash, epoch: rec.adv.epoch.toString(), reason: 'awaiting_epoch_secret_reveal' });
+          continue;
+        }
+        const artifactUrl = evalReportArtifactUrl(artifactBase, artifactHash);
+        const artifact = await readJsonUri(artifactUrl) as CoreTexPostRevealEvalReportArtifact;
+        if (String(artifact.artifactHash).toLowerCase() !== artifactHash) {
+          throw new Error(`eval artifact ${artifactUrl} carries artifactHash ${artifact.artifactHash} != on-chain evalReportHash ${artifactHash}`);
+        }
+        if (artifact.context.parentStateRoot.toLowerCase() !== rec.parentRoot.toLowerCase()) {
+          throw new Error(`eval artifact ${artifactHash} context.parentStateRoot ${artifact.context.parentStateRoot} != replayed advance parent ${rec.parentRoot}`);
+        }
+        if (ctx.corpus.corpusRoot.toLowerCase() !== artifact.context.corpusRoot.toLowerCase()) {
+          throw new Error(`eval artifact ${artifactHash} context.corpusRoot ${artifact.context.corpusRoot} != local materialized corpus root ${ctx.corpus.corpusRoot} — re-run coretex-validator-setup for this epoch's corpus`);
+        }
+        const result = await verifyPostRevealEvalReportArtifact(artifact, {
+          rpcClient,
+          epochSecret: secret,
+          scorer: scorerForParent(ctx, rec.parentState, artifact.epochId),
+        });
+        if (!result.ok) {
+          throw new Error(`post-reveal eval verification FAILED for ${artifactUrl}: ${result.code} ${result.detail}`);
+        }
+        evalReplay.verified.push({
+          artifactHash,
+          artifactUrl,
+          epoch: rec.adv.epoch.toString(),
+          transitionIndex: rec.adv.transitionIndex.toString(),
+          miner: rec.adv.miner,
+          outcome: artifact.outcome,
+          gateDeltaPpm: result.gateDeltaPpm,
+          confirmDeltaPpm: result.confirmDeltaPpm,
+        });
+      }
+    } finally {
+      await closeReranker(ctx.reranker);
+    }
+  }
+
+  // ── manually supplied eval artifacts (hash + optional secret-commit audit) ──
   const epochSecret = opt('epoch-secret', process.env['CORETEX_EPOCH_SECRET']);
   const evalArtifacts = [];
   for (const uri of all('eval-artifact')) {
@@ -447,13 +867,10 @@ async function syncMain() {
   }
 
   if (chain.evalReplayStatus === 'awaiting_epoch_secret_reveal') {
-    process.stderr.write('status: awaiting_epoch_secret_reveal — mining epochSecret is zero/unrevealed; post-reveal eval replay must wait\n');
+    warn('status: awaiting_epoch_secret_reveal — mining epochSecret is zero/unrevealed; post-reveal eval replay must wait');
   }
 
-  mkdirSync(dirname(resolve(statePath)), { recursive: true });
-  writeFileSync(statePath, JSON.stringify({
-    schema: 'coretex.validator-sync-state.v1',
-    updatedAt: new Date().toISOString(),
+  mergeValidatorStateFile(statePath, {
     epoch,
     bundleHash: bundleManifest.bundleHash,
     corpusRoot: delta.nextRoot,
@@ -461,22 +878,32 @@ async function syncMain() {
     corpusDeltaHash: deltaHash,
     evalReplayStatus: chain.evalReplayStatus,
     epochSigningKeyFingerprint: tofu.fingerprint,
-  }, null, 2) + '\n');
+    replay: {
+      stateRoot: finalRoot,
+      cursorBlock: newCursorBlock,
+      statePath: snapshotBinPath,
+      epochTransitions,
+    },
+  });
 
   process.stdout.write(JSON.stringify({
     ok: true,
     command: 'coretex-validator-sync',
     epoch,
+    epochSource,
     registry,
     miningContract: mining,
     bundleVersion: { localBundleHash: bundleManifest.bundleHash, chainCoreVersionHash: chain.coreVersionHash, match: version.match, policyAtomsMode },
     evalReplayStatus: chain.evalReplayStatus,
     chain,
     artifacts,
-    ...(replay ? { replay } : { replay: 'skipped: pass --parent-state and --from-block to replay registry logs' }),
+    replay,
+    evalReplay,
     evalArtifacts,
     statePath,
   }, null, 2) + '\n');
+
+  if (skipScoreReplay) process.exit(SKIP_SCORE_REPLAY_EXIT_CODE);
 }
 
 // ── verify-patch subcommand ───────────────────────────────────────────────────
@@ -484,7 +911,10 @@ async function syncMain() {
 async function verifyPatchMain() {
   const hash = opt('hash');
   if (!isBytes32(hash)) die('verify-patch requires --hash 0x<bytes32 artifactHash>');
-  const artifactBase = opt('artifact-base-url', process.env['CORETEX_ARTIFACT_BASE_URL']);
+  const stateDir = opt('state-dir', process.env['CORETEX_VALIDATOR_STATE_DIR'] ?? '.coretex-validator')!;
+  const statePath = opt('state', join(stateDir, 'validator-sync-state.json'))!;
+  const setup = readValidatorStateFile(statePath)?.setup;
+  const artifactBase = opt('artifact-base-url', process.env['CORETEX_ARTIFACT_BASE_URL'] ?? setup?.artifactBaseUrl);
   const artifactUri = opt('artifact-url', joinUrl(artifactBase, `eval-reports/${hash.toLowerCase()}.json`));
   if (!artifactUri) die('verify-patch requires CORETEX_ARTIFACT_BASE_URL / --artifact-base-url (or an explicit --artifact-url)');
   const artifact = await readJsonUri(artifactUri) as CoreTexPostRevealEvalReportArtifact;
@@ -492,59 +922,64 @@ async function verifyPatchMain() {
     die(`fetched artifact hash ${artifact.artifactHash} != requested ${hash}`);
   }
 
+  const bundleManifestPath = opt('bundle-manifest', process.env['CORETEX_BUNDLE_MANIFEST'] ?? setup?.bundleManifestPath);
+  if (!bundleManifestPath) die('--bundle-manifest, CORETEX_BUNDLE_MANIFEST, or a coretex-validator-setup state file is required');
+  const bundle = JSON.parse(readFileSync(bundleManifestPath, 'utf8')) as CoreTexBundleManifest;
+  if (!isBytes32(bundle.bundleHash)) die(`bundle manifest ${bundleManifestPath} has no bundleHash`);
+  checkValidatorBundleVersion(bundle.bundleHash, artifact.context.coreVersionHash, has('allow-version-mismatch'));
+
+  // ── FAIL-CLOSED scorer gate (same gate as sync): the deterministic stub is
+  //    unreachable; --skip-score-replay is the ONLY skip and cannot attest.
+  if (has('skip-score-replay')) {
+    const recomputed = hashPostRevealEvalReportArtifact(artifact);
+    const hashBound = recomputed === hash.toLowerCase()
+      && String(artifact.evalReportHash).toLowerCase() === hash.toLowerCase();
+    if (!hashBound) die(`artifact hash binding failed: recomputed ${recomputed}, evalReportHash ${artifact.evalReportHash}, requested ${hash}`);
+    warn('WARNING: --skip-score-replay passed — verify-patch checked ONLY the artifact hash binding. '
+      + `Scores were NOT re-scored; this run does NOT attest score honesty (exit code ${SKIP_SCORE_REPLAY_EXIT_CODE}).`);
+    process.stdout.write(JSON.stringify({
+      command: 'coretex-validator-sync verify-patch',
+      artifactUrl: artifactUri,
+      artifactHash: hash.toLowerCase(),
+      epochId: artifact.epochId,
+      minerAddress: artifact.minerAddress,
+      outcome: artifact.outcome,
+      scoreReplay: 'SKIPPED (--skip-score-replay): artifact hash binding only — NOT a score attestation',
+    }, null, 2) + '\n');
+    process.exit(SKIP_SCORE_REPLAY_EXIT_CODE);
+  }
+  try {
+    assertValidatorRerankerEnv(validatorRerankerPinsFromManifest(bundle));
+  } catch (err) {
+    die(err instanceof Error ? err.message : String(err));
+  }
+
   const rpcUrl = opt('rpc-url', process.env['BASE_RPC_URL']);
   if (!rpcUrl) die('--rpc-url or BASE_RPC_URL is required (blockhash binding replay)');
   const epochSecret = opt('epoch-secret', process.env['CORETEX_EPOCH_SECRET']);
   if (!isBytes32(epochSecret)) die('--epoch-secret or CORETEX_EPOCH_SECRET (revealed bytes32) is required for post-reveal verification');
-  const bundleManifestPath = opt('bundle-manifest', process.env['CORETEX_BUNDLE_MANIFEST']);
-  if (!bundleManifestPath) die('--bundle-manifest or CORETEX_BUNDLE_MANIFEST is required');
-  const corpusPath = opt('corpus', process.env['CORETEX_CORPUS_PATH']);
-  if (!corpusPath) die('--corpus or CORETEX_CORPUS_PATH is required (materialized epoch corpus)');
+  const corpusPath = opt('corpus', process.env['CORETEX_CORPUS_PATH'] ?? setup?.corpusPath);
+  if (!corpusPath) die('--corpus, CORETEX_CORPUS_PATH, or a coretex-validator-setup state file is required (materialized epoch corpus)');
   const parentStatePath = opt('parent-state', process.env['CORETEX_PARENT_STATE_PATH']);
   if (!parentStatePath) die('--parent-state or CORETEX_PARENT_STATE_PATH is required');
 
-  const bundle = JSON.parse(readFileSync(bundleManifestPath, 'utf8')) as CoreTexBundleManifest;
-  if (!isBytes32(bundle.bundleHash)) die(`bundle manifest ${bundleManifestPath} has no bundleHash`);
-  checkValidatorBundleVersion(bundle.bundleHash, artifact.context.coreVersionHash, has('allow-version-mismatch'));
-  const profile = bundle.evaluator?.profile ?? DEFAULT_PROFILE;
-
-  const corpus = loadProductionCorpus(corpusPath, { verifyCorpusRoot: true, verifySplits: true });
-  if (corpus.corpusRoot.toLowerCase() !== artifact.context.corpusRoot.toLowerCase()) {
-    die(`local corpus root ${corpus.corpusRoot} != artifact context corpusRoot ${artifact.context.corpusRoot}`);
-  }
   const parent = loadPackedState(parentStatePath);
   const parentRoot = bytesToHex(merkleizeState(parent));
   if (parentRoot.toLowerCase() !== artifact.context.parentStateRoot.toLowerCase()) {
     die(`local parent state root ${parentRoot} != artifact context parentStateRoot ${artifact.context.parentStateRoot}`);
   }
 
-  const layout = corpus.biEncoderRetrievalKeyLayout;
-  const biEncoder = biEncoderFromEnv(layout, { modelId: corpus.biEncoderModelId, revision: corpus.biEncoderRevision });
-  const reranker = await rerankerFromEnv();
-  const scoringOpts = scoringOptionsFromProfile(profile, {
-    biEncoder,
-    reranker,
-    biEncoderHash: biEncoderModelIdHash(corpus.biEncoderModelId, corpus.biEncoderRevision, 'dense'),
-    retrievalKeyLayout: layout,
-  });
-  const thresholdPpm = Math.min(computeAcceptanceThresholdPpm(profile), 355);
+  const ctx = await buildValidatorScorerContext(bundle, corpusPath);
+  if (ctx.corpus.corpusRoot.toLowerCase() !== artifact.context.corpusRoot.toLowerCase()) {
+    await closeReranker(ctx.reranker);
+    die(`local corpus root ${ctx.corpus.corpusRoot} != artifact context corpusRoot ${artifact.context.corpusRoot}`);
+  }
 
   try {
     const result = await verifyPostRevealEvalReportArtifact(artifact, {
       rpcClient: createBaseRpcClient(rpcUrl),
       epochSecret,
-      scorer: async ({ normalizedPatchBytes, evalSeed }) => {
-        const pack = deriveQueryPack(artifact.epochId, evalSeed, corpus, profile.hiddenPack);
-        const scored = await evaluateRetrievalBenchmarkPatch(parent, decodePatch(normalizedPatchBytes), corpus, pack, scoringOpts, {
-          ...profile.patchAcceptanceFloors,
-          acceptanceThresholdPpm: thresholdPpm,
-        });
-        return {
-          scorePpm: scored.deltaPpm,
-          accepted: scored.accepted,
-          ...(scored.reason ? { rejectionReason: scored.reason } : {}),
-        };
-      },
+      scorer: scorerForParent(ctx, parent, artifact.epochId),
     });
     process.stdout.write(JSON.stringify({
       command: 'coretex-validator-sync verify-patch',
@@ -557,12 +992,15 @@ async function verifyPatchMain() {
     }, null, 2) + '\n');
     if (!result.ok) process.exit(1);
   } finally {
-    const closable = reranker as { close?: () => Promise<void> };
-    if (typeof closable.close === 'function') await closable.close();
+    await closeReranker(ctx.reranker);
   }
 }
 
 async function main() {
+  if (has('help') || args[0] === '-h' || args[0] === 'help') {
+    process.stdout.write(USAGE + '\n');
+    return;
+  }
   if (args[0] === 'verify-patch') return verifyPatchMain();
   return syncMain();
 }

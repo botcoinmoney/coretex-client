@@ -2,12 +2,13 @@
  * Golden TS↔Python parity for the canonical Qwen reranker prompt template
  * (§2 score-honesty / prompt unification).
  *
- * scripts/reranker_runner.py is the CANONICAL template (every calibration
- * baseline was derived through it). eval/reranker.ts:renderQwenRerankerPrompt
- * must build the byte-identical string. This test spawns
- * `python3 scripts/reranker_runner.py --print-prompt-template` (stdlib-only,
- * no torch) and asserts byte equality. It SKIPS — loudly — ONLY when python3
- * is genuinely unavailable on the host.
+ * packages/cortex/scripts/reranker_runner.py is the CANONICAL template (every
+ * calibration baseline was derived through it; the repo-root
+ * scripts/reranker_runner.py is a forwarding shim).
+ * eval/reranker.ts:renderQwenRerankerPrompt must build the byte-identical
+ * string. This test spawns the canonical runner with --print-prompt-template
+ * (stdlib-only, no torch) and asserts byte equality. It SKIPS — loudly — ONLY
+ * when python3 is genuinely unavailable on the host.
  */
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
@@ -20,9 +21,17 @@ import {
   qwenRerankerPromptTemplateHash,
   renderQwenRerankerPrompt,
   resolveQwenRerankerInstruction,
+  resolveRerankerScriptPath,
 } from '../../dist/index.js';
 
-const RUNNER = fileURLToPath(new URL('../../../../scripts/reranker_runner.py', import.meta.url));
+// Resolve through the SAME package-root resolver production uses (B-fix):
+// the canonical runner ships inside the package at scripts/reranker_runner.py.
+const RUNNER = resolveRerankerScriptPath({});
+assert.equal(
+  RUNNER,
+  fileURLToPath(new URL('../../scripts/reranker_runner.py', import.meta.url)),
+  'package-root resolver must point at the in-package canonical runner',
+);
 
 function python3Available() {
   const probe = spawnSync('python3', ['--version'], { encoding: 'utf8' });

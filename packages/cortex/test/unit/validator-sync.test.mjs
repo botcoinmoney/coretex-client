@@ -320,10 +320,22 @@ describe('validator-sync CLI — mandatory inputs (spawned)', () => {
 
   test('a missing epoch signing public key is a hard error (signatures are mandatory)', () => withTmpDir((dir) => {
     const manifestPath = join(dir, 'bundle.json');
-    writeFileSync(manifestPath, JSON.stringify({ bundleHash: `0x${'44'.repeat(32)}`, corpus: { root: ROOT_A } }));
+    writeFileSync(manifestPath, JSON.stringify({
+      bundleHash: `0x${'44'.repeat(32)}`,
+      corpus: { root: ROOT_A },
+      model: { reranker: { modelId: 'Qwen/Qwen3-Reranker-0.6B', revision: 'test-revision' } },
+    }));
     const proc = runCli(baseArgs(manifestPath));
     assert.notEqual(proc.status, 0);
     assert.match(proc.stderr, /epoch signing public key is required \(signature verification is mandatory\)/);
+  }));
+
+  test('a bundle manifest without model.reranker pins is a hard error (fail-closed scorer)', () => withTmpDir((dir) => {
+    const manifestPath = join(dir, 'bundle.json');
+    writeFileSync(manifestPath, JSON.stringify({ bundleHash: `0x${'44'.repeat(32)}`, corpus: { root: ROOT_A } }));
+    const proc = runCli(baseArgs(manifestPath));
+    assert.notEqual(proc.status, 0);
+    assert.match(proc.stderr, /no model\.reranker\.modelId\/revision pins/);
   }));
 
   test('verify-patch requires --hash', () => {
