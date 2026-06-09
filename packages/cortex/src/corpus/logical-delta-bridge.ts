@@ -32,6 +32,8 @@ export interface LogicalDeltaDoc {
   readonly lifecycleScope?: string;
   readonly liveUpdateEpoch?: number;
   readonly shape?: string;
+  /** Set on retraction_record tombstones: the logical doc id this record withdraws. */
+  readonly retractsDocId?: string;
 }
 
 export interface LogicalDeltaRelation {
@@ -72,10 +74,16 @@ export interface LogicalDelta {
   readonly epoch: number;
   readonly seed: string;
   readonly churnFraction: number;
+  readonly retractionFraction?: number;
   readonly addedDocs: readonly LogicalDeltaDoc[];
   readonly addedRelations: readonly LogicalDeltaRelation[];
   readonly addedQueries: readonly LogicalDeltaQuery[];
   readonly churnedSubjects: readonly string[];
+  /** Logical doc ids retracted this epoch (callers map them to CorpusDelta.removedIds). */
+  readonly retractedDocIds?: readonly string[];
+  /** Logical eval_hidden query ids aged out this epoch (callers map them to CorpusDelta.removedIds). */
+  readonly retiredQueryIds?: readonly string[];
+  readonly freshEvalHiddenQueryIds?: readonly string[];
   readonly liveChurnRate: number;
 }
 
@@ -111,8 +119,10 @@ function epochFromLogicalId(id: string): number | null {
   return Number.isInteger(epoch) && epoch >= 0 ? epoch : null;
 }
 
-const liveTailMemId = (id: string, epoch: number): string => `zz_e${epochKey(epoch)}_mem_${id}`;
-const liveTailQueryId = (id: string, epoch: number): string => `zz_e${epochKey(epoch)}_q_${id}`;
+/** Canonical live-tail production id for a logical doc added at `epoch`. */
+export const liveTailMemId = (id: string, epoch: number): string => `zz_e${epochKey(epoch)}_mem_${id}`;
+/** Canonical live-tail production id for a logical query added at `epoch`. */
+export const liveTailQueryId = (id: string, epoch: number): string => `zz_e${epochKey(epoch)}_q_${id}`;
 
 function possibleLiveTailMemIds(id: string): string[] {
   const epoch = epochFromLogicalId(id);
@@ -149,6 +159,52 @@ function productionMemIdForRelationTarget(
   if (added) return added;
   for (const id of possibleLiveTailMemIds(docId)) if (previousCorpus.byId.has(id)) return id;
   return memId(docId);
+}
+
+/** Inverse of `liveTailQueryId`: strip the live-tail epoch prefix from a production query event id. */
+export function logicalQueryIdFromProductionEventId(id: string): string {
+  const m = /^zz_e\d+_q_(.+)$/.exec(id);
+  return m ? m[1]! : id;
+}
+
+/**
+ * Resolve the production corpus event id holding a LOGICAL doc (genesis `mem_*` or live-tail
+ * `zz_e*_mem_*` forms). Returns null when the doc has no event in `previousCorpus` — callers
+ * building CorpusDelta.removedIds MUST hard-fail on null (logical/production state divergence).
+ */
+export function productionEventIdForLogicalDoc(
+  previousCorpus: ProductionCorpus,
+  doc: { readonly id: string; readonly liveUpdateEpoch?: number | undefined },
+): string | null {
+  if (doc.liveUpdateEpoch !== undefined) {
+    const tail = liveTailMemId(doc.id, doc.liveUpdateEpoch);
+    if (previousCorpus.byId.has(tail)) return tail;
+  }
+  const staticId = memId(doc.id);
+  if (previousCorpus.byId.has(staticId)) return staticId;
+  for (const id of possibleLiveTailMemIds(doc.id)) if (previousCorpus.byId.has(id)) return id;
+  return null;
+}
+
+/**
+ * Resolve the production corpus event id holding a LOGICAL query (genesis queries use the raw
+ * logical id; live-tail queries use `zz_e*_q_*`). Same null contract as the doc resolver.
+ */
+export function productionEventIdForLogicalQuery(
+  previousCorpus: ProductionCorpus,
+  query: { readonly id: string; readonly liveUpdateEpoch?: number | undefined },
+): string | null {
+  if (query.liveUpdateEpoch !== undefined) {
+    const tail = liveTailQueryId(query.id, query.liveUpdateEpoch);
+    if (previousCorpus.byId.has(tail)) return tail;
+  }
+  if (previousCorpus.byId.has(query.id)) return query.id;
+  const epoch = epochFromLogicalId(query.id);
+  if (epoch !== null) {
+    const tail = liveTailQueryId(query.id, epoch);
+    if (previousCorpus.byId.has(tail)) return tail;
+  }
+  return null;
 }
 
 const PROVENANCE = { source: 'synthetic_challenge', sourceHash: '0x' + '00'.repeat(32) } as const;

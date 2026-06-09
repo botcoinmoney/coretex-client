@@ -117,6 +117,69 @@ export function verifyEpochRotationManifestSignature(
   return verifier.verify(publicKeyPem, Buffer.from(manifest.signer.signature.replace(/^0x/i, ''), 'hex'));
 }
 
+// ── Frontier-state pruning (hidden-row retirement support) ────────────────────
+
+/**
+ * Structural mirror of the coordinator EpochFrontierRuntimeState
+ * (`coretex.epoch-frontier-state.v1`) — kept structural so corpus rotation code
+ * does not depend on the coordinator module.
+ */
+export interface EpochFrontierStateLike {
+  readonly schemaVersion: string;
+  readonly order: readonly string[];
+  readonly reservePtr: number;
+  readonly active: readonly (readonly [string, number])[];
+  readonly retired: readonly string[];
+  readonly cumulativeActivated: number;
+  readonly cumulativeRetired: number;
+  readonly initialized: boolean;
+  readonly injectedSinceLastStep: number;
+  readonly ewmaAccepts: number | null;
+}
+
+export interface PrunedEpochFrontierState<T extends EpochFrontierStateLike> {
+  readonly state: T;
+  /** Ids dropped from the order/reserve (no longer present in the corpus). */
+  readonly prunedOrderIds: readonly string[];
+  /** Ids dropped from the ACTIVE set — each is a forced activeFrontierRoot change. */
+  readonly prunedActiveIds: readonly string[];
+  readonly prunedRetiredIds: readonly string[];
+}
+
+/**
+ * Drop ids that are no longer present in the corpus (e.g. hidden rows retired via
+ * CorpusDelta.removedIds) from a persisted epoch-frontier runtime state, preserving
+ * `reservePtr` semantics (decremented for every pruned id ahead of the pointer) and the
+ * cumulative counters. `makeEpochFrontier` hard-rejects initialState ids that are not in
+ * `evalHiddenIds`, so the rotation pipeline MUST prune before re-hydrating the frontier.
+ */
+export function pruneEpochFrontierState<T extends EpochFrontierStateLike>(
+  state: T,
+  isKnownId: (id: string) => boolean,
+): PrunedEpochFrontierState<T> {
+  if (state.schemaVersion !== 'coretex.epoch-frontier-state.v1') {
+    throw new Error(`pruneEpochFrontierState: unsupported schema ${state.schemaVersion}`);
+  }
+  const prunedOrderIds: string[] = [];
+  const order: string[] = [];
+  let reservePtr = state.reservePtr;
+  state.order.forEach((id, idx) => {
+    if (isKnownId(id)) { order.push(id); return; }
+    prunedOrderIds.push(id);
+    if (idx < state.reservePtr) reservePtr -= 1;
+  });
+  const prunedActiveIds = state.active.filter(([id]) => !isKnownId(id)).map(([id]) => id);
+  const active = state.active.filter(([id]) => isKnownId(id));
+  const prunedRetiredIds = state.retired.filter((id) => !isKnownId(id));
+  const retired = state.retired.filter((id) => isKnownId(id));
+  return {
+    state: { ...state, order, reservePtr, active, retired },
+    prunedOrderIds,
+    prunedActiveIds,
+    prunedRetiredIds,
+  };
+}
+
 export function hashCorpusDelta(delta: CorpusDelta): string {
   // Delta can carry binary embedding bytes; defer to delta.ts canonical-JSON
   // which knows how to hex-encode Uint8Array fields.

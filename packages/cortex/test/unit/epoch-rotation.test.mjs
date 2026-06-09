@@ -6,6 +6,8 @@ import {
   buildCorpusDelta,
   buildEpochRotationManifest,
   hashCorpusDelta,
+  makeEpochFrontier,
+  pruneEpochFrontierState,
   signEpochRotationManifest,
   verifyEpochRotationManifestSignature,
   splitForRecord,
@@ -152,5 +154,58 @@ describe('epoch rotation manifest', () => {
       { ...signed, minImprovementPpm: 1 },
       publicKey.export({ type: 'pkcs1', format: 'pem' }),
     ), false);
+  });
+});
+
+describe('pruneEpochFrontierState (hidden-row retirement support)', () => {
+  const state = {
+    schemaVersion: 'coretex.epoch-frontier-state.v1',
+    order: ['a', 'b', 'c', 'd', 'e'],
+    reservePtr: 3, // a,b,c consumed; d,e in reserve
+    active: [['a', 1], ['c', 2]],
+    retired: ['b'],
+    cumulativeActivated: 3,
+    cumulativeRetired: 1,
+    initialized: true,
+    injectedSinceLastStep: 0,
+    ewmaAccepts: 0.5,
+  };
+
+  test('drops unknown ids from order/active/retired and shifts reservePtr', () => {
+    const known = new Set(['a', 'c', 'e']); // b removed (before ptr), d removed (after ptr)
+    const { state: pruned, prunedOrderIds, prunedActiveIds, prunedRetiredIds } = pruneEpochFrontierState(state, (id) => known.has(id));
+    assert.deepEqual(pruned.order, ['a', 'c', 'e']);
+    assert.equal(pruned.reservePtr, 2, 'one pruned id ahead of the pointer shifts it left by one');
+    assert.deepEqual(pruned.active, [['a', 1], ['c', 2]]);
+    assert.deepEqual(pruned.retired, []);
+    assert.deepEqual(prunedOrderIds, ['b', 'd']);
+    assert.deepEqual(prunedActiveIds, []);
+    assert.deepEqual(prunedRetiredIds, ['b']);
+    assert.equal(pruned.cumulativeRetired, 1, 'cumulative counters preserved');
+  });
+
+  test('reports forced ACTIVE prunes (each is an activeFrontierRoot change)', () => {
+    const known = new Set(['b', 'c', 'd', 'e']);
+    const { state: pruned, prunedActiveIds } = pruneEpochFrontierState(state, (id) => known.has(id));
+    assert.deepEqual(prunedActiveIds, ['a']);
+    assert.deepEqual(pruned.active, [['c', 2]]);
+  });
+
+  test('pruned state re-hydrates makeEpochFrontier where the unpruned state throws', () => {
+    const survivors = ['a', 'c', 'e'];
+    const familyOf = () => 'temporal';
+    assert.throws(() => makeEpochFrontier({
+      evalHiddenIds: survivors, familyOf, mode: 'C3', activeWindow: 2, seed: 'p', initialState: state,
+    }), /unknown id/);
+    const { state: pruned } = pruneEpochFrontierState(state, (id) => survivors.includes(id));
+    const frontier = makeEpochFrontier({
+      evalHiddenIds: survivors, familyOf, mode: 'C3', activeWindow: 2, seed: 'p', initialState: pruned,
+    });
+    const snap = frontier.stepEpoch(3, 1, 2);
+    assert.ok(snap.activeRoot && !/^0x0+$/.test(snap.activeRoot));
+  });
+
+  test('rejects unsupported schema', () => {
+    assert.throws(() => pruneEpochFrontierState({ ...state, schemaVersion: 'bogus' }, () => true), /unsupported schema/);
   });
 });
