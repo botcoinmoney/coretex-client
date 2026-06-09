@@ -100,7 +100,13 @@ export interface CoreTexCoordinatorDataSource {
   /** Packed substrate by confirmed state root. */
   readonly getSubstrate?: (stateRoot: string) => Promise<unknown> | unknown;
   /** Accept a candidate patch. Body: `{patchBytesHex, parentStateRoot, minerAddress}`.
-   *  Returns either a signed receipt envelope or a rejection. */
+   *  Returns either a signed receipt envelope or a rejection. While an epoch
+   *  cutover freeze is active the rejection code is `epoch_cutover_in_progress`;
+   *  while a rotated context has no recomputed baseline it is
+   *  `awaiting_baseline_recompute`. Rejection envelopes carry NO score
+   *  telemetry (no deterministicDeltaPpm / requiredDeltaPpm or equivalent
+   *  gradients) — the router passes responses through verbatim and MUST NOT
+   *  decorate them. */
   readonly submit?: (body: unknown) => Promise<unknown> | unknown;
   /** Look up a previously signed receipt by patchHash. Lookup must work for BOTH
    *  the miner-submitted (original) hash AND the coordinator-rewritten signed hash.

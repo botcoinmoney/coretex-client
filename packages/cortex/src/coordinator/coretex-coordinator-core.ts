@@ -35,6 +35,34 @@
  *      coord.lastTransitionIndex + 1`; when caught up,
  *      `registry.liveStateRoot(epoch) == coord.liveRoot`. Mismatch ->
  *      signing disabled + `acceptingSubmissions = false`.
+ *   9. Submit/tick concurrency (audit §9 W02 race): ALL submit processing is
+ *      serialized through ONE FIFO queue (`CoreTexSubmitQueue`; in-process
+ *      default, durable-adapter wrappable) and shares an async mutex with
+ *      `tick()`, so a watcher tick can never interleave between a submit's
+ *      parent-root capture and its signature. Immediately before signing, the
+ *      live root / epoch / freeze flag are re-checked; a stale live root is
+ *      REJECTED (`W02_STALE_PARENT_AT_SIGNING`) — never re-evaluated, because
+ *      the patch wire bytes pin the evaluated parent root and cannot apply to
+ *      any other root. Per-miner solveIndex/prevReceiptHash are reserved while
+ *      a signed receipt is un-landed: a follow-up same-miner submit either
+ *      builds on the reservation (when the signer returns the V4 on-chain
+ *      `receiptHash`) or is rejected `MinerReceiptChainBusy` — never
+ *      double-spends the chain counter. The cutover orchestrator can
+ *      `freeze()` the core: submits reject with `epoch_cutover_in_progress`
+ *      and ticks become no-ops until `unfreeze()`.
+ *  10. Baseline runtime semantics (audit §7, bundle-attested
+ *      `baselineRecompute='activeRootChanged'`): the effective baseline is
+ *      tracked PER STATE ROOT. The launch baseline (production-scorer baseline
+ *      for the pinned epoch context) MUST be configured — boot hard-fails
+ *      without it. Each chain-confirmed state advance that matches a receipt
+ *      this coordinator signed moves the effective baseline to the accepted
+ *      `scoreAfterPpm`; the screener gate derives the live threshold from that
+ *      baseline via `computeCoreTexScreenerThresholdPpm` (the configured
+ *      `screenerThresholdPpm` is a static floor, not an override). When the
+ *      active root changes without a known baseline (foreign advance, corpus /
+ *      frontier rotation, orchestrator invalidation), submits are refused with
+ *      `awaiting_baseline_recompute` until `setRecomputedBaseline()` provides
+ *      the baseline for the new context.
  *
  * Designed for fork/mocked unit testing — every external dependency (chain
  * RPC, signer, parent-substrate loader, real eval/scoring path) is a typed
@@ -134,8 +162,10 @@ export interface RealEvaluator {
 }
 
 export type EvalResult =
-  | { readonly outcome: 'reject'; readonly code: string; readonly reason: string;
-      readonly deterministicDeltaPpm?: number; readonly requiredDeltaPpm?: number }
+  // §8 envelope strip: reject results carry NO score telemetry. The core never
+  // forwards deterministicDeltaPpm / requiredDeltaPpm (or any equivalent score
+  // gradient) into a rejection envelope.
+  | { readonly outcome: 'reject'; readonly code: string; readonly reason: string }
   | { readonly outcome: 'screener_pass'; readonly deterministicDeltaPpm: number;
       readonly evalReportHash: string; readonly artifactHash: string;
       readonly evaluationProof?: CoreTexDualPackEvaluationProof }
@@ -205,8 +235,51 @@ export interface CoreTexReceiptSigner {
   signCoreTexReceipt(input: {
     readonly miner: string;
     readonly receipt: CoreTexReceiptPayload;
-  }): Promise<{ readonly signature: string; readonly transactionData: string; readonly receipt?: unknown }>
-    | { readonly signature: string; readonly transactionData: string; readonly receipt?: unknown };
+  }): Promise<CoreTexSignedReceipt> | CoreTexSignedReceipt;
+}
+
+export interface CoreTexSignedReceipt {
+  readonly signature: string;
+  readonly transactionData: string;
+  readonly receipt?: unknown;
+  /** Optional V4 on-chain receiptHash (the `lastReceiptHash` chain key the
+   *  contract will store when this receipt lands). A production signer that
+   *  computes the EIP-712 digest can derive it; when present the core can
+   *  chain a follow-up same-miner receipt on this un-landed one instead of
+   *  rejecting `MinerReceiptChainBusy`. */
+  readonly receiptHash?: string;
+}
+
+// ── submit FIFO queue ───────────────────────────────────────────────────────
+/** Serializes submit processing in strict arrival order (audit §9). The
+ *  in-process default chains tasks on one promise tail; a durable sidecar
+ *  adapter (integration repo) can wrap `enqueue` to persist submit envelopes
+ *  before/after execution while preserving FIFO order. */
+export interface CoreTexSubmitQueue {
+  enqueue<T>(task: () => Promise<T>): Promise<T>;
+}
+
+export function createInProcessCoreTexSubmitQueue(): CoreTexSubmitQueue {
+  let tail: Promise<unknown> = Promise.resolve();
+  return {
+    enqueue<T>(task: () => Promise<T>): Promise<T> {
+      const run = tail.then(() => task());
+      tail = run.then(() => undefined, () => undefined);
+      return run;
+    },
+  };
+}
+
+/** FIFO async mutex: acquisitions run exclusively, in request order. Shared by
+ *  the submit worker and `tick()` so cutover-sensitive mutations never
+ *  interleave with an in-flight evaluation/signature. */
+class AsyncMutex {
+  private tail: Promise<unknown> = Promise.resolve();
+  runExclusive<T>(fn: () => Promise<T> | T): Promise<T> {
+    const run = this.tail.then(() => fn());
+    this.tail = run.then(() => undefined, () => undefined);
+    return run;
+  }
 }
 
 // ── configuration ──────────────────────────────────────────────────────────
@@ -224,6 +297,9 @@ export interface CoreTexCoordinatorConfig {
   readonly replayFromBlock?: number;
   readonly receiptTtlSec: number;
   readonly perMinerScreenerCap?: number;
+  /** Static FLOOR for the live screener threshold. The effective threshold is
+   *  `max(screenerThresholdPpm, computeCoreTexScreenerThresholdPpm(liveBaseline))`
+   *  so the gate tracks the live baseline per the attested policy. */
   readonly screenerThresholdPpm?: number;
   readonly minImprovementPpm?: number;
   readonly replayTolerancePpm?: number;
@@ -236,6 +312,10 @@ export interface CoreTexCoordinatorConfig {
   readonly pipelineVersion?: string;
   readonly memoryIRSchemaVersion?: string;
   readonly runwayTelemetry?: Record<string, unknown>;
+  /** REQUIRED (either this or `baselineParentScorePpm`): production-scorer
+   *  baseline for the PINNED launch parent root. Boot hard-fails without it —
+   *  the coordinator must never serve `/coretex/*` with no baseline for the
+   *  current context. */
   readonly baselineScorePpm?: number;
   readonly baselineParentScorePpm?: number;
   readonly baselineVariancePpm?: number;
@@ -332,8 +412,21 @@ export class CoreTexCoordinatorCore {
   private replayFromBlock = 0;
   private finalityLagBlocks = 0;
   private lastEpochMismatch: bigint | null = null;
-  private currentBaselineParentScorePpm = 0;
   private currentBaselineVariancePpm: number | undefined;
+
+  // §9 concurrency lane: FIFO submit queue + shared submit/tick mutex + freeze
+  private readonly coreMutex = new AsyncMutex();
+  private readonly submitQueue: CoreTexSubmitQueue;
+  private frozen = false;
+  private frozenReason: string | null = null;
+  /** Per-miner un-landed receipt-chain reservation: the NEXT (solveIndex,
+   *  prevReceiptHash) a follow-up receipt must use. `lastReceiptHash === null`
+   *  when the signer could not provide the on-chain receiptHash (chaining
+   *  impossible -> follow-up submits reject `MinerReceiptChainBusy`). */
+  private readonly minerChainReservations = new Map<string, { nextIndex: bigint; lastReceiptHash: string | null; expiresAt: number }>();
+
+  // §7 baseline lane: effective baseline per state root (baselineRecompute='activeRootChanged')
+  private readonly baselineByRoot = new Map<string, number>();
 
   private readonly pendingByPatchHash = new Map<string, PendingReceipt>();
   private readonly receiptCache = new Map<string, ReceiptEnvelope>();
@@ -357,8 +450,9 @@ export class CoreTexCoordinatorCore {
     private readonly parentLoader: ParentSubstrateLoader,
     private readonly evaluator: RealEvaluator,
     private readonly signer?: CoreTexReceiptSigner,
+    submitQueue?: CoreTexSubmitQueue,
   ) {
-    this.currentBaselineParentScorePpm = config.baselineParentScorePpm ?? config.baselineScorePpm ?? 0;
+    this.submitQueue = submitQueue ?? createInProcessCoreTexSubmitQueue();
     const source = config.baselineVarianceSource ?? 'unavailable';
     this.currentBaselineVariancePpm = source === 'rotating_pack' || source === 'broad_sampling'
       ? config.baselineVariancePpm
@@ -405,6 +499,10 @@ export class CoreTexCoordinatorCore {
     this.parentState = { words: [...parent.words] };
     this.parentRoot = this.liveRoot;
     this.stateByRoot.set(this.liveRoot, this.liveState);
+    // Launch baseline binds to the PINNED parent root. If startup replay
+    // advances past it, the live root has no baseline until the recompute
+    // plumbing provides one ('awaiting_baseline_recompute').
+    this.baselineByRoot.set(this.parentRoot, this.launchBaselinePpm());
 
     // Startup replay from the configured deployment/cursor block, not recent N blocks.
     const replayFromBlock = Math.max(0, Math.floor(this.config.replayFromBlock ?? 0));
@@ -431,7 +529,14 @@ export class CoreTexCoordinatorCore {
   }
 
   // ── watcher tick (called periodically) ────────────────────────────────────
+  /** Mutually exclusive with submit processing (§9): a tick can never
+   *  interleave between a submit's parent-root capture and its signature. */
   async tick(): Promise<void> {
+    return this.coreMutex.runExclusive(() => this.tickInner());
+  }
+
+  private async tickInner(): Promise<void> {
+    if (this.frozen) return; // cutover orchestrator owns the core while frozen
     try {
       if (!(await this.checkEpochStillCurrent())) {
         this.gcPending(Math.floor(Date.now() / 1000));
@@ -527,7 +632,11 @@ export class CoreTexCoordinatorCore {
       if (p.parentRoot.toLowerCase() === ev.parent.toLowerCase() &&
           p.signedPatchHash.toLowerCase() === ev.patchHash.toLowerCase()) {
         p.state = 'confirmed';
-        if (p.scoreAfterPpm !== undefined) this.currentBaselineParentScorePpm = p.scoreAfterPpm;
+        // §7: an accepted state advance moves the effective baseline for the
+        // new active root to the accepted scoreAfterPpm. A confirmed advance
+        // with NO matching pending (foreign signer / replayed history) leaves
+        // the new root baseline-less -> 'awaiting_baseline_recompute'.
+        if (p.scoreAfterPpm !== undefined) this.baselineByRoot.set(newRoot, p.scoreAfterPpm);
       } else if (p.parentRoot.toLowerCase() === ev.parent.toLowerCase()) {
         // Audit-3 R3 P3: stale pending receipts must reconcile receipt-cache states
         // — the cached envelope is marked stale via the pending lookup, AND it is
@@ -670,6 +779,11 @@ export class CoreTexCoordinatorCore {
     for (const [hash, tombstoneUntil] of [...this.expiredReceiptTombstones.entries()]) {
       if (tombstoneUntil <= nowSec) this.expiredReceiptTombstones.delete(hash);
     }
+    // An expired receipt can never land (V4 _validateReceiptWindow), so its
+    // reserved solveIndex is safe to reuse once the reservation window closes.
+    for (const [miner, reservation] of [...this.minerChainReservations.entries()]) {
+      if (reservation.expiresAt <= nowSec) this.minerChainReservations.delete(miner);
+    }
   }
 
   private markExpiredReceiptHash(hash: string, nowSec: number): void {
@@ -697,16 +811,18 @@ export class CoreTexCoordinatorCore {
     const miner = typeof minerRaw === 'string' && isAddress(minerRaw) ? minerRaw.toLowerCase() : null;
     const qualified = await this.chain.getQualifiedScreenerPassesSinceLastStateAdvance(this.config.epoch);
     const workPolicy = this.config.workPolicy ?? DEFAULT_CORETEX_WORK_POLICY;
-    const baselineParentScorePpm = this.currentBaselineParentScorePpm;
+    // §7: live effective baseline + threshold for the CURRENT live root. After
+    // a rotation (live root with no recomputed baseline) both are null and
+    // baselineState flips to 'awaiting_baseline_recompute'.
+    const baselineParentScorePpm = this.effectiveBaselinePpm();
+    const baselineState = baselineParentScorePpm === null ? 'awaiting_baseline_recompute' : 'ready';
     const baselineVarianceSource = this.config.baselineVarianceSource ?? 'unavailable';
     const baselineVariancePpm = this.currentBaselineVariancePpm;
     const recentNoiseFloorPpm = this.config.recentNoiseFloorPpm ?? 0;
     const minImprovementPpm = this.config.minImprovementPpm ?? Number(DEFAULT_CORETEX_WORK_POLICY.stateAdvance.minDeterministicDeltaPpm);
-    const screenerThresholdPpm = this.config.screenerThresholdPpm ?? Number(computeCoreTexScreenerThresholdPpm({
-      baselineScorePpm: baselineParentScorePpm,
-      recentNoiseFloorPpm,
-      policy: workPolicy,
-    }));
+    const screenerThresholdPpm = baselineParentScorePpm === null
+      ? null
+      : this.effectiveScreenerThresholdPpm(baselineParentScorePpm);
     const nextStateAdvanceWorkBps = computeCoreTexWorkUnitsBps({
       outcome: OUTCOME_CORETEX_STATE_ADVANCE,
       qualifiedScreenerPassesSinceLastStateAdvance: qualified,
@@ -735,6 +851,7 @@ export class CoreTexCoordinatorCore {
       screenerThresholdPpm,
       baselineScorePpm: baselineParentScorePpm,
       baselineParentScorePpm,
+      baselineState,
       ...(baselineVariancePpm !== undefined ? { baselineVariancePpm } : {}),
       baselineVarianceSource,
       ...(this.config.fixedPackRepeatabilityPpm !== undefined ? { fixedPackRepeatabilityPpm: this.config.fixedPackRepeatabilityPpm } : {}),
@@ -751,7 +868,8 @@ export class CoreTexCoordinatorCore {
       patchWordRanges: [...(this.config.patchWordRanges ?? [])],
       exampleValidPatch: this.config.exampleValidPatch ?? this.exampleValidPatch(),
       substrate: { uri: `/coretex/substrate/${this.liveRoot}` },
-      acceptingSubmissions: this.signingEnabled,
+      acceptingSubmissions: this.isAcceptingSubmissions(),
+      frozen: this.frozen,
       pins: this.config.expectedEpochPins,
       hiddenSeedCommit: this.config.expectedEpochPins.hiddenSeedCommit,
       thresholds: {
@@ -759,10 +877,12 @@ export class CoreTexCoordinatorCore {
         replayTolerancePpm: this.config.replayTolerancePpm ?? 0,
         screenerThresholdPpm,
         baselineParentScorePpm,
+        baselineState,
         ...(baselineVariancePpm !== undefined ? { baselineVariancePpm } : {}),
         baselineVarianceSource,
         recentNoiseFloorPpm,
       },
+      ...(this.frozenReason ? { frozenReason: this.frozenReason } : {}),
       ...(this.unhealthyReason ? { reason: this.unhealthyReason } : {}),
       ...(this.config.pipelineVersion ? { pipelineVersion: this.config.pipelineVersion } : {}),
       memoryIRSchemaVersion: this.config.memoryIRSchemaVersion ?? 'memory_ir.v1',
@@ -773,9 +893,19 @@ export class CoreTexCoordinatorCore {
     };
   }
 
+  /** ALL submit processing enters ONE FIFO queue (§9): exactly one submit is
+   *  evaluated/signed at a time, in arrival order, mutually exclusive with
+   *  `tick()`. */
   async submit(body: unknown): Promise<unknown> {
+    return this.submitQueue.enqueue(() => this.coreMutex.runExclusive(() => this.processSubmit(body)));
+  }
+
+  private async processSubmit(body: unknown): Promise<unknown> {
     const now = Math.floor(Date.now() / 1000);
     this.gcPending(now);
+    if (this.frozen) {
+      return this.rejectSubmission('epoch_cutover_in_progress', this.frozenReason ?? 'epoch cutover in progress; submissions are frozen');
+    }
     if (!(await this.checkEpochStillCurrent())) {
       return this.rejectSubmission('CoordEpochMismatch', this.unhealthyReason ?? 'epoch mismatch');
     }
@@ -786,11 +916,20 @@ export class CoreTexCoordinatorCore {
     if (!this.signer) {
       return this.rejectSubmission('CoordSignerUnavailable', 'CoreTex receipt signer is not configured');
     }
+    // §7: no baseline for the current context (post-rotation live root) ->
+    // refuse until the recompute plumbing provides one.
+    const baselinePpm = this.effectiveBaselinePpm();
+    if (baselinePpm === null) {
+      return this.rejectSubmission('awaiting_baseline_recompute',
+        `no production-scorer baseline for live root ${this.liveRoot}; submissions are refused until a recomputed baseline is provided`);
+    }
     const parsed = parseSubmitBody(body, this.config.maxPatchBytes ?? 256);
     if (!parsed.ok) return this.rejectSubmission(String(parsed.body.code ?? 'BODY'), String(parsed.body.reason ?? 'malformed body'), parsed.body);
     if (parsed.parentStateRoot !== this.liveRoot.toLowerCase()) {
       return this.rejectSubmission('E01', 'parentStateRoot != confirmed live root', { currentStateRoot: this.liveRoot });
     }
+    // §9: captured for the pre-sign stale-root re-check.
+    const rootAtEvaluation = this.liveRoot.toLowerCase();
 
     let decoded;
     try {
@@ -816,10 +955,8 @@ export class CoreTexCoordinatorCore {
       return this.rejectSubmission('EvalFailure', 'evaluator failed');
     }
     if (evalResult.outcome === 'reject') {
-      return this.rejectSubmission(evalResult.code, evalResult.reason, {
-        ...(evalResult.deterministicDeltaPpm !== undefined ? { deterministicDeltaPpm: evalResult.deterministicDeltaPpm } : {}),
-        ...(evalResult.requiredDeltaPpm !== undefined ? { requiredDeltaPpm: evalResult.requiredDeltaPpm } : {}),
-      });
+      // §8 envelope strip: never forward score telemetry on rejects.
+      return this.rejectSubmission(evalResult.code, evalResult.reason);
     }
     const evalInvalid = validateAcceptedEvalResult(evalResult);
     if (evalInvalid) return this.rejectSubmission(evalInvalid.code, evalInvalid.reason);
@@ -845,6 +982,25 @@ export class CoreTexCoordinatorCore {
     }
 
     const counters = await this.chain.getMinerCoreTexCounters(this.config.epoch, parsed.miner);
+    // §9 in-flight reservation: a previously signed, un-landed receipt has the
+    // chain's (nextIndex, lastReceiptHash) reserved. Build on the reservation
+    // when the signer gave us the on-chain receiptHash; otherwise refuse to
+    // double-spend the counter.
+    let solveIndex = counters.nextIndex;
+    let prevReceiptHash = counters.lastReceiptHash.toLowerCase();
+    const reservation = this.minerChainReservations.get(parsed.miner);
+    if (reservation) {
+      if (counters.nextIndex >= reservation.nextIndex) {
+        // Reserved receipt(s) landed on chain; chain truth has caught up.
+        this.minerChainReservations.delete(parsed.miner);
+      } else if (reservation.lastReceiptHash) {
+        solveIndex = reservation.nextIndex;
+        prevReceiptHash = reservation.lastReceiptHash;
+      } else {
+        return this.rejectSubmission('MinerReceiptChainBusy',
+          'a previously signed receipt for this miner has not landed on-chain; broadcast it (or wait for its expiry) before submitting again');
+      }
+    }
     const cap = this.config.perMinerScreenerCap ?? 50;
     if (outcome === OUTCOME_CORETEX_SCREENER_PASS && counters.screenersThisEpoch >= cap) {
       return this.rejectSubmission('CoreTexScreenerCapExceeded', 'per-miner screener cap exceeded', {
@@ -864,10 +1020,19 @@ export class CoreTexCoordinatorCore {
     let stateWordCount = 0;
     let scoreBeforePpm = 0;
     let scoreAfterPpm = 0;
+    // §7: both gates derive from the LIVE baseline-tracked threshold (the
+    // attested baselineRecompute='activeRootChanged' policy), mirroring
+    // evaluateCoreTexWorkQualification: state advance requires
+    // max(minImprovementPpm, liveScreenerThreshold).
+    const liveScreenerThresholdPpm = this.effectiveScreenerThresholdPpm(baselinePpm);
     if (evalResult.outcome === 'state_advance') {
       const scoreDelta = evalResult.scoreAfterPpm - evalResult.scoreBeforePpm;
-      if (scoreDelta < (this.config.minImprovementPpm ?? Number(DEFAULT_CORETEX_WORK_POLICY.stateAdvance.minDeterministicDeltaPpm))) {
-        return this.rejectSubmission('W03_DETERMINISTIC_DELTA_TOO_LOW', 'below state-advance minimum', { deterministicDeltaPpm: scoreDelta });
+      const minStateAdvanceDelta = Math.max(
+        this.config.minImprovementPpm ?? Number(DEFAULT_CORETEX_WORK_POLICY.stateAdvance.minDeterministicDeltaPpm),
+        liveScreenerThresholdPpm,
+      );
+      if (scoreDelta < minStateAdvanceDelta) {
+        return this.rejectSubmission('W03_DETERMINISTIC_DELTA_TOO_LOW', 'below state-advance minimum');
       }
       const rewrittenPatchBytes = normalizeHexBytes(evalResult.rewrittenPatchBytesHex);
       if (!rewrittenPatchBytes || rewrittenPatchBytes.bytes.length > (this.config.maxPatchBytes ?? 256)) {
@@ -893,8 +1058,8 @@ export class CoreTexCoordinatorCore {
       stateWordCount = Number(finalDecoded.wordCount);
       scoreBeforePpm = evalResult.scoreBeforePpm;
       scoreAfterPpm = evalResult.scoreAfterPpm;
-    } else if (evalResult.deterministicDeltaPpm < (this.config.screenerThresholdPpm ?? Number(DEFAULT_CORETEX_WORK_POLICY.screenerPass.calibration.minDeltaPpm))) {
-      return this.rejectSubmission('W03_DETERMINISTIC_DELTA_TOO_LOW', 'below screener threshold', { deterministicDeltaPpm: evalResult.deterministicDeltaPpm });
+    } else if (evalResult.deterministicDeltaPpm < liveScreenerThresholdPpm) {
+      return this.rejectSubmission('W03_DETERMINISTIC_DELTA_TOO_LOW', 'below screener threshold');
     }
 
     const difficultyCount = await this.chain.getQualifiedScreenerPassesSinceLastStateAdvance(this.config.epoch);
@@ -907,8 +1072,8 @@ export class CoreTexCoordinatorCore {
     const expiresAt = issuedAt + this.config.receiptTtlSec;
     const receipt: CoreTexReceiptPayload = {
       epochId: this.config.epoch,
-      solveIndex: counters.nextIndex,
-      prevReceiptHash: counters.lastReceiptHash.toLowerCase(),
+      solveIndex,
+      prevReceiptHash,
       outcome,
       challengeId: hashText('coretex-challenge-v1', String(this.config.epoch), parsed.parentStateRoot, signedPatchHash),
       parentStateRoot: parsed.parentStateRoot,
@@ -919,7 +1084,7 @@ export class CoreTexCoordinatorCore {
       evalReportHash: evalResult.evalReportHash.toLowerCase(),
       patchHash: signedPatchHash,
       artifactHash: evalResult.artifactHash.toLowerCase(),
-      worldSeed: worldSeed(parsed.miner, counters.nextIndex, signedPatchHash),
+      worldSeed: worldSeed(parsed.miner, solveIndex, signedPatchHash),
       rulesVersion: this.config.rulesVersion ?? DEFAULT_CORETEX_WORK_POLICY.rulesVersion,
       workPolicyHash: this.config.workPolicyHash!.toLowerCase(),
       workUnitsBps,
@@ -934,6 +1099,24 @@ export class CoreTexCoordinatorCore {
     if (!receipt.evalReportHash.match(/^0x[0-9a-f]{64}$/) || !receipt.artifactHash.match(/^0x[0-9a-f]{64}$/)) {
       return this.rejectSubmission('EVAL_HASH_INVALID', 'evaluator returned malformed evalReportHash/artifactHash');
     }
+    // §9 pre-sign re-checks: the shared mutex keeps tick out, but re-verify
+    // immediately before signing anyway (freeze can flip mid-flight; epoch is
+    // chain truth). A stale live root is REJECTED, never re-evaluated: the
+    // patch wire bytes pin the evaluated parent root, so the evaluation cannot
+    // be transplanted onto the advanced root.
+    if (this.frozen) {
+      return this.rejectSubmission('epoch_cutover_in_progress', this.frozenReason ?? 'epoch cutover in progress; submissions are frozen');
+    }
+    if (this.liveRoot.toLowerCase() !== rootAtEvaluation) {
+      return this.rejectSubmission('W02_STALE_PARENT_AT_SIGNING',
+        'confirmed live root advanced between evaluation and signing; re-submit against the new root',
+        { currentStateRoot: this.liveRoot });
+    }
+    const epochAtSigning = await this.chain.getV4CurrentEpoch();
+    if (epochAtSigning !== this.config.epoch) {
+      return this.rejectSubmission('CoordEpochMismatch',
+        `V4.currentEpoch=${epochAtSigning} rolled over during evaluation; configured=${this.config.epoch}`);
+    }
     let signed;
     try {
       signed = await this.signer.signCoreTexReceipt({ miner: parsed.miner, receipt });
@@ -944,6 +1127,15 @@ export class CoreTexCoordinatorCore {
     if (!isHex(signed.signature) || !isHex(signed.transactionData)) {
       return this.rejectSubmission('SIGNER_INVALID', 'signer returned malformed signature or transactionData');
     }
+    if (signed.receiptHash !== undefined && !isBytes32(signed.receiptHash)) {
+      return this.rejectSubmission('SIGNER_INVALID', 'signer returned malformed receiptHash');
+    }
+    // §9: reserve this miner's chain counter until the receipt lands or expires.
+    this.minerChainReservations.set(parsed.miner, {
+      nextIndex: solveIndex + 1n,
+      lastReceiptHash: signed.receiptHash?.toLowerCase() ?? null,
+      expiresAt,
+    });
 
     const publicReceipt = signed.receipt ?? serializeReceipt(receipt, signed.signature);
     const envelope: ReceiptEnvelope & Record<string, unknown> = {
@@ -990,10 +1182,92 @@ export class CoreTexCoordinatorCore {
       chainLiveRoot: this.chainLiveRoot,
       confirmedLiveRoot: this.liveRoot,
       finalityLagBlocks: this.finalityLagBlocks,
-      acceptingSubmissions: this.signingEnabled,
+      acceptingSubmissions: this.isAcceptingSubmissions(),
+      frozen: this.frozen,
+      baselineState: this.effectiveBaselinePpm() === null ? 'awaiting_baseline_recompute' : 'ready',
+      ...(this.frozenReason ? { frozenReason: this.frozenReason } : {}),
       ...(this.unhealthyReason ? { reason: this.unhealthyReason } : {}),
       epochPins: this.config.expectedEpochPins,
     };
+  }
+
+  // ── cutover freeze + baseline plumbing (§9/§7 orchestrator surface) ────────
+  /** Freeze the core for an epoch cutover: `/coretex/submit` rejects with
+   *  `epoch_cutover_in_progress` and `tick()` becomes a no-op. Resolves once
+   *  any in-flight submit/tick work has drained (do NOT await this from inside
+   *  an evaluator/signer callback — the flag itself flips synchronously). */
+  async freeze(reason = 'epoch cutover in progress'): Promise<void> {
+    this.frozen = true;
+    this.frozenReason = reason;
+    await this.coreMutex.runExclusive(() => undefined);
+  }
+
+  unfreeze(): void {
+    this.frozen = false;
+    this.frozenReason = null;
+  }
+
+  isFrozen(): boolean {
+    return this.frozen;
+  }
+
+  /** §7 baselineRecompute='activeRootChanged': provide the recomputed
+   *  production-scorer baseline for a (new) state root after rotation. */
+  setRecomputedBaseline(input: {
+    readonly stateRoot: string;
+    readonly baselineParentScorePpm: number;
+    readonly baselineVariancePpm?: number;
+    readonly baselineVarianceSource?: 'rotating_pack' | 'broad_sampling';
+  }): void {
+    if (!isBytes32(input.stateRoot)) {
+      throw new Error('coord: setRecomputedBaseline stateRoot must be bytes32');
+    }
+    if (!Number.isSafeInteger(input.baselineParentScorePpm) || input.baselineParentScorePpm < 0) {
+      throw new Error('coord: setRecomputedBaseline baselineParentScorePpm must be a non-negative integer');
+    }
+    this.baselineByRoot.set(input.stateRoot.toLowerCase(), input.baselineParentScorePpm);
+    if (input.baselineVariancePpm !== undefined) {
+      if (!Number.isSafeInteger(input.baselineVariancePpm) || input.baselineVariancePpm < 0) {
+        throw new Error('coord: setRecomputedBaseline baselineVariancePpm must be non-negative');
+      }
+      this.currentBaselineVariancePpm = input.baselineVariancePpm;
+    }
+  }
+
+  /** §7: orchestrator-driven invalidation (corpus/frontier rotation): every
+   *  known baseline becomes INVALID; submits refuse with
+   *  `awaiting_baseline_recompute` until `setRecomputedBaseline` re-arms. */
+  invalidateBaselines(): void {
+    this.baselineByRoot.clear();
+    this.currentBaselineVariancePpm = undefined;
+  }
+
+  private launchBaselinePpm(): number {
+    const baseline = this.config.baselineParentScorePpm ?? this.config.baselineScorePpm;
+    if (!Number.isSafeInteger(baseline) || (baseline as number) < 0) {
+      throw new Error('coord: launch baselineParentScorePpm (production-scorer baseline for the pinned context) must be configured');
+    }
+    return baseline as number;
+  }
+
+  private effectiveBaselinePpm(): number | null {
+    return this.baselineByRoot.get(this.liveRoot.toLowerCase()) ?? null;
+  }
+
+  /** Live screener threshold per the attested policy: derived from the
+   *  effective baseline via computeCoreTexScreenerThresholdPpm, floored by the
+   *  configured static screenerThresholdPpm. */
+  private effectiveScreenerThresholdPpm(baselinePpm: number): number {
+    const computed = Number(computeCoreTexScreenerThresholdPpm({
+      baselineScorePpm: baselinePpm,
+      recentNoiseFloorPpm: this.config.recentNoiseFloorPpm ?? 0,
+      policy: this.config.workPolicy ?? DEFAULT_CORETEX_WORK_POLICY,
+    }));
+    return Math.max(this.config.screenerThresholdPpm ?? 0, computed);
+  }
+
+  private isAcceptingSubmissions(): boolean {
+    return this.signingEnabled && !this.frozen && this.effectiveBaselinePpm() !== null;
   }
 
   getSubstrate(stateRoot: string): { stateRoot: string; wordCount: number; packedBytes: number; packedHex: string } | null {
@@ -1078,6 +1352,13 @@ export class CoreTexCoordinatorCore {
         (!Number.isInteger(this.config.targetBlockOffset) || this.config.targetBlockOffset <= 0)) {
       throw new Error('coord: targetBlockOffset must be a positive integer');
     }
+    // §7: serving /coretex/* without a baseline for the pinned context is a
+    // construction error — launchBaselinePpm() throws when absent/invalid.
+    this.launchBaselinePpm();
+    if (this.config.screenerThresholdPpm !== undefined &&
+        (!Number.isInteger(this.config.screenerThresholdPpm) || this.config.screenerThresholdPpm < 0)) {
+      throw new Error('coord: screenerThresholdPpm floor must be non-negative when configured');
+    }
     if (this.config.baselineVariancePpm !== undefined &&
         (!Number.isInteger(this.config.baselineVariancePpm) || this.config.baselineVariancePpm < 0)) {
       throw new Error('coord: baselineVariancePpm must be non-negative when configured');
@@ -1139,7 +1420,7 @@ export class CoreTexCoordinatorCore {
   }
 
   // Internal accessors for tests
-  getState(): { liveRoot: string; transitionCount: number; signingEnabled: boolean; unhealthyReason: string | null; snapshotCount: number; pendingCount: number; receiptCacheSize: number; stateByRootSize: number; lastScannedBlock: number } {
+  getState(): { liveRoot: string; transitionCount: number; signingEnabled: boolean; unhealthyReason: string | null; snapshotCount: number; pendingCount: number; receiptCacheSize: number; stateByRootSize: number; lastScannedBlock: number; frozen: boolean; effectiveBaselinePpm: number | null; minerReservationCount: number } {
     return {
       liveRoot: this.liveRoot,
       transitionCount: Number(this.lastTransitionIndex + 1n),
@@ -1150,6 +1431,9 @@ export class CoreTexCoordinatorCore {
       receiptCacheSize: this.receiptCache.size,
       stateByRootSize: this.stateByRoot.size,
       lastScannedBlock: this.lastScannedBlock,
+      frozen: this.frozen,
+      effectiveBaselinePpm: this.effectiveBaselinePpm(),
+      minerReservationCount: this.minerChainReservations.size,
     };
   }
 

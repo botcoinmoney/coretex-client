@@ -262,10 +262,18 @@ describe('createRetrievalDataSource — v0 canonical surface', () => {
   });
 
   test('submit response preserves safe rejection codes and accepted contract fields', async () => {
+    // Exact score gradients are the blockhash-grinding oracle: even if an
+    // upstream object carries them, the public envelope must strip them.
     const rejected = createRetrievalDataSource(makeFactoryOpts({
       submit: () => ({ status: 'rejected', code: 'W03_DETERMINISTIC_DELTA_TOO_LOW', deterministicDeltaPpm: 12, requiredDeltaPpm: 347, perFamilyDelta: { temporal: -0.9 } }),
     }));
-    assert.deepEqual(await rejected.submit({}), { status: 'rejected', code: 'W03_DETERMINISTIC_DELTA_TOO_LOW', deterministicDeltaPpm: 12, requiredDeltaPpm: 347 });
+    assert.deepEqual(await rejected.submit({}), { status: 'rejected', code: 'W03_DETERMINISTIC_DELTA_TOO_LOW' });
+
+    const cutoverCodes = ['epoch_cutover_in_progress', 'awaiting_baseline_recompute', 'MinerReceiptChainBusy', 'duplicate_submission', 'CoordEpochMismatch'];
+    for (const code of cutoverCodes) {
+      const ds = createRetrievalDataSource(makeFactoryOpts({ submit: () => ({ status: 'rejected', code }) }));
+      assert.deepEqual(await ds.submit({}), { status: 'rejected', code }, `code ${code} must pass the sanitizer whitelist`);
+    }
 
     const accepted = createRetrievalDataSource(makeFactoryOpts({
       submit: () => ({

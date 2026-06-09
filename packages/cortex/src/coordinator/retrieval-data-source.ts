@@ -85,8 +85,9 @@ function sanitizeSubmitResponse(raw: unknown): Record<string, unknown> {
     const out: Record<string, unknown> = { status: 'rejected', code };
     if (patchHash) out.patchHash = patchHash;
     copyBytes32Field(out, r, 'currentStateRoot');
-    copyNonNegativeIntField(out, r, 'deterministicDeltaPpm');
-    copyNonNegativeIntField(out, r, 'requiredDeltaPpm');
+    // Exact score gradients (deterministicDeltaPpm/requiredDeltaPpm) are the
+    // blockhash-grinding oracle — the core never emits them and the public
+    // envelope must never carry them even if an upstream object does.
     copyNonNegativeIntField(out, r, 'perMinerScreenerCap');
     copyNonNegativeIntField(out, r, 'current');
     return out;
@@ -115,6 +116,8 @@ function sanitizeSubmitRejectionCode(raw: unknown): string {
   if (raw === 'DECODE' || raw === 'DuplicateCoreTexPatch' || raw === 'CoreTexScreenerCapExceeded') return raw;
   if (raw === 'PATCH_TOO_LARGE' || raw === 'BODY' || raw === 'BODY_UNKNOWN_KEY') return raw;
   if (raw === 'PendingReceiptStale' || raw === 'StaleParentRoot' || raw === 'CoordAwaitingFinality') return raw;
+  if (raw === 'epoch_cutover_in_progress' || raw === 'awaiting_baseline_recompute') return raw;
+  if (raw === 'MinerReceiptChainBusy' || raw === 'duplicate_submission' || raw === 'CoordEpochMismatch') return raw;
   return 'rejected';
 }
 
@@ -296,6 +299,8 @@ function sanitizeStatusResponse(raw: unknown, manifestBundleHash: string): Recor
   copyPublicJsonField(out, r, 'lastEvolveDecision');
   copyRunwayTelemetryField(out, r);
   if (typeof r.acceptingSubmissions === 'boolean') out.acceptingSubmissions = r.acceptingSubmissions;
+  if (r.baselineState === 'ready' || r.baselineState === 'awaiting_baseline_recompute') out.baselineState = r.baselineState;
+  if (typeof r.frozen === 'boolean') out.frozen = r.frozen;
   copySafeStringField(out, r, 'reason', 256);
   return {
     ...out,
@@ -320,6 +325,8 @@ function sanitizeHealthResponse(raw: unknown, manifestBundleHash: string): Recor
   copyBytes32Field(out, r, 'bundleHash');
   if (!out.bundleHash && manifestBundleHash) out.bundleHash = manifestBundleHash.toLowerCase();
   if (typeof r.acceptingSubmissions === 'boolean') out.acceptingSubmissions = r.acceptingSubmissions;
+  if (r.baselineState === 'ready' || r.baselineState === 'awaiting_baseline_recompute') out.baselineState = r.baselineState;
+  if (typeof r.frozen === 'boolean') out.frozen = r.frozen;
   copySafeStringField(out, r, 'reason', 256);
   copySafeStringField(out, r, 'serverTime', 64);
 

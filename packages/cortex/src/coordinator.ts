@@ -7,6 +7,7 @@ export * from './coordinator/endpoints.js';
 export * from './coordinator/retrieval-data-source.js';
 export {
   CoreTexCoordinatorCore,
+  createInProcessCoreTexSubmitQueue,
 } from './coordinator/coretex-coordinator-core.js';
 export type {
   ChainClient as CoreTexCoordinatorChainClient,
@@ -17,6 +18,8 @@ export type {
   EvalResult,
   CoreTexReceiptPayload,
   CoreTexReceiptSigner,
+  CoreTexSignedReceipt,
+  CoreTexSubmitQueue,
   CoreTexCoordinatorConfig,
   PendingReceipt,
   ReceiptEnvelope,

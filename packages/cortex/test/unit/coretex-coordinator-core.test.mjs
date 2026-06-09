@@ -60,6 +60,9 @@ const baseConfig = {
   confirmationDepth: 4,
   receiptTtlSec: 60,
   perMinerScreenerCap: 50,
+  // §7 launch baseline for the pinned (genesis) context. 288438 under the
+  // default policy derives a live screener threshold of 355ppm.
+  baselineParentScorePpm: 288438,
   screenerThresholdPpm: 355,
   minImprovementPpm: 2500,
   replayTolerancePpm: 200,
