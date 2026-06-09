@@ -29,6 +29,81 @@ export interface CrossEncoderReranker {
   score(pairs: ReadonlyArray<{ query: string; document: string }>): Promise<number[]>;
 }
 
+// ─── Canonical Qwen reranker prompt template ──────────────────────────────────
+//
+// The Python runner (scripts/reranker_runner.py:_build_qwen3_prompt) is the
+// CANONICAL template — every calibration baseline was derived through it.
+// `renderQwenRerankerPrompt` below MUST build the byte-identical string
+// (system judge instruction, <Instruct>/<Query>/<Document> fields, empty
+// <think> block). A golden test spawns `python3 scripts/reranker_runner.py
+// --print-prompt-template` and asserts TS rendering == Python rendering
+// byte-for-byte (test/unit/qwen-prompt-template-golden.test.mjs).
+
+/** Default <Instruct> field. MUST stay byte-identical to the
+ *  CORETEX_RERANKER_INSTRUCTION default in scripts/reranker_runner.py. */
+export const QWEN_RERANKER_DEFAULT_INSTRUCTION =
+  'Given a web search query, retrieve relevant passages that answer the query';
+
+/** Fixed probe pair rendered by `--print-prompt-template` for the golden
+ *  TS↔Python parity test. Same literals live in scripts/reranker_runner.py. */
+export const QWEN_RERANKER_PROMPT_PROBE = {
+  query: 'coretex prompt-template probe query',
+  document: 'coretex prompt-template probe document',
+} as const;
+
+/** Resolve the pinned instruction: CORETEX_RERANKER_INSTRUCTION env override
+ *  or the canonical default. Mirrors the Python runner's os.environ.get. */
+export function resolveQwenRerankerInstruction(env: NodeJS.ProcessEnv = process.env): string {
+  return env['CORETEX_RERANKER_INSTRUCTION'] ?? QWEN_RERANKER_DEFAULT_INSTRUCTION;
+}
+
+/**
+ * Render the canonical Qwen3 reranker prompt for one (query, document) pair.
+ *
+ * Byte-identical to scripts/reranker_runner.py:_build_qwen3_prompt — the
+ * Qwen3-Reranker model-card chat template with the empty <think> block.
+ * EVERY TS scoring path must build prompts through this function; the
+ * Python streaming path builds the same string from the same fields.
+ */
+export function renderQwenRerankerPrompt(
+  query: string,
+  document: string,
+  instruction: string = resolveQwenRerankerInstruction(),
+): string {
+  return (
+    '<|im_start|>system\n' +
+    'Judge whether the Document meets the requirements based on the Query and the Instruct provided. ' +
+    'Note that the answer can only be "yes" or "no".' +
+    '<|im_end|>\n' +
+    '<|im_start|>user\n' +
+    `<Instruct>: ${instruction}\n<Query>: ${query}\n<Document>: ${document}` +
+    '<|im_end|>\n' +
+    '<|im_start|>assistant\n' +
+    '<think>\n\n</think>\n\n'
+  );
+}
+
+export const QWEN_RERANKER_PROMPT_TEMPLATE_DOMAIN = 'coretex-qwen-reranker-prompt-v1';
+
+/**
+ * sha256 commitment over the canonical template + resolved instruction
+ * (domain-tagged, rendered for the fixed probe pair so the template
+ * structure itself is covered, not just the instruction). Part of the
+ * coordinator boot attestation (§2 score-honesty).
+ */
+export function qwenRerankerPromptTemplateHash(
+  instruction: string = resolveQwenRerankerInstruction(),
+): string {
+  const rendered = renderQwenRerankerPrompt(
+    QWEN_RERANKER_PROMPT_PROBE.query,
+    QWEN_RERANKER_PROMPT_PROBE.document,
+    instruction,
+  );
+  return `0x${createHash('sha256')
+    .update(`${QWEN_RERANKER_PROMPT_TEMPLATE_DOMAIN}\n${rendered}`, 'utf8')
+    .digest('hex')}`;
+}
+
 const GPU_ENV_VARS = ['CORETEX_USE_GPU', 'PYTORCH_USE_MPS'] as const;
 
 function refuseGpuForReranker(): void {
@@ -70,11 +145,8 @@ export interface Qwen3RerankerOptions {
  * chat-template + logit-difference scoring path described in §8.
  *
  * Inference path for one pair:
- *   1. Format as:
- *        <|im_start|>system\nYou are a relevance judge.\n<|im_end|>\n
- *        <|im_start|>user\nQuery: {query}\nDocument: {doc}\n
- *        Is the document relevant? Answer yes or no.<|im_end|>\n
- *        <|im_start|>assistant\n
+ *   1. Format via `renderQwenRerankerPrompt` (the CANONICAL template —
+ *      byte-identical to scripts/reranker_runner.py:_build_qwen3_prompt).
  *   2. Tokenise and run a single forward pass (no generation).
  *   3. Grab logits at the last position.
  *   4. relevance_score = sigmoid(logit[yes_token_id] - logit[no_token_id])
@@ -110,17 +182,6 @@ export async function createQwen3Reranker(
   });
 }
 
-function buildQwen3Prompt(query: string, doc: string): string {
-  return (
-    '<|im_start|>system\nYou are a relevance judge.\n<|im_end|>\n' +
-    '<|im_start|>user\n' +
-    `Query: ${query}\nDocument: ${doc}\n` +
-    'Is the document relevant? Answer yes or no.' +
-    '<|im_end|>\n' +
-    '<|im_start|>assistant\n'
-  );
-}
-
 interface Qwen3PythonOptions {
   readonly modelId: string;
   readonly revision: string;
@@ -143,7 +204,7 @@ async function scoreBatchQwen3Python(
     pairs: batch.map((pair) => ({
       query: pair.query,
       document: pair.document,
-      prompt: buildQwen3Prompt(pair.query, pair.document),
+      prompt: renderQwenRerankerPrompt(pair.query, pair.document),
     })),
   });
   const script = String.raw`

@@ -1663,6 +1663,9 @@ export function assertBundleBindingAtStartup(opts: {
   readonly installedRuntimeVersions: Readonly<Record<string, string>>;
   readonly clientVersion?: string;
   readonly allowOutdatedClient?: boolean;
+  /** Coordinator boot attestation (production evaluator §2 score-honesty).
+   *  When provided, it must hash-bind and match the bundle's reranker pin. */
+  readonly bootAttestation?: AttestedCoordinatorBootAttestation;
 }): void {
   if (opts.manifest.bundleHash.toLowerCase() !== opts.onChainCoreVersionHash.toLowerCase()) {
     throw new Error(
@@ -1712,6 +1715,89 @@ export function assertBundleBindingAtStartup(opts: {
     && opts.allowOutdatedClient !== true
   ) {
     throw new Error(`outdated client refused: ${clientCheck.message}`);
+  }
+  if (opts.bootAttestation) {
+    assertCoordinatorBootAttestationBinding(opts.bootAttestation, opts.manifest);
+  }
+}
+
+// ─── Coordinator boot attestation ────────────────────────────────────────────
+
+/**
+ * Boot attestation the production evaluator exposes at construction: the
+ * resolved reranker identity + canonical prompt-template commitment +
+ * Memory-IR mode, hash-bound so the coordinator/replay side can record one
+ * bytes32 alongside the bundle binding (§2 score-honesty).
+ */
+export interface CoordinatorBootAttestation {
+  readonly bundleHash: string;
+  readonly rerankerModelId: string;
+  readonly rerankerRevision: string;
+  readonly rerankerMode: 'qwen3-streaming' | 'qwen3-per-batch';
+  /** Resolved CORETEX_RERANKER_INSTRUCTION (default = canonical constant). */
+  readonly rerankerInstruction: string;
+  /** sha256 commitment over the canonical prompt template + instruction
+   *  (eval/reranker.ts qwenRerankerPromptTemplateHash). */
+  readonly promptTemplateHash: string;
+  /** Memory-IR rendering mode pinned by the signed profile (NOT env). */
+  readonly memoryIRMode: 'off' | 'full';
+}
+
+export type AttestedCoordinatorBootAttestation = CoordinatorBootAttestation & {
+  readonly attestationHash: string;
+};
+
+const COORDINATOR_BOOT_ATTESTATION_DOMAIN = 'coretex-coordinator-boot-attestation-v1';
+
+export function computeCoordinatorBootAttestationHash(att: CoordinatorBootAttestation): string {
+  const canonical = JSON.stringify([
+    COORDINATOR_BOOT_ATTESTATION_DOMAIN,
+    att.bundleHash.toLowerCase(),
+    att.rerankerModelId,
+    att.rerankerRevision,
+    att.rerankerMode,
+    att.rerankerInstruction,
+    att.promptTemplateHash.toLowerCase(),
+    att.memoryIRMode,
+  ]);
+  return bytesToHex(keccak256(new TextEncoder().encode(canonical))).toLowerCase();
+}
+
+export function buildCoordinatorBootAttestation(
+  att: CoordinatorBootAttestation,
+): AttestedCoordinatorBootAttestation {
+  assertBytes32(att.bundleHash, 'bootAttestation.bundleHash');
+  assertBytes32(att.promptTemplateHash, 'bootAttestation.promptTemplateHash');
+  if (!att.rerankerModelId || !att.rerankerRevision) {
+    throw new Error('bootAttestation requires rerankerModelId and rerankerRevision');
+  }
+  if (att.rerankerMode !== 'qwen3-streaming' && att.rerankerMode !== 'qwen3-per-batch') {
+    throw new Error(`bootAttestation.rerankerMode invalid: ${String(att.rerankerMode)}`);
+  }
+  if (att.memoryIRMode !== 'off' && att.memoryIRMode !== 'full') {
+    throw new Error(`bootAttestation.memoryIRMode invalid: ${String(att.memoryIRMode)}`);
+  }
+  return { ...att, attestationHash: computeCoordinatorBootAttestationHash(att) };
+}
+
+function assertCoordinatorBootAttestationBinding(
+  att: AttestedCoordinatorBootAttestation,
+  manifest: CoreTexBundleManifest,
+): void {
+  if (computeCoordinatorBootAttestationHash(att) !== att.attestationHash.toLowerCase()) {
+    throw new Error('boot attestation hash does not bind its fields');
+  }
+  if (att.bundleHash.toLowerCase() !== manifest.bundleHash.toLowerCase()) {
+    throw new Error(
+      `boot attestation bundleHash ${att.bundleHash} != bundle manifest ${manifest.bundleHash}`,
+    );
+  }
+  const pin = manifest.model?.reranker;
+  if (!pin) throw new Error('bundle manifest has no model.reranker pin to attest against');
+  if (att.rerankerModelId !== pin.modelId || att.rerankerRevision !== pin.revision) {
+    throw new Error(
+      `boot attestation reranker ${att.rerankerModelId}@${att.rerankerRevision} != bundle pin ${pin.modelId}@${pin.revision}`,
+    );
   }
 }
 
