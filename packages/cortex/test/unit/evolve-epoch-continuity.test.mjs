@@ -28,6 +28,7 @@ import {
   applyCorpusDelta,
   computeCorpusRoot,
   parseCorpusDelta,
+  serializeProductionCorpus,
   splitForRecord,
 } from '../../dist/index.js';
 
@@ -77,35 +78,12 @@ function mkEmb(queryBytes, truthEntries, negativeEntries = []) {
     perNegative: new Map(negativeEntries),
   };
 }
-// NOTE: serializeProductionCorpus (eval/retrieval-corpus.ts) whitelists event fields and DROPS
-// the live-query metadata (logicalFamily/band) that bridgeLogicalDeltaToProductionEvents adds and
-// that computeCorpusRoot hashes into the leaf — a round-trip of an EVOLVED corpus through it
-// breaks the pinned root. The delta serializer preserves all fields; this test mirrors that
-// (field-preserving spread + hex embeddings) to materialize per-epoch corpora.
-function uint8ToHex(bytes) {
-  let hex = '';
-  for (const b of bytes) hex += b.toString(16).padStart(2, '0');
-  return hex;
-}
+// Evolved corpora carry live-query metadata (logicalFamily/band) that
+// computeCorpusRoot hashes into the leaf; serializeProductionCorpus preserves
+// those fields, so the canonical serializer round-trips evolved corpora
+// root-stable (regression-tested in corpus-serializer-roundtrip.test.mjs).
 function serializeCorpusPreservingMetadata(c) {
-  return {
-    schemaVersion: 'coretex.production-corpus.v1',
-    corpusEpoch: c.corpusEpoch,
-    biEncoder: { modelId: c.biEncoderModelId, revision: c.biEncoderRevision, layout: c.biEncoderRetrievalKeyLayout },
-    labelingModel: { modelId: c.labelingModelId, revision: c.labelingModelRevision },
-    events: c.events.map((e) => ({
-      ...e,
-      embeddings: {
-        modelId: e.embeddings.modelId,
-        revision: e.embeddings.revision,
-        layout: e.embeddings.layout,
-        query: uint8ToHex(e.embeddings.query),
-        perTruth: Object.fromEntries(Array.from(e.embeddings.perTruth.entries()).map(([k, v]) => [k, uint8ToHex(v)])),
-        perNegative: Object.fromEntries(Array.from(e.embeddings.perNegative.entries()).map(([k, v]) => [k, uint8ToHex(v)])),
-      },
-    })),
-    corpusRoot: c.corpusRoot,
-  };
+  return serializeProductionCorpus(c);
 }
 function findTmpResidue(dir) {
   const out = [];

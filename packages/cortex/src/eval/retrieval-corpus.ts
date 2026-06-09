@@ -284,6 +284,12 @@ export interface ProductionCorpusEvent {
    * off the most-adversarial end rather than only at it.
    */
   readonly grounding?: 'distant' | 'partial';
+  /**
+   * Synthesis logical family preserved verbatim (the logical-delta bridge sets
+   * this; `family` is the bucketed production family). Hidden-pack family
+   * quotas and the epoch frontier prefer it over `family` when present.
+   */
+  readonly logicalFamily?: string;
 }
 
 export interface ProductionCorpus {
@@ -871,6 +877,11 @@ export function serializeProductionCorpus(corpus: ProductionCorpus): CorpusFileS
     ...(e.ownerEntityId !== undefined ? { ownerEntityId: e.ownerEntityId } : {}),
     ...(e.ownerScoped !== undefined ? { ownerScoped: e.ownerScoped } : {}),
     ...(e.subjectEntityId !== undefined ? { subjectEntityId: e.subjectEntityId } : {}),
+    ...(e.causalDepth !== undefined ? { causalDepth: e.causalDepth } : {}),
+    ...(e.relationHopDepth !== undefined ? { relationHopDepth: e.relationHopDepth } : {}),
+    ...(e.band !== undefined ? { band: e.band } : {}),
+    ...(e.grounding !== undefined ? { grounding: e.grounding } : {}),
+    ...(e.logicalFamily !== undefined ? { logicalFamily: e.logicalFamily } : {}),
     provenance: e.provenance,
     embeddings: {
       modelId: e.embeddings.modelId,
