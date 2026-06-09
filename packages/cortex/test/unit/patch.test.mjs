@@ -143,11 +143,20 @@ describe('patch wire encode/decode', () => {
     assert.equal(wire.length, 178);
   });
 
-  test('encode/decode round-trip preserves score delta (negative)', () => {
-    const patch = makePatch({ scoreDelta: -500000n });
-    const wire = encodePatch(patch);
-    const decoded = decodePatch(wire);
-    assert.equal(decoded.scoreDelta, -500000n);
+  test('encode rejects scoreDelta outside the non-negative int64 wire range', () => {
+    // Solidity reads the wire scoreDelta as uint64 and reverts when the top bit is set,
+    // so negative (and > int64.max) values must be encode-time validity errors, not
+    // silent two's-complement wraps.
+    assert.throws(() => encodePatch(makePatch({ scoreDelta: -500000n })), /non-negative int64/);
+    assert.throws(() => encodePatch(makePatch({ scoreDelta: 1n << 63n })), /non-negative int64/);
+    const max = (1n << 63n) - 1n;
+    assert.equal(decodePatch(encodePatch(makePatch({ scoreDelta: max }))).scoreDelta, max);
+  });
+
+  test('decode rejects wire scoreDelta with the top bit set', () => {
+    const wire = encodePatch(makePatch());
+    wire[2] |= 0x80; // set the top bit of scoreDeltaHi
+    assert.throws(() => decodePatch(wire), /non-negative int64/);
   });
 
   test('encode/decode: all patch types', () => {
@@ -177,6 +186,27 @@ describe('patch wire encode/decode', () => {
       patchType: 0x7e,
       indices: [384],
     })), /unknown patchType/);
+  });
+
+  test('duplicate word indices within one patch are a validity error', () => {
+    // encode rejects
+    assert.throws(() => encodePatch(makePatch({
+      wordCount: 2,
+      indices: [385, 385],
+      newWords: [1n, 2n],
+    })), /duplicate word index/);
+    assert.equal(validatePatchType(PATCH_TYPE.KEY_UPDATE, [385, 385]).ok, false);
+
+    // decode rejects: craft wire bytes with a repeated index (both indices are
+    // 2-byte LEB128: word 1 index at offsets 42–43, word 2 index at 76–77)
+    const wire = encodePatch(makePatch({
+      wordCount: 2,
+      indices: [385, 386],
+      newWords: [1n, 2n],
+    }));
+    wire[76] = wire[42];
+    wire[77] = wire[43];
+    assert.throws(() => decodePatch(wire), /duplicate word index/);
   });
 
   test('validatePatchType accepts mixed non-reserved ranges', () => {
@@ -294,6 +324,23 @@ describe('applyPatch', () => {
     const result = applyPatch(state, patch);
     assert.equal(result.ok, false);
     assert.equal(result.code, 'E02');
+  });
+
+  test('E02: duplicate word indices rejected on apply', () => {
+    const state = makeCleanState();
+    const root = merkleizeState(state);
+    const patch = makePatch({
+      wordCount: 2,
+      parentStateRoot: root,
+      indices: [401, 401],
+      newWords: [1n, 2n],
+    });
+    const result = applyPatch(state, patch);
+    assert.equal(result.ok, false);
+    assert.equal(result.code, 'E02');
+    const onto = applyPatchOntoCurrent(state, patch);
+    assert.equal(onto.ok, false);
+    assert.equal(onto.code, 'E02');
   });
 
   test('applyPatchOntoCurrent rejects patch type/index mismatch', () => {

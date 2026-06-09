@@ -12,6 +12,12 @@ import { writeBigEndian32, readBigEndian32 } from './codec.js';
 import { merkleizeState } from './merkle.js';
 import { hasNonZeroReservedBits, validatePolicyRegions } from './validate.js';
 
+// On-chain cap for the wire scoreDelta: BotcoinMiningV4._validateCompactPatch reads it as a
+// big-endian uint64 and reverts when the top bit is set, so only non-negative int64 values
+// (0 .. 2^63-1) are serializable. The TS codec enforces the same range instead of silently
+// wrapping via two's complement.
+const MAX_WIRE_SCORE_DELTA = (1n << 63n) - 1n;
+
 // ─── LEB128 varint ────────────────────────────────────────────────────────────
 
 /**
@@ -67,7 +73,7 @@ export function decodeLEB128(data: Uint8Array, offset: number): { value: number;
  * Wire format (per patch_format.md):
  *   [1]  patchType
  *   [1]  wordCount
- *   [4]  scoreDeltaHi (big-endian uint32)
+ *   [4]  scoreDeltaHi (big-endian uint32; top bit must be clear — non-negative int64)
  *   [4]  scoreDeltaLo (big-endian uint32)
  *   [32] parentStateRoot
  *   for each word: [1-2] LEB128 index + [32] newWord
@@ -100,10 +106,12 @@ export function encodePatch(patch: Patch): Uint8Array {
   // wordCount (1 byte)
   out[offset++] = patch.wordCount;
 
-  // scoreDelta as int64, split into hi/lo uint32 big-endian
-  // scoreDelta is a bigint; clamp to int64 range
-  const sd = BigInt.asIntN(64, patch.scoreDelta);
-  const sdUnsigned = BigInt.asUintN(64, sd);
+  // scoreDelta as non-negative int64 (uint64 with top bit clear — the representation the
+  // on-chain validator requires), split into hi/lo uint32 big-endian
+  if (patch.scoreDelta < 0n || patch.scoreDelta > MAX_WIRE_SCORE_DELTA) {
+    throw new RangeError(`encodePatch: scoreDelta ${patch.scoreDelta} outside non-negative int64 range`);
+  }
+  const sdUnsigned = patch.scoreDelta;
   const sdHi = Number(sdUnsigned >> 32n) >>> 0;
   const sdLo = Number(sdUnsigned & 0xffffffffn) >>> 0;
   out[offset++] = (sdHi >>> 24) & 0xff;
@@ -152,12 +160,15 @@ export function decodePatch(data: Uint8Array): Patch {
     throw new RangeError(`decodePatch: invalid wordCount ${wordCount}`);
   }
 
-  // scoreDelta: read hi+lo uint32, reconstruct int64
+  // scoreDelta: read hi+lo uint32, reconstruct non-negative int64 (Solidity reverts when the
+  // top bit is set, so a set top bit is a wire validity error here too)
   const sdHi = ((data[offset]! << 24) | (data[offset + 1]! << 16) | (data[offset + 2]! << 8) | data[offset + 3]!) >>> 0;
   const sdLo = ((data[offset + 4]! << 24) | (data[offset + 5]! << 16) | (data[offset + 6]! << 8) | data[offset + 7]!) >>> 0;
   offset += 8;
-  const sdUnsigned = (BigInt(sdHi) << 32n) | BigInt(sdLo);
-  const scoreDelta = BigInt.asIntN(64, sdUnsigned);
+  const scoreDelta = (BigInt(sdHi) << 32n) | BigInt(sdLo);
+  if (scoreDelta > MAX_WIRE_SCORE_DELTA) {
+    throw new RangeError('decodePatch: scoreDelta outside non-negative int64 range');
+  }
 
   // parentStateRoot
   const parentStateRoot = data.slice(offset, offset + 32);
@@ -370,6 +381,7 @@ export function validatePatchType(
   patchType: number,
   indices: readonly number[],
 ): { ok: true } | { ok: false; reason: string } {
+  const seen = new Set<number>();
   for (const idx of indices) {
     if (!Number.isInteger(idx) || idx < 0 || idx >= RANGES.WORD_COUNT) {
       return { ok: false, reason: `index ${idx} is outside state word range` };
@@ -377,6 +389,12 @@ export function validatePatchType(
     if (idx >= RANGES.RESERVED_START && idx <= RANGES.RESERVED_END) {
       return { ok: false, reason: `index ${idx} is reserved` };
     }
+    // Duplicate word indices are a validity error (mirrors the Solidity validator), not
+    // last-write-wins.
+    if (seen.has(idx)) {
+      return { ok: false, reason: `duplicate word index ${idx}` };
+    }
+    seen.add(idx);
   }
 
   if (patchType === PATCH_TYPE.MIXED) {
