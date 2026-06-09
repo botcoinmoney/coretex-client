@@ -107,6 +107,7 @@ async function main() {
     const registry = opt(args, '--coretex-registry') ?? opt(args, '--registry');
     const addresses = [registry, opt(args, '--v4'), opt(args, '--cortex-state')].filter((v): v is string => v !== undefined);
     const expectedBundleHash = opt(args, '--expected-bundle-hash') ?? opt(args, '--core-version-hash');
+    const expectedPins = expectedReplayPins(args);
     // r5 epochs: enforce the reserved-region / PolicyAtom grammar during canonical replay (same as scoring),
     // derived from the pinned bundle's pipelineVersion when a manifest is supplied. Default off (r4-safe).
     const replayManifestPath = opt(args, '--bundle-manifest');
@@ -120,7 +121,7 @@ async function main() {
       if (latest >= fromFixed) {
         // cumulative + idempotent: always replay the full range from the pinned start over the empty/parent state.
         const logs = await coretexRangeLogs(rpc, addresses.length > 0 ? addresses : undefined, blockHex(fromFixed), blockHex(latest));
-        const result = replayCoreTexFromLogs(parentState, logs, { ...(expectedBundleHash ? { expectedBundleHash } : {}), policyAtomsMode });
+        const result = replayCoreTexFromLogs(parentState, logs, { ...(expectedBundleHash ? { expectedBundleHash } : {}), ...expectedPins, policyAtomsMode });
         print({ fromBlock: blockHex(fromFixed), toBlock: blockHex(latest), logCount: logs.length, ...result });
         if (!result.ok) process.exit(1);
       }
@@ -130,6 +131,31 @@ async function main() {
   }
 
   die(`unknown command ${cmd}`);
+}
+
+function expectedReplayPins(args: readonly string[]): {
+  expectedCorpusRoot?: string;
+  expectedActiveFrontierRoot?: string;
+  expectedBaselineManifestHash?: string;
+  expectedHiddenSeedCommit?: string;
+} {
+  const manifestPath = opt(args, '--bundle-manifest');
+  const manifest = manifestPath ? JSON.parse(readFileSync(manifestPath, 'utf8')) as CoreTexBundleManifest : null;
+  const out: {
+    expectedCorpusRoot?: string;
+    expectedActiveFrontierRoot?: string;
+    expectedBaselineManifestHash?: string;
+    expectedHiddenSeedCommit?: string;
+  } = {};
+  const corpusRoot = opt(args, '--expected-corpus-root') ?? opt(args, '--corpus-root') ?? manifest?.corpus?.root;
+  const activeFrontierRoot = opt(args, '--expected-active-frontier-root') ?? opt(args, '--active-frontier-root');
+  const baselineManifestHash = opt(args, '--expected-baseline-manifest-hash') ?? opt(args, '--baseline-manifest-hash');
+  const hiddenSeedCommit = opt(args, '--expected-hidden-seed-commit') ?? opt(args, '--hidden-seed-commit');
+  if (corpusRoot) out.expectedCorpusRoot = corpusRoot;
+  if (activeFrontierRoot) out.expectedActiveFrontierRoot = activeFrontierRoot;
+  if (baselineManifestHash) out.expectedBaselineManifestHash = baselineManifestHash;
+  if (hiddenSeedCommit) out.expectedHiddenSeedCommit = hiddenSeedCommit;
+  return out;
 }
 
 function verifyBundleIfRequested(args: readonly string[]): void {

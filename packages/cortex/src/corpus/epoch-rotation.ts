@@ -19,6 +19,19 @@ export interface EpochRotationManifest {
   readonly challengeBookHash: string;
   readonly bundleHash: string;
   readonly minImprovementPpm: number;
+  readonly baselineParentScorePpm?: number;
+  readonly baselineVariancePpm?: number;
+  readonly baselineVarianceSource?: 'rotating_pack' | 'broad_sampling' | 'unavailable';
+  readonly fixedPackRepeatabilityPpm?: number;
+  readonly screenerThresholdPpm?: number;
+  readonly recentNoiseFloorPpm?: number;
+  readonly controller?: {
+    readonly inputs: Record<string, unknown>;
+    readonly output: Record<string, unknown>;
+    readonly reason: string;
+  };
+  readonly activeFrontierRoot?: string;
+  readonly hiddenSeedCommit?: string;
   readonly advancesObserved: number;
   readonly qualityAttemptsObserved: number;
   readonly signer?: EpochRotationManifestSigner;
@@ -30,6 +43,19 @@ export interface BuildEpochRotationManifestOptions {
   readonly challengeBook: unknown;
   readonly bundleHash: string;
   readonly minImprovementPpm: number;
+  readonly baselineParentScorePpm?: number;
+  readonly baselineVariancePpm?: number;
+  readonly baselineVarianceSource?: 'rotating_pack' | 'broad_sampling' | 'unavailable';
+  readonly fixedPackRepeatabilityPpm?: number;
+  readonly screenerThresholdPpm?: number;
+  readonly recentNoiseFloorPpm?: number;
+  readonly controller?: {
+    readonly inputs: Record<string, unknown>;
+    readonly output: Record<string, unknown>;
+    readonly reason: string;
+  };
+  readonly activeFrontierRoot?: string;
+  readonly hiddenSeedCommit?: string;
   readonly advancesObserved: number;
   readonly qualityAttemptsObserved: number;
   readonly generatedAt?: string;
@@ -46,6 +72,15 @@ export function buildEpochRotationManifest(opts: BuildEpochRotationManifestOptio
     challengeBookHash: hashJson(opts.challengeBook),
     bundleHash: opts.bundleHash.toLowerCase(),
     minImprovementPpm: opts.minImprovementPpm,
+    ...(opts.baselineParentScorePpm !== undefined ? { baselineParentScorePpm: opts.baselineParentScorePpm } : {}),
+    ...(opts.baselineVariancePpm !== undefined ? { baselineVariancePpm: opts.baselineVariancePpm } : {}),
+    ...(opts.baselineVarianceSource !== undefined ? { baselineVarianceSource: opts.baselineVarianceSource } : {}),
+    ...(opts.fixedPackRepeatabilityPpm !== undefined ? { fixedPackRepeatabilityPpm: opts.fixedPackRepeatabilityPpm } : {}),
+    ...(opts.screenerThresholdPpm !== undefined ? { screenerThresholdPpm: opts.screenerThresholdPpm } : {}),
+    ...(opts.recentNoiseFloorPpm !== undefined ? { recentNoiseFloorPpm: opts.recentNoiseFloorPpm } : {}),
+    ...(opts.controller !== undefined ? { controller: opts.controller } : {}),
+    ...(opts.activeFrontierRoot !== undefined ? { activeFrontierRoot: opts.activeFrontierRoot.toLowerCase() } : {}),
+    ...(opts.hiddenSeedCommit !== undefined ? { hiddenSeedCommit: opts.hiddenSeedCommit.toLowerCase() } : {}),
     advancesObserved: opts.advancesObserved,
     qualityAttemptsObserved: opts.qualityAttemptsObserved,
   };

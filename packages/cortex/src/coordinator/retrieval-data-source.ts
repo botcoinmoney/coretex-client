@@ -62,8 +62,10 @@ export function createRetrievalDataSource(opts: RetrievalDataSourceOptions): Cor
       return sanitizeHealthResponse(raw, manifest.bundleHash);
     },
   };
-  if (opts.getSubstrate) (ds as Mutable).getSubstrate = opts.getSubstrate;
-  if (opts.getReceipt) (ds as Mutable).getReceipt = opts.getReceipt;
+  if (opts.getSubstrate) (ds as Mutable).getSubstrate = async (stateRoot) => sanitizeSubstrateResponse(await opts.getSubstrate!(stateRoot));
+  if (opts.getReceipt) {
+    (ds as Mutable).getReceipt = async (hash) => sanitizeReceiptLookupResponse(await opts.getReceipt!(hash));
+  }
   if (opts.rateLimit) (ds as Mutable).rateLimit = opts.rateLimit;
   if (opts.authorize) (ds as Mutable).authorize = opts.authorize;
   return ds;
@@ -79,27 +81,71 @@ function sanitizeSubmitResponse(raw: unknown): Record<string, unknown> {
   const accepted = r.status === 'accepted' || r.accepted === true;
   const patchHash = asBytes32Hex(r.patchHash);
   if (!accepted) {
-    // Opaque rejection surface: do not leak retrieval-correlated details.
-    return patchHash ? { status: 'rejected', code: 'rejected', patchHash } : { status: 'rejected', code: 'rejected' };
+    const code = sanitizeSubmitRejectionCode(r.code);
+    const out: Record<string, unknown> = { status: 'rejected', code };
+    if (patchHash) out.patchHash = patchHash;
+    copyBytes32Field(out, r, 'currentStateRoot');
+    copyNonNegativeIntField(out, r, 'deterministicDeltaPpm');
+    copyNonNegativeIntField(out, r, 'requiredDeltaPpm');
+    copyNonNegativeIntField(out, r, 'perMinerScreenerCap');
+    copyNonNegativeIntField(out, r, 'current');
+    return out;
   }
   const evalReportHash = asBytes32Hex(r.evalReportHash);
   const receipt = sanitizeReceiptEnvelope(r.receipt);
   const transaction = sanitizeTransactionEnvelope(r.transaction);
+  const outcome = r.outcome === 'SCREENER_PASS' || r.outcome === 'STATE_ADVANCE' ? r.outcome : null;
+  const newStateRoot = asBytes32Hex(r.newStateRoot);
   return {
     status: 'accepted',
+    ...(outcome ? { outcome } : {}),
     ...(patchHash ? { patchHash } : {}),
+    ...(newStateRoot ? { newStateRoot } : {}),
     ...(evalReportHash ? { evalReportHash } : {}),
+    ...(asNonNegativeInt(r.workUnitsBps) !== null ? { workUnitsBps: asNonNegativeInt(r.workUnitsBps) } : {}),
     ...(receipt ? { receipt } : {}),
     ...(transaction ? { transaction } : {}),
   };
 }
 
+function sanitizeSubmitRejectionCode(raw: unknown): string {
+  if (typeof raw !== 'string') return 'rejected';
+  if (/^E0[1-5]$/.test(raw)) return raw;
+  if (/^W0[2356](_[A-Z0-9_]+)?$/.test(raw)) return raw;
+  if (raw === 'DECODE' || raw === 'DuplicateCoreTexPatch' || raw === 'CoreTexScreenerCapExceeded') return raw;
+  if (raw === 'PATCH_TOO_LARGE' || raw === 'BODY' || raw === 'BODY_UNKNOWN_KEY') return raw;
+  if (raw === 'PendingReceiptStale' || raw === 'StaleParentRoot' || raw === 'CoordAwaitingFinality') return raw;
+  return 'rejected';
+}
+
+function sanitizeReceiptLookupResponse(
+  raw: { readonly status: number; readonly body: unknown } | null,
+): { readonly status: number; readonly body: unknown } | null {
+  if (!raw) return null;
+  const status = asPosInt(raw.status) ?? 500;
+  const body = sanitizeReceiptLookupBody(raw.body);
+  return { status, body };
+}
+
+function sanitizeReceiptLookupBody(raw: unknown): Record<string, unknown> {
+  const body = sanitizeSubmitResponse(raw);
+  if (!raw || typeof raw !== 'object') return body;
+  const r = raw as Record<string, unknown>;
+  const out: Record<string, unknown> = { ...body };
+  if (typeof r.confirmedOnChain === 'boolean') out.confirmedOnChain = r.confirmedOnChain;
+  if (r.pendingState === 'pending' || r.pendingState === 'confirmed' || r.pendingState === 'stale') {
+    out.pendingState = r.pendingState;
+  }
+  if (body.status === 'rejected') {
+    copySafeStringField(out, r, 'reason', 256);
+    copySafeStringField(out, r, 'state', 32);
+  }
+  return out;
+}
+
 /**
- * Receipt envelope must only carry signature-shaped fields. Anything that
- * could expose retrieval correlations (per-family deltas, scoreAfterPpm,
- * recency hints) MUST NOT pass this boundary, even if the host put it in
- * the receipt. Allow-list:
- *   keyId, algorithm, signature, signedFields, sig
+ * Receipt envelope is allow-listed to the fields miners need to submit the
+ * CoreTex receipt. Retrieval-correlated eval details stay outside this list.
  */
 function sanitizeReceiptEnvelope(raw: unknown): Record<string, unknown> | undefined {
   if (!raw || typeof raw !== 'object') return undefined;
@@ -113,7 +159,53 @@ function sanitizeReceiptEnvelope(raw: unknown): Record<string, unknown> | undefi
   if (Array.isArray(r.signedFields) && r.signedFields.every((f) => typeof f === 'string')) {
     out.signedFields = r.signedFields.slice();
   }
+  for (const key of [
+    'prevReceiptHash',
+    'challengeId',
+    'parentStateRoot',
+    'newStateRoot',
+    'corpusRoot',
+    'activeFrontierRoot',
+    'coreVersionHash',
+    'evalReportHash',
+    'patchHash',
+    'artifactHash',
+    'workPolicyHash',
+  ]) {
+    copyBytes32Field(out, r, key);
+  }
+  for (const key of [
+    'epochId',
+    'solveIndex',
+    'outcome',
+    'worldSeed',
+    'rulesVersion',
+    'workUnitsBps',
+    'difficultyCountSnapshot',
+    'stateWordCount',
+    'scoreBeforePpm',
+    'scoreAfterPpm',
+    'issuedAt',
+    'expiresAt',
+  ]) {
+    copySafeIntegerLikeField(out, r, key);
+  }
+  const compactPatchBytes = typeof r.compactPatchBytes === 'string' && /^0x[0-9a-fA-F]*$/.test(r.compactPatchBytes)
+    ? r.compactPatchBytes.toLowerCase()
+    : null;
+  if (compactPatchBytes) out.compactPatchBytes = compactPatchBytes;
   return Object.keys(out).length > 0 ? out : undefined;
+}
+
+function copySafeIntegerLikeField(out: Record<string, unknown>, src: Record<string, unknown>, key: string): void {
+  const raw = src[key];
+  if (Number.isSafeInteger(raw) && Number(raw) >= 0) {
+    out[key] = Number(raw);
+    return;
+  }
+  if (typeof raw === 'string' && /^(0|[1-9][0-9]*)$/.test(raw) && raw.length <= 80) {
+    out[key] = raw;
+  }
 }
 
 function sanitizeTransactionEnvelope(raw: unknown): { to: string; chainId: number; value: string; data: string } | null {
@@ -163,6 +255,12 @@ function sanitizeStatusResponse(raw: unknown, manifestBundleHash: string): Recor
   copyNonNegativeIntField(out, r, 'patchWordBudget');
   copyNonNegativeIntField(out, r, 'perMinerScreenerCap');
   copyNonNegativeIntField(out, r, 'baselineScorePpm');
+  copyNonNegativeIntField(out, r, 'baselineParentScorePpm');
+  copyNonNegativeIntField(out, r, 'baselineVariancePpm');
+  if (r.baselineVarianceSource === 'rotating_pack' || r.baselineVarianceSource === 'broad_sampling' || r.baselineVarianceSource === 'unavailable') {
+    out.baselineVarianceSource = r.baselineVarianceSource;
+  }
+  copyNonNegativeIntField(out, r, 'fixedPackRepeatabilityPpm');
   copyNonNegativeIntField(out, r, 'recentNoiseFloorPpm');
   copyNonNegativeIntField(out, r, 'qualifiedScreenerPassesSinceLastStateAdvance');
   copyNonNegativeIntField(out, r, 'nextStateAdvanceWorkBps');
@@ -173,6 +271,7 @@ function sanitizeStatusResponse(raw: unknown, manifestBundleHash: string): Recor
   copyBytes32Field(out, r, 'rotationManifestHash');
   copyBytes32Field(out, r, 'corpusDeltaHash');
   copyBytes32Field(out, r, 'evalSeedCommit');
+  copyBytes32Field(out, r, 'hiddenSeedCommit');
   copyNullableBytes32Field(out, r, 'activeFrontierRoot');
   copyNonNegativeIntField(out, r, 'currentEpoch');
   copySafeStringField(out, r, 'rotationManifestUrl', 1024);
@@ -190,6 +289,9 @@ function sanitizeStatusResponse(raw: unknown, manifestBundleHash: string): Recor
   copyPublicJsonField(out, r, 'allowedPatchTypes');
   copyPublicJsonField(out, r, 'patchWordRanges');
   copyPublicJsonField(out, r, 'exampleValidPatch');
+  copyPublicJsonField(out, r, 'pins');
+  copyPublicJsonField(out, r, 'thresholds');
+  copyPublicJsonField(out, r, 'difficultyController');
   copyPublicJsonField(out, r, 'nextEpochReadiness');
   copyPublicJsonField(out, r, 'lastEvolveDecision');
   copyRunwayTelemetryField(out, r);
@@ -224,6 +326,23 @@ function sanitizeHealthResponse(raw: unknown, manifestBundleHash: string): Recor
   const pins = sanitizeEpochPins(r.epochPins);
   if (pins) out.epochPins = pins;
   return Object.keys(out).length > 0 ? out : { error: 'coretex-health-malformed' };
+}
+
+function sanitizeSubstrateResponse(raw: unknown): Record<string, unknown> | null {
+  if (raw === null || raw === undefined) return null;
+  if (!raw || typeof raw !== 'object') return { error: 'coretex-substrate-malformed' };
+  const r = raw as Record<string, unknown>;
+  const stateRoot = asBytes32Hex(r.stateRoot);
+  const wordCount = asNonNegativeInt(r.wordCount);
+  const packedHex = typeof r.packedHex === 'string' && /^0x[0-9a-fA-F]*$/.test(r.packedHex)
+    ? r.packedHex.toLowerCase()
+    : null;
+  if (!stateRoot || wordCount !== 1024 || !packedHex || (packedHex.length - 2) !== 32768 * 2) {
+    return { error: 'coretex-substrate-malformed' };
+  }
+  const packedBytes = asNonNegativeInt(r.packedBytes) ?? ((packedHex.length - 2) / 2);
+  if (packedBytes !== 32768) return { error: 'coretex-substrate-malformed' };
+  return { stateRoot, wordCount, packedBytes, packedHex };
 }
 
 function sanitizeEpochPins(raw: unknown): Record<string, string> | null {
@@ -314,32 +433,6 @@ function sanitizeRunwayTelemetry(raw: unknown): Record<string, unknown> | null {
     'acceptedGoldDamageCount',
   ]) {
     copyNonNegativeIntField(out, r, key);
-  }
-  for (const key of [
-    'activeLivePackFamilyDistribution',
-    'familyAttempts',
-    'familyAccepts',
-    'familyRejects',
-    'familyFirstRejectBuckets',
-    'fingerprintAttempts',
-    'fingerprintAccepts',
-  ]) {
-    const m = sanitizeTelemetryCountMap(r[key]);
-    if (m) out[key] = m;
-  }
-  return Object.keys(out).length > 0 ? out : null;
-}
-
-function sanitizeTelemetryCountMap(raw: unknown): Record<string, number> | null {
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
-  const keys = Object.keys(raw as Record<string, unknown>);
-  if (keys.length > 256) return null;
-  const out: Record<string, number> = {};
-  for (const key of keys) {
-    if (!/^[a-zA-Z0-9_:.:-]{1,96}$/.test(key) || FORBIDDEN_PUBLIC_KEY_RE.test(key)) return null;
-    const v = asNonNegativeInt((raw as Record<string, unknown>)[key]);
-    if (v === null) return null;
-    out[key] = v;
   }
   return Object.keys(out).length > 0 ? out : null;
 }

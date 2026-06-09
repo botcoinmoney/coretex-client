@@ -31,25 +31,34 @@ export function encodeLEB128(n: number): Uint8Array {
 }
 
 /**
- * Decode an LEB128 unsigned integer from `data` starting at `offset`.
- * Returns the decoded value and number of bytes consumed.
+ * Decode a canonical compact-patch word index from `data` starting at `offset`.
+ * Solidity accepts only 1-byte indices 0..127 and canonical 2-byte indices
+ * 128..1023.
  */
 export function decodeLEB128(data: Uint8Array, offset: number): { value: number; bytesRead: number } {
-  let result = 0;
-  let shift = 0;
-  let bytesRead = 0;
-  while (true) {
-    if (offset + bytesRead >= data.length) {
-      throw new RangeError('decodeLEB128: unexpected end of data');
-    }
-    const b = data[offset + bytesRead]!;
-    bytesRead++;
-    result |= (b & 0x7f) << shift;
-    shift += 7;
-    if ((b & 0x80) === 0) break;
-    if (shift >= 35) throw new RangeError('decodeLEB128: varint too long');
+  if (offset >= data.length) {
+    throw new RangeError('decodeLEB128: unexpected end of data');
   }
-  return { value: result >>> 0, bytesRead };
+  const first = data[offset]!;
+  let value = first & 0x7f;
+  if ((first & 0x80) === 0) {
+    return { value, bytesRead: 1 };
+  }
+  if (offset + 1 >= data.length) {
+    throw new RangeError('decodeLEB128: unexpected end of data');
+  }
+  const second = data[offset + 1]!;
+  if ((second & 0x80) !== 0) {
+    throw new RangeError('decodeLEB128: varint too long');
+  }
+  value |= (second & 0x7f) << 7;
+  if (value < 128) {
+    throw new RangeError('decodeLEB128: non-canonical word index');
+  }
+  if (value >= RANGES.WORD_COUNT) {
+    throw new RangeError('decodeLEB128: word index out of range');
+  }
+  return { value, bytesRead: 2 };
 }
 
 // ─── Patch wire encode/decode ─────────────────────────────────────────────────
@@ -170,6 +179,14 @@ export function decodePatch(data: Uint8Array): Patch {
 
     indices.push(idx);
     newWords.push(newWord);
+  }
+
+  if (offset !== data.length) {
+    throw new RangeError('decodePatch: trailing bytes');
+  }
+  const typeValidation = validatePatchType(patchType, indices);
+  if (!typeValidation.ok) {
+    throw new RangeError(`decodePatch: ${typeValidation.reason}`);
   }
 
   return { patchType, wordCount, scoreDelta, parentStateRoot, indices, newWords };

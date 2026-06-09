@@ -10,7 +10,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { runPerPatchEvaluation } from '../../dist/index.js';
+import { dualPackProofFromPerPatchReceipt, runPerPatchEvaluation } from '../../dist/index.js';
 
 const PARENT_ROOT = `0x${'aa'.repeat(32)}`;
 const MINER = `0x${'10'.repeat(20)}`;
@@ -82,6 +82,28 @@ describe('runPerPatchEvaluation — happy path', () => {
     // The two seeds MUST differ — that's the whole point of dual-pack.
     assert.notEqual(r.gateSeed, r.confirmSeed);
     assert.equal(r.rejectionReason, undefined);
+  });
+
+  test('accepted receipt builds coordinator dual-pack proof without raw seed disclosure', async () => {
+    const r = await runPerPatchEvaluation(makeRequest(), makeDeps());
+    const proof = dualPackProofFromPerPatchReceipt(r, {
+      corpusRoot: CORPUS_ROOT,
+      coreVersionHash: BUNDLE_HASH,
+      hiddenSeedCommit: `0x${'99'.repeat(32)}`,
+      targetBlockOffset: 30,
+    });
+    assert.equal(proof.kind, 'coretex-dual-pack-v1');
+    assert.equal(proof.mode, 'future_blockhash_dual_pack');
+    assert.equal(proof.targetBlock, proof.receivedAtBlock + proof.targetBlockOffset);
+    assert.equal(proof.patchHash, r.patchHash);
+    assert.equal(proof.parentStateRoot, r.parentRoot);
+    assert.equal(proof.corpusRoot, CORPUS_ROOT);
+    assert.equal(proof.coreVersionHash, BUNDLE_HASH);
+    assert.match(proof.gate.seedCommit, /^0x[0-9a-f]{64}$/);
+    assert.match(proof.confirm.seedCommit, /^0x[0-9a-f]{64}$/);
+    assert.notEqual(proof.gate.seedCommit, proof.confirm.seedCommit);
+    assert.equal(JSON.stringify(proof).includes(r.gateSeed), false);
+    assert.equal(JSON.stringify(proof).includes(r.confirmSeed), false);
   });
 
   test('determinism — same request + deps → byte-identical receipt', async () => {

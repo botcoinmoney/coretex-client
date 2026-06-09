@@ -45,8 +45,13 @@ const ds = {
     activeFrontierRoot: '0x' + '09'.repeat(32),
     pipelineVersion: 'coretex-retrieval-v2-policy-r5-atom-v16-300k',
     allowedPatchTypes: [{ name: 'MEMORY_INDEX_UPDATE', byte: 2, wordIndexRange: [32, 383] }],
+    patchWordRanges: [{ surface: 'temporal_update', patchType: 'MIXED', wordRanges: [[32, 383], [800, 895]] }],
+    exampleValidPatch: { patchType: 4, wordCount: 1, indexRange: [672, 799], encodedHex: '0x04' },
     patchWordBudget: 4,
     minImprovementPpm: 2500, replayTolerancePpm: 250, screenerThresholdPpm: 347,
+    baselineParentScorePpm: 288438, baselineVarianceSource: 'unavailable', fixedPackRepeatabilityPpm: 0, recentNoiseFloorPpm: 12,
+    pins: { corpusRoot: CORPUS_ROOT, activeFrontierRoot: '0x' + '09'.repeat(32), baselineManifestHash: '0x' + 'ba'.repeat(32) },
+    difficultyController: { reason: 'under_target_recovery', output: { next: '2500' } },
     perMinerScreenerCap: 50, qualifiedScreenerPassesSinceLastStateAdvance: 0,
     memoryIRSchemaVersion: 'memory_ir.v1',
     activeSubstrateSurfaces: ['temporal_update', 'conflict_lifecycle', 'relation_category_routing',
@@ -54,15 +59,12 @@ const ds = {
                               'entity_resolution_atom'],
     runwayTelemetry: {
       updatedAtEpoch: 0,
-      activeLivePackFamilyDistribution: { temporal_update: 12, validity_atom: 8, scope_atom: 6 },
       strictMinableRatioPpm: 528000,
       alreadySolvedRatioPpm: 250000,
       tooHardRatioPpm: 222000,
       acceptedFamilyEntropyPpm: 812000,
       acceptedFingerprintReusePpm: 675000,
       acceptedSelectorReusePpm: 640000,
-      familyAttempts: { temporal_update: 24, validity_atom: 18 },
-      familyAccepts: { temporal_update: 14, validity_atom: 7 },
       randomControlAccepts: 0,
       randomControlAttempts: 32,
       hillControlAccepts: 0,
@@ -89,7 +91,7 @@ const ds = {
 };
 
 const handle = createCoreTexCoordinatorRouteHandler(ds);
-const FORBIDDEN = /qrel|truthdoc|hardnegativ|answerid|answer_id|epochsecret|epoch_secret|evalseed|eval_seed|hiddenpack|hidden_pack|relevance|truthDocuments/i;
+const FORBIDDEN = /qrel|truthdoc|hardnegativ|answerid|answer_id|answerlabel|answer_label|epochsecret|epoch_secret|gateseed|gate_seed|confirmseed|confirm_seed|evalseed(?!commit)|eval_seed(?!_commit)|hiddenpack|hidden_pack|relevance|truthDocuments|scorebeforeppm|scoreafterppm|perfamilydelta|failurestat/i;
 function scanLeak(obj, path = '') {
   const hits = [];
   if (obj && typeof obj === 'object') for (const [k, v] of Object.entries(obj)) {
@@ -140,12 +142,15 @@ describe('v0 coordinator data-source contract', () => {
       'activeFrontierRoot', 'pipelineVersion', 'allowedPatchTypes', 'patchWordBudget',
       'minImprovementPpm', 'screenerThresholdPpm', 'perMinerScreenerCap',
       'qualifiedScreenerPassesSinceLastStateAdvance', 'activeSubstrateSurfaces',
-      'runwayTelemetry', 'acceptingSubmissions', 'perMiner',
+      'patchWordRanges', 'exampleValidPatch', 'memoryIRSchemaVersion',
+      'baselineParentScorePpm', 'baselineVarianceSource', 'recentNoiseFloorPpm',
+      'pins', 'difficultyController', 'runwayTelemetry', 'acceptingSubmissions', 'perMiner',
     ]) {
       assert.ok(r.body[k] !== undefined, `status.${k} present`);
     }
     assert.equal(r.body.runwayTelemetry.strictMinableRatioPpm, 528000);
-    assert.equal(r.body.runwayTelemetry.activeLivePackFamilyDistribution.validity_atom, 8);
+    assert.equal(r.body.runwayTelemetry.activeLivePackFamilyDistribution, undefined);
+    assert.equal(r.body.runwayTelemetry.familyAttempts, undefined);
     for (const k of ['address', 'screenersThisEpoch', 'remaining', 'cap', 'nextIndex', 'lastReceiptHash']) {
       assert.ok(r.body.perMiner[k] !== undefined, `status.perMiner.${k} present`);
     }
@@ -229,7 +234,7 @@ describe('v0 coordinator data-source contract', () => {
       '/coordinator/',
       '@aws-sdk',
       'child_process',
-      'coretex-start-epoch',
+      'coretex-pin-epoch-context',
       'coretex-epoch-evolve',
     ]) {
       assert.equal(

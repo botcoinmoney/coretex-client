@@ -21,6 +21,8 @@ export interface PackQuota {
 export interface HiddenPackProfile {
   readonly packSize: number;
   readonly quotas: readonly PackQuota[];
+  readonly disabledFamilies?: readonly string[];
+  readonly disabledSubstrateSurfaces?: readonly string[];
 }
 
 export interface QueryPack {
@@ -35,6 +37,37 @@ export interface ActiveLiveEvalPackOptions {
   readonly limit: number;
   readonly familyPriority?: readonly string[];
   readonly dedupePublicIntent?: boolean;
+  /** Optional quota contract to preserve when live rows replace base hidden-pack rows. */
+  readonly profile?: HiddenPackProfile;
+  readonly quotas?: readonly PackQuota[];
+  readonly disabledFamilies?: readonly string[];
+}
+
+export function disabledHiddenEvalFamiliesFromProfile(profile: {
+  readonly enableAspectConstraintAtoms?: boolean;
+  readonly policyAspectIntentAdmission?: boolean;
+  readonly disabledSubstrateSurfaces?: readonly string[];
+}): readonly string[] {
+  const disabled = new Set<string>();
+  if (profile.disabledSubstrateSurfaces?.includes('aspect_constraint') ||
+      profile.enableAspectConstraintAtoms === false ||
+      profile.policyAspectIntentAdmission === false) {
+    disabled.add('aspect_constraint');
+  }
+  return [...disabled].sort();
+}
+
+export function hiddenPackProfileFromEvaluatorProfile(profile: {
+  readonly hiddenPack: HiddenPackProfile;
+  readonly enableAspectConstraintAtoms?: boolean;
+  readonly policyAspectIntentAdmission?: boolean;
+  readonly disabledSubstrateSurfaces?: readonly string[];
+}): HiddenPackProfile {
+  const disabledFamilies = new Set([
+    ...(profile.hiddenPack.disabledFamilies ?? []),
+    ...disabledHiddenEvalFamiliesFromProfile(profile),
+  ]);
+  return { ...profile.hiddenPack, disabledFamilies: [...disabledFamilies].sort() };
 }
 
 /**
@@ -188,7 +221,7 @@ export function deriveQueryPack(
   const epochBE = u64BE(epochId);
 
   const sorted = corpus.events
-    .filter((e) => e.split === 'eval_hidden')
+    .filter((e) => hiddenPackEventEligible(e, profile))
     .sort((a, b) => a.id.localeCompare(b.id));
   if (sorted.length === 0) throw new Error('deriveQueryPack: corpus has no eval_hidden records');
 
@@ -229,6 +262,9 @@ export function deriveQueryPack(
     if (ids.has(cand.id)) continue;
     pack.push(cand);
     ids.add(cand.id);
+  }
+  if (pack.length !== profile.packSize) {
+    throw new Error(`deriveQueryPack: cannot fill exact packSize ${profile.packSize} (got ${pack.length}; eval_hidden unique records exhausted)`);
   }
 
   return {
@@ -293,11 +329,16 @@ export function admitActiveLiveEvalEvents(
   if (!opts.limit || opts.limit <= 0) return { pack, added: 0, liveEvalInPack: 0, familyCounts: {} };
   const existing = new Set(pack.events.map((e) => e.id));
   const activeIds = opts.activeIds;
+  const disabledFamilies = new Set([
+    ...(opts.profile?.disabledFamilies ?? []),
+    ...(opts.profile?.disabledSubstrateSurfaces ?? []),
+    ...(opts.disabledFamilies ?? []),
+  ]);
   const isActiveLiveEval = (e: ProductionCorpusEvent): boolean => activeIds.has(e.id)
     && e.split === 'eval_hidden'
     && e.id.startsWith('zz_e')
-    && !e.id.includes('_mem_');
-  const alreadyLive = pack.events.filter(isActiveLiveEval).length;
+    && !e.id.includes('_mem_')
+    && !disabledFamilies.has(((e as ProductionCorpusEvent & { logicalFamily?: string }).logicalFamily ?? e.family ?? 'unknown'));
   const priority = new Map((opts.familyPriority ?? []).map((f, i) => [f, i] as const));
   const familyOf = (e: ProductionCorpusEvent): string => (e as ProductionCorpusEvent & { logicalFamily?: string }).logicalFamily ?? e.family ?? 'unknown';
   const byFamily = new Map<string, ProductionCorpusEvent[]>();
@@ -367,7 +408,22 @@ export function admitActiveLiveEvalEvents(
       advanced = true;
     }
   }
-  const finalEvents = live.length ? [...live, ...pack.events] : pack.events;
+  const maxEvents = pack.events.length > 0 ? pack.events.length : opts.limit;
+  const quotas = opts.quotas ?? opts.profile?.quotas ?? [];
+  let finalEvents: readonly ProductionCorpusEvent[];
+  if (quotas.length === 0) {
+    finalEvents = live.length ? [...live, ...pack.events].slice(0, maxEvents) : pack.events;
+  } else {
+    finalEvents = quotaSafeLiveOverlay({
+      baseEvents: pack.events,
+      liveEvents: live,
+      maxEvents,
+      quotas,
+      isActiveLiveEval,
+    });
+  }
+  const added = finalEvents.filter((e) => isActiveLiveEval(e) && !existing.has(e.id)).length;
+  const liveEvalInPack = finalEvents.filter(isActiveLiveEval).length;
   const familyCounts: Record<string, number> = {};
   for (const e of finalEvents) {
     if (!isActiveLiveEval(e)) continue;
@@ -376,10 +432,58 @@ export function admitActiveLiveEvalEvents(
   }
   return {
     pack: { ...pack, events: finalEvents },
-    added: live.length,
-    liveEvalInPack: alreadyLive + live.length,
+    added,
+    liveEvalInPack,
     familyCounts,
   };
+}
+
+function quotasSatisfied(events: readonly ProductionCorpusEvent[], quotas: readonly PackQuota[]): boolean {
+  return quotas.every((q) => events.filter((e) => eventSatisfiesStratum(e, q.stratum)).length >= q.minCount);
+}
+
+function quotaSafeLiveOverlay({
+  baseEvents,
+  liveEvents,
+  maxEvents,
+  quotas,
+  isActiveLiveEval,
+}: {
+  readonly baseEvents: readonly ProductionCorpusEvent[];
+  readonly liveEvents: readonly ProductionCorpusEvent[];
+  readonly maxEvents: number;
+  readonly quotas: readonly PackQuota[];
+  readonly isActiveLiveEval: (event: ProductionCorpusEvent) => boolean;
+}): readonly ProductionCorpusEvent[] {
+  if (!quotasSatisfied(baseEvents, quotas)) {
+    throw new Error('admitActiveLiveEvalEvents: base hidden pack does not satisfy quotas');
+  }
+  const finalEvents = [...baseEvents];
+  const ids = new Set(finalEvents.map((e) => e.id));
+  for (const candidate of liveEvents) {
+    if (ids.has(candidate.id)) continue;
+    if (finalEvents.length < maxEvents) {
+      const trial = [candidate, ...finalEvents];
+      if (!quotasSatisfied(trial, quotas)) continue;
+      finalEvents.splice(0, 0, candidate);
+      ids.add(candidate.id);
+      continue;
+    }
+    let accepted = false;
+    for (let i = finalEvents.length - 1; i >= 0; i--) {
+      if (isActiveLiveEval(finalEvents[i]!)) continue;
+      const trial = [candidate, ...finalEvents.slice(0, i), ...finalEvents.slice(i + 1)].slice(0, maxEvents);
+      if (!quotasSatisfied(trial, quotas)) continue;
+      ids.delete(finalEvents[i]!.id);
+      finalEvents.splice(i, 1);
+      finalEvents.splice(0, 0, candidate);
+      ids.add(candidate.id);
+      accepted = true;
+      break;
+    }
+    if (accepted) continue;
+  }
+  return finalEvents;
 }
 
 function uint8ToHex(bytes: Uint8Array): string {
@@ -404,7 +508,7 @@ export function verifyQueryPack(
   try {
     recomputed = deriveQueryPack(pack.epochId, pack.evalSeedHex, corpus, profile);
     if (activeLiveEval) {
-      recomputed = admitActiveLiveEvalEvents(recomputed, corpus, activeLiveEval).pack;
+      recomputed = admitActiveLiveEvalEvents(recomputed, corpus, { ...activeLiveEval, profile }).pack;
     }
   } catch (err) {
     return { ok: false, reason: `deriveQueryPack failed: ${(err as Error).message}` };
@@ -438,4 +542,11 @@ export function packFamilyCounts(pack: QueryPack): PerFamilyCount {
     counts[e.family] = (counts[e.family] ?? 0) + 1;
   }
   return counts;
+}
+
+export function hiddenPackEventEligible(event: ProductionCorpusEvent, profile: HiddenPackProfile): boolean {
+  if (event.split !== 'eval_hidden') return false;
+  const family = (event as ProductionCorpusEvent & { logicalFamily?: string }).logicalFamily ?? event.family ?? 'unknown';
+  const disabled = new Set([...(profile.disabledFamilies ?? []), ...(profile.disabledSubstrateSurfaces ?? [])]);
+  return !disabled.has(family);
 }

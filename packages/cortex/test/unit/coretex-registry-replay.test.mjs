@@ -3,7 +3,7 @@
  *
  * Builds ABI-encoded logs (matching CoreTexRegistry.sol's event encoding) from the REAL committed
  * state-root vectors (genuine patch bytes + roots + patch hashes), then asserts: topic constants,
- * decode of all three events, replay of one + multiple advances in order, and the failure cases
+ * decode of state/finalize events, replay of one + multiple advances in order, and the failure cases
  * (wrong parent, wrong patch hash, wrong new root, missing bytes, coreVersion mismatch, out-of-order).
  */
 import { test, describe } from 'node:test';
@@ -13,7 +13,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 
 import {
-  CORETEX_EVENT_TOPICS, decodeCoreTexEpochStarted, decodeCoreTexStateAdvanced,
+  CORETEX_EVENT_TOPICS, decodeCoreTexStateAdvanced,
   decodeCoreTexEpochFinalized, replayCoreTexFromLogs,
 } from '../../dist/index.js';
 import { applyPatch, encodePatch } from '../../dist/state/patch.js';
@@ -47,16 +47,12 @@ function advanceLog({ epoch, idx, miner, parent, child, patchHash, evalHash, cvh
     data: '0x' + head + tail,
   };
 }
-function epochStartedLog({ epoch, parent, cvh, corpus, frontier, baseline, seed }) {
-  return { topics: [TOPIC.CoreTexEpochStarted, '0x' + num32(epoch)], data: '0x' + [pad32(parent), pad32(cvh), pad32(corpus), pad32(frontier), pad32(baseline), pad32(seed)].join('') };
-}
 function epochFinalizedLog({ epoch, parent, finalRoot, cvh, corpus, frontier, patchSet, score, baseline }) {
   return { topics: [TOPIC.CoreTexEpochFinalized, '0x' + num32(epoch)], data: '0x' + [pad32(parent), pad32(finalRoot), pad32(cvh), pad32(corpus), pad32(frontier), pad32(patchSet), pad32(score), pad32(baseline)].join('') };
 }
 
 const adv0 = advanceLog({ epoch: 7, idx: 0, miner: MINER, parent: genesis.stateRoot, child: temporalVec.childStateRoot, patchHash: temporalVec.patchHash, evalHash: '0x' + '11'.repeat(32), cvh: BUNDLE, corpus: CORPUS, frontier: FRONTIER, credits: 30000, wordCount: temporalVec.patch.wordCount, patchHex: temporalVec.patchBytesHex });
 const adv1 = advanceLog({ epoch: 7, idx: 1, miner: MINER, parent: temporalVec.childStateRoot, child: mixedVec.childStateRoot, patchHash: mixedVec.patchHash, evalHash: '0x' + '22'.repeat(32), cvh: BUNDLE, corpus: CORPUS, frontier: FRONTIER, credits: 40000, wordCount: mixedVec.patch.wordCount, patchHex: mixedVec.patchBytesHex });
-const startedLog = epochStartedLog({ epoch: 7, parent: genesis.stateRoot, cvh: BUNDLE, corpus: CORPUS, frontier: FRONTIER, baseline: '0x' + 'ba'.repeat(32), seed: '0x' + '5e'.repeat(32) });
 const finalizedLog = epochFinalizedLog({ epoch: 7, parent: genesis.stateRoot, finalRoot: mixedVec.childStateRoot, cvh: BUNDLE, corpus: CORPUS, frontier: FRONTIER, patchSet: '0x' + '90'.repeat(32), score: '0x' + '91'.repeat(32), baseline: '0x' + 'ba'.repeat(32) });
 
 const empty = { words: new Array(1024).fill(0n) };
@@ -64,16 +60,7 @@ const empty = { words: new Array(1024).fill(0n) };
 describe('CoreTexRegistry canonical replay decoder', () => {
   test('topics match cast-computed signatures', () => {
     assert.equal(TOPIC.CoreTexStateAdvanced, '0x2f0a89894d44aa2294de109d294ac072f0e206dc834a0c35c6fbf1623ec02dd0');
-    assert.equal(TOPIC.CoreTexEpochStarted, '0xfdd4b01921a2e9dac964ae9b6ebd4d0649cd934841331933c2cea94792e616f3');
     assert.equal(TOPIC.CoreTexEpochFinalized, '0x7c882e64d34d7e0b82f8004ec182f5b9e942388f7b7b1ea60233306c02821085');
-  });
-
-  test('decode CoreTexEpochStarted', () => {
-    const e = decodeCoreTexEpochStarted(startedLog);
-    assert.equal(e.epoch, 7n);
-    assert.equal(e.parentStateRoot, genesis.stateRoot);
-    assert.equal(e.coreVersionHash, BUNDLE);
-    assert.equal(e.corpusRoot, CORPUS);
   });
 
   test('decode CoreTexStateAdvanced (incl miner topic + compactPatchBytes)', () => {
@@ -101,8 +88,8 @@ describe('CoreTexRegistry canonical replay decoder', () => {
     assert.equal(r.reproducedFinalRoot, temporalVec.childStateRoot);
   });
 
-  test('replay MULTIPLE advances in order (+ start + finalize) reproduces final root', () => {
-    const r = replayCoreTexFromLogs(empty, [startedLog, adv0, adv1, finalizedLog], { expectedBundleHash: BUNDLE });
+  test('replay MULTIPLE advances in order (+ finalize) reproduces final root', () => {
+    const r = replayCoreTexFromLogs(empty, [adv0, adv1, finalizedLog], { expectedBundleHash: BUNDLE });
     assert.equal(r.ok, true, r.message);
     assert.equal(r.transitions, 2);
     assert.equal(r.reproducedFinalRoot, mixedVec.childStateRoot);
@@ -121,9 +108,9 @@ describe('CoreTexRegistry canonical replay decoder', () => {
     assert.equal(r.ok, false); assert.equal(r.code, 'OUT_OF_ORDER');
   });
 
-  test('wrong parent root rejected (epochStarted parent != provided state)', () => {
-    const bad = epochStartedLog({ epoch: 7, parent: '0x' + 'de'.repeat(32), cvh: BUNDLE, corpus: CORPUS, frontier: FRONTIER, baseline: '0x00', seed: '0x00' });
-    const r = replayCoreTexFromLogs(empty, [bad, adv0], { expectedBundleHash: BUNDLE });
+  test('wrong parent root rejected', () => {
+    const bad = advanceLog({ epoch: 7, idx: 0, miner: MINER, parent: '0x' + 'de'.repeat(32), child: temporalVec.childStateRoot, patchHash: temporalVec.patchHash, evalHash: '0x00', cvh: BUNDLE, corpus: CORPUS, frontier: FRONTIER, credits: 0, wordCount: temporalVec.patch.wordCount, patchHex: temporalVec.patchBytesHex });
+    const r = replayCoreTexFromLogs(empty, [bad], { expectedBundleHash: BUNDLE });
     assert.equal(r.ok, false); assert.equal(r.code, 'STATE_PARENT_MISMATCH');
   });
 
@@ -142,6 +129,21 @@ describe('CoreTexRegistry canonical replay decoder', () => {
   test('bundle/coreVersion mismatch rejected', () => {
     const r = replayCoreTexFromLogs(empty, [adv0], { expectedBundleHash: '0x' + 'cc'.repeat(32) });
     assert.equal(r.ok, false); assert.equal(r.code, 'CORE_VERSION_MISMATCH');
+  });
+
+  test('non-coreVersion registry pin mismatches are rejected', () => {
+    assert.equal(
+      replayCoreTexFromLogs(empty, [adv0], { expectedBundleHash: BUNDLE, expectedCorpusRoot: '0x' + 'c1'.repeat(32) }).code,
+      'CORPUS_ROOT_MISMATCH',
+    );
+    assert.equal(
+      replayCoreTexFromLogs(empty, [adv0], { expectedBundleHash: BUNDLE, expectedActiveFrontierRoot: '0x' + 'f1'.repeat(32) }).code,
+      'ACTIVE_FRONTIER_ROOT_MISMATCH',
+    );
+    assert.equal(
+      replayCoreTexFromLogs(empty, [adv0, finalizedLog], { expectedBundleHash: BUNDLE, expectedBaselineManifestHash: '0x' + 'b1'.repeat(32) }).code,
+      'BASELINE_MANIFEST_HASH_MISMATCH',
+    );
   });
 
   test('missing patch bytes rejected', () => {

@@ -8,6 +8,7 @@
  */
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { DEFAULT_PROFILE, scoringOptionsFromProfile } from '../../dist/index.js';
 
 const runtime = {
@@ -45,5 +46,13 @@ describe('V2 profile → ScoringOptions', () => {
     const opts = scoringOptionsFromProfile(DEFAULT_PROFILE, runtime);
     assert.equal(opts.ownerScopeMode, undefined, 'legacy default is full-pool');
     assert.equal(opts.categoryLensScoreInheritance, undefined, 'legacy default has no inheritance');
+  });
+
+  test('real v16 launch profile activates the full Memory-IR reranker path through profile mapping', () => {
+    const profilePath = new URL('../../../../release/calibration/2026-06-04-memory-atom-v16/evaluator-profile-v2-dgen1-policy-r5-atom-v16-300k-enabled.json', import.meta.url);
+    const launchProfile = JSON.parse(readFileSync(profilePath, 'utf8'));
+    const opts = scoringOptionsFromProfile(launchProfile, runtime);
+    assert.equal(opts.rerankerMemoryIRMode, 'full');
+    assert.notEqual(opts.rerankerMemoryIRFormat, 'F2');
   });
 });

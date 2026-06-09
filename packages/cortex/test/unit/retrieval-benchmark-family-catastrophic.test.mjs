@@ -22,19 +22,22 @@ import assert from 'node:assert/strict';
 import { computeAcceptanceThresholdPpm } from '../../dist/index.js';
 
 describe('computeAcceptanceThresholdPpm', () => {
-  test('sums minImprovement + replayTolerance + baselineVariance', () => {
+  test('sums minImprovement + replayTolerance + production baselineVariance', () => {
     const t = computeAcceptanceThresholdPpm({
       patchAcceptanceFloors: { minImprovementPpm: 1000 },
       replayTolerancePpm: 250,
       baselineVariancePpm: 100,
+      baselineVarianceSource: 'rotating_pack',
     });
     assert.equal(t, 1350);
   });
 
-  test('treats baselineVariancePpm as 0 when absent', () => {
+  test('treats baselineVariancePpm as 0 when source is unavailable', () => {
     const t = computeAcceptanceThresholdPpm({
       patchAcceptanceFloors: { minImprovementPpm: 1000 },
       replayTolerancePpm: 250,
+      baselineVariancePpm: 100,
+      baselineVarianceSource: 'unavailable',
     });
     assert.equal(t, 1250);
   });
@@ -48,6 +51,7 @@ describe('computeAcceptanceThresholdPpm', () => {
       patchAcceptanceFloors: { minImprovementPpm: 2500 },
       replayTolerancePpm: 250,
       baselineVariancePpm: 75,
+      baselineVarianceSource: 'broad_sampling',
     };
     const handRolled =
       profile.patchAcceptanceFloors.minImprovementPpm

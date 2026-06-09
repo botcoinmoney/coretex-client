@@ -234,6 +234,8 @@ export interface EvaluatorProfile {
   /** Memory-IR sidecar doc rendering for the reranker ('F2' prefixes the derived lifecycle header).
    *  Pin only with a Memory-IR-tuned reranker (E1); default off → raw doc text. */
   readonly rerankerMemoryIRFormat?: 'off' | 'F2';
+  /** Full protocol Memory-IR document rendering for a Memory-IR-tuned reranker. Default off. */
+  readonly rerankerMemoryIRMode?: 'off' | 'full';
   /** Memory-IR lifecycle SOURCE: 'resolved' (substrate's decoded temporal state — launch form, lifecycle
    *  earned by the miner patch) vs 'corpus' (raw corpus labels — convenience). Default 'corpus'. */
   readonly rerankerMemoryIRSource?: 'corpus' | 'resolved';
@@ -368,20 +370,20 @@ export interface EvaluatorProfile {
    * bundles (the initial output of `build-coretex-bundle.mjs`) don't
    * have it yet; the orchestrator chain populates it as step 7/9.
    *
-   * The acceptance rule should normalize against this score +
-   * `baselineVariancePpm` + `replayTolerancePpm` so substrate changes
-   * cleanly beat the parent rather than chasing absolute thresholds
-   * that drift as the corpus grows.
+   * The acceptance rule should normalize against this score plus
+   * `replayTolerancePpm`. Production `baselineVariancePpm` is only added
+   * when `baselineVarianceSource` is `rotating_pack` or `broad_sampling`.
    */
   readonly baselineParentScorePpm?: number;
   /**
-   * Standard deviation of the parent score across `baselineSamples`
-   * repeated runs, in ppm. On a byte-deterministic single host this
-   * is exactly 0; on heterogeneous calibration hardware it captures
-   * real reranker-side noise so acceptance doesn't oscillate.
+   * Production-relevant baseline variance, in ppm. Must be omitted unless
+   * computed from rotating-pack or broad sampling.
    */
   readonly baselineVariancePpm?: number;
-  /** Number of samples used to compute `baselineVariancePpm`. */
+  readonly baselineVarianceSource?: 'rotating_pack' | 'broad_sampling' | 'unavailable';
+  /** Fixed-pack repeated-run variance. Calibration/debug only; not a production threshold term. */
+  readonly fixedPackRepeatabilityPpm?: number;
+  /** Number of samples used to compute the baseline/repeatability fields. */
   readonly baselineSamples?: number;
   /**
    * The eval seed used to derive the genesis hidden query pack that
@@ -1013,6 +1015,7 @@ export function scoringOptionsFromProfile(
     ...(profile.policyAspectIntentAdmission !== undefined ? { policyAspectIntentAdmission: profile.policyAspectIntentAdmission } : {}),
     ...(profile.policyAspectBoost !== undefined ? { policyAspectBoost: profile.policyAspectBoost } : {}),
     ...(profile.rerankerMemoryIRFormat !== undefined ? { rerankerMemoryIRFormat: profile.rerankerMemoryIRFormat } : {}),
+    ...(profile.rerankerMemoryIRMode !== undefined ? { rerankerMemoryIRMode: profile.rerankerMemoryIRMode } : {}),
     ...(profile.rerankerMemoryIRSource !== undefined ? { rerankerMemoryIRSource: profile.rerankerMemoryIRSource } : {}),
   } as ScoringOptions;
 }
@@ -1377,6 +1380,15 @@ function validateProfile(profile: EvaluatorProfile, errors?: string[]): void {
     const t = profile.policyAbstentionTop1Threshold;
     if (typeof t !== 'number' || t < 0 || t > 1) out.push('policyAbstentionTop1Threshold must be in [0,1] when present');
   }
+  if (profile.rerankerMemoryIRFormat !== undefined && !['off', 'F2'].includes(profile.rerankerMemoryIRFormat)) {
+    out.push("rerankerMemoryIRFormat must be 'off' or 'F2' when present");
+  }
+  if (profile.rerankerMemoryIRMode !== undefined && !['off', 'full'].includes(profile.rerankerMemoryIRMode)) {
+    out.push("rerankerMemoryIRMode must be 'off' or 'full' when present");
+  }
+  if (profile.rerankerMemoryIRSource !== undefined && !['corpus', 'resolved'].includes(profile.rerankerMemoryIRSource)) {
+    out.push("rerankerMemoryIRSource must be 'corpus' or 'resolved' when present");
+  }
   // r5 enables only meaningful under the policy-r5 pipeline pin (warn-as-error: prevents
   // accidentally shipping r5 atoms under an r4 profile, where they would be ignored).
   const r5Enabled = profile.enableEvidenceBundleAtoms || profile.enableConflictLifecycleAtoms || profile.enableAbstentionAtoms || profile.enableAspectConstraintAtoms || profile.enableValidityAtoms || profile.enableEntityResolutionAtoms || profile.enableScopeAtoms;
@@ -1448,13 +1460,29 @@ function validateProfile(profile: EvaluatorProfile, errors?: string[]): void {
   const anyBaseline =
     profile.baselineParentScorePpm !== undefined ||
     profile.baselineVariancePpm !== undefined ||
+    profile.baselineVarianceSource !== undefined ||
+    profile.fixedPackRepeatabilityPpm !== undefined ||
     profile.baselineSamples !== undefined ||
     profile.baselineEvalSeedHex !== undefined;
   if (anyBaseline) {
     if (typeof profile.baselineParentScorePpm !== 'number' || profile.baselineParentScorePpm < 0)
       out.push('baselineParentScorePpm must be a non-negative number when baseline is pinned');
-    if (typeof profile.baselineVariancePpm !== 'number' || profile.baselineVariancePpm < 0)
-      out.push('baselineVariancePpm must be a non-negative number when baseline is pinned');
+    const source = profile.baselineVarianceSource ?? 'unavailable';
+    if (!['rotating_pack', 'broad_sampling', 'unavailable'].includes(source)) {
+      out.push('baselineVarianceSource must be rotating_pack, broad_sampling, or unavailable when baseline is pinned');
+    }
+    if (source === 'rotating_pack' || source === 'broad_sampling') {
+      if (typeof profile.baselineVariancePpm !== 'number' || profile.baselineVariancePpm < 0) {
+        out.push('baselineVariancePpm must be a non-negative number when production baseline variance is pinned');
+      }
+    }
+    if (source === 'unavailable' && profile.baselineVariancePpm !== undefined && profile.baselineVariancePpm !== 0) {
+      out.push('baselineVariancePpm must be omitted or 0 when baselineVarianceSource is unavailable');
+    }
+    if (profile.fixedPackRepeatabilityPpm !== undefined &&
+        (typeof profile.fixedPackRepeatabilityPpm !== 'number' || profile.fixedPackRepeatabilityPpm < 0)) {
+      out.push('fixedPackRepeatabilityPpm must be a non-negative number when present');
+    }
     if (!Number.isInteger(profile.baselineSamples) || (profile.baselineSamples ?? 0) < 1)
       out.push('baselineSamples must be a positive integer when baseline is pinned');
     if (typeof profile.baselineEvalSeedHex !== 'string' || !/^0x[0-9a-f]{64}$/i.test(profile.baselineEvalSeedHex))

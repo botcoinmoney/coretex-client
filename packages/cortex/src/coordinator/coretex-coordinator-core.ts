@@ -46,10 +46,13 @@ import {
   DEFAULT_CORETEX_WORK_POLICY,
   OUTCOME_CORETEX_SCREENER_PASS,
   OUTCOME_CORETEX_STATE_ADVANCE,
+  computeCoreTexScreenerThresholdPpm,
   computeCoreTexWorkUnitsBps,
   type CoreTexWorkPolicy,
 } from '../rewards/work-units.js';
 import type { CortexState } from '../state/types.js';
+import { PATCH_TYPE, RANGES } from '../state/types.js';
+import { buildAllowedPatchTypes } from '../state/patch.js';
 
 // ── chain log shape ────────────────────────────────────────────────────────
 export interface CoreTexStateAdvancedEvent {
@@ -79,8 +82,6 @@ export interface ChainClient {
   getBlockHashAt(blockNumber: number): Promise<string | null>;
   /** Range-scan CoreTexStateAdvanced events. */
   getStateAdvancedEvents(fromBlock: number, toBlock: number): Promise<readonly CoreTexStateAdvancedEvent[]>;
-  /** Block of the CoreTexEpochStarted event for `epoch`. */
-  getEpochStartedBlock(epoch: bigint): Promise<number>;
   /** Registry's current liveStateRoot and transitionCount for `epoch`. */
   getRegistryEpoch(epoch: bigint): Promise<{ readonly liveStateRoot: string; readonly transitionCount: number }>;
   /** Registry's epoch pins (parentStateRoot, coreVersionHash, corpusRoot, etc.) */
@@ -128,6 +129,7 @@ export interface RealEvaluator {
     patchBytesHex: string;
     parentStateRoot: string;
     miner: string;
+    parentState?: CortexState;
   }): Promise<EvalResult> | EvalResult;
 }
 
@@ -135,12 +137,42 @@ export type EvalResult =
   | { readonly outcome: 'reject'; readonly code: string; readonly reason: string;
       readonly deterministicDeltaPpm?: number; readonly requiredDeltaPpm?: number }
   | { readonly outcome: 'screener_pass'; readonly deterministicDeltaPpm: number;
-      readonly evalReportHash: string; readonly artifactHash: string }
+      readonly evalReportHash: string; readonly artifactHash: string;
+      readonly evaluationProof?: CoreTexDualPackEvaluationProof }
   | { readonly outcome: 'state_advance'; readonly deterministicDeltaPpm: number;
       readonly evalReportHash: string; readonly artifactHash: string;
       readonly scoreBeforePpm: number; readonly scoreAfterPpm: number;
       /** Coord-rewritten patch bytes whose embedded scoreDelta matches scoreAfter - scoreBefore. */
-      readonly rewrittenPatchBytesHex: string; };
+      readonly rewrittenPatchBytesHex: string;
+      readonly evaluationProof?: CoreTexDualPackEvaluationProof };
+
+export interface CoreTexDualPackEvaluationProof {
+  readonly kind: 'coretex-dual-pack-v1';
+  readonly mode: 'future_blockhash_dual_pack';
+  readonly epochId: number;
+  readonly receivedAtBlock: number;
+  readonly targetBlock: number;
+  readonly targetBlockOffset: number;
+  readonly blockhash: string;
+  readonly patchHash: string;
+  readonly parentStateRoot: string;
+  readonly corpusRoot: string;
+  readonly coreVersionHash: string;
+  readonly hiddenSeedCommit: string;
+  readonly epochSecretCommit: string;
+  readonly gate: {
+    readonly domain: 'gate';
+    readonly seedCommit: string;
+    readonly accepted: boolean;
+    readonly scorePpm: number;
+  };
+  readonly confirm: {
+    readonly domain: 'confirm';
+    readonly seedCommit: string;
+    readonly accepted: boolean;
+    readonly scorePpm: number;
+  };
+}
 
 export interface CoreTexReceiptPayload {
   readonly epochId: bigint;
@@ -181,11 +213,15 @@ export interface CoreTexReceiptSigner {
 export interface CoreTexCoordinatorConfig {
   readonly epoch: bigint;
   readonly expectedChainId: bigint;
-  readonly v4Address: string;
+  readonly miningContractAddress?: string;
+  /** Deprecated compatibility alias for BotcoinMiningV4. */
+  readonly v4Address?: string;
   readonly registryAddress: string;
   readonly expectedCoordinatorSigner: string;
   readonly expectedEpochPins: RegistryEpochPins;
   readonly confirmationDepth: number;
+  /** Inclusive block to start replaying CoreTexStateAdvanced logs from. Defaults to 0. */
+  readonly replayFromBlock?: number;
   readonly receiptTtlSec: number;
   readonly perMinerScreenerCap?: number;
   readonly screenerThresholdPpm?: number;
@@ -194,12 +230,20 @@ export interface CoreTexCoordinatorConfig {
   readonly patchWordBudget?: number;
   readonly maxPatchBytes?: number;
   readonly allowedPatchTypes?: readonly unknown[];
+  readonly patchWordRanges?: readonly unknown[];
+  readonly exampleValidPatch?: unknown;
   readonly activeSubstrateSurfaces?: readonly string[];
   readonly pipelineVersion?: string;
   readonly memoryIRSchemaVersion?: string;
   readonly runwayTelemetry?: Record<string, unknown>;
   readonly baselineScorePpm?: number;
+  readonly baselineParentScorePpm?: number;
+  readonly baselineVariancePpm?: number;
+  readonly baselineVarianceSource?: 'rotating_pack' | 'broad_sampling' | 'unavailable';
+  readonly fixedPackRepeatabilityPpm?: number;
   readonly recentNoiseFloorPpm?: number;
+  readonly difficultyController?: Record<string, unknown>;
+  readonly targetBlockOffset?: number;
   readonly rulesVersion?: number;
   readonly workPolicyHash?: string;
   readonly workPolicy?: CoreTexWorkPolicy;
@@ -217,6 +261,7 @@ export interface PendingReceipt {
   readonly miner: string;
   readonly issuedAt: number;
   readonly expiresAt: number;
+  readonly scoreAfterPpm?: number;
   state: PendingState;
 }
 
@@ -284,9 +329,11 @@ export class CoreTexCoordinatorCore {
   private chainLiveRoot = '';
   private chainTransitionCount = 0;
   private lastScannedBlock = 0;
-  private epochStartBlock = 0;
+  private replayFromBlock = 0;
   private finalityLagBlocks = 0;
   private lastEpochMismatch: bigint | null = null;
+  private currentBaselineParentScorePpm = 0;
+  private currentBaselineVariancePpm: number | undefined;
 
   private readonly pendingByPatchHash = new Map<string, PendingReceipt>();
   private readonly receiptCache = new Map<string, ReceiptEnvelope>();
@@ -310,7 +357,13 @@ export class CoreTexCoordinatorCore {
     private readonly parentLoader: ParentSubstrateLoader,
     private readonly evaluator: RealEvaluator,
     private readonly signer?: CoreTexReceiptSigner,
-  ) {}
+  ) {
+    this.currentBaselineParentScorePpm = config.baselineParentScorePpm ?? config.baselineScorePpm ?? 0;
+    const source = config.baselineVarianceSource ?? 'unavailable';
+    this.currentBaselineVariancePpm = source === 'rotating_pack' || source === 'broad_sampling'
+      ? config.baselineVariancePpm
+      : undefined;
+  }
 
   // ── boot-time wiring gates (audit-3 R3 P5) ────────────────────────────────
   async boot(): Promise<void> {
@@ -353,13 +406,13 @@ export class CoreTexCoordinatorCore {
     this.parentRoot = this.liveRoot;
     this.stateByRoot.set(this.liveRoot, this.liveState);
 
-    // Startup replay (audit-3 R2 #2 — replay from epoch start, NOT recent N blocks)
-    const epochStartBlock = await this.chain.getEpochStartedBlock(this.config.epoch);
-    this.epochStartBlock = epochStartBlock;
+    // Startup replay from the configured deployment/cursor block, not recent N blocks.
+    const replayFromBlock = Math.max(0, Math.floor(this.config.replayFromBlock ?? 0));
+    this.replayFromBlock = replayFromBlock;
     const replayHead = await this.chain.getBlockNumber();
     // R3 audit-2: replay only through safeHead = head - depth
-    const safeHead = Math.max(epochStartBlock, replayHead - this.config.confirmationDepth);
-    const events = await this.chain.getStateAdvancedEvents(epochStartBlock, safeHead);
+    const safeHead = Math.max(replayFromBlock, replayHead - this.config.confirmationDepth);
+    const events = await this.chain.getStateAdvancedEvents(replayFromBlock, safeHead);
     const sorted = [...events].sort((a, b) => {
       const db = Number(a.blockNumber - b.blockNumber);
       if (db !== 0) return db;
@@ -474,6 +527,7 @@ export class CoreTexCoordinatorCore {
       if (p.parentRoot.toLowerCase() === ev.parent.toLowerCase() &&
           p.signedPatchHash.toLowerCase() === ev.patchHash.toLowerCase()) {
         p.state = 'confirmed';
+        if (p.scoreAfterPpm !== undefined) this.currentBaselineParentScorePpm = p.scoreAfterPpm;
       } else if (p.parentRoot.toLowerCase() === ev.parent.toLowerCase()) {
         // Audit-3 R3 P3: stale pending receipts must reconcile receipt-cache states
         // — the cached envelope is marked stale via the pending lookup, AND it is
@@ -507,7 +561,7 @@ export class CoreTexCoordinatorCore {
       this.liveState = { words: [...this.parentState.words] };
       this.liveRoot = this.parentRoot.toLowerCase();
       this.lastTransitionIndex = -1n;
-      this.lastScannedBlock = Math.max(0, this.epochStartBlock - 1);
+      this.lastScannedBlock = Math.max(0, this.replayFromBlock - 1);
     }
 
     const keep = new Set(this.snapshots.map((s) => s.root.toLowerCase()));
@@ -643,6 +697,16 @@ export class CoreTexCoordinatorCore {
     const miner = typeof minerRaw === 'string' && isAddress(minerRaw) ? minerRaw.toLowerCase() : null;
     const qualified = await this.chain.getQualifiedScreenerPassesSinceLastStateAdvance(this.config.epoch);
     const workPolicy = this.config.workPolicy ?? DEFAULT_CORETEX_WORK_POLICY;
+    const baselineParentScorePpm = this.currentBaselineParentScorePpm;
+    const baselineVarianceSource = this.config.baselineVarianceSource ?? 'unavailable';
+    const baselineVariancePpm = this.currentBaselineVariancePpm;
+    const recentNoiseFloorPpm = this.config.recentNoiseFloorPpm ?? 0;
+    const minImprovementPpm = this.config.minImprovementPpm ?? Number(DEFAULT_CORETEX_WORK_POLICY.stateAdvance.minDeterministicDeltaPpm);
+    const screenerThresholdPpm = this.config.screenerThresholdPpm ?? Number(computeCoreTexScreenerThresholdPpm({
+      baselineScorePpm: baselineParentScorePpm,
+      recentNoiseFloorPpm,
+      policy: workPolicy,
+    }));
     const nextStateAdvanceWorkBps = computeCoreTexWorkUnitsBps({
       outcome: OUTCOME_CORETEX_STATE_ADVANCE,
       qualifiedScreenerPassesSinceLastStateAdvance: qualified,
@@ -666,22 +730,44 @@ export class CoreTexCoordinatorCore {
       rulesVersion: this.config.rulesVersion ?? DEFAULT_CORETEX_WORK_POLICY.rulesVersion,
       workPolicyHash: this.config.workPolicyHash,
       patchWordBudget: this.config.patchWordBudget ?? 4,
-      minImprovementPpm: this.config.minImprovementPpm ?? Number(DEFAULT_CORETEX_WORK_POLICY.stateAdvance.minDeterministicDeltaPpm),
+      minImprovementPpm,
       replayTolerancePpm: this.config.replayTolerancePpm ?? 0,
-      screenerThresholdPpm: this.config.screenerThresholdPpm ?? Number(DEFAULT_CORETEX_WORK_POLICY.screenerPass.calibration.minDeltaPpm),
-      baselineScorePpm: this.config.baselineScorePpm ?? 0,
-      recentNoiseFloorPpm: this.config.recentNoiseFloorPpm ?? 0,
+      screenerThresholdPpm,
+      baselineScorePpm: baselineParentScorePpm,
+      baselineParentScorePpm,
+      ...(baselineVariancePpm !== undefined ? { baselineVariancePpm } : {}),
+      baselineVarianceSource,
+      ...(this.config.fixedPackRepeatabilityPpm !== undefined ? { fixedPackRepeatabilityPpm: this.config.fixedPackRepeatabilityPpm } : {}),
+      recentNoiseFloorPpm,
       perMinerScreenerCap: cap,
       qualifiedScreenerPassesSinceLastStateAdvance: qualified,
       nextStateAdvanceWorkBps: Number(nextStateAdvanceWorkBps),
       activeSubstrateSurfaces: [...(this.config.activeSubstrateSurfaces ?? [])],
-      allowedPatchTypes: [...(this.config.allowedPatchTypes ?? [])],
+      allowedPatchTypes: [
+        ...(this.config.allowedPatchTypes ?? buildAllowedPatchTypes(
+          this.config.pipelineVersion ? { pipelineVersion: this.config.pipelineVersion } : {},
+        )),
+      ],
+      patchWordRanges: [...(this.config.patchWordRanges ?? [])],
+      exampleValidPatch: this.config.exampleValidPatch ?? this.exampleValidPatch(),
       substrate: { uri: `/coretex/substrate/${this.liveRoot}` },
       acceptingSubmissions: this.signingEnabled,
+      pins: this.config.expectedEpochPins,
+      hiddenSeedCommit: this.config.expectedEpochPins.hiddenSeedCommit,
+      thresholds: {
+        minImprovementPpm,
+        replayTolerancePpm: this.config.replayTolerancePpm ?? 0,
+        screenerThresholdPpm,
+        baselineParentScorePpm,
+        ...(baselineVariancePpm !== undefined ? { baselineVariancePpm } : {}),
+        baselineVarianceSource,
+        recentNoiseFloorPpm,
+      },
       ...(this.unhealthyReason ? { reason: this.unhealthyReason } : {}),
       ...(this.config.pipelineVersion ? { pipelineVersion: this.config.pipelineVersion } : {}),
-      ...(this.config.memoryIRSchemaVersion ? { memoryIRSchemaVersion: this.config.memoryIRSchemaVersion } : {}),
-      ...(this.config.runwayTelemetry ? { runwayTelemetry: this.config.runwayTelemetry } : {}),
+      memoryIRSchemaVersion: this.config.memoryIRSchemaVersion ?? 'memory_ir.v1',
+      ...(this.config.runwayTelemetry ? { runwayTelemetry: publicRunwayTelemetry(this.config.runwayTelemetry) } : {}),
+      ...(this.config.difficultyController ? { difficultyController: this.config.difficultyController } : {}),
       hiddenEvalWarning: 'hidden qrels / eval pack / epochSecret are NOT public',
       perMiner,
     };
@@ -723,6 +809,7 @@ export class CoreTexCoordinatorCore {
         patchBytesHex: parsed.patchBytesHex,
         parentStateRoot: parsed.parentStateRoot,
         miner: parsed.miner,
+        parentState: this.liveState,
       });
     } catch {
       this.metrics.evalFailureCount += 1;
@@ -736,6 +823,18 @@ export class CoreTexCoordinatorCore {
     }
     const evalInvalid = validateAcceptedEvalResult(evalResult);
     if (evalInvalid) return this.rejectSubmission(evalInvalid.code, evalInvalid.reason);
+    const proofInvalid = validateDualPackProof(evalResult, {
+      epoch: Number(this.config.epoch),
+      patchHash: originalPatchHash,
+      parentStateRoot: parsed.parentStateRoot,
+      corpusRoot: this.config.expectedEpochPins.corpusRoot,
+      coreVersionHash: this.config.expectedEpochPins.coreVersionHash,
+      hiddenSeedCommit: this.config.expectedEpochPins.hiddenSeedCommit,
+      ...(this.config.targetBlockOffset !== undefined ? { targetBlockOffset: this.config.targetBlockOffset } : {}),
+    });
+    if (proofInvalid) {
+      return this.rejectSubmission('DUAL_PACK_PROOF_INVALID', proofInvalid);
+    }
 
     const outcome = evalResult.outcome === 'state_advance'
       ? OUTCOME_CORETEX_STATE_ADVANCE
@@ -780,11 +879,10 @@ export class CoreTexCoordinatorCore {
       } catch {
         return this.rejectSubmission('EVAL_REWRITE_INVALID', 'evaluator returned undecodable rewrittenPatchBytesHex');
       }
-      if (rewrittenDecoded.scoreDelta !== BigInt(scoreDelta)) {
-        compactPatchBytes = bytesToHex(encodePatch({ ...decoded, scoreDelta: BigInt(scoreDelta) })).toLowerCase();
-      } else {
-        compactPatchBytes = rewrittenPatchBytes.hex;
+      if (!patchSemanticsMatchExceptScoreDelta(decoded, rewrittenDecoded)) {
+        return this.rejectSubmission('EVAL_REWRITE_INVALID', 'evaluator rewrite changed patch semantics');
       }
+      compactPatchBytes = bytesToHex(encodePatch({ ...decoded, scoreDelta: BigInt(scoreDelta) })).toLowerCase();
       const finalDecoded = decodePatch(hexToBytes(compactPatchBytes));
       const finalApplied = applyPatch(this.liveState, finalDecoded, true);
       if (!finalApplied.ok) {
@@ -853,13 +951,12 @@ export class CoreTexCoordinatorCore {
       outcome: outcome === OUTCOME_CORETEX_STATE_ADVANCE ? 'STATE_ADVANCE' : 'SCREENER_PASS',
       patchHash: signedPatchHash,
       evalReportHash: receipt.evalReportHash,
-      deterministicDeltaPpm: evalResult.deterministicDeltaPpm,
       workUnitsBps: Number(workUnitsBps),
       newStateRoot,
       perMinerScreenerCount: outcome === OUTCOME_CORETEX_SCREENER_PASS ? counters.screenersThisEpoch + 1 : counters.screenersThisEpoch,
       perMinerScreenerRemaining: Math.max(0, cap - (outcome === OUTCOME_CORETEX_SCREENER_PASS ? counters.screenersThisEpoch + 1 : counters.screenersThisEpoch)),
       receipt: publicReceipt,
-      transaction: { to: this.config.v4Address.toLowerCase(), chainId: Number(this.config.expectedChainId), value: '0', data: signed.transactionData.toLowerCase() },
+      transaction: { to: this.miningContractAddress().toLowerCase(), chainId: Number(this.config.expectedChainId), value: '0', data: signed.transactionData.toLowerCase() },
       issuedAt,
       expiresAt,
     };
@@ -875,6 +972,7 @@ export class CoreTexCoordinatorCore {
         miner: parsed.miner,
         issuedAt,
         expiresAt,
+        scoreAfterPpm,
         state: 'pending',
       });
     }
@@ -898,10 +996,10 @@ export class CoreTexCoordinatorCore {
     };
   }
 
-  getSubstrate(stateRoot: string): { stateRoot: string; wordCount: number; packedHex: string } | null {
+  getSubstrate(stateRoot: string): { stateRoot: string; wordCount: number; packedBytes: number; packedHex: string } | null {
     const cached = this.stateByRoot.get(stateRoot.toLowerCase());
     if (!cached) return null;
-    return { stateRoot: stateRoot.toLowerCase(), wordCount: 1024, packedHex: this.statePackedHex(cached) };
+    return { stateRoot: stateRoot.toLowerCase(), wordCount: 1024, packedBytes: 32768, packedHex: this.statePackedHex(cached) };
   }
 
   getReceiptByHash(hash: string): { status: number; body: unknown } {
@@ -950,6 +1048,12 @@ export class CoreTexCoordinatorCore {
   }
 
   private validateStaticConfig(): void {
+    if (!isAddress(this.miningContractAddress())) {
+      throw new Error('coord: miningContractAddress must be a configured address');
+    }
+    if (!isAddress(this.config.registryAddress)) {
+      throw new Error('coord: registryAddress must be a configured address');
+    }
     if (!Number.isInteger(this.config.confirmationDepth) || this.config.confirmationDepth < 0) {
       throw new Error('coord: confirmationDepth must be a non-negative integer');
     }
@@ -970,12 +1074,49 @@ export class CoreTexCoordinatorCore {
         (!Number.isInteger(this.config.maxPatchBytes) || this.config.maxPatchBytes < 42)) {
       throw new Error('coord: maxPatchBytes must be at least the minimum patch size');
     }
+    if (this.config.targetBlockOffset !== undefined &&
+        (!Number.isInteger(this.config.targetBlockOffset) || this.config.targetBlockOffset <= 0)) {
+      throw new Error('coord: targetBlockOffset must be a positive integer');
+    }
+    if (this.config.baselineVariancePpm !== undefined &&
+        (!Number.isInteger(this.config.baselineVariancePpm) || this.config.baselineVariancePpm < 0)) {
+      throw new Error('coord: baselineVariancePpm must be non-negative when configured');
+    }
+    if (this.config.baselineVarianceSource !== undefined &&
+        !['rotating_pack', 'broad_sampling', 'unavailable'].includes(this.config.baselineVarianceSource)) {
+      throw new Error('coord: baselineVarianceSource must be rotating_pack, broad_sampling, or unavailable');
+    }
+    if (this.config.fixedPackRepeatabilityPpm !== undefined &&
+        (!Number.isInteger(this.config.fixedPackRepeatabilityPpm) || this.config.fixedPackRepeatabilityPpm < 0)) {
+      throw new Error('coord: fixedPackRepeatabilityPpm must be non-negative when configured');
+    }
+  }
+
+  private miningContractAddress(): string {
+    return this.config.miningContractAddress ?? this.config.v4Address ?? '';
   }
 
   private cacheReceipt(envelope: ReceiptEnvelope, originalPatchHash: string): void {
     const signed = envelope.patchHash.toLowerCase();
     this.receiptCache.set(signed, envelope);
     if (originalPatchHash.toLowerCase() !== signed) this.receiptCache.set(originalPatchHash.toLowerCase(), envelope);
+  }
+
+  private exampleValidPatch(): Record<string, unknown> {
+    const patch = {
+      patchType: PATCH_TYPE.RELATION_UPDATE,
+      wordCount: 1,
+      scoreDelta: 0n,
+      parentStateRoot: hexToBytes(this.liveRoot),
+      indices: [RANGES.RELATIONS_START],
+      newWords: [0n],
+    };
+    return {
+      patchType: patch.patchType,
+      wordCount: patch.wordCount,
+      indexRange: [RANGES.RELATIONS_START, RANGES.RELATIONS_END],
+      encodedHex: bytesToHex(encodePatch(patch)),
+    };
   }
 
   getMetrics(): CoreTexCoordinatorMetrics {
@@ -1130,6 +1271,95 @@ function validateAcceptedEvalResult(result: EvalResult): { code: string; reason:
   return null;
 }
 
+function validateDualPackProof(
+  result: Exclude<EvalResult, { readonly outcome: 'reject' }>,
+  expected: {
+    readonly epoch: number;
+    readonly targetBlockOffset?: number;
+    readonly patchHash: string;
+    readonly parentStateRoot: string;
+    readonly corpusRoot: string;
+    readonly coreVersionHash: string;
+    readonly hiddenSeedCommit: string;
+  },
+): string | null {
+  const proof = result.evaluationProof;
+  if (!proof || typeof proof !== 'object') return 'accepted evaluation missing dual-pack proof';
+  if (proof.kind !== 'coretex-dual-pack-v1') return 'dual-pack proof kind mismatch';
+  if (proof.mode !== 'future_blockhash_dual_pack') return 'dual-pack proof mode mismatch';
+  if (proof.epochId !== expected.epoch) return 'dual-pack proof epoch mismatch';
+  if (!Number.isSafeInteger(proof.receivedAtBlock) || proof.receivedAtBlock < 0) return 'dual-pack proof receivedAtBlock invalid';
+  if (!Number.isSafeInteger(proof.targetBlock) || proof.targetBlock <= proof.receivedAtBlock) return 'dual-pack proof targetBlock invalid';
+  if (!Number.isSafeInteger(proof.targetBlockOffset) || proof.targetBlockOffset <= 0) return 'dual-pack proof targetBlockOffset invalid';
+  if (proof.targetBlock !== proof.receivedAtBlock + proof.targetBlockOffset) return 'dual-pack proof targetBlock offset mismatch';
+  if (expected.targetBlockOffset !== undefined && proof.targetBlockOffset !== expected.targetBlockOffset) {
+    return 'dual-pack proof targetBlockOffset config mismatch';
+  }
+  if (!isBytes32(proof.blockhash) || proof.blockhash.toLowerCase() === '0x' + '00'.repeat(32)) return 'dual-pack proof blockhash invalid';
+  if (!isBytes32(proof.patchHash) || proof.patchHash.toLowerCase() !== expected.patchHash.toLowerCase()) return 'dual-pack proof patchHash mismatch';
+  if (!isBytes32(proof.parentStateRoot) || proof.parentStateRoot.toLowerCase() !== expected.parentStateRoot.toLowerCase()) return 'dual-pack proof parentStateRoot mismatch';
+  if (!isBytes32(proof.corpusRoot) || proof.corpusRoot.toLowerCase() !== expected.corpusRoot.toLowerCase()) return 'dual-pack proof corpusRoot mismatch';
+  if (!isBytes32(proof.coreVersionHash) || proof.coreVersionHash.toLowerCase() !== expected.coreVersionHash.toLowerCase()) return 'dual-pack proof coreVersionHash mismatch';
+  if (!isBytes32(proof.hiddenSeedCommit) || proof.hiddenSeedCommit.toLowerCase() !== expected.hiddenSeedCommit.toLowerCase()) return 'dual-pack proof hiddenSeedCommit mismatch';
+  if (!isBytes32(proof.epochSecretCommit) || proof.epochSecretCommit.toLowerCase() !== expected.hiddenSeedCommit.toLowerCase()) return 'dual-pack proof epochSecretCommit mismatch';
+  if (!proof.gate || proof.gate.domain !== 'gate') return 'dual-pack proof gate domain missing';
+  if (!proof.confirm || proof.confirm.domain !== 'confirm') return 'dual-pack proof confirm domain missing';
+  for (const [label, pack] of [['gate', proof.gate], ['confirm', proof.confirm]] as const) {
+    if (!isBytes32(pack.seedCommit) || pack.seedCommit.toLowerCase() === '0x' + '00'.repeat(32)) {
+      return `dual-pack proof ${label} seedCommit invalid`;
+    }
+    if (pack.accepted !== true) return `dual-pack proof ${label} not accepted`;
+    if (!Number.isSafeInteger(pack.scorePpm) || pack.scorePpm < 0 || pack.scorePpm > 1_000_000) {
+      return `dual-pack proof ${label} score invalid`;
+    }
+  }
+  if (proof.gate.seedCommit.toLowerCase() === proof.confirm.seedCommit.toLowerCase()) {
+    return 'dual-pack proof gate/confirm seeds are not domain-separated';
+  }
+  return null;
+}
+
+function patchSemanticsMatchExceptScoreDelta(a: ReturnType<typeof decodePatch>, b: ReturnType<typeof decodePatch>): boolean {
+  if (a.patchType !== b.patchType || a.wordCount !== b.wordCount) return false;
+  if (bytesToHex(a.parentStateRoot).toLowerCase() !== bytesToHex(b.parentStateRoot).toLowerCase()) return false;
+  if (a.indices.length !== b.indices.length || a.newWords.length !== b.newWords.length) return false;
+  for (let i = 0; i < a.indices.length; i++) {
+    if (a.indices[i] !== b.indices[i]) return false;
+    if (a.newWords[i] !== b.newWords[i]) return false;
+  }
+  return true;
+}
+
+function publicRunwayTelemetry(raw: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const key of [
+    'updatedAtEpoch',
+    'strictMinableRatioPpm',
+    'alreadySolvedRatioPpm',
+    'tooHardRatioPpm',
+    'acceptedFamilyEntropyPpm',
+    'acceptedFingerprintReusePpm',
+    'acceptedSelectorReusePpm',
+    'randomControlAccepts',
+    'randomControlAttempts',
+    'noopControlAccepts',
+    'noopControlAttempts',
+    'hillControlAccepts',
+    'hillControlAttempts',
+    'reserveRemaining',
+    'reserveAdded',
+    'activeChurn',
+    'oldCorpusDamageRejects',
+    'goldDamageRejects',
+    'acceptedOldCorpusDamageCount',
+    'acceptedGoldDamageCount',
+  ]) {
+    const value = raw[key];
+    if (Number.isSafeInteger(value) && Number(value) >= 0) out[key] = Number(value);
+  }
+  return out;
+}
+
 function hashText(...parts: readonly string[]): string {
   return bytesToHex(keccak256(new TextEncoder().encode(parts.join('|')))).toLowerCase();
 }
@@ -1160,8 +1390,6 @@ function serializeReceipt(receipt: CoreTexReceiptPayload, signature: string): Re
     workUnitsBps: receipt.workUnitsBps.toString(),
     difficultyCountSnapshot: receipt.difficultyCountSnapshot.toString(),
     stateWordCount: receipt.stateWordCount,
-    scoreBeforePpm: receipt.scoreBeforePpm,
-    scoreAfterPpm: receipt.scoreAfterPpm,
     issuedAt: receipt.issuedAt,
     expiresAt: receipt.expiresAt,
     compactPatchBytes: receipt.compactPatchBytes,

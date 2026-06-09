@@ -251,6 +251,14 @@ describe('Fix B — production delta/root path (mock embeddings): logical delta 
     assert.ok(d1.addedIds.length > 0);
   });
 
+  test('applyCorpusDelta rejects addedRecords not listed in addedIds', () => {
+    const ld = evolveCorpusDelta({ baseLogical, epoch: 4, seed: 'frontier', churnFraction: 0.5 });
+    const delta = buildCorpusDelta({ previousCorpus: prevCorpus(0), additions: prodEvents(ld, 0), removals: [], epoch: 4, labelingProvenance });
+    assert.ok(delta.addedRecords.length > 0, 'fixture should produce additions');
+    const bad = { ...delta, addedIds: delta.addedIds.slice(0, -1) };
+    assert.throws(() => applyCorpusDelta(prevCorpus(0), bad), /not listed in addedIds/);
+  });
+
   test('signed corpus delta preserves live metadata through disk round-trip', () => {
     const previousCorpus = prevCorpusWithBaseMemory(0);
     const ld = evolveCorpusDelta({ baseLogical, epoch: 7, seed: 'frontier', churnFraction: 1.0 });

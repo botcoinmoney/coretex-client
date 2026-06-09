@@ -21,6 +21,7 @@ export * from './bundle/index.js';
 export * from './replay/v4.js';
 export * from './replay/coretex-registry.js';
 export * from './replay/per-patch.js';
+export * from './replay/eval-report-artifact.js';
 export * from './coordinator/endpoints.js';
 export * from './coordinator/retrieval-data-source.js';
 export {
@@ -42,6 +43,7 @@ export type {
 export * from './coordinator/base-blockhash.js';
 export * from './coordinator/patch-received-notice.js';
 export * from './coordinator/per-patch-evaluator.js';
+export * from './coordinator/production-evaluator.js';
 export * from './coordinator/epoch-frontier.js';
 export * from './eval/seed-derivation.js';
 export * from './eval/live-eval-admission.js';

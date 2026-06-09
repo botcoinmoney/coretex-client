@@ -54,6 +54,8 @@ describe('EvaluatorProfile H1/H2 fields', () => {
     assert.equal(m.evaluator.profile.majorDeltaThreshold, undefined);
     assert.equal(m.evaluator.profile.baselineParentScorePpm, undefined);
     assert.equal(m.evaluator.profile.baselineVariancePpm, undefined);
+    assert.equal(m.evaluator.profile.baselineVarianceSource, undefined);
+    assert.equal(m.evaluator.profile.fixedPackRepeatabilityPpm, undefined);
     assert.equal(m.evaluator.profile.baselineSamples, undefined);
     assert.equal(m.evaluator.profile.baselineEvalSeedHex, undefined);
     // Defaults must still verify clean.
@@ -106,6 +108,8 @@ describe('EvaluatorProfile H1/H2 fields', () => {
       evaluatorProfile: {
         baselineParentScorePpm: 250_000,
         baselineVariancePpm: 50,
+        baselineVarianceSource: 'rotating_pack',
+        fixedPackRepeatabilityPpm: 0,
         baselineSamples: 3,
         baselineEvalSeedHex: '0x' + 'ab'.repeat(32),
       },
@@ -115,7 +119,7 @@ describe('EvaluatorProfile H1/H2 fields', () => {
     assert.deepEqual(verifyBundleManifest(m, repoRoot), []);
   });
 
-  test('partial baseline (parent only, missing variance) is rejected', () => {
+  test('partial baseline (parent only, missing samples/seed) is rejected', () => {
     assert.throws(() => buildBundleManifest({
       repoRoot,
       corpusRoot: '0x' + '11'.repeat(32),
@@ -149,7 +153,8 @@ describe('EvaluatorProfile H1/H2 fields', () => {
       labelingReranker: labeling(),
       evaluatorProfile: {
         baselineParentScorePpm: 250_000,
-        baselineVariancePpm: 0,
+        baselineVarianceSource: 'unavailable',
+        fixedPackRepeatabilityPpm: 0,
         baselineSamples: 1,
         baselineEvalSeedHex: 'not-a-hex-string',
       },
@@ -166,7 +171,8 @@ describe('EvaluatorProfile H1/H2 fields', () => {
       labelingReranker: labeling(),
       evaluatorProfile: {
         baselineParentScorePpm: -1,
-        baselineVariancePpm: 0,
+        baselineVarianceSource: 'unavailable',
+        fixedPackRepeatabilityPpm: 0,
         baselineSamples: 1,
         baselineEvalSeedHex: '0x' + 'ab'.repeat(32),
       },

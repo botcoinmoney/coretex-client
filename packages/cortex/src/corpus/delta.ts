@@ -139,9 +139,17 @@ export function applyCorpusDelta(corpus: ProductionCorpus, delta: CorpusDelta, o
   const addedSet = new Set(delta.addedIds);
   const addedRecordsById = new Map(delta.addedRecords.map((e) => [e.id, e]));
 
+  if (addedRecordsById.size !== delta.addedRecords.length) {
+    throw new Error('applyCorpusDelta: duplicate addedRecords id');
+  }
   for (const id of addedSet) {
     if (!addedRecordsById.has(id)) {
       throw new Error(`applyCorpusDelta: addedId ${id} is missing from addedRecords`);
+    }
+  }
+  for (const e of delta.addedRecords) {
+    if (!addedSet.has(e.id)) {
+      throw new Error(`applyCorpusDelta: addedRecord ${e.id} is not listed in addedIds`);
     }
   }
 

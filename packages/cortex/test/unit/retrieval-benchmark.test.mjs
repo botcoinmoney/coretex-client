@@ -147,7 +147,7 @@ describe('retrieval benchmark scorer (v2-lens)', () => {
 
 describe('hidden query pack', () => {
   test('pack is deterministic from (epochId, evalSeed) and stable to corpus order', async () => {
-    const events = Array.from({ length: 100 }, (_, i) => makeEvent(`x${i}`, 'temporal', 0));
+    const events = Array.from({ length: 200 }, (_, i) => makeEvent(`x${i}`, 'temporal', 0));
     const corpus = makeCorpus(events);
     const profile = { packSize: 16, quotas: [] };
     const pack1 = deriveQueryPack(7, '0x' + 'aa'.repeat(32), corpus, profile);

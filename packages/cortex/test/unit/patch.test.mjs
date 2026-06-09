@@ -56,6 +56,12 @@ describe('LEB128 varint', () => {
       assert.equal(encodeLEB128(i).length, 2);
     }
   });
+
+  test('rejects non-canonical and out-of-range word-index encodings', () => {
+    assert.throws(() => decodeLEB128(new Uint8Array([0x80, 0x00]), 0), /non-canonical/);
+    assert.throws(() => decodeLEB128(new Uint8Array([0x80, 0x08]), 0), /out of range/);
+    assert.throws(() => decodeLEB128(new Uint8Array([0x80, 0x80, 0x00]), 0), /varint too long/);
+  });
 });
 
 // ─── Patch helpers ─────────────────────────────────────────────────────────────
@@ -180,6 +186,39 @@ describe('patch wire encode/decode', () => {
 
   test('decode throws on truncated input', () => {
     assert.throws(() => decodePatch(new Uint8Array(10)));
+  });
+
+  test('decode rejects trailing bytes after declared words', () => {
+    const wire = encodePatch(makePatch());
+    const withTrailing = new Uint8Array(wire.length + 1);
+    withTrailing.set(wire);
+    withTrailing[withTrailing.length - 1] = 0xff;
+    assert.throws(() => decodePatch(withTrailing), /trailing bytes/);
+  });
+
+  test('decode rejects overlong LEB128 word indices before signing', () => {
+    const wire = encodePatch(makePatch({
+      patchType: PATCH_TYPE.SLOT_REPLACE,
+      indices: [32],
+      newWords: [1n],
+    }));
+    const malformed = new Uint8Array(wire.length + 1);
+    malformed.set(wire.slice(0, 42), 0);
+    malformed[42] = 0x80 | 32;
+    malformed[43] = 0x00;
+    malformed.set(wire.slice(43), 44);
+    assert.throws(() => decodePatch(malformed), /non-canonical/);
+  });
+
+  test('decode rejects Solidity-rejected patch type/index bytes before signing', () => {
+    const wire = encodePatch(makePatch({
+      patchType: PATCH_TYPE.SLOT_REPLACE,
+      indices: [32],
+      newWords: [1n],
+    }));
+    const badType = new Uint8Array(wire);
+    badType[0] = PATCH_TYPE.KEY_UPDATE;
+    assert.throws(() => decodePatch(badType), /cannot target index 32/);
   });
 });
 

@@ -23,4 +23,5 @@ export type {
   CoreTexCoordinatorMetrics,
 } from './coordinator/coretex-coordinator-core.js';
 export * from './coordinator/per-patch-evaluator.js';
+export * from './coordinator/production-evaluator.js';
 export * from './coordinator/epoch-frontier.js';

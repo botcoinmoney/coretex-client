@@ -159,7 +159,10 @@ export async function handleCoreTexCoordinatorRoute(
     const denied = await guardRoute(req, source, 'substrate-by-root');
     if (denied) return denied;
     if (!source.getSubstrate) return notConfigured('substrate-by-root');
-    return handled(200, await source.getSubstrate(substrate));
+    const result = await source.getSubstrate(substrate);
+    if (!result) return handled(404, { error: 'coretex-substrate-not-found', stateRoot: substrate });
+    if (isErrorBody(result)) return handled(502, result);
+    return handled(200, result);
   }
 
   if (method === 'POST' && path === '/coretex/submit') {
@@ -192,6 +195,10 @@ function handled(status: number, body: unknown): CoreTexHttpResponse {
 
 function notConfigured(route: CoreTexEndpointName): CoreTexHttpResponse {
   return handled(503, { error: 'coretex-route-not-configured', route });
+}
+
+function isErrorBody(result: unknown): result is { readonly error: string } {
+  return !!result && typeof result === 'object' && typeof (result as { error?: unknown }).error === 'string';
 }
 
 async function guardRoute(

@@ -63,6 +63,7 @@ const baseConfig = {
   screenerThresholdPpm: 355,
   minImprovementPpm: 2500,
   replayTolerancePpm: 200,
+  targetBlockOffset: 30,
   patchWordBudget: 4,
   rulesVersion: 192,
   workPolicyHash: '0x' + '66'.repeat(32),
@@ -82,7 +83,6 @@ class MockChain {
     this.events = opts.events ?? [];
     this.blockHashes = opts.blockHashes ?? new Map(); // blockNumber -> hash
     this.regEpoch = opts.regEpoch ?? { liveStateRoot: GENESIS_ROOT, transitionCount: 0 };
-    this.epochStartBlock = opts.epochStartBlock ?? 100;
     this.minerCounters = opts.minerCounters ?? { screenersThisEpoch: 0, nextIndex: 0n, lastReceiptHash: '0x' + '00'.repeat(32) };
     this.qualified = opts.qualified ?? 0;
   }
@@ -91,7 +91,6 @@ class MockChain {
   async getStateAdvancedEvents(from, to) {
     return this.events.filter((e) => Number(e.blockNumber) >= from && Number(e.blockNumber) <= to);
   }
-  async getEpochStartedBlock() { return this.epochStartBlock; }
   async getRegistryEpoch() { return this.regEpoch; }
   async getRegistryEpochPins() { return this.pins; }
   async getV4CurrentEpoch() { return this.v4Epoch; }
@@ -162,6 +161,28 @@ function hexToBytes(h) {
   const out = new Uint8Array(s.length / 2);
   for (let i = 0; i < out.length; i++) out[i] = parseInt(s.slice(i * 2, i * 2 + 2), 16);
   return out;
+}
+
+function dualProofFor(patchHex, parentStateRoot = GENESIS_ROOT, overrides = {}) {
+  const patchHash = computePatchHash(hexToBytes(patchHex)).toLowerCase();
+  return {
+    kind: 'coretex-dual-pack-v1',
+    mode: 'future_blockhash_dual_pack',
+    epochId: Number(EPOCH),
+    receivedAtBlock: 1000,
+    targetBlock: 1030,
+    targetBlockOffset: 30,
+    blockhash: '0x' + '77'.repeat(32),
+    patchHash,
+    parentStateRoot: parentStateRoot.toLowerCase(),
+    corpusRoot: CORPUS,
+    coreVersionHash: CORE_V,
+    hiddenSeedCommit: SEED_COMMIT,
+    epochSecretCommit: SEED_COMMIT,
+    gate: { domain: 'gate', seedCommit: '0x' + '91'.repeat(32), accepted: true, scorePpm: 3100 },
+    confirm: { domain: 'confirm', seedCommit: '0x' + '92'.repeat(32), accepted: true, scorePpm: 3090 },
+    ...overrides,
+  };
 }
 
 describe('CoreTexCoordinatorCore — boot wiring gates', () => {
@@ -368,6 +389,7 @@ describe('CoreTexCoordinatorCore — reorg detection + rollback', () => {
         scoreBeforePpm: 100,
         scoreAfterPpm: 3100,
         rewrittenPatchBytesHex: rewritten,
+        evaluationProof: dualProofFor(ev.compactPatchBytes),
       }),
     };
     const chain = new MockChain({
@@ -477,6 +499,7 @@ describe('CoreTexCoordinatorCore — pending receipt lifecycle', () => {
         deterministicDeltaPpm: 500,
         evalReportHash: '0x' + 'e1'.repeat(32),
         artifactHash: '0x' + 'a1'.repeat(32),
+        evaluationProof: dualProofFor(ev.compactPatchBytes),
       }),
     };
     const chain = new MockChain({ head: 1000 });
@@ -512,6 +535,7 @@ describe('CoreTexCoordinatorCore — production submit path', () => {
           deterministicDeltaPpm: 500,
           evalReportHash: '0x' + 'e1'.repeat(32),
           artifactHash: '0x' + 'a1'.repeat(32),
+          evaluationProof: dualProofFor(ev.compactPatchBytes),
         };
       },
     };
@@ -525,6 +549,9 @@ describe('CoreTexCoordinatorCore — production submit path', () => {
     });
     assert.equal(out.status, 'accepted');
     assert.equal(out.outcome, 'SCREENER_PASS');
+    assert.equal(out.deterministicDeltaPpm, undefined);
+    assert.equal(out.receipt.scoreBeforePpm, undefined);
+    assert.equal(out.receipt.scoreAfterPpm, undefined);
     assert.equal(out.transaction.to, V4_ADDR.toLowerCase());
     assert.equal(out.perMinerScreenerCount, 3);
     assert.equal(coord.getState().liveRoot.toLowerCase(), GENESIS_ROOT.toLowerCase());
@@ -532,6 +559,45 @@ describe('CoreTexCoordinatorCore — production submit path', () => {
     const lookup = coord.getReceiptByHash(out.patchHash);
     assert.equal(lookup.status, 200);
     assert.equal(lookup.body.confirmedOnChain, false);
+  });
+
+  test('accepted submit refuses missing or malformed dual-pack proof before signing', async () => {
+    const ev = buildEvent({ blockNumber: 500, blockHash: '0x' + '55'.repeat(32) });
+    const body = {
+      patchBytesHex: ev.compactPatchBytes,
+      parentStateRoot: GENESIS_ROOT,
+      minerAddress: '0x' + 'aa'.repeat(20),
+    };
+    const acceptedWithoutProof = {
+      scorePatch: () => ({
+        outcome: 'screener_pass',
+        deterministicDeltaPpm: 500,
+        evalReportHash: '0x' + 'e1'.repeat(32),
+        artifactHash: '0x' + 'a1'.repeat(32),
+      }),
+    };
+    const coord = new CoreTexCoordinatorCore(baseConfig, new MockChain({ head: 1000 }), loadGenesis, acceptedWithoutProof, signer);
+    await coord.boot();
+    const missing = await coord.submit(body);
+    assert.equal(missing.status, 'rejected');
+    assert.equal(missing.code, 'DUAL_PACK_PROOF_INVALID');
+    assert.match(missing.reason, /missing dual-pack proof/);
+
+    const badProof = {
+      scorePatch: () => ({
+        outcome: 'screener_pass',
+        deterministicDeltaPpm: 500,
+        evalReportHash: '0x' + 'e1'.repeat(32),
+        artifactHash: '0x' + 'a1'.repeat(32),
+        evaluationProof: dualProofFor(ev.compactPatchBytes, GENESIS_ROOT, { blockhash: '0x' + '00'.repeat(32) }),
+      }),
+    };
+    const coord2 = new CoreTexCoordinatorCore(baseConfig, new MockChain({ head: 1000 }), loadGenesis, badProof, signer);
+    await coord2.boot();
+    const malformed = await coord2.submit(body);
+    assert.equal(malformed.status, 'rejected');
+    assert.equal(malformed.code, 'DUAL_PACK_PROOF_INVALID');
+    assert.match(malformed.reason, /blockhash invalid/);
   });
 
   test('state advance submit stores pending by original and signed hashes, then confirms from chain event', async () => {
@@ -547,6 +613,7 @@ describe('CoreTexCoordinatorCore — production submit path', () => {
         scoreBeforePpm: 100,
         scoreAfterPpm: 3100,
         rewrittenPatchBytesHex: rewritten,
+        evaluationProof: dualProofFor(ev.compactPatchBytes),
       }),
     };
     const chain = new MockChain({ head: 1000, qualified: 25 });
@@ -559,6 +626,9 @@ describe('CoreTexCoordinatorCore — production submit path', () => {
     });
     assert.equal(out.status, 'accepted');
     assert.equal(out.outcome, 'STATE_ADVANCE');
+    assert.equal(out.deterministicDeltaPpm, undefined);
+    assert.equal(out.receipt.scoreBeforePpm, undefined);
+    assert.equal(out.receipt.scoreAfterPpm, undefined);
     assert.equal(out.patchHash, signedHash);
     assert.notEqual(out.patchHash, ev.patchHash);
     assert.equal(coord.getState().liveRoot.toLowerCase(), GENESIS_ROOT.toLowerCase(), 'signing does not roll state forward');
@@ -574,9 +644,45 @@ describe('CoreTexCoordinatorCore — production submit path', () => {
     chain.regEpoch = { liveStateRoot: out.newStateRoot, transitionCount: 1 };
     await coord.tick();
     assert.equal(coord.getState().liveRoot.toLowerCase(), out.newStateRoot.toLowerCase());
+    const status = await coord.getStatus();
+    assert.equal(status.baselineParentScorePpm, 3100);
+    assert.equal(status.baselineVarianceSource, 'unavailable');
+    assert.equal(status.baselineVariancePpm, undefined);
     const confirmed = coord.getReceiptByHash(signedHash);
     assert.equal(confirmed.status, 200);
     assert.equal(confirmed.body.confirmedOnChain, true);
+  });
+
+  test('state advance submit rejects evaluator rewrite that changes patch semantics', async () => {
+    const ev = buildEvent({ blockNumber: 500, blockHash: '0x' + '55'.repeat(32) });
+    const decoded = decodePatch(hexToBytes(ev.compactPatchBytes));
+    const malicious = encodePatch({
+      ...decoded,
+      scoreDelta: 3000n,
+      indices: [decoded.indices[0] + 1],
+      newWords: [decoded.newWords[0] + 1n],
+    });
+    const evalAdvance = {
+      scorePatch: () => ({
+        outcome: 'state_advance',
+        deterministicDeltaPpm: 3000,
+        evalReportHash: '0x' + 'e2'.repeat(32),
+        artifactHash: '0x' + 'a2'.repeat(32),
+        scoreBeforePpm: 100,
+        scoreAfterPpm: 3100,
+        rewrittenPatchBytesHex: bytesToHex(malicious),
+        evaluationProof: dualProofFor(ev.compactPatchBytes),
+      }),
+    };
+    const coord = new CoreTexCoordinatorCore(baseConfig, new MockChain({ head: 1000 }), loadGenesis, evalAdvance, signer);
+    await coord.boot();
+    const out = await coord.submit({
+      patchBytesHex: ev.compactPatchBytes,
+      parentStateRoot: GENESIS_ROOT,
+      minerAddress: '0x' + 'aa'.repeat(20),
+    });
+    assert.equal(out.status, 'rejected');
+    assert.equal(out.code, 'EVAL_REWRITE_INVALID');
   });
 
   test('submit rejects unknown body keys before evaluation', async () => {
@@ -637,6 +743,7 @@ describe('CoreTexCoordinatorCore — production submit path', () => {
         deterministicDeltaPpm: 500,
         evalReportHash: '0x' + 'e1'.repeat(32),
         artifactHash: '0x' + 'a1'.repeat(32),
+        evaluationProof: dualProofFor(ev.compactPatchBytes),
       }),
     };
     const throwingSigner = { signCoreTexReceipt: () => { throw new Error('key failed'); } };
@@ -700,5 +807,22 @@ describe('CoreTexCoordinatorCore — /coretex/health shape', () => {
     assert.equal(h.acceptingSubmissions, false);
     assert.equal(h.reason, 'test-disabled');
     assert.equal(h.ok, false);
+  });
+
+  test('rotated epoch status uses configured live-root baseline and keeps fixed-pack repeatability separate', async () => {
+    const chain = new MockChain({ head: 1000 });
+    const coord = new CoreTexCoordinatorCore({
+      ...baseConfig,
+      baselineParentScorePpm: 4242,
+      baselineVariancePpm: 0,
+      baselineVarianceSource: 'unavailable',
+      fixedPackRepeatabilityPpm: 0,
+    }, chain, loadGenesis, evaluator);
+    await coord.boot();
+    const status = await coord.getStatus();
+    assert.equal(status.baselineParentScorePpm, 4242);
+    assert.equal(status.baselineVarianceSource, 'unavailable');
+    assert.equal(status.baselineVariancePpm, undefined);
+    assert.equal(status.fixedPackRepeatabilityPpm, 0);
   });
 });

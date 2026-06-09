@@ -96,22 +96,28 @@ export function assertValidWeights(w: CompositeWeights): void {
  * Canonical acceptance threshold in ppm. Combines the three bundle-
  * pinned terms that callers previously had to fold in manually:
  *
- *   threshold = minImprovementPpm + replayTolerancePpm + baselineVariancePpm
+ *   threshold = minImprovementPpm + replayTolerancePpm + production baselineVariancePpm
  *
  * Hosts wiring the per-patch evaluator pass the result here as
  * `thresholdPpm`. Centralizing this prevents call sites from forgetting
- * a term (replay tolerance + baseline variance must BOTH be on top of
- * minImprovement so that pack-luck advances within reranker-noise
- * range don't qualify).
+ * a term. Fixed-pack repeatability is calibration/debug metadata and is
+ * deliberately excluded unless the profile declares a production-relevant
+ * variance source.
  */
 export function computeAcceptanceThresholdPpm(profile: {
   readonly patchAcceptanceFloors: { readonly minImprovementPpm: number };
   readonly replayTolerancePpm: number;
   readonly baselineVariancePpm?: number;
+  readonly baselineVarianceSource?: 'rotating_pack' | 'broad_sampling' | 'unavailable';
+  readonly fixedPackRepeatabilityPpm?: number;
 }): number {
+  const source = profile.baselineVarianceSource ?? 'unavailable';
+  const productionVariancePpm = source === 'rotating_pack' || source === 'broad_sampling'
+    ? (profile.baselineVariancePpm ?? 0)
+    : 0;
   return profile.patchAcceptanceFloors.minImprovementPpm
        + profile.replayTolerancePpm
-       + (profile.baselineVariancePpm ?? 0);
+       + productionVariancePpm;
 }
 
 export type EvidencePolicyAction = 'include' | 'boost' | 'suppress' | 'bundle';
@@ -2998,7 +3004,7 @@ export interface PatchAcceptanceFloors {
    * Production acceptance threshold in ppm — the minimum `deltaPpm` a
    * patch must clear for `result.accepted === true`. Production wires
    * `computeAcceptanceThresholdPpm(profile)` = minImprovementPpm +
-   * replayTolerancePpm + baselineVariancePpm. Keeping this explicit
+   * replayTolerancePpm + production baselineVariancePpm. Keeping this explicit
    * (rather than re-deriving from `minImprovementPpm` alone) closes the
    * footgun where a caller reads `result.accepted` thinking it captures
    * the full production gate. When omitted, the evaluator falls back to

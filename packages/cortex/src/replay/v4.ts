@@ -274,15 +274,29 @@ export function decodeCortexStateAdvancedLog(log: RpcLog): CortexStateAdvancedEv
 }
 
 export async function rpcCall<T>(rpcUrl: string, method: string, params: unknown[]): Promise<T> {
-  const res = await fetch(rpcUrl, {
+  const { url, headers } = rpcFetchTarget(rpcUrl);
+  const res = await fetch(url, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers,
     body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
   });
   if (!res.ok) throw new Error(`RPC HTTP ${res.status}`);
   const body = await res.json() as { result?: T; error?: { message?: string } };
   if (body.error) throw new Error(body.error.message ?? 'RPC error');
   return body.result as T;
+}
+
+function rpcFetchTarget(rpcUrl: string): { url: string; headers: Record<string, string> } {
+  const url = new URL(rpcUrl);
+  const headers: Record<string, string> = { 'content-type': 'application/json' };
+  if (url.username || url.password) {
+    const user = decodeURIComponent(url.username);
+    const pass = decodeURIComponent(url.password);
+    headers.authorization = `Basic ${Buffer.from(`${user}:${pass}`).toString('base64')}`;
+    url.username = '';
+    url.password = '';
+  }
+  return { url: url.toString(), headers };
 }
 
 export async function receiptLogs(rpcUrl: string, txHash: string): Promise<RpcLog[]> {

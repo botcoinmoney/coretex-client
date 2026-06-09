@@ -33,6 +33,8 @@ import {
   computePatchHash,
   computeDedupKey,
 } from '../eval/seed-derivation.js';
+import { keccak256 } from '../state/keccak256.js';
+import { bytesToHex } from '../state/merkle.js';
 import { liveEvalAdmissionDecision, type LiveEvalAdmissionRejectReason } from '../eval/live-eval-admission.js';
 import type { BaseRpcClient } from './base-blockhash.js';
 
@@ -128,6 +130,75 @@ export interface PerPatchReceipt {
     | 'gate-acceptance-floor'            // gate pack failed structural/protected/family acceptance floors
     | 'confirm-acceptance-floor'         // confirm pack failed structural/protected/family acceptance floors
     | 'admit-malformed-input';
+}
+
+export interface PerPatchDualPackEvaluationProof {
+  readonly kind: 'coretex-dual-pack-v1';
+  readonly mode: 'future_blockhash_dual_pack';
+  readonly epochId: number;
+  readonly receivedAtBlock: number;
+  readonly targetBlock: number;
+  readonly targetBlockOffset: number;
+  readonly blockhash: string;
+  readonly patchHash: string;
+  readonly parentStateRoot: string;
+  readonly corpusRoot: string;
+  readonly coreVersionHash: string;
+  readonly hiddenSeedCommit: string;
+  readonly epochSecretCommit: string;
+  readonly gate: {
+    readonly domain: 'gate';
+    readonly seedCommit: string;
+    readonly accepted: boolean;
+    readonly scorePpm: number;
+  };
+  readonly confirm: {
+    readonly domain: 'confirm';
+    readonly seedCommit: string;
+    readonly accepted: boolean;
+    readonly scorePpm: number;
+  };
+}
+
+export function dualPackProofFromPerPatchReceipt(
+  receipt: PerPatchReceipt,
+  context: {
+    readonly corpusRoot: string;
+    readonly coreVersionHash: string;
+    readonly hiddenSeedCommit: string;
+    readonly targetBlockOffset: number;
+  },
+): PerPatchDualPackEvaluationProof {
+  if (!receipt.accepted) {
+    throw new Error('dualPackProofFromPerPatchReceipt: receipt was not accepted');
+  }
+  return {
+    kind: 'coretex-dual-pack-v1',
+    mode: 'future_blockhash_dual_pack',
+    epochId: receipt.epochId,
+    receivedAtBlock: receipt.receivedAtBlock,
+    targetBlock: receipt.targetBlock,
+    targetBlockOffset: context.targetBlockOffset,
+    blockhash: receipt.blockhash.toLowerCase(),
+    patchHash: receipt.patchHash.toLowerCase(),
+    parentStateRoot: receipt.parentRoot.toLowerCase(),
+    corpusRoot: context.corpusRoot.toLowerCase(),
+    coreVersionHash: context.coreVersionHash.toLowerCase(),
+    hiddenSeedCommit: context.hiddenSeedCommit.toLowerCase(),
+    epochSecretCommit: context.hiddenSeedCommit.toLowerCase(),
+    gate: {
+      domain: 'gate',
+      seedCommit: seedCommit(receipt.gateSeed),
+      accepted: true,
+      scorePpm: receipt.gateScorePpm,
+    },
+    confirm: {
+      domain: 'confirm',
+      seedCommit: seedCommit(receipt.confirmSeed),
+      accepted: true,
+      scorePpm: receipt.confirmScorePpm,
+    },
+  };
 }
 
 // ─── Orchestrator ─────────────────────────────────────────────────────────────
@@ -284,4 +355,18 @@ function mapAdmissionReason(
     default:
       return 'admit-malformed-input';
   }
+}
+
+function seedCommit(seed: string): string {
+  return bytesToHex(keccak256(hexToBytes(seed))).toLowerCase();
+}
+
+function hexToBytes(hex: string): Uint8Array {
+  const clean = hex.startsWith('0x') || hex.startsWith('0X') ? hex.slice(2) : hex;
+  if (!/^[0-9a-fA-F]*$/.test(clean) || clean.length % 2 !== 0) {
+    throw new Error('hexToBytes: malformed hex');
+  }
+  const out = new Uint8Array(clean.length / 2);
+  for (let i = 0; i < out.length; i++) out[i] = parseInt(clean.slice(i * 2, i * 2 + 2), 16);
+  return out;
 }

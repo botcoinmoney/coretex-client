@@ -20,6 +20,7 @@ export * from './bundle/index.js';
 export * from './replay/v4.js';
 export * from './replay/coretex-registry.js';
 export * from './replay/per-patch.js';
+export * from './replay/eval-report-artifact.js';
 export * from './coordinator/base-blockhash.js';
 export * from './coordinator/patch-received-notice.js';
 export * from './eval/seed-derivation.js';

@@ -27,7 +27,8 @@
   },
   "bin": {
     "botcoin-cortex": "dist/cli.js",
-    "coretex-replay": "dist/replay-cli.js"
+    "coretex-replay": "dist/replay-cli.js",
+    "coretex-validator-sync": "dist/validator-sync-cli.js"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",

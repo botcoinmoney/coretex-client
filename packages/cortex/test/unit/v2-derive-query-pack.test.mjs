@@ -9,7 +9,17 @@
  */
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { admitActiveLiveEvalEvents, deriveQueryPack, eventSatisfiesStratum, splitForRecord, verifyQueryPack } from '../../dist/index.js';
+import { readFileSync } from 'node:fs';
+import {
+  admitActiveLiveEvalEvents,
+  deriveQueryPack,
+  eventSatisfiesStratum,
+  hiddenPackProfileFromEvaluatorProfile,
+  loadProductionCorpus,
+  packQuotaCoverage,
+  splitForRecord,
+  verifyQueryPack,
+} from '../../dist/index.js';
 
 const LAYOUT = { dim: 8, headerBytes: 9, quantization: 'int8' };
 function ev(id, family, ownerEntityId, ownerScoped) {
@@ -45,7 +55,7 @@ describe('deriveQueryPack on V2 families', () => {
   test('produces a deterministic pack satisfying V2 quotas (no long_horizon)', () => {
     const seed = '0x' + 'a5'.repeat(32);
     const pack = deriveQueryPack(7, seed, corpus, V2_PROFILE);
-    assert.ok(pack.events.length <= V2_PROFILE.packSize, 'pack within size');
+    assert.equal(pack.events.length, V2_PROFILE.packSize, 'pack hits exact size');
     for (const q of V2_PROFILE.quotas) {
       const got = pack.events.filter((e) => eventSatisfiesStratum(e, q.stratum)).length;
       assert.ok(got >= q.minCount, `quota ${q.stratum}: ${got} >= ${q.minCount}`);
@@ -59,6 +69,19 @@ describe('deriveQueryPack on V2 families', () => {
     const pack = deriveQueryPack(3, '0x' + 'b7'.repeat(32), corpus, V2_PROFILE);
     const scoped = pack.events.filter((e) => e.ownerScoped === true && e.ownerEntityId);
     assert.ok(scoped.length > 0, 'pack carries owner-scoped events with ownerEntityId');
+  });
+
+  test('deriveQueryPack rejects underfill instead of silently returning a short pack', () => {
+    const tinyCorpus = {
+      ...corpus,
+      events: [ev('tiny0', 'temporal', 'e_u0', true)],
+      byId: new Map(),
+    };
+    tinyCorpus.byId = new Map(tinyCorpus.events.map((e) => [e.id, e]));
+    assert.throws(
+      () => deriveQueryPack(1, '0x' + 'aa'.repeat(32), tinyCorpus, { packSize: 2, quotas: [] }),
+      /cannot fill exact packSize/,
+    );
   });
 
   test('active live eval overlay admits newest active rows replayably', () => {
@@ -139,5 +162,107 @@ describe('deriveQueryPack on V2 families', () => {
       limit: 2,
       familyPriority: ['validity_atom'],
     }), { ok: true });
+  });
+
+  test('active live eval overlay is bounded to the base pack size when replacing a non-empty pack', () => {
+    const seed = '0x' + 'e5'.repeat(32);
+    const basePack = deriveQueryPack(11, seed, corpus, { packSize: 2, quotas: [] });
+    const live = [
+      { ...ev('zz_e000000000005_q_scope_a', 'scope_atom', 'e_u_live', true), logicalFamily: 'scope_atom' },
+      { ...ev('zz_e000000000005_q_coref_a', 'coreference', 'e_u_live', true), logicalFamily: 'coreference' },
+    ];
+    const corpus2 = {
+      ...corpus,
+      events: [...corpus.events, ...live],
+      byId: new Map([...corpus.events, ...live].map((e) => [e.id, e])),
+    };
+    const overlay = admitActiveLiveEvalEvents(basePack, corpus2, {
+      activeIds: new Set(live.map((e) => e.id)),
+      limit: 2,
+      familyPriority: ['scope_atom', 'coreference'],
+    });
+    assert.equal(overlay.pack.events.length, basePack.events.length);
+    assert.deepEqual(overlay.pack.events.map((e) => e.id), [
+      'zz_e000000000005_q_scope_a',
+      'zz_e000000000005_q_coref_a',
+    ]);
+  });
+
+  test('active live eval overlay preserves non-empty quota coverage when naive prepend would evict it', () => {
+    const profile = {
+      packSize: 4,
+      quotas: [
+        { stratum: 'family=temporal', minCount: 2 },
+        { stratum: 'family=near_collision', minCount: 1 },
+      ],
+    };
+    const basePack = {
+      epochId: 12,
+      evalSeedHex: '0x' + 'f6'.repeat(32),
+      corpusRoot: corpus.corpusRoot,
+      events: [
+        ev('base_tm_0', 'temporal', 'e_u0', true),
+        ev('base_tm_1', 'temporal', 'e_u1', true),
+        ev('base_nc_0', 'near_collision', 'e_u2', true),
+        ev('base_mh_0', 'multi_hop_relation', 'e_u3', true),
+      ],
+    };
+    const live = [
+      { ...ev('zz_e000000000006_q_scope_a', 'scope_atom', 'e_u_live', true), logicalFamily: 'scope_atom' },
+      { ...ev('zz_e000000000006_q_coref_a', 'coreference', 'e_u_live', true), logicalFamily: 'coreference' },
+    ];
+    const corpus2 = {
+      ...corpus,
+      events: [...corpus.events, ...basePack.events, ...live],
+      byId: new Map([...corpus.events, ...basePack.events, ...live].map((e) => [e.id, e])),
+    };
+    const naiveOverlay = [...live, ...basePack.events].slice(0, basePack.events.length);
+    assert.equal(naiveOverlay.filter((e) => eventSatisfiesStratum(e, 'family=near_collision')).length, 0);
+    const overlay = admitActiveLiveEvalEvents(basePack, corpus2, {
+      activeIds: new Set(live.map((e) => e.id)),
+      limit: 2,
+      familyPriority: ['scope_atom', 'coreference'],
+      profile,
+    });
+
+    assert.equal(overlay.pack.events.length, 4);
+    assert.equal(overlay.added, 1);
+    assert.ok(overlay.pack.events.some((e) => e.id === 'zz_e000000000006_q_scope_a'));
+    assert.ok(overlay.pack.events.some((e) => e.id === 'base_nc_0'), 'near_collision quota row survives');
+    assert.equal(overlay.pack.events.filter((e) => eventSatisfiesStratum(e, 'family=temporal')).length, 2);
+    assert.equal(overlay.pack.events.filter((e) => eventSatisfiesStratum(e, 'family=near_collision')).length, 1);
+  });
+
+  test('v16 launch hidden pack excludes disabled aspect_constraint and overlay cannot reintroduce it', () => {
+    const profilePath = new URL('../../../../release/calibration/2026-06-04-memory-atom-v16/evaluator-profile-v2-dgen1-policy-r5-atom-v16-300k-enabled.json', import.meta.url);
+    const corpusPath = new URL('../../../../release/calibration/2026-06-04-memory-atom-v16/materialized/78336d1d/corpus.json', import.meta.url);
+    const profile = JSON.parse(readFileSync(profilePath, 'utf8'));
+    const corpus = loadProductionCorpus(corpusPath.pathname, { verifyCorpusRoot: false, verifySplits: false });
+    const rawAspectCount = corpus.events.filter((e) => e.split === 'eval_hidden' && ((e.logicalFamily ?? e.family) === 'aspect_constraint')).length;
+    assert.ok(rawAspectCount > 0, 'fixture must contain aspect eval_hidden rows so this test proves filtering');
+
+    const hiddenPack = hiddenPackProfileFromEvaluatorProfile(profile);
+    const pack = deriveQueryPack(0, '0x' + 'ab'.repeat(32), corpus, hiddenPack);
+    assert.equal(pack.events.length, profile.hiddenPack.packSize);
+    assert.equal(pack.events.filter((e) => (e.logicalFamily ?? e.family) === 'aspect_constraint').length, 0);
+    assert.deepEqual(packQuotaCoverage(pack, hiddenPack).filter((q) => !q.satisfied), []);
+
+    const liveAspect = {
+      ...ev('zz_e000000000099_q_aspect_live', 'aspect_constraint', 'e_u_live', true),
+      logicalFamily: 'aspect_constraint',
+    };
+    const corpus2 = {
+      ...corpus,
+      events: [...corpus.events, liveAspect],
+      byId: new Map([...corpus.events, liveAspect].map((e) => [e.id, e])),
+    };
+    const overlay = admitActiveLiveEvalEvents(pack, corpus2, {
+      activeIds: new Set([liveAspect.id]),
+      limit: 1,
+      familyPriority: ['aspect_constraint'],
+      profile: hiddenPack,
+    });
+    assert.equal(overlay.added, 0);
+    assert.equal(overlay.pack.events.filter((e) => (e.logicalFamily ?? e.family) === 'aspect_constraint').length, 0);
   });
 });

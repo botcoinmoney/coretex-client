@@ -5,7 +5,7 @@
  * thinking it captures the full production gate, but the evaluator only
  * checks `floors.minImprovementPpm`. Production gate is
  * `computeAcceptanceThresholdPpm(profile)` =
- *   minImprovementPpm + replayTolerancePpm + baselineVariancePpm.
+ *   minImprovementPpm + replayTolerancePpm + production baselineVariancePpm.
  *
  * These tests pin the contract:
  *   1. When `acceptanceThresholdPpm` is omitted, the gate falls back

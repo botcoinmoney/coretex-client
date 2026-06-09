@@ -80,6 +80,22 @@ describe('CoreTex v0 canonical endpoint surface', () => {
     assert.deepEqual(r.body, { status: 'rejected', reason: 'unknown patchHash (not signed by this coordinator)' });
   });
 
+  test('substrate-by-root returns 404 when data source has no confirmed root', async () => {
+    const source = { getSubstrate: () => null };
+    const root = '0x' + '12'.repeat(32);
+    const r = await handleCoreTexCoordinatorRoute({ method: 'GET', path: `/coretex/substrate/${root}` }, source);
+    assert.equal(r.status, 404);
+    assert.deepEqual(r.body, { error: 'coretex-substrate-not-found', stateRoot: root });
+  });
+
+  test('substrate-by-root returns non-200 when data source fails closed on malformed substrate', async () => {
+    const source = { getSubstrate: () => ({ error: 'coretex-substrate-malformed' }) };
+    const root = '0x' + '12'.repeat(32);
+    const r = await handleCoreTexCoordinatorRoute({ method: 'GET', path: `/coretex/substrate/${root}` }, source);
+    assert.equal(r.status, 502);
+    assert.deepEqual(r.body, { error: 'coretex-substrate-malformed' });
+  });
+
   test('receipt-by-hash propagates 409 stale + body from data source', async () => {
     const source = { getReceipt: () => ({ status: 409, body: { status: 'rejected', code: 'PendingReceiptStale', reason: 'competing advance landed' } }) };
     const hash = '0x' + 'de'.repeat(32);
