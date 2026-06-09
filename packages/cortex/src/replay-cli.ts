@@ -109,11 +109,10 @@ async function main() {
     const expectedBundleHash = opt(args, '--expected-bundle-hash') ?? opt(args, '--core-version-hash');
     const expectedPins = expectedReplayPins(args);
     // r5 epochs: enforce the reserved-region / PolicyAtom grammar during canonical replay (same as scoring),
-    // derived from the pinned bundle's pipelineVersion when a manifest is supplied. Default off (r4-safe).
-    const replayManifestPath = opt(args, '--bundle-manifest');
-    const policyAtomsMode = replayManifestPath
-      ? (JSON.parse(readFileSync(replayManifestPath, 'utf8'))?.evaluator?.profile?.pipelineVersion === 'coretex-retrieval-v2-policy-r5')
-      : false;
+    // derived from the pinned bundle's pipelineVersion. The manifest is bound to the on-chain
+    // coreVersionHash by verifyBundleIfRequested; without a manifest there is NO silent default —
+    // the operator must pass an explicit --policy-atoms-mode on|off.
+    const policyAtomsMode = derivePolicyAtomsMode(args, opt(args, '--bundle-manifest'));
     const fromFixed = fromBlockArg === 'latest' ? await latestBlock(rpc) : parseBlock(fromBlockArg);
 
     for (;;) {
@@ -131,6 +130,24 @@ async function main() {
   }
 
   die(`unknown command ${cmd}`);
+}
+
+/**
+ * Derive the canonical replay mode flags from the bundle manifest resolved via the on-chain
+ * coreVersionHash. Refuses to silently default when the manifest is unavailable: replaying an
+ * r5 epoch with policyAtomsMode silently off would reconstruct forged reserved-region patches.
+ */
+function derivePolicyAtomsMode(args: readonly string[], manifestPath: string | undefined): boolean {
+  const explicit = opt(args, '--policy-atoms-mode');
+  if (explicit !== undefined) {
+    if (explicit !== 'on' && explicit !== 'off') die('--policy-atoms-mode must be "on" or "off"');
+    return explicit === 'on';
+  }
+  if (!manifestPath) {
+    die('cannot derive policyAtomsMode: pass --bundle-manifest (pinned to the on-chain coreVersionHash) or an explicit --policy-atoms-mode on|off — refusing to silently default');
+  }
+  const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as CoreTexBundleManifest;
+  return manifest?.evaluator?.profile?.pipelineVersion === 'coretex-retrieval-v2-policy-r5';
 }
 
 function expectedReplayPins(args: readonly string[]): {

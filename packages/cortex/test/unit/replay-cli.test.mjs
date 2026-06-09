@@ -203,3 +203,17 @@ describe('coretex-replay canonical watch gates', () => {
     }
   }));
 });
+
+describe('coretex-replay watch — mode-flag derivation (no silent default)', () => {
+  test('without a bundle manifest, policyAtomsMode must be explicit', () => withPackedState((statePath) => {
+    const proc = runWatch(['--parent-state', statePath, '--allow-unverified-bundle']);
+    assert.notEqual(proc.status, 0);
+    assert.match(proc.stderr, /cannot derive policyAtomsMode/);
+  }));
+
+  test('explicit --policy-atoms-mode must be on|off', () => withPackedState((statePath) => {
+    const proc = runWatch(['--parent-state', statePath, '--allow-unverified-bundle', '--policy-atoms-mode', 'maybe']);
+    assert.notEqual(proc.status, 0);
+    assert.match(proc.stderr, /--policy-atoms-mode must be "on" or "off"/);
+  }));
+});

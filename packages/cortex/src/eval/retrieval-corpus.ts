@@ -560,7 +560,16 @@ export function computeCorpusRoot(events: readonly ProductionCorpusEvent[]): str
   return buildCorpusRootLeafCache(events).root;
 }
 
-const corpusEventIdCompare = (a: string, b: string): number => a.localeCompare(b);
+/**
+ * Deterministic codepoint string comparator for every sort that feeds a pinned
+ * hash (corpusRoot leaf ordering, hidden-pack derivation ordering). NEVER use
+ * `localeCompare` here: ICU collation is locale/version-dependent (e.g.
+ * 'a_x' vs 'a0x' order flips between locale and codepoint order), which would
+ * make pinned roots differ across validator environments.
+ */
+export const codePointCompare = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
+
+const corpusEventIdCompare = codePointCompare;
 const TEXT_ENCODER = new TextEncoder();
 
 export function computeCorpusEventLeafHash(event: ProductionCorpusEvent): Uint8Array {

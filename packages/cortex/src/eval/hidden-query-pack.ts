@@ -9,6 +9,7 @@
  */
 
 import { keccak256 } from '../state/keccak256.js';
+import { codePointCompare } from './retrieval-corpus.js';
 import type { ProductionCorpus, ProductionCorpusEvent, ProductionCorpusFamily } from './retrieval-corpus.js';
 
 export type HardnessBucket = 'easy' | 'medium' | 'hard';
@@ -222,7 +223,7 @@ export function deriveQueryPack(
 
   const sorted = corpus.events
     .filter((e) => hiddenPackEventEligible(e, profile))
-    .sort((a, b) => a.id.localeCompare(b.id));
+    .sort((a, b) => codePointCompare(a.id, b.id));
   if (sorted.length === 0) throw new Error('deriveQueryPack: corpus has no eval_hidden records');
 
   // QUOTA-FIRST derivation (deterministic, replay-reproducible). Quotas are HARD guarantees, not
@@ -354,14 +355,14 @@ export function admitActiveLiveEvalEvents(
       const ea = liveEpochFromEventId(a.id);
       const eb = liveEpochFromEventId(b.id);
       if (ea !== eb) return eb - ea;
-      return a.id.localeCompare(b.id);
+      return codePointCompare(a.id, b.id);
     });
   }
   const familyOrder = [...byFamily.keys()].sort((a, b) => {
     const pa = priority.get(a) ?? 999;
     const pb = priority.get(b) ?? 999;
     if (pa !== pb) return pa - pb;
-    return a.localeCompare(b);
+    return codePointCompare(a, b);
   });
   const live: ProductionCorpusEvent[] = [];
   const dedupePublicIntent = opts.dedupePublicIntent !== false;
