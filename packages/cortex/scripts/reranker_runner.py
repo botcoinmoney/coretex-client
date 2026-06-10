@@ -22,6 +22,12 @@ template for a fixed probe (query, document) pair plus the resolved
 CORETEX_RERANKER_INSTRUCTION and exits. No ML imports — usable as a golden
 oracle so the TypeScript renderer can be asserted byte-identical.
 
+HEALTH (--health): emits the runtime fingerprint as one JSON object on
+stdout and exits — torch / transformers versions, python version, and
+whether CUDA is active (CORETEX_RERANKER_ALLOW_CUDA=1 + torch.cuda
+available) with the device name + fp32 / tf32=false math flags. The
+keyless GPU scorer server calls this once at boot to populate scorerHealth.
+
 STREAM (--stream): loads the pinned model once, then reads NDJSON requests
 from stdin and writes NDJSON responses to stdout until EOF. Required for
 launch-scale corpus generation: a 4B reranker takes 30-60s to load on CPU,
@@ -387,9 +393,44 @@ def _run_print_prompt_template() -> None:
     }))
 
 
+def _run_health() -> None:
+    """Runtime fingerprint for the keyless GPU scorer's scorerHealth (no model load)."""
+    import platform
+
+    health: dict[str, Any] = {
+        "python": platform.python_version(),
+        "dtype": "fp32",
+        "tf32": False,
+        "cuda": False,
+        "device": "cpu",
+    }
+    try:
+        import torch  # type: ignore
+
+        health["torch"] = getattr(torch, "__version__", "unknown")
+        use_cuda = _ALLOW_CUDA and torch.cuda.is_available()
+        health["cuda"] = bool(use_cuda)
+        if use_cuda:
+            health["device"] = torch.cuda.get_device_name(0)
+    except Exception as exc:  # torch not importable yet — report it, don't crash
+        health["torch"] = None
+        health["torchError"] = str(exc)
+    try:
+        import transformers  # type: ignore
+
+        health["transformers"] = getattr(transformers, "__version__", "unknown")
+    except Exception as exc:
+        health["transformers"] = None
+        health["transformersError"] = str(exc)
+    print(json.dumps(health), flush=True)
+
+
 def main() -> None:
     if len(sys.argv) > 1 and sys.argv[1] == "--print-prompt-template":
         _run_print_prompt_template()
+        return
+    if len(sys.argv) > 1 and sys.argv[1] == "--health":
+        _run_health()
         return
     if len(sys.argv) > 1 and sys.argv[1] == "--stream":
         _run_stream()

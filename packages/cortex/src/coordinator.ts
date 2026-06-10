@@ -16,6 +16,7 @@ export type {
   ParentSubstrateLoader,
   RealEvaluator,
   EvalResult,
+  CoreTexDualPackEvaluationProof,
   CoreTexReceiptPayload,
   CoreTexReceiptSigner,
   CoreTexSignedReceipt,
@@ -27,4 +28,5 @@ export type {
 } from './coordinator/coretex-coordinator-core.js';
 export * from './coordinator/per-patch-evaluator.js';
 export * from './coordinator/production-evaluator.js';
+export * from './coordinator/scorer-pair-trace.js';
 export * from './coordinator/epoch-frontier.js';

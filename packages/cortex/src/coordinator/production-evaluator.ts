@@ -260,6 +260,13 @@ export interface ProductionCoreTexEvaluatorOptions {
    *  accepted result is returned; a publish failure fails the evaluation
    *  (the on-chain hash must never commit to an unpublished artifact). */
   readonly publishArtifact?: (artifact: CoreTexPostRevealEvalReportArtifact) => Promise<void> | void;
+  /** OPTIONAL reranker construction override. Default builds the pinned CPU-only
+   *  streaming/per-batch Qwen3 backend. The keyless GPU scorer server injects an
+   *  instrumented, CUDA-allowed reranker here so it can emit a pair-trace; the
+   *  resolved reranker MUST still report the bundle-pinned `${modelId}@${revision}`
+   *  (assertResolvedRerankerMatchesPin enforces this). The integration sidecar
+   *  passes nothing, so the default CPU path is unchanged. */
+  readonly rerankerFactory?: (plan: ProductionRerankerPlan) => Promise<CrossEncoderReranker> | CrossEncoderReranker;
 }
 
 // ─── Core orchestration (scorer-injectable; production + tests share it) ─────
@@ -470,7 +477,7 @@ export async function createProductionCoreTexEvaluator(
     modelId: corpus.biEncoderModelId,
     revision: corpus.biEncoderRevision,
   });
-  const reranker = await createPinnedQwen3Reranker(plan);
+  const reranker = await (options.rerankerFactory ? options.rerankerFactory(plan) : createPinnedQwen3Reranker(plan));
   assertResolvedRerankerMatchesPin(reranker, plan);
   const memoryIRMode = profile.rerankerMemoryIRMode ?? 'off';
   const bootAttestation = buildCoordinatorBootAttestation({

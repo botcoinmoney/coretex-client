@@ -29,7 +29,8 @@
     "botcoin-cortex": "dist/cli.js",
     "coretex-replay": "dist/replay-cli.js",
     "coretex-validator-sync": "dist/validator-sync-cli.js",
-    "coretex-validator-setup": "dist/validator-setup-cli.js"
+    "coretex-validator-setup": "dist/validator-setup-cli.js",
+    "coretex-scorer-server": "dist/scorer-server-cli.js"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",

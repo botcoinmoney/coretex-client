@@ -1,0 +1,529 @@
+#!/usr/bin/env node
+/**
+ * coretex-scorer-server — keyless GPU production-evaluator sidecar.
+ *
+ * ARCHITECTURE (trusted internal acceleration worker): this is the GPU half of
+ * the coordinator/scorer split. It is KEYLESS — it never holds the coordinator
+ * signing key and never signs anything. It loads the pinned production CoreTex
+ * evaluator ONCE (real Qwen3 reranker on CUDA, fp32 / tf32=false), accepts an
+ * eval JOB over HTTP, runs `runPerPatchEvaluation` (via the production
+ * evaluator's scorePatch), and returns the scores + a full scored-pair trace +
+ * a runtime health fingerprint. The coordinator (EC2, non-CUDA, holds the key)
+ * VERIFIES the returned result against live chain/coordinator state and the
+ * live threshold, then signs. The scorer is trusted for COMPUTE, never for
+ * authority: it returns scores, the coordinator re-derives the accept/reject
+ * decision.
+ *
+ * Fail-closed boot env (same contract as the coordinator's production
+ * evaluator, plus CUDA enabled):
+ *   CORETEX_RERANKER=qwen3 CORTEX_REAL_EVAL=1 CORETEX_RERANKER_PRODUCTION=1
+ *   CORETEX_RERANKER_MODE=streaming CORETEX_RERANKER_ALLOW_CUDA=1
+ *   RERANKER_INNER_BATCH (default 8)
+ * plus CORETEX_BUNDLE_MANIFEST_PATH, CORETEX_CORPUS_PATH, CORETEX_EPOCH_ID,
+ * CORETEX_EPOCH_SECRET, CORETEX_PER_MINER_SCREENER_CAP, BASE_RPC_URL.
+ *
+ * POST /score-job — see ScorerJobRequest / ScorerJobResult below.
+ * GET  /healthz   — liveness + the loaded pins + scorerHealth.
+ *
+ * The pair-trace (pairTraceHash / scoreArrayHash) reuses the SAME ordered
+ * promptHash + score chain mechanism as the CPU parity harness
+ * (scripts/lib/instrumented-reranker.mjs), ported in
+ * coordinator/scorer-pair-trace.ts.
+ */
+import http from 'node:http';
+import { readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+
+import {
+  createProductionCoreTexEvaluator,
+  createInMemoryDedupStore,
+  type ProductionCoreTexEvaluator,
+  type ProductionRerankerPlan,
+} from './coordinator/production-evaluator.js';
+import { wrapRerankerWithPairTrace, type TracedReranker } from './coordinator/scorer-pair-trace.js';
+import type { CoreTexDualPackEvaluationProof } from './coordinator/coretex-coordinator-core.js';
+import {
+  createStreamingQwen3Reranker,
+  qwenRerankerPromptTemplateHash,
+  resolveQwenRerankerInstruction,
+  resolveRerankerScriptPath,
+  getRerankerCacheStats,
+  type CrossEncoderReranker,
+  type RerankerCacheStats,
+} from './eval/reranker.js';
+import { loadProductionCorpus } from './eval/retrieval-corpus.js';
+import type { CoreTexBundleManifest } from './bundle/index.js';
+import type { ProductionEvalResult } from './coordinator/production-evaluator.js';
+
+// ─── Wire schemas ─────────────────────────────────────────────────────────────
+
+/** Pins the coordinator asserts the scorer must have loaded. The scorer
+ *  REFUSES (no eval) on any mismatch — it never silently scores against a
+ *  different model/bundle/corpus than the coordinator expects. */
+export interface ScorerExpectedPins {
+  readonly modelId: string;
+  readonly revision: string;
+  readonly promptTemplateHash: string;
+  readonly bundleHash: string;
+  readonly corpusRoot: string;
+}
+
+export interface ScorerPublicEvalContext {
+  /** Future-blockhash dual-pack public inputs the evaluator's RPC client
+   *  would otherwise fetch; surfaced here for visibility / replay. The scorer
+   *  still runs the canonical blockhash binding via its own BASE_RPC_URL. */
+  readonly receivedAtBlock?: number;
+  readonly targetBlock?: number;
+  readonly blockhash?: string;
+  readonly targetBlockOffset?: number;
+  readonly hiddenSeedCommit?: string;
+}
+
+export interface ScorerJobRequest {
+  readonly jobId: string;
+  readonly epochId: number;
+  readonly parentStateRoot: string;
+  readonly patchHash: string;
+  readonly corpusRoot: string;
+  readonly bundleHash: string;
+  readonly coreVersionHash: string;
+  readonly publicEvalContext?: ScorerPublicEvalContext;
+  readonly compactPatchBytesHex: string;
+  readonly miner: string;
+  readonly expectedScorerPins: ScorerExpectedPins;
+}
+
+/** Runtime fingerprint the coordinator checks before signing (model/dtype/cuda
+ *  must match the attested expectation). Carries NO signing material. */
+export interface ScorerHealth {
+  readonly commit: string;
+  readonly modelId: string;
+  readonly revision: string;
+  readonly promptTemplateHash: string;
+  readonly dtype: 'fp32';
+  readonly tf32: false;
+  readonly cuda: boolean;
+  readonly device: string;
+  readonly torch: string | null;
+  readonly transformers: string | null;
+  readonly python: string | null;
+}
+
+export interface ScorerJobResult {
+  readonly jobId: string;
+  readonly accepted: boolean;
+  readonly rejectionReason?: string;
+  readonly scoreBeforePpm: number | null;
+  readonly scoreAfterPpm: number | null;
+  readonly deltaPpm: number;
+  readonly gateScorePpm: number;
+  readonly confirmScorePpm: number;
+  /** Present only when accepted (built via the canonical eval-report builder). */
+  readonly evalReportHash?: string;
+  readonly artifactHash?: string;
+  /** Dual-pack proof the coordinator re-validates against live pins before signing. */
+  readonly evaluationProof?: CoreTexDualPackEvaluationProof;
+  /** Coord-rewritten patch bytes (state_advance only) — the embedded scoreDelta
+   *  equals scoreAfter - scoreBefore. The coordinator re-checks semantics. */
+  readonly rewrittenPatchBytesHex?: string;
+  readonly pairTraceHash: string;
+  readonly scoreArrayHash: string;
+  readonly totalScoredPairCount: number;
+  readonly wallMs: number;
+  readonly telemetry: unknown;
+  readonly scorerHealth: ScorerHealth;
+}
+
+// ─── Loaded-pins computation (shared with the coordinator's expectation) ─────
+
+export interface ScorerLoadedPins {
+  readonly modelId: string;
+  readonly revision: string;
+  readonly promptTemplateHash: string;
+  readonly bundleHash: string;
+  readonly corpusRoot: string;
+  readonly coreVersionHash: string;
+}
+
+function hexEq(a: string | undefined, b: string | undefined): boolean {
+  return typeof a === 'string' && typeof b === 'string' && a.toLowerCase() === b.toLowerCase();
+}
+
+/**
+ * Validate a job's pins against what the scorer actually loaded. Returns a
+ * refusal reason string, or null when the job may proceed. Pure — unit-tested
+ * directly with a fake set of loaded pins.
+ */
+export function checkScorerJobPins(job: ScorerJobRequest, loaded: ScorerLoadedPins): string | null {
+  const p = job.expectedScorerPins;
+  if (!p || typeof p !== 'object') return 'expectedScorerPins missing';
+  if (p.modelId !== loaded.modelId) return `expectedScorerPins.modelId ${p.modelId} != loaded ${loaded.modelId}`;
+  if (p.revision !== loaded.revision) return `expectedScorerPins.revision ${p.revision} != loaded ${loaded.revision}`;
+  if (!hexEq(p.promptTemplateHash, loaded.promptTemplateHash)) {
+    return `expectedScorerPins.promptTemplateHash != loaded ${loaded.promptTemplateHash}`;
+  }
+  if (!hexEq(p.bundleHash, loaded.bundleHash)) return `expectedScorerPins.bundleHash != loaded ${loaded.bundleHash}`;
+  if (!hexEq(p.corpusRoot, loaded.corpusRoot)) return `expectedScorerPins.corpusRoot != loaded ${loaded.corpusRoot}`;
+  // Job-level context pins must ALSO match what was loaded (the coordinator
+  // sends them independently of expectedScorerPins; both must agree).
+  if (!hexEq(job.corpusRoot, loaded.corpusRoot)) return `job.corpusRoot != loaded ${loaded.corpusRoot}`;
+  if (!hexEq(job.bundleHash, loaded.bundleHash)) return `job.bundleHash != loaded ${loaded.bundleHash}`;
+  if (!hexEq(job.coreVersionHash, loaded.coreVersionHash)) return `job.coreVersionHash != loaded ${loaded.coreVersionHash}`;
+  return null;
+}
+
+function validateJobShape(job: unknown): string | null {
+  if (!job || typeof job !== 'object') return 'job must be an object';
+  const j = job as Record<string, unknown>;
+  if (typeof j.jobId !== 'string' || !j.jobId) return 'jobId required';
+  if (!Number.isSafeInteger(j.epochId)) return 'epochId must be an integer';
+  for (const key of ['parentStateRoot', 'patchHash', 'corpusRoot', 'bundleHash', 'coreVersionHash'] as const) {
+    if (typeof j[key] !== 'string' || !/^0x[0-9a-fA-F]{64}$/.test(j[key] as string)) return `${key} must be bytes32`;
+  }
+  if (typeof j.compactPatchBytesHex !== 'string' || !/^0x[0-9a-fA-F]*$/.test(j.compactPatchBytesHex)) {
+    return 'compactPatchBytesHex must be hex';
+  }
+  if (typeof j.miner !== 'string' || !/^0x[0-9a-fA-F]{40}$/.test(j.miner)) return 'miner must be an address';
+  if (!j.expectedScorerPins || typeof j.expectedScorerPins !== 'object') return 'expectedScorerPins required';
+  return null;
+}
+
+// ─── Job handler (pure, evaluator-injectable; CLI + tests share it) ──────────
+
+export interface ScorerJobHandlerDeps {
+  readonly evaluator: Pick<ProductionCoreTexEvaluator, 'scorePatch'>;
+  readonly tracedReranker: Pick<TracedReranker, 'resetTrace' | 'traceSnapshot'>;
+  readonly loadedPins: ScorerLoadedPins;
+  readonly scorerHealth: ScorerHealth;
+  /** Telemetry snapshot for the job (e.g. reranker cache stats). Optional. */
+  readonly telemetry?: () => unknown;
+  readonly now?: () => number;
+}
+
+export type ScorerJobResponse =
+  | { readonly status: 200; readonly body: ScorerJobResult }
+  | { readonly status: number; readonly body: { readonly error: string; readonly reason: string } };
+
+/**
+ * Run one scored job. REFUSES (4xx, no eval) on a malformed job or any pin
+ * mismatch. Otherwise runs the production scorePatch, snapshots the per-job
+ * pair-trace, and returns the full result. KEYLESS — no signing material is
+ * ever in scope here.
+ */
+export async function handleScoreJob(
+  job: ScorerJobRequest,
+  deps: ScorerJobHandlerDeps,
+): Promise<ScorerJobResponse> {
+  const shape = validateJobShape(job);
+  if (shape) return { status: 400, body: { error: 'invalid-job', reason: shape } };
+  const pinMismatch = checkScorerJobPins(job, deps.loadedPins);
+  if (pinMismatch) return { status: 409, body: { error: 'pin-mismatch', reason: pinMismatch } };
+
+  const now = deps.now ?? (() => Date.now());
+  // Per-job trace: every scored pair in THIS job folds into a fresh chain.
+  deps.tracedReranker.resetTrace();
+  const start = now();
+  let result: ProductionEvalResult;
+  try {
+    result = await deps.evaluator.scorePatch({
+      patchBytesHex: job.compactPatchBytesHex,
+      parentStateRoot: job.parentStateRoot,
+      miner: job.miner,
+    });
+  } catch (e) {
+    return { status: 500, body: { error: 'eval-failure', reason: (e as Error)?.message ?? 'scorePatch threw' } };
+  }
+  const wallMs = now() - start;
+  const trace = deps.tracedReranker.traceSnapshot();
+
+  const base = {
+    jobId: job.jobId,
+    pairTraceHash: trace.pairTraceHash,
+    scoreArrayHash: trace.scoreArrayHash,
+    totalScoredPairCount: trace.totalScoredPairCount,
+    wallMs,
+    telemetry: deps.telemetry ? deps.telemetry() : null,
+    scorerHealth: deps.scorerHealth,
+  };
+
+  if (result.outcome === 'reject') {
+    return {
+      status: 200,
+      body: {
+        ...base,
+        accepted: false,
+        rejectionReason: result.code,
+        scoreBeforePpm: null,
+        scoreAfterPpm: null,
+        deltaPpm: 0,
+        gateScorePpm: 0,
+        confirmScorePpm: 0,
+      },
+    };
+  }
+
+  const proof = result.evaluationProof;
+  const gateScorePpm = proof?.gate.scorePpm ?? 0;
+  const confirmScorePpm = proof?.confirm.scorePpm ?? 0;
+  return {
+    status: 200,
+    body: {
+      ...base,
+      accepted: true,
+      scoreBeforePpm: result.outcome === 'state_advance' ? result.scoreBeforePpm : null,
+      scoreAfterPpm: result.outcome === 'state_advance' ? result.scoreAfterPpm : null,
+      deltaPpm: result.deterministicDeltaPpm,
+      gateScorePpm,
+      confirmScorePpm,
+      evalReportHash: result.evalReportHash,
+      artifactHash: result.artifactHash,
+      ...(proof ? { evaluationProof: proof } : {}),
+      ...(result.outcome === 'state_advance' ? { rewrittenPatchBytesHex: result.rewrittenPatchBytesHex } : {}),
+    },
+  };
+}
+
+// ─── Boot: build the keyless GPU evaluator + health (CLI only) ───────────────
+
+function gitCommit(): string {
+  try {
+    return execFileSync('git', ['rev-parse', '--short', 'HEAD'], { encoding: 'utf8' }).trim() || 'unknown';
+  } catch {
+    return 'unknown';
+  }
+}
+
+function probeRuntimeHealth(): Pick<ScorerHealth, 'cuda' | 'device' | 'torch' | 'transformers' | 'python'> {
+  const pythonBin = process.env['CORETEX_RERANKER_PYTHON'] ?? 'python3';
+  const script = resolveRerankerScriptPath();
+  try {
+    const out = execFileSync(pythonBin, [script, '--health'], {
+      encoding: 'utf8',
+      env: { ...process.env, CORETEX_RERANKER_ALLOW_CUDA: '1' },
+    });
+    const h = JSON.parse(out.trim().split('\n').pop() ?? '{}') as Record<string, unknown>;
+    return {
+      cuda: h.cuda === true,
+      device: typeof h.device === 'string' ? h.device : 'unknown',
+      torch: typeof h.torch === 'string' ? h.torch : null,
+      transformers: typeof h.transformers === 'string' ? h.transformers : null,
+      python: typeof h.python === 'string' ? h.python : null,
+    };
+  } catch (e) {
+    process.stderr.write(`[scorer] runtime health probe failed: ${(e as Error).message}\n`);
+    return { cuda: false, device: 'unknown', torch: null, transformers: null, python: null };
+  }
+}
+
+interface BootedScorer {
+  readonly evaluator: ProductionCoreTexEvaluator;
+  readonly tracedReranker: TracedReranker;
+  readonly loadedPins: ScorerLoadedPins;
+  readonly scorerHealth: ScorerHealth;
+  readonly telemetry: () => unknown;
+}
+
+async function bootScorer(env: NodeJS.ProcessEnv): Promise<BootedScorer> {
+  // Fail-closed env: assert the production reranker contract BEFORE the heavy
+  // model load, and assert CUDA is explicitly enabled (this is the GPU half).
+  const required: Record<string, string> = {
+    CORETEX_RERANKER: 'qwen3',
+    CORTEX_REAL_EVAL: '1',
+    CORETEX_RERANKER_PRODUCTION: '1',
+    CORETEX_RERANKER_MODE: 'streaming',
+    CORETEX_RERANKER_ALLOW_CUDA: '1',
+  };
+  for (const [name, value] of Object.entries(required)) {
+    if (env[name] !== value) {
+      throw new Error(`coretex-scorer-server requires ${name}=${value} (got ${env[name] ?? 'unset'})`);
+    }
+  }
+  const bundleManifestPath = requiredEnv(env, 'CORETEX_BUNDLE_MANIFEST_PATH');
+  const corpusPath = requiredEnv(env, 'CORETEX_CORPUS_PATH');
+  const epochId = Number(requiredEnv(env, 'CORETEX_EPOCH_ID'));
+  const epochSecret = requiredEnv(env, 'CORETEX_EPOCH_SECRET');
+  const perMinerCap = Number(requiredEnv(env, 'CORETEX_PER_MINER_SCREENER_CAP'));
+  const innerBatch = Number(env['RERANKER_INNER_BATCH'] ?? '8') || 8;
+
+  const bundle = JSON.parse(readFileSync(bundleManifestPath, 'utf8')) as CoreTexBundleManifest;
+  const corpus = loadProductionCorpus(corpusPath, { verifyCorpusRoot: true, verifySplits: true });
+
+  // The traced reranker is captured so /score-job can reset+snapshot per job;
+  // the inner streaming reranker is captured for cache telemetry (getRerankerCacheStats
+  // keys on the withRerankerCache-wrapped object, i.e. the streaming reranker).
+  let tracedReranker: TracedReranker | undefined;
+  let innerReranker: CrossEncoderReranker | undefined;
+  // The keyless GPU reranker: a CUDA-enabled streaming Qwen3 wrapped with the
+  // SAME pair-trace as the CPU parity harness. ALLOW_CUDA is set; the Node-side
+  // CPU guard only refuses when CUDA_VISIBLE_DEVICES / CORETEX_USE_GPU are set,
+  // so we clear CUDA_VISIBLE_DEVICES at the Node layer and let the Python runner
+  // place the model on CUDA via CORETEX_RERANKER_ALLOW_CUDA=1 (fp32/tf32=false).
+  delete process.env['CUDA_VISIBLE_DEVICES'];
+  delete process.env['CORETEX_USE_GPU'];
+  const rerankerFactory = (plan: ProductionRerankerPlan): CrossEncoderReranker => {
+    const numThreads = Number(env['RERANKER_NUM_THREADS'] ?? '0') || undefined;
+    const cacheDir = env['CORTEX_LOCAL_MODEL_CACHE'];
+    const streaming = createStreamingQwen3Reranker({
+      model: plan.modelId,
+      revision: plan.revision,
+      ...(cacheDir ? { cacheDir } : {}),
+      localOnly: env['CORTEX_LOCAL_MODEL_LOCAL_ONLY'] === '1',
+      batchSize: innerBatch,
+      ...(numThreads ? { numThreads } : {}),
+    });
+    innerReranker = streaming;
+    tracedReranker = wrapRerankerWithPairTrace(streaming);
+    return tracedReranker;
+  };
+
+  const evaluator = await createProductionCoreTexEvaluator({
+    epochId,
+    epochSecret,
+    corpusPath,
+    bundleManifestPath,
+    // Keyless: the scorer never advances state; the parent substrate is loaded
+    // for scoring only. An operator-provided loader can be wired via env later;
+    // for the launch corpus the production evaluator loads from the corpus.
+    parentStateLoader: () => { throw new Error('coretex-scorer-server: parentState must be supplied with the job (parentStateLoader unset)'); },
+    dedupStore: createInMemoryDedupStore(),
+    perMinerCap,
+    ...(env['CORETEX_SCREENER_THRESHOLD_PPM'] ? { screenerThresholdPpm: Number(env['CORETEX_SCREENER_THRESHOLD_PPM']) } : {}),
+    rerankerFactory,
+  });
+  if (!tracedReranker) throw new Error('coretex-scorer-server: reranker factory was not invoked');
+
+  const att = evaluator.bootAttestation;
+  const loadedPins: ScorerLoadedPins = {
+    modelId: att.rerankerModelId,
+    revision: att.rerankerRevision,
+    promptTemplateHash: att.promptTemplateHash.toLowerCase(),
+    bundleHash: bundle.bundleHash.toLowerCase(),
+    corpusRoot: corpus.corpusRoot.toLowerCase(),
+    coreVersionHash: bundle.bundleHash.toLowerCase(),
+  };
+  const runtime = probeRuntimeHealth();
+  const scorerHealth: ScorerHealth = {
+    commit: gitCommit(),
+    modelId: loadedPins.modelId,
+    revision: loadedPins.revision,
+    promptTemplateHash: loadedPins.promptTemplateHash,
+    dtype: 'fp32',
+    tf32: false,
+    cuda: runtime.cuda,
+    device: runtime.device,
+    torch: runtime.torch,
+    transformers: runtime.transformers,
+    python: runtime.python,
+  };
+  // Cross-check the resolved prompt-template hash against the canonical render.
+  const instructionHash = qwenRerankerPromptTemplateHash(resolveQwenRerankerInstruction(env));
+  if (instructionHash.toLowerCase() !== loadedPins.promptTemplateHash) {
+    throw new Error(`coretex-scorer-server: resolved promptTemplateHash ${instructionHash} != boot attestation ${loadedPins.promptTemplateHash}`);
+  }
+  const traced = tracedReranker;
+  const inner = innerReranker;
+  return {
+    evaluator,
+    tracedReranker: traced,
+    loadedPins,
+    scorerHealth,
+    telemetry: () => {
+      const stats: RerankerCacheStats | undefined = inner ? getRerankerCacheStats(inner) : undefined;
+      return {
+        rerankerCache: stats ? { hits: stats.hits, misses: stats.misses, evictions: stats.evictions, size: stats.size() } : null,
+      };
+    },
+  };
+}
+
+function requiredEnv(env: NodeJS.ProcessEnv, name: string): string {
+  const v = env[name];
+  if (!v || !v.trim()) throw new Error(`coretex-scorer-server requires env ${name}`);
+  return v.trim();
+}
+
+function readJsonBody(req: http.IncomingMessage, maxBytes: number): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let total = 0;
+    req.on('data', (chunk: Buffer) => {
+      total += chunk.length;
+      if (total > maxBytes) {
+        reject(new Error('body too large'));
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on('end', () => {
+      const raw = Buffer.concat(chunks).toString('utf8');
+      try {
+        resolve(raw.length > 0 ? JSON.parse(raw) : null);
+      } catch (e) {
+        reject(e);
+      }
+    });
+    req.on('error', reject);
+  });
+}
+
+async function main(): Promise<void> {
+  const port = Number(process.env['CORETEX_SCORER_PORT'] ?? '8888') || 8888;
+  const host = process.env['CORETEX_SCORER_HOST'] ?? '127.0.0.1';
+  const bodyLimit = Number(process.env['CORETEX_SCORER_BODY_LIMIT_BYTES'] ?? '65536') || 65536;
+
+  process.stdout.write('[scorer] booting keyless GPU production evaluator (this loads the model once)...\n');
+  const booted = await bootScorer(process.env);
+  process.stdout.write(
+    `[scorer] ready: model=${booted.loadedPins.modelId}@${booted.loadedPins.revision} ` +
+    `bundle=${booted.loadedPins.bundleHash} corpus=${booted.loadedPins.corpusRoot} ` +
+    `cuda=${booted.scorerHealth.cuda} device=${booted.scorerHealth.device} ` +
+    `torch=${booted.scorerHealth.torch} commit=${booted.scorerHealth.commit}\n`,
+  );
+
+  const server = http.createServer((req, res) => {
+    const send = (status: number, body: unknown) => {
+      const json = JSON.stringify(body);
+      res.writeHead(status, { 'content-type': 'application/json' });
+      res.end(json);
+    };
+    void (async () => {
+      if (req.method === 'GET' && req.url === '/healthz') {
+        send(200, { ok: true, loadedPins: booted.loadedPins, scorerHealth: booted.scorerHealth });
+        return;
+      }
+      if (req.method === 'POST' && (req.url === '/score-job' || req.url?.startsWith('/score-job?'))) {
+        let job: unknown;
+        try {
+          job = await readJsonBody(req, bodyLimit);
+        } catch (e) {
+          send((e as Error).message.includes('too large') ? 413 : 400, { error: 'bad-body', reason: (e as Error).message });
+          return;
+        }
+        const response = await handleScoreJob(job as ScorerJobRequest, booted);
+        send(response.status, response.body);
+        return;
+      }
+      send(404, { error: 'not-found', reason: `${req.method} ${req.url}` });
+    })().catch((e) => {
+      send(500, { error: 'internal', reason: (e as Error)?.message ?? 'unknown' });
+    });
+  });
+
+  server.listen(port, host, () => {
+    process.stdout.write(`[scorer] listening on http://${host}:${port}\n`);
+  });
+  const shutdown = () => server.close(() => process.exit(0));
+  process.on('SIGTERM', shutdown);
+  process.on('SIGINT', shutdown);
+}
+
+// Run only when invoked as the bin (not when imported by tests).
+const invokedDirectly = process.argv[1]?.endsWith('scorer-server-cli.js')
+  || process.argv[1]?.endsWith('scorer-server-cli.ts');
+if (invokedDirectly) {
+  main().catch((e) => {
+    process.stderr.write(`HARD FAIL: ${(e as Error)?.stack ?? e}\n`);
+    process.exit(1);
+  });
+}
