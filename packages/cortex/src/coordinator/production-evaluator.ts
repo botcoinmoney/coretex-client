@@ -222,10 +222,18 @@ export type ProductionEvalRejectResult = {
   readonly reason: string;
 };
 
+/** §3 artifact-bytes return: accepted production results carry the FULL
+ *  canonical post-reveal eval-report artifact (the exact object whose single
+ *  hash is BOTH evalReportHash and artifactHash). The keyless scorer server
+ *  returns these bytes to the coordinator so the remote path can spool the
+ *  identical on-disk artifact the local publishArtifact hook would write —
+ *  BEFORE signing. The local coordinator path ignores this field (it spools
+ *  via publishArtifact directly). Optional so the narrower type stays
+ *  assignable to the core's EvalResult. */
 export type ProductionEvalResult =
   | ProductionEvalRejectResult
-  | Extract<EvalResult, { readonly outcome: 'screener_pass' }>
-  | Extract<EvalResult, { readonly outcome: 'state_advance' }>;
+  | (Extract<EvalResult, { readonly outcome: 'screener_pass' }> & { readonly artifact?: CoreTexPostRevealEvalReportArtifact })
+  | (Extract<EvalResult, { readonly outcome: 'state_advance' }> & { readonly artifact?: CoreTexPostRevealEvalReportArtifact });
 
 export type ProductionCoreTexEvaluator = RealEvaluator & {
   scorePatch(input: {
@@ -233,6 +241,14 @@ export type ProductionCoreTexEvaluator = RealEvaluator & {
     parentStateRoot: string;
     miner: string;
     parentState?: CortexState;
+    /** Per-job screener threshold (ppm) override. The keyless scorer server
+     *  passes the LIVE threshold carried in the job here so its advisory
+     *  accept/reject + the committed artifact `thresholdPpm` reflect the
+     *  threshold the coordinator sent — never a drifted CORETEX_SCREENER_THRESHOLD_PPM
+     *  env. When omitted, the construction-time `screenerThresholdPpm` is used
+     *  (the local CPU path is unchanged). The coordinator still re-derives the
+     *  final decision from the returned scores vs its live threshold. */
+    screenerThresholdPpm?: number;
   }): Promise<ProductionEvalResult>;
   /** Hash-bound boot attestation (§2): resolved model id + revision +
    *  reranker mode + instruction + prompt-template hash + Memory-IR mode. */
@@ -292,6 +308,10 @@ export interface ProductionCoreTexEvaluatorCoreDeps {
     readonly parent: CortexState;
     readonly normalizedPatchBytes: Uint8Array;
     readonly evalSeed: string;
+    /** Effective screener threshold (ppm) for THIS evaluation — the per-job
+     *  override when supplied, else the construction-time default. The seed
+     *  scorer's acceptance floors honor exactly this number. */
+    readonly thresholdPpm: number;
   }) => Promise<PatchEvalResult>;
   readonly publishArtifact?: (artifact: CoreTexPostRevealEvalReportArtifact) => Promise<void> | void;
   readonly close?: () => Promise<void>;
@@ -312,6 +332,14 @@ export function createCoreTexEvaluatorCore(deps: ProductionCoreTexEvaluatorCoreD
       const parentStateRoot = input.parentStateRoot.toLowerCase();
       const patchHash = computePatchHash(patchBytes).toLowerCase();
       const dedupKey: CoreTexEvalDedupKey = { epochId: deps.epochId, parentStateRoot, patchHash };
+      // Per-job screener-threshold override (keyless scorer ships the LIVE
+      // threshold with the job so its advisory accept/reject + committed
+      // artifact thresholdPpm never use a drifted env). Defaults to the
+      // construction-time threshold (local CPU path unchanged).
+      const effectiveThresholdPpm = input.screenerThresholdPpm ?? deps.screenerThresholdPpm;
+      if (!Number.isSafeInteger(effectiveThresholdPpm) || effectiveThresholdPpm < 0) {
+        throw new Error(`scorePatch: screenerThresholdPpm override must be a non-negative integer (got ${String(input.screenerThresholdPpm)})`);
+      }
 
       // §8 grinding dedup: a patch already evaluated at the same
       // (epochId, parentStateRoot) is rejected WITHOUT re-evaluation —
@@ -330,7 +358,7 @@ export function createCoreTexEvaluatorCore(deps: ProductionCoreTexEvaluatorCoreD
       const parent = input.parentState ?? await deps.parentStateLoader(input.parentStateRoot);
       const perSeed = new Map<string, PatchEvalResult>();
       const scorer: PerPatchScorer = async ({ normalizedPatchBytes, evalSeed }) => {
-        const result = await deps.seedScorer({ parent, normalizedPatchBytes, evalSeed });
+        const result = await deps.seedScorer({ parent, normalizedPatchBytes, evalSeed, thresholdPpm: effectiveThresholdPpm });
         perSeed.set(evalSeed.toLowerCase(), result);
         const score = {
           scorePpm: result.deltaPpm,
@@ -348,7 +376,7 @@ export function createCoreTexEvaluatorCore(deps: ProductionCoreTexEvaluatorCoreD
         rpcClient: deps.rpcClient,
         scorer,
         targetBlockOffset: deps.targetBlockOffset,
-        thresholdPpm: deps.screenerThresholdPpm,
+        thresholdPpm: effectiveThresholdPpm,
         perMinerCap: deps.perMinerCap,
         epochSecret: deps.epochSecret,
         corpusRoot: deps.corpusRoot,
@@ -386,7 +414,7 @@ export function createCoreTexEvaluatorCore(deps: ProductionCoreTexEvaluatorCoreD
         minerAddress: miner,
         outcome: stateAdvance ? 'STATE_ADVANCE' : 'SCREENER_PASS',
         compactPatchBytesHex: bytesToHex(patchBytes).toLowerCase(),
-        thresholdPpm: deps.screenerThresholdPpm,
+        thresholdPpm: effectiveThresholdPpm,
         seedDerivation: {
           mode: 'future_blockhash_dual_pack',
           epochId: deps.epochId,
@@ -433,6 +461,7 @@ export function createCoreTexEvaluatorCore(deps: ProductionCoreTexEvaluatorCoreD
           scoreAfterPpm,
           rewrittenPatchBytesHex,
           evaluationProof: proof,
+          artifact,
         };
       }
 
@@ -443,6 +472,7 @@ export function createCoreTexEvaluatorCore(deps: ProductionCoreTexEvaluatorCoreD
         evalReportHash: artifact.evalReportHash,
         artifactHash: artifact.artifactHash,
         evaluationProof: proof,
+        artifact,
       };
     },
   };
@@ -515,7 +545,7 @@ export async function createProductionCoreTexEvaluator(
     dedupStore: options.dedupStore,
     bootAttestation,
     parentStateLoader: options.parentStateLoader,
-    seedScorer: async ({ parent, normalizedPatchBytes, evalSeed }) => {
+    seedScorer: async ({ parent, normalizedPatchBytes, evalSeed, thresholdPpm }) => {
       const seedPatch = decodePatch(normalizedPatchBytes);
       return scoreAgainstSeed({
         epochId: options.epochId,
@@ -525,7 +555,7 @@ export async function createProductionCoreTexEvaluator(
         profile,
         evalSeed,
         scoringOpts,
-        thresholdPpm: screenerThresholdPpm,
+        thresholdPpm,
       });
     },
     ...(options.publishArtifact ? { publishArtifact: options.publishArtifact } : {}),

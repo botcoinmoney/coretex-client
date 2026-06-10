@@ -30,3 +30,18 @@ export * from './coordinator/per-patch-evaluator.js';
 export * from './coordinator/production-evaluator.js';
 export * from './coordinator/scorer-pair-trace.js';
 export * from './coordinator/epoch-frontier.js';
+// Keyless GPU scorer-server handler boundary (pure, evaluator-injectable) — so
+// the coordinator-side integration test can drive the REAL handler over HTTP.
+export {
+  handleScoreJob,
+  checkScorerJobPins,
+  verifyJobParentState,
+  DEFAULT_SCORER_BODY_LIMIT_BYTES,
+  type ScorerJobRequest,
+  type ScorerJobResult,
+  type ScorerJobHandlerDeps,
+  type ScorerJobResponse,
+  type ScorerLoadedPins,
+  type ScorerHealth as ScorerServerHealth,
+  type ScorerExpectedPins as ScorerServerExpectedPins,
+} from './scorer-server-cli.js';

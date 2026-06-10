@@ -76,6 +76,8 @@ function baseJob(over = {}) {
     corpusRoot: LOADED_PINS.corpusRoot,
     bundleHash: LOADED_PINS.bundleHash,
     coreVersionHash: LOADED_PINS.coreVersionHash,
+    thresholdPpm: 1_000,
+    policyHash: LOADED_PINS.coreVersionHash,
     compactPatchBytesHex: '0x1234',
     miner: `0x${'10'.repeat(20)}`,
     expectedScorerPins: {

@@ -158,6 +158,14 @@ export interface RealEvaluator {
     parentStateRoot: string;
     miner: string;
     parentState?: CortexState;
+    /** OPTIONAL per-job screener-threshold (ppm) override. The keyless scorer
+     *  server passes the LIVE threshold carried in the job so the evaluator's
+     *  advisory accept/reject + committed artifact threshold reflect what the
+     *  coordinator sent (no CORETEX_SCREENER_THRESHOLD_PPM env drift). The local
+     *  CPU evaluator path omits it. The coordinator core never sets it — it
+     *  re-derives the final decision from the returned scores vs the live
+     *  threshold regardless. */
+    screenerThresholdPpm?: number;
   }): Promise<EvalResult> | EvalResult;
 }
 

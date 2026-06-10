@@ -42,6 +42,7 @@ import {
 } from './coordinator/production-evaluator.js';
 import { wrapRerankerWithPairTrace, type TracedReranker } from './coordinator/scorer-pair-trace.js';
 import type { CoreTexDualPackEvaluationProof } from './coordinator/coretex-coordinator-core.js';
+import type { CoreTexPostRevealEvalReportArtifact } from './replay/eval-report-artifact.js';
 import {
   createStreamingQwen3Reranker,
   qwenRerankerPromptTemplateHash,
@@ -97,6 +98,16 @@ export interface ScorerJobRequest {
   readonly corpusRoot: string;
   readonly bundleHash: string;
   readonly coreVersionHash: string;
+  /** LIVE screener threshold (ppm) the coordinator is enforcing for THIS job.
+   *  The scorer uses THIS for its advisory accept/reject + the committed
+   *  artifact thresholdPpm — never CORETEX_SCREENER_THRESHOLD_PPM env, which
+   *  can drift — and echoes it back as `thresholdPpmUsed`. The coordinator
+   *  rejects the result if the echo != the threshold it sent. */
+  readonly thresholdPpm: number;
+  /** Policy / core-version hash the coordinator pins for this job. Echoed back
+   *  in the result so the coordinator can reject a result computed under a
+   *  drifted policy (defense-in-depth alongside the pin checks). */
+  readonly policyHash: string;
   readonly publicEvalContext?: ScorerPublicEvalContext;
   readonly compactPatchBytesHex: string;
   readonly miner: string;
@@ -128,9 +139,23 @@ export interface ScorerJobResult {
   readonly deltaPpm: number;
   readonly gateScorePpm: number;
   readonly confirmScorePpm: number;
+  /** The screener threshold (ppm) the scorer ACTUALLY used — echoes
+   *  `job.thresholdPpm`. The coordinator rejects the result unless this equals
+   *  the live threshold it sent (no env drift). */
+  readonly thresholdPpmUsed: number;
+  /** Echoes `job.policyHash` so the coordinator can reject a result computed
+   *  under a drifted policy/core-version pin. */
+  readonly policyHash: string;
   /** Present only when accepted (built via the canonical eval-report builder). */
   readonly evalReportHash?: string;
   readonly artifactHash?: string;
+  /** The FULL canonical CoreTexPostRevealEvalReportArtifact (§3) — the exact
+   *  object buildPostRevealEvalReportArtifact produced, whose single hash is
+   *  BOTH evalReportHash and artifactHash. Present only when accepted. The
+   *  coordinator recomputes hashPostRevealEvalReportArtifact(artifact), verifies
+   *  it == artifactHash == evalReportHash + the context pins, then spools the
+   *  bytes atomically to the artifact spool BEFORE signing. */
+  readonly artifact?: CoreTexPostRevealEvalReportArtifact;
   /** Dual-pack proof the coordinator re-validates against live pins before signing. */
   readonly evaluationProof?: CoreTexDualPackEvaluationProof;
   /** Coord-rewritten patch bytes (state_advance only) — the embedded scoreDelta
@@ -227,6 +252,8 @@ function validateJobShape(job: unknown): string | null {
     return `packedParentStateHex must be ${PACKED_SIZE} bytes (got ${(j.packedParentStateHex.length - 2) / 2})`;
   }
   if (typeof j.miner !== 'string' || !/^0x[0-9a-fA-F]{40}$/.test(j.miner)) return 'miner must be an address';
+  if (!Number.isSafeInteger(j.thresholdPpm) || (j.thresholdPpm as number) < 0) return 'thresholdPpm must be a non-negative integer';
+  if (typeof j.policyHash !== 'string' || !/^0x[0-9a-fA-F]{64}$/.test(j.policyHash)) return 'policyHash must be bytes32';
   if (!j.expectedScorerPins || typeof j.expectedScorerPins !== 'object') return 'expectedScorerPins required';
   return null;
 }
@@ -281,6 +308,10 @@ export async function handleScoreJob(
       parentStateRoot: job.parentStateRoot,
       miner: job.miner,
       parentState: parent.state,
+      // §2 (threshold honesty): the scorer uses the LIVE threshold the
+      // coordinator shipped with the job — never CORETEX_SCREENER_THRESHOLD_PPM
+      // env — for its advisory accept/reject + the committed artifact threshold.
+      screenerThresholdPpm: job.thresholdPpm,
     });
   } catch (e) {
     return { status: 500, body: { error: 'eval-failure', reason: (e as Error)?.message ?? 'scorePatch threw' } };
@@ -290,6 +321,11 @@ export async function handleScoreJob(
 
   const base = {
     jobId: job.jobId,
+    // §2: echo the threshold the scorer USED (the job's, not env) + the policy
+    // pin, so the coordinator can reject a result computed under a drifted
+    // threshold / policy.
+    thresholdPpmUsed: job.thresholdPpm,
+    policyHash: job.policyHash.toLowerCase(),
     pairTraceHash: trace.pairTraceHash,
     scoreArrayHash: trace.scoreArrayHash,
     totalScoredPairCount: trace.totalScoredPairCount,
@@ -329,6 +365,9 @@ export async function handleScoreJob(
       confirmScorePpm,
       evalReportHash: result.evalReportHash,
       artifactHash: result.artifactHash,
+      // §3: return the FULL canonical artifact bytes so the coordinator can
+      // spool the identical on-disk artifact (tmp+rename) BEFORE signing.
+      ...(result.artifact ? { artifact: result.artifact } : {}),
       ...(proof ? { evaluationProof: proof } : {}),
       ...(result.outcome === 'state_advance' ? { rewrittenPatchBytesHex: result.rewrittenPatchBytesHex } : {}),
     },
