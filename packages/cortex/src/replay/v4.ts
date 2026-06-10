@@ -286,7 +286,14 @@ export async function rpcCall<T>(rpcUrl: string, method: string, params: unknown
   return body.result as T;
 }
 
-function rpcFetchTarget(rpcUrl: string): { url: string; headers: Record<string, string> } {
+/**
+ * Normalize a JSON-RPC endpoint for `fetch`: Node's undici REFUSES URLs with
+ * embedded basic-auth userinfo (`https://user:pass@host`), so credentials are
+ * extracted into an `Authorization: Basic` header. Every fetch-based RPC call
+ * in this package MUST go through this (or `rpcCall`) — observed live on Base
+ * mainnet with a credentialed provider URL.
+ */
+export function rpcFetchTarget(rpcUrl: string): { url: string; headers: Record<string, string> } {
   const url = new URL(rpcUrl);
   const headers: Record<string, string> = { 'content-type': 'application/json' };
   if (url.username || url.password) {

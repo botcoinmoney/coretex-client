@@ -950,8 +950,13 @@ export class CoreTexCoordinatorCore {
         miner: parsed.miner,
         parentState: this.liveState,
       });
-    } catch {
+    } catch (e) {
       this.metrics.evalFailureCount += 1;
+      // Operational visibility (audit: silent swallow made live EvalFailure
+      // undiagnosable). The public envelope stays opaque; the host log gets
+      // the real error. No score telemetry can leak here — the evaluator
+      // threw before producing a result.
+      console.error('[coretex-core] evaluator failure:', (e as Error)?.stack ?? e);
       return this.rejectSubmission('EvalFailure', 'evaluator failed');
     }
     if (evalResult.outcome === 'reject') {

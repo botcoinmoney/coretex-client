@@ -60,6 +60,7 @@ import {
   buildPostRevealEvalReportArtifact,
   type CoreTexPostRevealEvalReportArtifact,
 } from '../replay/eval-report-artifact.js';
+import { rpcFetchTarget } from '../replay/v4.js';
 import {
   runPerPatchEvaluation,
   dualPackProofFromPerPatchReceipt,
@@ -618,9 +619,14 @@ class EnvBaseRpcClient implements BaseRpcClient {
 }
 
 async function rpcCall<T>(rpcUrl: string, method: string, params: readonly unknown[]): Promise<T> {
-  const res = await fetch(rpcUrl, {
+  // rpcFetchTarget (replay/v4.ts) extracts embedded basic-auth userinfo into
+  // an Authorization header — Node fetch/undici hard-rejects credentialed
+  // URLs (observed live: every production eval failed against a credentialed
+  // Base RPC URL until this was routed through the shared helper).
+  const { url, headers } = rpcFetchTarget(rpcUrl);
+  const res = await fetch(url, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers,
     body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
   });
   if (!res.ok) throw new Error(`RPC ${method} HTTP ${res.status}`);
