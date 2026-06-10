@@ -54,6 +54,8 @@ import {
 import { loadProductionCorpus } from './eval/retrieval-corpus.js';
 import type { CoreTexBundleManifest } from './bundle/index.js';
 import type { ProductionEvalResult } from './coordinator/production-evaluator.js';
+import { unpack, merkleizeState, bytesToHex, hexToBytes, PACKED_SIZE } from './index.js';
+import type { CortexState } from './index.js';
 
 // ─── Wire schemas ─────────────────────────────────────────────────────────────
 
@@ -83,6 +85,14 @@ export interface ScorerJobRequest {
   readonly jobId: string;
   readonly epochId: number;
   readonly parentStateRoot: string;
+  /** The verified parent substrate, packed via the canonical state codec
+   *  (`pack(state)` → hex). REQUIRED: the keyless scorer holds no chain state,
+   *  so the coordinator (which already holds the merkle-verified parent) ships
+   *  the substrate with the job. The scorer re-merkleizes it and REFUSES
+   *  (`SCORER_PARENT_STATE_MISMATCH`) unless `merkleizeState(unpack(hex)) ==
+   *  parentStateRoot` — only then is it the parent the evaluator scores against
+   *  to compute scoreBefore + apply the patch. */
+  readonly packedParentStateHex: string;
   readonly patchHash: string;
   readonly corpusRoot: string;
   readonly bundleHash: string;
@@ -172,6 +182,30 @@ export function checkScorerJobPins(job: ScorerJobRequest, loaded: ScorerLoadedPi
   return null;
 }
 
+/**
+ * Verify the job's packed parent substrate against its pinned `parentStateRoot`.
+ * The keyless scorer holds no chain state, so the parent substrate is supplied
+ * WITH the job; this is the load-bearing trust check that makes scoring honest —
+ * the evaluator only ever scores against a substrate that re-merkleizes to the
+ * pin the coordinator (and chain) attest. Returns the verified `CortexState` on
+ * match, or a refusal reason string. Pure — unit-tested directly.
+ */
+export function verifyJobParentState(
+  job: Pick<ScorerJobRequest, 'parentStateRoot' | 'packedParentStateHex'>,
+): { readonly ok: true; readonly state: CortexState } | { readonly ok: false; readonly reason: string } {
+  let state: CortexState;
+  try {
+    state = unpack(hexToBytes(job.packedParentStateHex));
+  } catch (e) {
+    return { ok: false, reason: `packedParentStateHex did not unpack: ${(e as Error).message}` };
+  }
+  const recomputed = bytesToHex(merkleizeState(state)).toLowerCase();
+  if (recomputed !== job.parentStateRoot.toLowerCase()) {
+    return { ok: false, reason: `packedParentStateHex merkles to ${recomputed} != job.parentStateRoot ${job.parentStateRoot.toLowerCase()}` };
+  }
+  return { ok: true, state };
+}
+
 function validateJobShape(job: unknown): string | null {
   if (!job || typeof job !== 'object') return 'job must be an object';
   const j = job as Record<string, unknown>;
@@ -182,6 +216,15 @@ function validateJobShape(job: unknown): string | null {
   }
   if (typeof j.compactPatchBytesHex !== 'string' || !/^0x[0-9a-fA-F]*$/.test(j.compactPatchBytesHex)) {
     return 'compactPatchBytesHex must be hex';
+  }
+  // The packed parent substrate MUST be exactly PACKED_SIZE bytes (1024×32) of
+  // hex. Wrong-length bytes can never merkleize to the pinned root, but reject
+  // early with a precise reason before the unpack attempt.
+  if (typeof j.packedParentStateHex !== 'string' || !/^0x[0-9a-fA-F]*$/.test(j.packedParentStateHex)) {
+    return 'packedParentStateHex must be hex';
+  }
+  if ((j.packedParentStateHex.length - 2) / 2 !== PACKED_SIZE) {
+    return `packedParentStateHex must be ${PACKED_SIZE} bytes (got ${(j.packedParentStateHex.length - 2) / 2})`;
   }
   if (typeof j.miner !== 'string' || !/^0x[0-9a-fA-F]{40}$/.test(j.miner)) return 'miner must be an address';
   if (!j.expectedScorerPins || typeof j.expectedScorerPins !== 'object') return 'expectedScorerPins required';
@@ -218,6 +261,14 @@ export async function handleScoreJob(
   if (shape) return { status: 400, body: { error: 'invalid-job', reason: shape } };
   const pinMismatch = checkScorerJobPins(job, deps.loadedPins);
   if (pinMismatch) return { status: 409, body: { error: 'pin-mismatch', reason: pinMismatch } };
+  // The keyless scorer holds no chain state: REFUSE (no eval) unless the parent
+  // substrate shipped with the job re-merkleizes to the pinned parentStateRoot.
+  // Only the verified state is handed to the evaluator (replacing the throwing
+  // boot stub), so scoreBefore + applyPatch run against the attested parent.
+  const parent = verifyJobParentState(job);
+  if (!parent.ok) {
+    return { status: 422, body: { error: 'SCORER_PARENT_STATE_MISMATCH', reason: parent.reason } };
+  }
 
   const now = deps.now ?? (() => Date.now());
   // Per-job trace: every scored pair in THIS job folds into a fresh chain.
@@ -229,6 +280,7 @@ export async function handleScoreJob(
       patchBytesHex: job.compactPatchBytesHex,
       parentStateRoot: job.parentStateRoot,
       miner: job.miner,
+      parentState: parent.state,
     });
   } catch (e) {
     return { status: 500, body: { error: 'eval-failure', reason: (e as Error)?.message ?? 'scorePatch threw' } };
@@ -381,9 +433,13 @@ async function bootScorer(env: NodeJS.ProcessEnv): Promise<BootedScorer> {
     epochSecret,
     corpusPath,
     bundleManifestPath,
-    // Keyless: the scorer never advances state; the parent substrate is loaded
-    // for scoring only. An operator-provided loader can be wired via env later;
-    // for the launch corpus the production evaluator loads from the corpus.
+    // Keyless: the scorer holds no chain state. Every /score-job ships the
+    // merkle-verified parent substrate (packedParentStateHex), which the job
+    // handler unpacks, re-merkleizes against parentStateRoot, and passes to the
+    // evaluator as `parentState` — so the production evaluator's
+    // `input.parentState ?? parentStateLoader(...)` always takes the supplied
+    // state. This loader is the defense-in-depth fallback: it must never be
+    // reached (the handler refuses any job without a verified parent first).
     parentStateLoader: () => { throw new Error('coretex-scorer-server: parentState must be supplied with the job (parentStateLoader unset)'); },
     dedupStore: createInMemoryDedupStore(),
     perMinerCap,
@@ -442,6 +498,12 @@ function requiredEnv(env: NodeJS.ProcessEnv, name: string): string {
   return v.trim();
 }
 
+/** Default HTTP request-body byte limit. The body carries packedParentStateHex
+ *  (PACKED_SIZE×2 ≈ 64 KB of hex) plus the patch bytes + public context, so the
+ *  default is well clear of a realistic job; overridable via
+ *  CORETEX_SCORER_BODY_LIMIT_BYTES. */
+export const DEFAULT_SCORER_BODY_LIMIT_BYTES = 4 * 1024 * 1024;
+
 function readJsonBody(req: http.IncomingMessage, maxBytes: number): Promise<unknown> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
@@ -470,7 +532,10 @@ function readJsonBody(req: http.IncomingMessage, maxBytes: number): Promise<unkn
 async function main(): Promise<void> {
   const port = Number(process.env['CORETEX_SCORER_PORT'] ?? '8888') || 8888;
   const host = process.env['CORETEX_SCORER_HOST'] ?? '127.0.0.1';
-  const bodyLimit = Number(process.env['CORETEX_SCORER_BODY_LIMIT_BYTES'] ?? '65536') || 65536;
+  // The body now carries packedParentStateHex (PACKED_SIZE×2 ≈ 64 KB of hex)
+  // plus the patch bytes + public context, so the default limit is raised well
+  // clear of that (4 MB) — overridable via CORETEX_SCORER_BODY_LIMIT_BYTES.
+  const bodyLimit = Number(process.env['CORETEX_SCORER_BODY_LIMIT_BYTES'] ?? String(DEFAULT_SCORER_BODY_LIMIT_BYTES)) || DEFAULT_SCORER_BODY_LIMIT_BYTES;
 
   process.stdout.write('[scorer] booting keyless GPU production evaluator (this loads the model once)...\n');
   const booted = await bootScorer(process.env);

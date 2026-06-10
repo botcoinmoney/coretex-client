@@ -17,13 +17,31 @@ import assert from 'node:assert/strict';
 import {
   handleScoreJob,
   checkScorerJobPins,
+  verifyJobParentState,
 } from '../../dist/scorer-server-cli.js';
 import { wrapRerankerWithPairTrace } from '../../dist/coordinator/scorer-pair-trace.js';
+import { pack, merkleizeState, bytesToHex, RANGES, PACKED_SIZE } from '../../dist/index.js';
+import { DEFAULT_SCORER_BODY_LIMIT_BYTES } from '../../dist/scorer-server-cli.js';
 import { makeInstrumentedReranker } from '../../../../scripts/lib/instrumented-reranker.mjs';
 
 const B32 = (seed) => `0x${seed.repeat(Math.ceil(64 / seed.length)).slice(0, 64)}`;
 const MODEL_ID = 'Qwen/Qwen3-Reranker-0.6B';
 const REVISION = 'e61197ed45024b0ed8a2d74b80b4d909f1255473';
+
+// A REAL parent substrate the scorer can verify: a full-size (1024-word) state,
+// its canonical packing (PACKED_SIZE = 32768 bytes), and the merkle root it
+// hashes to. The scorer refuses any job whose packed state does not merkle to
+// the job's parentStateRoot.
+function makeParentState() {
+  const words = new Array(RANGES.WORD_COUNT).fill(0n);
+  words[0] = 0x1234n;
+  words[7] = (1n << 200n) | 99n;
+  words[RANGES.WORD_COUNT - 1] = 0x5678n;
+  return { words };
+}
+const PARENT_STATE = makeParentState();
+const PARENT_PACKED_HEX = bytesToHex(pack(PARENT_STATE));
+const PARENT_ROOT = bytesToHex(merkleizeState(PARENT_STATE)).toLowerCase();
 
 const LOADED_PINS = {
   modelId: MODEL_ID,
@@ -52,7 +70,8 @@ function baseJob(over = {}) {
   return {
     jobId: 'job-1',
     epochId: 7,
-    parentStateRoot: B32('11'),
+    parentStateRoot: PARENT_ROOT,
+    packedParentStateHex: PARENT_PACKED_HEX,
     patchHash: B32('22'),
     corpusRoot: LOADED_PINS.corpusRoot,
     bundleHash: LOADED_PINS.bundleHash,
@@ -132,6 +151,95 @@ describe('scorer-server — pin enforcement', () => {
     assert.match(checkScorerJobPins(baseJob({ corpusRoot: B32('99') }), LOADED_PINS), /corpusRoot/);
     assert.match(checkScorerJobPins(baseJob({ bundleHash: B32('99') }), LOADED_PINS), /bundleHash/);
     assert.match(checkScorerJobPins(baseJob({ coreVersionHash: B32('99') }), LOADED_PINS), /coreVersionHash/);
+  });
+});
+
+describe('scorer-server — parent-state verification', () => {
+  test('verifyJobParentState accepts a packed state that merkles to parentStateRoot', () => {
+    const v = verifyJobParentState({ parentStateRoot: PARENT_ROOT, packedParentStateHex: PARENT_PACKED_HEX });
+    assert.equal(v.ok, true);
+    assert.deepEqual(v.state.words, PARENT_STATE.words);
+  });
+
+  test('verifyJobParentState refuses a packed state that hashes to a DIFFERENT root', () => {
+    const other = { words: PARENT_STATE.words.slice() };
+    other.words[3] = 0xdeadn; // perturb -> different merkle root
+    const v = verifyJobParentState({ parentStateRoot: PARENT_ROOT, packedParentStateHex: bytesToHex(pack(other)) });
+    assert.equal(v.ok, false);
+    assert.match(v.reason, /merkles to .* != job\.parentStateRoot/);
+  });
+
+  test('happy job passes the VERIFIED parent state through to the evaluator', async () => {
+    const counter = { calls: 0 };
+    const res = await handleScoreJob(baseJob(), {
+      evaluator: fakeEvaluator(stateAdvanceResult(), counter),
+      tracedReranker: fakeTracedReranker(),
+      loadedPins: LOADED_PINS,
+      scorerHealth: HEALTH,
+    });
+    assert.equal(res.status, 200);
+    assert.equal(counter.calls, 1);
+    // The evaluator must receive the unpacked, verified parent state (NOT just
+    // the root hash) so it scores against the attested substrate.
+    assert.ok(counter.lastInput.parentState, 'parentState must be supplied to the evaluator');
+    assert.deepEqual(counter.lastInput.parentState.words, PARENT_STATE.words);
+    assert.equal(counter.lastInput.parentStateRoot, PARENT_ROOT);
+  });
+
+  test('mismatched packedParentStateHex is REFUSED (422) and the evaluator NEVER runs', async () => {
+    const other = { words: PARENT_STATE.words.slice() };
+    other.words[10] = 0xbeefn;
+    const counter = { calls: 0 };
+    const res = await handleScoreJob(
+      baseJob({ packedParentStateHex: bytesToHex(pack(other)) }),
+      {
+        evaluator: fakeEvaluator(stateAdvanceResult(), counter),
+        tracedReranker: fakeTracedReranker(),
+        loadedPins: LOADED_PINS,
+        scorerHealth: HEALTH,
+      },
+    );
+    assert.equal(res.status, 422);
+    assert.equal(res.body.error, 'SCORER_PARENT_STATE_MISMATCH');
+    assert.equal(counter.calls, 0, 'evaluator must not run when the parent state does not match the pin');
+  });
+
+  test('wrong-length packedParentStateHex is rejected (400) before any eval', async () => {
+    const counter = { calls: 0 };
+    const res = await handleScoreJob(baseJob({ packedParentStateHex: '0x1234' }), {
+      evaluator: fakeEvaluator(stateAdvanceResult(), counter),
+      tracedReranker: fakeTracedReranker(),
+      loadedPins: LOADED_PINS,
+      scorerHealth: HEALTH,
+    });
+    assert.equal(res.status, 400);
+    assert.equal(counter.calls, 0);
+  });
+
+  test('a job at the realistic substrate size scores (full PACKED_SIZE body accepted by the handler)', async () => {
+    // The packed parent is the largest field on the wire (PACKED_SIZE bytes).
+    assert.equal((PARENT_PACKED_HEX.length - 2) / 2, PACKED_SIZE);
+    const counter = { calls: 0 };
+    const res = await handleScoreJob(baseJob(), {
+      evaluator: fakeEvaluator(stateAdvanceResult(), counter),
+      tracedReranker: fakeTracedReranker(),
+      loadedPins: LOADED_PINS,
+      scorerHealth: HEALTH,
+    });
+    assert.equal(res.status, 200);
+    assert.equal(counter.calls, 1);
+  });
+
+  test('the HTTP body limit comfortably fits a realistic job (packed substrate + patch + context)', () => {
+    // A serialized job at realistic size must fit under the raised default
+    // body limit (the old 64 KB default was smaller than the packed substrate
+    // alone, which is the bug this guards against).
+    const realisticJobBytes = JSON.stringify(baseJob()).length;
+    assert.ok(realisticJobBytes > PACKED_SIZE, 'sanity: the packed substrate dominates the body');
+    assert.ok(
+      DEFAULT_SCORER_BODY_LIMIT_BYTES > realisticJobBytes * 2,
+      `default body limit ${DEFAULT_SCORER_BODY_LIMIT_BYTES} must comfortably exceed a realistic job body ${realisticJobBytes}`,
+    );
   });
 });
 
