@@ -58,6 +58,7 @@ import json
 import math
 import os
 import sys
+import time
 from typing import Any, List
 
 # CPU-only enforcement BEFORE any ML imports.
@@ -192,6 +193,24 @@ def _load_model(model_id: str, revision: str):
     return torch, tokenizer, model, yes_id, no_id
 
 
+def _split_base_and_head(model):
+    """Return (transformer_body, lm_head) so we can read the last-real-token
+    hidden state and project ONLY that position through the head, instead of
+    materializing [batch, seq, vocab] logits and discarding all but two
+    numbers at one position. Qwen3's vocab is ~152k against a 1024 hidden, so
+    the full-position vocab projection is a large fraction of each forward and
+    scales linearly with sequence length (HF exposes `logits_to_keep` for the
+    same reason). Unwraps a PEFT adapter wrapper if present. Returns
+    (None, None) when the layout isn't the expected ForCausalLM(body, lm_head)
+    so the caller falls back to the full-logits path (bit-for-bit unchanged)."""
+    inner = model.get_base_model() if hasattr(model, "get_base_model") else model
+    body = getattr(inner, "model", None)
+    head = getattr(inner, "lm_head", None)
+    if body is not None and head is not None and callable(head):
+        return body, head
+    return None, None
+
+
 def _score_pairs(torch, tokenizer, model, yes_id: int, no_id: int, prompts: "List[str]") -> "List[float]":
     """Batched padded forward pass for chat-template rerankers.
 
@@ -200,9 +219,20 @@ def _score_pairs(torch, tokenizer, model, yes_id: int, no_id: int, prompts: "Lis
     batched score per pair invariant to batch composition: padding tokens
     on the right don't contribute logits at the position we read, and the
     attention mask prevents non-padded tokens from attending to pads.
+
+    Fast path (default): run the transformer body once, gather the
+    last-real-token hidden state per sequence, and project ONLY those
+    positions through lm_head. This reads the exact same hidden vector at
+    the exact same position that the full-logits path reads, so the yes/no
+    logits — and therefore every score — are numerically identical, with
+    none of the wasted [seq-1] * vocab output projection. Set
+    CORETEX_RERANKER_FULL_LOGITS=1 to force the legacy full-logits path
+    (used by the parity harness to prove equivalence).
     """
     max_seq = int(os.environ.get("RERANKER_MAX_SEQ_LEN", "2048"))
     inner_batch = int(os.environ.get("RERANKER_INNER_BATCH", "8"))
+    emit_telemetry = os.environ.get("CORETEX_RERANKER_TELEMETRY") == "1"
+    force_full_logits = os.environ.get("CORETEX_RERANKER_FULL_LOGITS") == "1"
     scores: List[float] = []
     if not prompts:
         return scores
@@ -211,9 +241,16 @@ def _score_pairs(torch, tokenizer, model, yes_id: int, no_id: int, prompts: "Lis
     # convention and does not change the right-padded last-real-token logic.
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token = tokenizer.eos_token
+
+    body, head = (None, None) if force_full_logits else _split_base_and_head(model)
+    target_device = "cuda" if (_ALLOW_CUDA and torch.cuda.is_available()) else "cpu"
+    tok_ms = fwd_ms = proj_ms = 0.0
+    seq_lens: List[int] = []
+
     with torch.no_grad():
         for start in range(0, len(prompts), inner_batch):
             chunk = prompts[start : start + inner_batch]
+            t0 = time.perf_counter()
             encoded = tokenizer(
                 chunk,
                 return_tensors="pt",
@@ -221,17 +258,33 @@ def _score_pairs(torch, tokenizer, model, yes_id: int, no_id: int, prompts: "Lis
                 max_length=max_seq,
                 padding=True,
             )
-            target_device = "cuda" if (_ALLOW_CUDA and torch.cuda.is_available()) else "cpu"
             encoded = {k: v.to(target_device) for k, v in encoded.items()}
-            logits = model(**encoded).logits  # [batch, seq, vocab]
+            tok_ms += (time.perf_counter() - t0) * 1000.0
             attn = encoded["attention_mask"]
             # Last real token index per sequence: sum of mask - 1.
             last_idx = attn.sum(dim=1) - 1
-            for i in range(logits.shape[0]):
-                idx = int(last_idx[i].item())
-                if idx < 0:
-                    idx = 0
-                row = logits[i, idx]
+            if emit_telemetry:
+                seq_lens.extend(int(x) for x in attn.sum(dim=1).tolist())
+            batch_n = attn.shape[0]
+            rows_idx = torch.arange(batch_n)
+            clamped = last_idx.clamp(min=0)
+
+            if body is not None:
+                t1 = time.perf_counter()
+                hidden = body(**encoded).last_hidden_state  # [batch, seq, hidden]
+                fwd_ms += (time.perf_counter() - t1) * 1000.0
+                t2 = time.perf_counter()
+                gathered = hidden[rows_idx, clamped]  # [batch, hidden]
+                rows = head(gathered)  # [batch, vocab] — vocab projection at ONE position/seq
+                proj_ms += (time.perf_counter() - t2) * 1000.0
+            else:
+                t1 = time.perf_counter()
+                logits = model(**encoded).logits  # [batch, seq, vocab]
+                fwd_ms += (time.perf_counter() - t1) * 1000.0
+                rows = logits[rows_idx, clamped]  # [batch, vocab]
+
+            for i in range(batch_n):
+                row = rows[i]
                 diff = float((row[yes_id] - row[no_id]).detach().cpu())
                 score = 1.0 / (1.0 + math.exp(-diff))
                 if score < 0.0:
@@ -239,6 +292,22 @@ def _score_pairs(torch, tokenizer, model, yes_id: int, no_id: int, prompts: "Lis
                 elif score > 1.0:
                     score = 1.0
                 scores.append(score)
+
+    if emit_telemetry and seq_lens:
+        srt = sorted(seq_lens)
+        n = len(srt)
+        total_ms = tok_ms + fwd_ms + proj_ms
+        print(json.dumps({
+            "telemetry": {
+                "pairs": n,
+                "path": "last_token" if body is not None else "full_logits",
+                "seqLen": {"p50": srt[n // 2], "p95": srt[min(n - 1, (n * 95) // 100)], "max": srt[-1]},
+                "tokenizeMs": round(tok_ms, 1),
+                "forwardMs": round(fwd_ms, 1),
+                "projectionMs": round(proj_ms, 1),
+                "pairsPerSec": round(n / (total_ms / 1000.0), 2) if total_ms > 0 else None,
+            }
+        }), file=sys.stderr, flush=True)
     return scores
 
 
