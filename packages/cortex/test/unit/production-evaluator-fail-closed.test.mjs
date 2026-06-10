@@ -108,10 +108,28 @@ describe('resolveProductionRerankerPlan — fail-closed env contract', () => {
     const plan = resolveProductionRerankerPlan(PIN, productionEnv());
     assert.equal(plan.modelId, PIN.modelId);
     assert.equal(plan.revision, PIN.revision);
-    assert.equal(plan.mode, 'qwen3-per-batch');
+    // Production defaults to the persistent streaming model server, never the
+    // per-batch path that reloads the model on every batch.
+    assert.equal(plan.mode, 'qwen3-streaming');
     assert.equal(plan.instruction, QWEN_RERANKER_DEFAULT_INSTRUCTION);
     const streaming = resolveProductionRerankerPlan(PIN, productionEnv({ CORETEX_RERANKER_MODE: 'streaming' }));
     assert.equal(streaming.mode, 'qwen3-streaming');
+  });
+
+  test('per-batch reranker mode is refused unless the explicit dev escape is set', () => {
+    assert.throws(
+      () => resolveProductionRerankerPlan(PIN, productionEnv({ CORETEX_RERANKER_MODE: 'per-batch' })),
+      /refuses CORETEX_RERANKER_MODE=per-batch/,
+    );
+    const dev = resolveProductionRerankerPlan(
+      PIN,
+      productionEnv({ CORETEX_RERANKER_MODE: 'per-batch', CORETEX_ALLOW_PER_BATCH_RERANKER: 'dev-only-i-understand' }),
+    );
+    assert.equal(dev.mode, 'qwen3-per-batch');
+    assert.throws(
+      () => resolveProductionRerankerPlan(PIN, productionEnv({ CORETEX_RERANKER_MODE: 'bogus' })),
+      /unknown CORETEX_RERANKER_MODE/,
+    );
   });
 
   test('each missing env var fails construction with a clear error', () => {

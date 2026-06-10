@@ -173,8 +173,29 @@ export function resolveProductionRerankerPlan(
       `CORETEX_RERANKER_REVISION=${revisionOverride} conflicts with bundle reranker pin revision ${pin.revision}`,
     );
   }
+  // Production defaults to the persistent streaming model server: ONE python
+  // process loads Qwen once and stays warm. The per-batch path re-spawns
+  // python and reloads the ~0.6GB model for every batch (default 4 pairs) —
+  // an eval over tens of thousands of pairs becomes thousands of cold model
+  // loads, turning a ~minutes eval into hours. It is reachable only under an
+  // explicit dev/test escape, never by default.
+  let mode: ProductionRerankerPlan['mode'] = 'qwen3-streaming';
+  const modeEnv = env['CORETEX_RERANKER_MODE'];
+  if (modeEnv === 'per-batch' || modeEnv === 'per_batch') {
+    if (env['CORETEX_ALLOW_PER_BATCH_RERANKER'] !== 'dev-only-i-understand') {
+      throw new Error(
+        'production CoreTex evaluator refuses CORETEX_RERANKER_MODE=per-batch: it reloads the ' +
+          'model for every batch (catastrophic on a live coordinator). Unset CORETEX_RERANKER_MODE ' +
+          'to use the streaming model server, or set CORETEX_ALLOW_PER_BATCH_RERANKER=dev-only-i-understand ' +
+          'for a dev/test run.',
+      );
+    }
+    mode = 'qwen3-per-batch';
+  } else if (modeEnv !== undefined && modeEnv !== 'streaming') {
+    throw new Error(`unknown CORETEX_RERANKER_MODE=${modeEnv} (expected 'streaming', 'per-batch', or unset)`);
+  }
   return {
-    mode: env['CORETEX_RERANKER_MODE'] === 'streaming' ? 'qwen3-streaming' : 'qwen3-per-batch',
+    mode,
     modelId: pin.modelId,
     revision: pin.revision,
     instruction: resolveQwenRerankerInstruction(env),
