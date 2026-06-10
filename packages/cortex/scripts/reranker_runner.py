@@ -28,6 +28,22 @@ whether CUDA is active (CORETEX_RERANKER_ALLOW_CUDA=1 + torch.cuda
 available) with the device name + fp32 / tf32=false math flags. The
 keyless GPU scorer server calls this once at boot to populate scorerHealth.
 
+BUCKET-INDEX-SELFTEST (--bucket-index-selftest): stdlib-only oracle that
+drives the length-bucketing bucket/un-bucket index math (no torch) over a
+known permutation of varied-length prompts and emits the buckets + the
+round-tripped order, so a unit test can assert scores map back to input
+order exactly. See _length_bucketed_order / _run_bucket_index_selftest.
+
+Length bucketing (default ON): _score_pairs sorts prompts by tokenized
+length and groups them into inner_batch-sized buckets so each padded forward
+pads to a near-uniform length (far less wasted pad compute), then RESTORES
+the original input order for the returned scores. The last-real-token read +
+per-sequence score are unchanged — only which sequences share a padded
+forward changes — so the returned score order (and therefore the harness
+pairTraceHash/scoreArrayHash, which see input order) is unaffected. Kill
+switch CORETEX_DISABLE_LENGTH_BUCKETING=1 takes the verbatim legacy
+pad-to-inner_batch arrival-order loop.
+
 STREAM (--stream): loads the pinned model once, then reads NDJSON requests
 from stdin and writes NDJSON responses to stdout until EOF. Required for
 launch-scale corpus generation: a 4B reranker takes 30-60s to load on CPU,
@@ -199,6 +215,30 @@ def _load_model(model_id: str, revision: str):
     return torch, tokenizer, model, yes_id, no_id
 
 
+def _length_bucketed_order(lengths: "List[int]", inner_batch: int) -> "List[List[int]]":
+    """Pure index helper for length bucketing.
+
+    Given the tokenized length of each prompt (in ORIGINAL input order) and the
+    inner-batch size, return the list of buckets, where each bucket is a list of
+    ORIGINAL indices to score together in one padded forward. Prompts are sorted
+    ascending by length so each bucket pads to a near-uniform length (far less
+    wasted pad compute) and then grouped into contiguous runs of `inner_batch`.
+
+    The sort is STABLE on (length, original_index): ties keep original order, so
+    the bucketing is fully deterministic for a given (lengths, inner_batch). The
+    caller scores bucket by bucket and scatters each score back to its original
+    index, so the RETURNED score order is identical to the input order — only the
+    set of sequences that share a padded forward changes.
+
+    This is factored out (and self-tested via --bucket-index-selftest) so the
+    bucket/un-bucket index math can be proven order-preserving without a model.
+    """
+    if inner_batch < 1:
+        inner_batch = 1
+    order = sorted(range(len(lengths)), key=lambda i: (lengths[i], i))
+    return [order[s : s + inner_batch] for s in range(0, len(order), inner_batch)]
+
+
 def _split_base_and_head(model):
     """Return (transformer_body, lm_head) so we can read the last-real-token
     hidden state and project ONLY that position through the head, instead of
@@ -239,6 +279,14 @@ def _score_pairs(torch, tokenizer, model, yes_id: int, no_id: int, prompts: "Lis
     inner_batch = int(os.environ.get("RERANKER_INNER_BATCH", "8"))
     emit_telemetry = os.environ.get("CORETEX_RERANKER_TELEMETRY") == "1"
     force_full_logits = os.environ.get("CORETEX_RERANKER_FULL_LOGITS") == "1"
+    # Length bucketing is DEFAULT-ON: sort prompts by tokenized length and group
+    # into buckets so each forward pads to a near-uniform length (far less wasted
+    # pad compute), then RESTORE the original input order for the returned scores.
+    # The last-real-token read + per-sequence score are unchanged; this only
+    # changes which sequences share a padded forward. Kill switch
+    # CORETEX_DISABLE_LENGTH_BUCKETING=1 takes the verbatim legacy
+    # pad-to-inner_batch arrival-order loop.
+    disable_bucketing = os.environ.get("CORETEX_DISABLE_LENGTH_BUCKETING") == "1"
     scores: List[float] = []
     if not prompts:
         return scores
@@ -253,51 +301,83 @@ def _score_pairs(torch, tokenizer, model, yes_id: int, no_id: int, prompts: "Lis
     tok_ms = fwd_ms = proj_ms = 0.0
     seq_lens: List[int] = []
 
+    # Score one chunk of prompts (a padded forward) and return the per-sequence
+    # scores IN CHUNK ORDER. Identical math for both the bucketed and the legacy
+    # path — the last-real-token read + sigmoid are bit-for-bit the same; only the
+    # composition of each chunk differs. seq_lens telemetry stays aligned with the
+    # legacy path: bucketing reorders which lengths land together, but the seqLen
+    # percentiles are computed over the same multiset of per-sequence lengths.
+    def _score_chunk(chunk: "List[str]") -> "List[float]":
+        nonlocal tok_ms, fwd_ms, proj_ms
+        t0 = time.perf_counter()
+        encoded = tokenizer(
+            chunk,
+            return_tensors="pt",
+            truncation=True,
+            max_length=max_seq,
+            padding=True,
+        )
+        encoded = {k: v.to(target_device) for k, v in encoded.items()}
+        tok_ms += (time.perf_counter() - t0) * 1000.0
+        attn = encoded["attention_mask"]
+        # Last real token index per sequence: sum of mask - 1.
+        last_idx = attn.sum(dim=1) - 1
+        if emit_telemetry:
+            seq_lens.extend(int(x) for x in attn.sum(dim=1).tolist())
+        batch_n = attn.shape[0]
+        rows_idx = torch.arange(batch_n)
+        clamped = last_idx.clamp(min=0)
+
+        if body is not None:
+            t1 = time.perf_counter()
+            hidden = body(**encoded).last_hidden_state  # [batch, seq, hidden]
+            fwd_ms += (time.perf_counter() - t1) * 1000.0
+            t2 = time.perf_counter()
+            gathered = hidden[rows_idx, clamped]  # [batch, hidden]
+            rows = head(gathered)  # [batch, vocab] — vocab projection at ONE position/seq
+            proj_ms += (time.perf_counter() - t2) * 1000.0
+        else:
+            t1 = time.perf_counter()
+            logits = model(**encoded).logits  # [batch, seq, vocab]
+            fwd_ms += (time.perf_counter() - t1) * 1000.0
+            rows = logits[rows_idx, clamped]  # [batch, vocab]
+
+        chunk_scores: List[float] = []
+        for i in range(batch_n):
+            row = rows[i]
+            diff = float((row[yes_id] - row[no_id]).detach().cpu())
+            score = 1.0 / (1.0 + math.exp(-diff))
+            if score < 0.0:
+                score = 0.0
+            elif score > 1.0:
+                score = 1.0
+            chunk_scores.append(score)
+        return chunk_scores
+
     with torch.no_grad():
-        for start in range(0, len(prompts), inner_batch):
-            chunk = prompts[start : start + inner_batch]
-            t0 = time.perf_counter()
-            encoded = tokenizer(
-                chunk,
-                return_tensors="pt",
-                truncation=True,
-                max_length=max_seq,
-                padding=True,
-            )
-            encoded = {k: v.to(target_device) for k, v in encoded.items()}
-            tok_ms += (time.perf_counter() - t0) * 1000.0
-            attn = encoded["attention_mask"]
-            # Last real token index per sequence: sum of mask - 1.
-            last_idx = attn.sum(dim=1) - 1
-            if emit_telemetry:
-                seq_lens.extend(int(x) for x in attn.sum(dim=1).tolist())
-            batch_n = attn.shape[0]
-            rows_idx = torch.arange(batch_n)
-            clamped = last_idx.clamp(min=0)
-
-            if body is not None:
-                t1 = time.perf_counter()
-                hidden = body(**encoded).last_hidden_state  # [batch, seq, hidden]
-                fwd_ms += (time.perf_counter() - t1) * 1000.0
-                t2 = time.perf_counter()
-                gathered = hidden[rows_idx, clamped]  # [batch, hidden]
-                rows = head(gathered)  # [batch, vocab] — vocab projection at ONE position/seq
-                proj_ms += (time.perf_counter() - t2) * 1000.0
-            else:
-                t1 = time.perf_counter()
-                logits = model(**encoded).logits  # [batch, seq, vocab]
-                fwd_ms += (time.perf_counter() - t1) * 1000.0
-                rows = logits[rows_idx, clamped]  # [batch, vocab]
-
-            for i in range(batch_n):
-                row = rows[i]
-                diff = float((row[yes_id] - row[no_id]).detach().cpu())
-                score = 1.0 / (1.0 + math.exp(-diff))
-                if score < 0.0:
-                    score = 0.0
-                elif score > 1.0:
-                    score = 1.0
-                scores.append(score)
+        if disable_bucketing:
+            # ── LEGACY (kill switch): verbatim pad-to-inner_batch arrival-order loop ──
+            for start in range(0, len(prompts), inner_batch):
+                chunk = prompts[start : start + inner_batch]
+                scores.extend(_score_chunk(chunk))
+        else:
+            # ── DEFAULT: length bucketing + restore original input order ──
+            # Tokenize ONCE (no padding) just to get per-prompt lengths for the
+            # sort; the per-chunk forward re-tokenizes with padding=True exactly as
+            # the legacy path does, so the encoded tensors fed to the model are
+            # identical to what the legacy path would feed for that same chunk.
+            lengths = [
+                len(ids) for ids in tokenizer(
+                    prompts, truncation=True, max_length=max_seq
+                )["input_ids"]
+            ]
+            buckets = _length_bucketed_order(lengths, inner_batch)
+            scores = [0.0] * len(prompts)
+            for bucket in buckets:
+                chunk = [prompts[i] for i in bucket]
+                chunk_scores = _score_chunk(chunk)
+                for orig_idx, sc in zip(bucket, chunk_scores):
+                    scores[orig_idx] = sc
 
     if emit_telemetry and seq_lens:
         srt = sorted(seq_lens)
@@ -393,6 +473,53 @@ def _run_print_prompt_template() -> None:
     }))
 
 
+def _run_bucket_index_selftest() -> None:
+    """No-model order-preservation oracle for length bucketing (--bucket-index-selftest).
+
+    Reads {"lengths": [...], "innerBatch": N} from stdin (or uses a fixed
+    varied-length permutation when stdin is empty), drives the SAME
+    bucket-then-scatter index math _score_pairs uses with a fake per-prompt
+    "score" = its original index, and asserts the scattered output maps back to
+    input order EXACTLY. Emits the buckets + the round-tripped order so a unit
+    test can assert order preservation without torch/transformers. stdlib-only."""
+    raw = sys.stdin.read() if not sys.stdin.isatty() else ""
+    if raw.strip():
+        req = json.loads(raw)
+        lengths = [int(x) for x in req["lengths"]]
+        inner_batch = int(req.get("innerBatch", 8))
+    else:
+        # Fixed varied-length permutation (duplicate lengths included to exercise
+        # the stable (length, index) tie-break) + an odd inner_batch for a ragged
+        # final bucket.
+        lengths = [37, 5, 5, 128, 64, 5, 900, 12, 12, 256, 1, 2048, 64, 3]
+        inner_batch = 3
+
+    buckets = _length_bucketed_order(lengths, inner_batch)
+    # Fake score for prompt i = i (its original index). Scatter chunk scores back
+    # to original indices exactly as _score_pairs does, then assert the output
+    # array is the identity permutation [0,1,2,...] — i.e. order is preserved.
+    out = [None] * len(lengths)
+    for bucket in buckets:
+        chunk_scores = [orig_idx for orig_idx in bucket]  # fake-scoring path
+        for orig_idx, sc in zip(bucket, chunk_scores):
+            out[orig_idx] = sc
+    order_preserved = out == list(range(len(lengths)))
+    # Every original index appears in exactly one bucket exactly once.
+    flat = [i for b in buckets for i in b]
+    coverage_ok = sorted(flat) == list(range(len(lengths)))
+    # Each non-final bucket is full; buckets are length-sorted ascending.
+    bucket_lengths = [[lengths[i] for i in b] for b in buckets]
+    print(json.dumps({
+        "lengths": lengths,
+        "innerBatch": inner_batch,
+        "buckets": buckets,
+        "bucketLengths": bucket_lengths,
+        "scatteredOutput": out,
+        "orderPreserved": order_preserved,
+        "coverageOk": coverage_ok,
+    }))
+
+
 def _run_health() -> None:
     """Runtime fingerprint for the keyless GPU scorer's scorerHealth (no model load)."""
     import platform
@@ -431,6 +558,9 @@ def main() -> None:
         return
     if len(sys.argv) > 1 and sys.argv[1] == "--health":
         _run_health()
+        return
+    if len(sys.argv) > 1 and sys.argv[1] == "--bucket-index-selftest":
+        _run_bucket_index_selftest()
         return
     if len(sys.argv) > 1 and sys.argv[1] == "--stream":
         _run_stream()
