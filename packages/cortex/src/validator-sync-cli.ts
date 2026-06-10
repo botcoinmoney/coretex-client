@@ -81,6 +81,12 @@ import {
 import { biEncoderModelIdHash } from './substrate/retrieval-decoder.js';
 import { createBaseRpcClient } from './coordinator/base-blockhash.js';
 import { mergeValidatorStateFile } from './validator-setup-cli.js';
+import {
+  applyRerankerThreadDefault,
+  makeProgress,
+  renderSummaryBlock,
+  type ThreadDefaultResult,
+} from './validator-runtime.js';
 
 const ZERO32 = `0x${'00'.repeat(32)}`;
 const args = process.argv.slice(2);
@@ -109,7 +115,14 @@ Common flags (all optional overrides of setup/state-file/chain defaults):
   --state-dir <dir>            validator state dir (default .coretex-validator)
   --skip-score-replay          SKIP post-reveal score re-scoring (loud; exit ${SKIP_SCORE_REPLAY_EXIT_CODE})
   --allow-version-mismatch     read-only escape for the bundle version check
-  --help                       this text`;
+  --no-progress                suppress stderr progress/ETA (auto-off on CI=1 / non-TTY)
+  --help                       this text
+
+Runtime: when set up via coretex-validator-setup, score replay reuses the
+recorded scorer venv (CORETEX_RERANKER_PYTHON, override always wins) and picks a
+sane RERANKER_NUM_THREADS (min(physical cores, ${16}); operator override wins).
+These affect runtime speed only — never scores. Progress/ETA print to stderr;
+the machine-readable JSON status stays on stdout.`;
 
 function opt(name: string, fallback?: string): string | undefined {
   const i = args.indexOf(`--${name}`);
@@ -311,6 +324,9 @@ export interface ValidatorSyncStateFile {
     readonly corpusPath?: string;
     readonly materializedRoot?: string;
     readonly artifactBaseUrl?: string;
+    /** Scorer interpreter recorded by setup's venv bootstrap (BUILD 1). */
+    readonly scorerPython?: string;
+    readonly scorerVenvStatus?: string;
   };
   readonly replay?: {
     readonly stateRoot?: string;
@@ -467,6 +483,37 @@ interface ValidatorScorerContext {
   readonly reranker: { model: string; close?: () => Promise<void> };
 }
 
+/**
+ * RUNTIME hygiene applied to process.env BEFORE the (expensive) scorer is
+ * constructed. Sets CORETEX_RERANKER_PYTHON from the setup-recorded venv
+ * interpreter when the operator has not already set one, and resolves a sane
+ * RERANKER_NUM_THREADS default. NEITHER changes scoring semantics: the python
+ * interpreter still runs the SAME pinned reranker_runner.py at the SAME pinned
+ * model revision, and thread count only affects throughput. An operator value
+ * always wins; we log what was selected and why. Returns the thread decision
+ * for the summary block.
+ */
+function applyScorerRuntimeDefaults(setup: ValidatorSyncStateFile['setup'] | undefined): {
+  scorerPython?: string;
+  scorerPythonSource: 'operator' | 'setup-venv' | 'default';
+  thread: ThreadDefaultResult;
+} {
+  let scorerPythonSource: 'operator' | 'setup-venv' | 'default' = 'default';
+  if (process.env['CORETEX_RERANKER_PYTHON']) {
+    scorerPythonSource = 'operator';
+  } else if (setup?.scorerPython && existsSync(setup.scorerPython)) {
+    process.env['CORETEX_RERANKER_PYTHON'] = setup.scorerPython;
+    scorerPythonSource = 'setup-venv';
+  }
+  const thread = applyRerankerThreadDefault(process.env);
+  warn(`[runtime] scorer python: ${process.env['CORETEX_RERANKER_PYTHON'] ?? 'python3'} (${scorerPythonSource}); ${thread.reason}`);
+  return {
+    ...(process.env['CORETEX_RERANKER_PYTHON'] ? { scorerPython: process.env['CORETEX_RERANKER_PYTHON'] } : {}),
+    scorerPythonSource,
+    thread,
+  };
+}
+
 /** Build the FAIL-CLOSED scorer context shared by sync auto-verify and
  *  verify-patch: pinned corpus + pinned qwen3 reranker from the bundle. */
 async function buildValidatorScorerContext(
@@ -508,6 +555,7 @@ async function closeReranker(reranker: { close?: () => Promise<void> } | undefin
 }
 
 async function syncMain() {
+  const noProgressFlag = has('no-progress');
   // ── validator state dir / state file FIRST: setup-written defaults feed everything below ──
   const stateDir = opt('state-dir', process.env['CORETEX_VALIDATOR_STATE_DIR'] ?? '.coretex-validator')!;
   const statePath = opt('state', join(stateDir, 'validator-sync-state.json'))!;
@@ -688,9 +736,19 @@ async function syncMain() {
   const confirmationDepth = BigInt(logOpts.confirmationDepth ?? CORETEX_DEFAULT_CONFIRMATION_DEPTH);
   const confirmedHead = latest - confirmationDepth;
   const fromBlock = fromBlockResolved.fromBlock;
+  // Registry log replay: surface the confirmed block window being paginated so
+  // a validator sees the replay is moving (stderr only — stdout JSON unaffected).
+  const replayProgress = makeProgress({
+    label: 'registry log replay',
+    unit: 'blocks',
+    ...(confirmedHead >= fromBlock ? { total: Number(confirmedHead - fromBlock + 1n) } : {}),
+    noProgressFlag,
+  });
   const logs = confirmedHead >= fromBlock
     ? await coretexRangeLogs(rpcUrl, registry, blockHex(fromBlock), blockHex(confirmedHead), { latestBlock: latest, ...logOpts })
     : [];
+  if (confirmedHead >= fromBlock) replayProgress.update(Number(confirmedHead - fromBlock + 1n));
+  replayProgress.done();
   const advances = logs
     .map(decodeCoreTexStateAdvanced)
     .filter((v): v is CoreTexStateAdvancedEvent => v !== null)
@@ -778,6 +836,7 @@ async function syncMain() {
     pending: { artifactHash: string; epoch: string; reason: string }[];
     skipped: boolean;
   } = { status: chain.evalReplayStatus, verified: [], pending: [], skipped: false };
+  let runtime: ReturnType<typeof applyScorerRuntimeDefaults> | undefined;
 
   if (skipScoreReplay) {
     evalReplay.skipped = true;
@@ -791,8 +850,14 @@ async function syncMain() {
     if (!corpusPath) {
       die('post-reveal eval verification requires the materialized corpus: run coretex-validator-setup or pass --corpus/CORETEX_CORPUS_PATH');
     }
+    // RUNTIME hygiene before the scorer spawns: setup-recorded venv interpreter
+    // + sane thread default (operator env always wins; scores unaffected).
+    runtime = applyScorerRuntimeDefaults(setup);
     const ctx = await buildValidatorScorerContext(bundleManifest, corpusPath);
     const rpcClient = createBaseRpcClient(rpcUrl);
+    // Per-advance score-replay progress + ETA (stderr only; stdout JSON clean).
+    const scoreProgress = makeProgress({ label: 'post-reveal score replay', unit: 'advances', total: advanceRecords.length, noProgressFlag });
+    let scoredAdvances = 0;
     const epochSecretCache = new Map<string, string | null>();
     const epochSecretFor = async (e: bigint): Promise<string | null> => {
       const key = e.toString();
@@ -845,8 +910,10 @@ async function syncMain() {
           gateDeltaPpm: result.gateDeltaPpm,
           confirmDeltaPpm: result.confirmDeltaPpm,
         });
+        scoreProgress.update(++scoredAdvances);
       }
     } finally {
+      scoreProgress.done();
       await closeReranker(ctx.reranker);
     }
   }
@@ -902,6 +969,18 @@ async function syncMain() {
     evalArtifacts,
     statePath,
   }, null, 2) + '\n');
+
+  // Final PASS/FAIL summary block — stderr only, after the machine-readable
+  // JSON on stdout. A --skip-score-replay run is a non-attesting PASS-with-caveat.
+  renderSummaryBlock('coretex-validator-sync', true, [
+    `epoch ${epoch} (${epochSource}); bundle ${version.match ? 'matches' : 'MISMATCH (read-only)'} on-chain coreVersionHash`,
+    `registry replay: ${advances.length} advance(s), final root == chain liveStateRoot`,
+    evalReplay.skipped
+      ? `score replay: SKIPPED (--skip-score-replay) — NOT a score attestation (exit ${SKIP_SCORE_REPLAY_EXIT_CODE})`
+      : `score replay: ${evalReplay.verified.length} verified, ${evalReplay.pending.length} pending (status ${chain.evalReplayStatus})`,
+    ...(runtime ? [`scorer python: ${runtime.scorerPython ?? 'python3'} (${runtime.scorerPythonSource}); RERANKER_NUM_THREADS=${runtime.thread.threads} (${runtime.thread.source})`] : []),
+    `state file: ${statePath}`,
+  ]);
 
   if (skipScoreReplay) process.exit(SKIP_SCORE_REPLAY_EXIT_CODE);
 }
@@ -969,6 +1048,9 @@ async function verifyPatchMain() {
     die(`local parent state root ${parentRoot} != artifact context parentStateRoot ${artifact.context.parentStateRoot}`);
   }
 
+  // RUNTIME hygiene before the scorer spawns (same as sync): setup-recorded
+  // venv interpreter + sane thread default. Operator env wins; scores unaffected.
+  applyScorerRuntimeDefaults(setup);
   const ctx = await buildValidatorScorerContext(bundle, corpusPath);
   if (ctx.corpus.corpusRoot.toLowerCase() !== artifact.context.corpusRoot.toLowerCase()) {
     await closeReranker(ctx.reranker);

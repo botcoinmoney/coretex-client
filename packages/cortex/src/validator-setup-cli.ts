@@ -44,7 +44,15 @@ import http from 'node:http';
 import https from 'node:https';
 
 import { verifyBundleManifest, type CoreTexBundleManifest } from './bundle/index.js';
-import { resolveCortexPackageRoot } from './eval/reranker.js';
+import { resolveCortexPackageRoot, resolveRerankerScriptPath } from './eval/reranker.js';
+import {
+  bootstrapScorerVenv,
+  VenvBootstrapError,
+  makeProgress,
+  renderSummaryBlock,
+  realSyncSpawner,
+  type VenvBootstrapResult,
+} from './validator-runtime.js';
 
 export const LAUNCH_ARTIFACT_MANIFEST_FILENAME = 'coretex-launch-v16-artifacts.json';
 export const LAUNCH_ARTIFACT_MANIFEST_SCHEMA = 'coretex.launch-artifacts.v1';
@@ -57,11 +65,20 @@ Usage:
   coretex-validator-setup [--artifact-base-url <url>] [--manifest <path-or-url>]
                           [--state-dir <dir>] [--registry-deploy-block <n>]
                           [--verify-only] [--no-download] [--repo-root <dir>]
+                          [--no-venv-bootstrap] [--no-progress]
 
 Env:
-  CORETEX_ARTIFACT_BASE_URL     artifact base URL (manifest + payloads)
-  CORETEX_VALIDATOR_STATE_DIR   state dir (default .coretex-validator)
-  CORETEX_REGISTRY_DEPLOY_BLOCK registry deploy block recorded for sync replay
+  CORETEX_ARTIFACT_BASE_URL      artifact base URL (manifest + payloads)
+  CORETEX_VALIDATOR_STATE_DIR    state dir (default .coretex-validator)
+  CORETEX_REGISTRY_DEPLOY_BLOCK  registry deploy block recorded for sync replay
+  CORETEX_RERANKER_PYTHON        operator scorer interpreter (skips venv bootstrap when valid)
+  CORETEX_VALIDATOR_SKIP_VENV=1  skip the Python venv bootstrap (same as --no-venv-bootstrap)
+
+By default setup also bootstraps a self-contained CPU scorer venv under
+<state-dir>/scorer-venv (idempotent; skipped when CORETEX_RERANKER_PYTHON
+already imports the pinned torch+transformers) and records its interpreter so
+sync's score replay runs without manual Python setup. Progress + ETA print to
+stderr (TTY-aware; suppress with --no-progress or CI=1) — stdout stays clean.
 
 After setup completes, \`coretex-validator-sync\` needs only BASE_RPC_URL,
 CORETEX_REGISTRY_ADDRESS, BOTCOIN_MINING_CONTRACT_ADDRESS, and
@@ -192,19 +209,26 @@ export async function verifyPayloadFile(
   return { ok: true };
 }
 
-function downloadHttp(url: string, outPath: string, redirects = 0): Promise<void> {
+/** Optional byte-progress callback: (downloadedBytes, totalBytesOrUndefined). */
+export type DownloadProgress = (downloaded: number, total: number | undefined) => void;
+
+function downloadHttp(url: string, outPath: string, onProgress?: DownloadProgress, redirects = 0): Promise<void> {
   return new Promise((resolveDone, reject) => {
     const client = url.startsWith('https:') ? https : http;
     const req = client.get(url, (res) => {
       if ([301, 302, 303, 307, 308].includes(res.statusCode ?? 0)) {
         res.resume();
         if (!res.headers.location || redirects >= 5) return reject(new Error(`redirect failed for ${url}`));
-        return resolveDone(downloadHttp(new URL(res.headers.location, url).toString(), outPath, redirects + 1));
+        return resolveDone(downloadHttp(new URL(res.headers.location, url).toString(), outPath, onProgress, redirects + 1));
       }
       if ((res.statusCode ?? 0) < 200 || (res.statusCode ?? 0) >= 300) {
         res.resume();
         return reject(new Error(`HTTP ${res.statusCode} for ${url}`));
       }
+      const totalHeader = Number(res.headers['content-length']);
+      const total = Number.isFinite(totalHeader) && totalHeader > 0 ? totalHeader : undefined;
+      let downloaded = 0;
+      if (onProgress) res.on('data', (chunk: Buffer) => { downloaded += chunk.length; onProgress(downloaded, total); });
       const file = createWriteStream(outPath);
       res.pipe(file);
       file.on('finish', () => file.close(() => resolveDone()));
@@ -214,14 +238,14 @@ function downloadHttp(url: string, outPath: string, redirects = 0): Promise<void
   });
 }
 
-export async function downloadArtifact(url: string, outPath: string, baseDir: string): Promise<void> {
+export async function downloadArtifact(url: string, outPath: string, baseDir: string, onProgress?: DownloadProgress): Promise<void> {
   mkdirSync(dirname(outPath), { recursive: true });
   const tmp = `${outPath}.tmp-${process.pid}`;
   try { if (existsSync(tmp)) unlinkSync(tmp); } catch { /* stale tmp */ }
   if (url.startsWith('file://')) {
     copyFileSync(fileURLToPath(url), tmp);
   } else if (url.startsWith('http://') || url.startsWith('https://')) {
-    await downloadHttp(url, tmp);
+    await downloadHttp(url, tmp, onProgress);
   } else {
     copyFileSync(resolve(baseDir, url), tmp);
   }
@@ -315,6 +339,7 @@ async function ensurePayload(opts: {
   verifyOnly: boolean;
   noDownload: boolean;
   baseDir: string;
+  noProgress?: boolean;
 }): Promise<void> {
   const existing = await verifyPayloadFile(opts.dest, opts.expected);
   if (existing.ok) {
@@ -328,7 +353,18 @@ async function ensurePayload(opts: {
     die(`${opts.dest} ${existing.reason}; set CORETEX_ARTIFACT_BASE_URL or pass --artifact-base-url`);
   }
   log(`FETCH ${opts.role}: ${opts.url}`);
-  await downloadArtifact(opts.url, opts.dest, opts.baseDir);
+  // Byte/total + ETA progress on the (potentially large) artifact download —
+  // stderr only, so stdout stays clean. content-length supplies the total.
+  const progress = makeProgress({
+    label: `download ${opts.role}`,
+    unit: 'bytes',
+    ...(opts.expected.bytes !== undefined ? { total: opts.expected.bytes } : {}),
+    noProgressFlag: opts.noProgress ?? false,
+  });
+  await downloadArtifact(opts.url, opts.dest, opts.baseDir, (downloaded, total) => {
+    progress.update(total !== undefined ? Math.min(downloaded, total) : downloaded);
+  });
+  progress.done();
   const after = await verifyPayloadFile(opts.dest, opts.expected);
   if (!after.ok) die(`downloaded ${opts.dest} failed verification: ${after.reason}`);
   log(`OK ${opts.role}: ${opts.dest}`);
@@ -341,6 +377,8 @@ async function main(): Promise<void> {
   }
   const verifyOnly = has('verify-only');
   const noDownload = has('no-download');
+  const noProgress = has('no-progress');
+  const skipVenv = has('no-venv-bootstrap') || process.env['CORETEX_VALIDATOR_SKIP_VENV'] === '1';
   const repoRoot = opt('repo-root');
   const artifactBase = opt('artifact-base-url', process.env['CORETEX_ARTIFACT_BASE_URL']);
   const stateDir = resolve(opt('state-dir', process.env['CORETEX_VALIDATOR_STATE_DIR'] ?? (repoRoot ? join(repoRoot, '.coretex-validator') : '.coretex-validator'))!);
@@ -386,6 +424,7 @@ async function main(): Promise<void> {
       verifyOnly,
       noDownload,
       baseDir,
+      noProgress,
     });
   }
 
@@ -408,14 +447,14 @@ async function main(): Promise<void> {
       expected: { sha256: manifest.bundleSha256 },
       role: 'bundle-manifest',
       url: base ? payloadDownloadUrl(base, { path: manifest.bundlePath }) : null,
-      verifyOnly, noDownload, baseDir,
+      verifyOnly, noDownload, baseDir, noProgress,
     });
     await ensurePayload({
       dest: profileDest,
       expected: { sha256: manifest.profileSha256 },
       role: 'evaluator-profile',
       url: base ? payloadDownloadUrl(base, { path: manifest.profilePath }) : null,
-      verifyOnly, noDownload, baseDir,
+      verifyOnly, noDownload, baseDir, noProgress,
     });
   }
 
@@ -452,7 +491,37 @@ async function main(): Promise<void> {
   }
   const corpusJsonPath = materializedPaths(materializedRoot, manifest.bundleHash).corpusJson;
 
+  // ── Python scorer venv bootstrap (RUNTIME hygiene; never touches scoring) ──
+  //   Makes sync's CPU score replay self-contained given only python3. Skipped
+  //   in --verify-only (a verify-only run never builds anything) and when opted
+  //   out. The resolved interpreter is recorded so sync exports it as
+  //   CORETEX_RERANKER_PYTHON for the scorer spawn.
+  let venv: VenvBootstrapResult | undefined;
+  if (!verifyOnly) {
+    try {
+      venv = bootstrapScorerVenv({
+        stateDir,
+        rerankerScriptPath: resolveRerankerScriptPath(),
+        envScorerPython: process.env['CORETEX_RERANKER_PYTHON'],
+        optOut: skipVenv,
+      }, realSyncSpawner);
+      log(`scorer python: ${venv.status} — ${venv.detail}`);
+    } catch (err) {
+      if (err instanceof VenvBootstrapError) {
+        // A failed bootstrap is a hard, actionable failure — never leave a
+        // half-built venv claimed as ready.
+        renderSummaryBlock('coretex-validator-setup', false, [
+          'Python scorer venv bootstrap FAILED — score replay is not yet self-contained.',
+          ...err.message.split('\n'),
+        ]);
+        die(err.message);
+      }
+      throw err;
+    }
+  }
+
   // ── validator state file: sync needs no manual flags after this ──
+  const recordScorerPython = venv && venv.status !== 'skipped-opt-out';
   const state = mergeValidatorStateFile(statePath, {
     bundleHash: manifest.bundleHash,
     corpusRoot: manifest.corpusRoot,
@@ -466,11 +535,24 @@ async function main(): Promise<void> {
       corpusPath: corpusJsonPath,
       materializedRoot,
       ...(base ? { artifactBaseUrl: base } : {}),
+      ...(recordScorerPython ? { scorerPython: venv!.scorerPython, scorerVenvStatus: venv!.status } : {}),
     },
   });
   log(`state: ${statePath}`);
   log(`READY corpusRoot=${manifest.corpusRoot} bundleHash=${manifest.bundleHash}`);
   void state;
+
+  renderSummaryBlock('coretex-validator-setup', true, [
+    `launch artifact: ${manifest.name}`,
+    `corpusRoot=${manifest.corpusRoot}`,
+    `bundleHash=${manifest.bundleHash}`,
+    `materialized corpus: ${corpusJsonPath}`,
+    venv
+      ? `scorer python: ${recordScorerPython ? venv.scorerPython : '(operator-managed)'} [${venv.status}]`
+      : 'scorer python: (verify-only — venv bootstrap skipped)',
+    `state file: ${statePath}`,
+    'Next: coretex-validator-sync (needs only BASE_RPC_URL, CORETEX_REGISTRY_ADDRESS, BOTCOIN_MINING_CONTRACT_ADDRESS, CORETEX_ARTIFACT_BASE_URL)',
+  ]);
 }
 
 const invokedAsScript = (() => {

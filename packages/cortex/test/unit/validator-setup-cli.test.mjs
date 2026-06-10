@@ -138,10 +138,14 @@ describe('launch manifest helpers', () => {
 describe('coretex-validator-setup — tiny fixture over file:// (spawned)', () => {
   test('fresh setup downloads, verifies, materializes, and writes the one-command state file', { timeout: 120_000 }, () => {
     const stateDir = join(root, 'state');
+    // --no-venv-bootstrap: a real multi-GB torch install is NOT a unit test
+    // (the bootstrap LOGIC is covered in validator-runtime.test.mjs with a fake
+    // spawner). This case proves artifact hydration + the state file.
     const proc = runSetup([
       '--artifact-base-url', originUrl,
       '--state-dir', stateDir,
       '--registry-deploy-block', '4242',
+      '--no-venv-bootstrap',
     ]);
     assert.equal(proc.status, 0, `stdout: ${proc.stdout}\nstderr: ${proc.stderr}`);
     assert.match(proc.stdout, /READY corpusRoot=0x/);
@@ -187,5 +191,24 @@ describe('coretex-validator-setup — tiny fixture over file:// (spawned)', () =
     assert.equal(proc.status, 0);
     assert.match(proc.stdout, /coretex-validator-setup/);
     assert.match(proc.stdout, /--artifact-base-url/);
+  });
+
+  test('--no-venv-bootstrap skips the venv (no torch install); summary on stderr, stdout clean', { timeout: 120_000 }, () => {
+    const stateDir = join(root, 'state-novenv');
+    const proc = runSetup([
+      '--artifact-base-url', originUrl,
+      '--state-dir', stateDir,
+      '--no-venv-bootstrap',
+      '--no-progress',
+    ], { CI: '1' });
+    assert.equal(proc.status, 0, `stdout: ${proc.stdout}\nstderr: ${proc.stderr}`);
+    // No scorer venv was built, and no scorerPython recorded under opt-out.
+    assert.ok(!existsSync(join(stateDir, 'scorer-venv')), 'opt-out must not create scorer-venv');
+    const state = JSON.parse(readFileSync(join(stateDir, 'validator-sync-state.json'), 'utf8'));
+    assert.equal(state.setup.scorerPython, undefined, 'opt-out records no scorerPython');
+    // The PASS summary block is stderr-only — stdout carries [setup] log lines + READY.
+    assert.match(proc.stderr, /coretex-validator-setup: PASS/);
+    assert.doesNotMatch(proc.stdout, /coretex-validator-setup: PASS/);
+    assert.match(proc.stdout, /READY corpusRoot=0x/);
   });
 });
