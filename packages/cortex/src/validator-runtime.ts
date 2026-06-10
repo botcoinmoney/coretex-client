@@ -71,12 +71,18 @@ export function scorerVenvPython(stateDir: string): string {
   return join(stateDir, SCORER_VENV_DIRNAME, 'bin', 'python');
 }
 
-/** Result of the venv-python `--health` import probe. */
+/** Result of the venv-python `--health` import probe. Mirrors the JSON object
+ *  emitted by packages/cortex/scripts/reranker_runner.py:_run_health(). */
 export interface ScorerHealth {
   readonly torch?: string | null;
   readonly transformers?: string | null;
   readonly cuda?: boolean;
   readonly python?: string;
+  /** Reranker math dtype the runner pins (fp32 on both CPU and GPU paths). */
+  readonly dtype?: string;
+  /** Whether TF32 matmul is allowed (must be false — fp32-exact contract). */
+  readonly tf32?: boolean;
+  readonly device?: string;
 }
 
 /**
@@ -129,6 +135,123 @@ export function scorerHealthIsAcceptable(health: ScorerHealth | null): { ok: boo
   if (health.transformers == null) return { ok: false, reason: 'transformers not importable' };
   if (!String(health.transformers).startsWith(PINNED_TRANSFORMERS_VERSION)) {
     return { ok: false, reason: `transformers ${health.transformers} != pinned ${PINNED_TRANSFORMERS_VERSION}` };
+  }
+  return { ok: true };
+}
+
+// ─── BUILD 1b: bundle-pinned scorer runtime fingerprint assertion ─────────────
+//
+// The 5-ppm replay tolerance absorbs the CPU↔GPU fp32 numeric drift the keyless
+// scorer path is designed around, but it does NOT absorb a wrong torch /
+// transformers / model / prompt-template pin — those can shift logits well past
+// 5 ppm and silently corrupt a score replay. Before any score replay the
+// validator therefore asserts that the resolved scorer runtime fingerprint
+// matches the bundle manifest's reranker pins. This is a HARD GATE, not a
+// runtime-speed nicety: it never changes scores, it refuses to score at all
+// when the runtime cannot reproduce the pinned scorer.
+
+/** Bundle-manifest pins the scorer runtime fingerprint is asserted against. */
+export interface ScorerRuntimeBundlePins {
+  /** Pinned reranker model id (bundle.model.reranker.modelId). */
+  readonly modelId: string;
+  /** Pinned reranker revision (bundle.model.reranker.revision). */
+  readonly revision: string;
+  /** Pinned torch version range from the profile runtimePin (e.g. '2.6.*'). */
+  readonly torchRange: string;
+  /** Pinned transformers version range from the profile runtimePin (e.g. '4.55.*'). */
+  readonly transformersRange: string;
+  /** runtimePin.buildFlags — when it contains 'cpu-only', CUDA must be off. */
+  readonly buildFlags?: readonly string[] | undefined;
+  /** Optional pinned prompt-template hash (forward-compat: bundles that record
+   *  one bind the resolved template exactly; absent → only structural canonical
+   *  check via the resolved hash the caller supplies). */
+  readonly promptTemplateHash?: string | undefined;
+}
+
+/** The resolved scorer identity the sync is about to construct + score with. */
+export interface ResolvedScorerRuntime {
+  /** Resolved reranker model id (forced to the bundle pin by createValidatorReranker). */
+  readonly modelId: string;
+  /** Resolved reranker revision. */
+  readonly revision: string;
+  /** Locally computed qwenRerankerPromptTemplateHash() for the resolved instruction. */
+  readonly promptTemplateHash: string;
+}
+
+/**
+ * Match a concrete installed version against a runtimePin range token. Accepts
+ * the bundle's `X.Y.*` / `X.*` ranges and an exact `X.Y.Z`, stripping a wheel
+ * build/pre suffix (e.g. '2.6.0+cpu') before comparing. Mirrors the bundle
+ * module's matchSemverRange; duplicated here because validator-runtime is a
+ * standalone module (it ships the pinned-version constants for the same reason).
+ */
+export function scorerVersionMatchesRange(installed: string, range: string): boolean {
+  if (range === installed) return true;
+  const core = installed.split(/[+\-]/, 1)[0]!;
+  const minorGlob = range.match(/^(\d+)\.(\d+)\.\*$/);
+  if (minorGlob) {
+    const [, maj, min] = minorGlob;
+    return new RegExp(`^${maj}\\.${min}\\.\\d+$`).test(core);
+  }
+  const majorGlob = range.match(/^(\d+)\.\*$/);
+  if (majorGlob) {
+    return new RegExp(`^${majorGlob[1]}\\.\\d+\\.\\d+$`).test(core);
+  }
+  if (/^\d+\.\d+\.\d+$/.test(range)) return core === range;
+  return false;
+}
+
+/**
+ * Assert the resolved scorer runtime fingerprint matches the bundle pins.
+ * Returns { ok: true } only when EVERY pinned facet agrees:
+ *   - the `--health` probe imports torch/transformers in the pinned ranges,
+ *   - the math contract is fp32 with TF32 disabled (logit-exact),
+ *   - CUDA is off when the bundle is cpu-only,
+ *   - the resolved model id + revision equal the bundle reranker pins,
+ *   - the resolved prompt-template hash equals the bundle's (when pinned).
+ * Any mismatch returns { ok: false, reason } — the caller hard-errors BEFORE
+ * constructing the scorer or replaying any score. Never touches scoring math.
+ */
+export function scorerRuntimeMatchesBundle(
+  health: ScorerHealth | null,
+  pins: ScorerRuntimeBundlePins,
+  resolved: ResolvedScorerRuntime,
+): { ok: boolean; reason?: string } {
+  if (!health) {
+    return { ok: false, reason: 'scorer --health probe failed (interpreter missing or torch/transformers not importable)' };
+  }
+  const cpuOnly = (pins.buildFlags ?? []).includes('cpu-only');
+  if (cpuOnly && health.cuda === true) {
+    return { ok: false, reason: 'CUDA is active but the bundle runtimePin is cpu-only' };
+  }
+  if (health.torch == null) return { ok: false, reason: 'torch not importable in the scorer runtime' };
+  if (!scorerVersionMatchesRange(String(health.torch), pins.torchRange)) {
+    return { ok: false, reason: `torch ${health.torch} does not match bundle runtimePin ${pins.torchRange}` };
+  }
+  if (health.transformers == null) return { ok: false, reason: 'transformers not importable in the scorer runtime' };
+  if (!scorerVersionMatchesRange(String(health.transformers), pins.transformersRange)) {
+    return { ok: false, reason: `transformers ${health.transformers} does not match bundle runtimePin ${pins.transformersRange}` };
+  }
+  // The runner reports dtype/tf32 in its fingerprint; the 5-ppm tolerance is
+  // only valid for fp32 with TF32 disabled. A bf16/tf32 runtime is rejected.
+  if (health.dtype !== undefined && health.dtype !== 'fp32') {
+    return { ok: false, reason: `scorer dtype ${health.dtype} != fp32 (logit-exact replay contract)` };
+  }
+  if (health.tf32 === true) {
+    return { ok: false, reason: 'scorer TF32 matmul is enabled — the fp32-exact replay contract requires tf32=false' };
+  }
+  if (resolved.modelId !== pins.modelId) {
+    return { ok: false, reason: `resolved reranker modelId ${resolved.modelId} != bundle pin ${pins.modelId}` };
+  }
+  if (resolved.revision !== pins.revision) {
+    return { ok: false, reason: `resolved reranker revision ${resolved.revision} != bundle pin ${pins.revision}` };
+  }
+  if (pins.promptTemplateHash !== undefined
+    && resolved.promptTemplateHash.toLowerCase() !== pins.promptTemplateHash.toLowerCase()) {
+    return {
+      ok: false,
+      reason: `resolved prompt-template hash ${resolved.promptTemplateHash} != bundle pin ${pins.promptTemplateHash}`,
+    };
   }
   return { ok: true };
 }

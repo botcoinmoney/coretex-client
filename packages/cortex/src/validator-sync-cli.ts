@@ -39,7 +39,7 @@
  *   and replays it through verifyPostRevealEvalReportArtifact (the single
  *   entrypoint) with the same fail-closed scorer gate.
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync, realpathSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, unlinkSync, realpathSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -60,6 +60,7 @@ import { pack, unpack, PACKED_SIZE } from './state/codec.js';
 import { applyPatch, decodePatch } from './state/patch.js';
 import type { CortexState } from './state/types.js';
 import { keccak256 } from './state/keccak256.js';
+import { computePatchHash } from './eval/seed-derivation.js';
 import { hashCorpusDelta, hashJson, verifyEpochRotationManifestSignature } from './corpus/epoch-rotation.js';
 import { parseCorpusDelta, verifyCorpusDeltaSignature } from './corpus/delta.js';
 import {
@@ -76,15 +77,21 @@ import { biEncoderFromEnv } from './eval/bi-encoder.js';
 import {
   assertValidatorRerankerEnv,
   createValidatorReranker,
+  qwenRerankerPromptTemplateHash,
+  resolveQwenRerankerInstruction,
+  resolveRerankerScriptPath,
   type ValidatorRerankerPins,
 } from './eval/reranker.js';
 import { biEncoderModelIdHash } from './substrate/retrieval-decoder.js';
 import { createBaseRpcClient } from './coordinator/base-blockhash.js';
-import { mergeValidatorStateFile } from './validator-setup-cli.js';
 import {
   applyRerankerThreadDefault,
   makeProgress,
+  probeScorerHealth,
+  realSyncSpawner,
   renderSummaryBlock,
+  scorerRuntimeMatchesBundle,
+  type ScorerRuntimeBundlePins,
   type ThreadDefaultResult,
 } from './validator-runtime.js';
 
@@ -174,8 +181,14 @@ function decodeUint(result: string, label: string): number {
   if (n > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error(`${label} exceeds safe integer`);
   return Number(n);
 }
-async function ethCall(rpcUrl: string, to: string, signature: string, callArgs: readonly (string | number | bigint)[] = []): Promise<string> {
-  return rpcCall<string>(rpcUrl, 'eth_call', [{ to, data: calldata(signature, callArgs) }, 'latest']);
+async function ethCall(
+  rpcUrl: string,
+  to: string,
+  signature: string,
+  callArgs: readonly (string | number | bigint)[] = [],
+  blockTag: string = 'latest',
+): Promise<string> {
+  return rpcCall<string>(rpcUrl, 'eth_call', [{ to, data: calldata(signature, callArgs) }, blockTag]);
 }
 async function readJsonUri(uri: string): Promise<unknown> {
   if (uri.startsWith('http://') || uri.startsWith('https://')) return JSON.parse(await download(uri));
@@ -259,17 +272,85 @@ export function checkTofuKeyPin(pinPath: string, publicKeyPem: string): { finger
   return { fingerprint, pinned: true };
 }
 
-/** Write the TOFU pin after the FIRST fully verified sync. */
-export function writeTofuKeyPin(pinPath: string, publicKeyPem: string): { fingerprint: string } {
+/** Canonical serialized TOFU pin file body (shared by the eager + staged writers). */
+export function serializeTofuKeyPin(publicKeyPem: string): { fingerprint: string; body: string } {
   const fingerprint = sha256Fingerprint(publicKeyPem);
-  mkdirSync(dirname(resolve(pinPath)), { recursive: true });
-  writeFileSync(pinPath, JSON.stringify({
+  const body = JSON.stringify({
     schema: 'coretex.epoch-signing-key-pin.v1',
     pinnedAt: new Date().toISOString(),
     fingerprint,
     publicKeyPem,
-  }, null, 2) + '\n');
+  }, null, 2) + '\n';
+  return { fingerprint, body };
+}
+
+/** Write the TOFU pin after the FIRST fully verified sync. */
+export function writeTofuKeyPin(pinPath: string, publicKeyPem: string): { fingerprint: string } {
+  const { fingerprint, body } = serializeTofuKeyPin(publicKeyPem);
+  mkdirSync(dirname(resolve(pinPath)), { recursive: true });
+  writeFileSync(pinPath, body);
   return { fingerprint };
+}
+
+// ── atomic trusted-state staging (Finding 7) ──────────────────────────────────
+
+/**
+ * Stage trusted-state writes (the TOFU pin, the substrate snapshot, the state
+ * file) to temp files and atomically commit (rename) them ONLY AFTER every
+ * mandatory check for the sync pass has passed. If any mandatory check throws
+ * before `commit()`, NOTHING in trusted state is mutated — `dispose()` removes
+ * the temp files and the prior pin/snapshot/state remain byte-unchanged.
+ *
+ * Atomicity is per-file (rename(2) is atomic per path); we commit the snapshot
+ * first, then the state file, then the TOFU pin, so a crash mid-commit can only
+ * leave already-trusted artifacts (never a half-written file claimed as
+ * trusted). All mandatory verification happens before the first rename.
+ */
+export class TrustedStateStaging {
+  private readonly staged: { tmp: string; dest: string }[] = [];
+
+  /** Queue a file write to `dest`, materialized at a sibling temp path. */
+  stage(dest: string, contents: string | Uint8Array): void {
+    mkdirSync(dirname(resolve(dest)), { recursive: true });
+    const tmp = `${dest}.tmp-${process.pid}-${this.staged.length}`;
+    try { if (existsSync(tmp)) unlinkSync(tmp); } catch { /* stale tmp */ }
+    writeFileSync(tmp, contents);
+    this.staged.push({ tmp, dest });
+  }
+
+  /** Atomically commit every staged write (rename temp → dest), in stage order. */
+  commit(): void {
+    for (const { tmp, dest } of this.staged) renameSync(tmp, dest);
+    this.staged.length = 0;
+  }
+
+  /** Remove any uncommitted temp files (best-effort; safe to call always). */
+  dispose(): void {
+    for (const { tmp } of this.staged) {
+      try { if (existsSync(tmp)) unlinkSync(tmp); } catch { /* already gone */ }
+    }
+    this.staged.length = 0;
+  }
+}
+
+/** Merge a state-file patch over the on-disk state and return the serialized
+ *  body (same merge semantics as mergeValidatorStateFile, but WITHOUT writing —
+ *  the body is staged and committed atomically by TrustedStateStaging). */
+export function serializeMergedValidatorState(
+  statePath: string,
+  patch: Record<string, unknown>,
+): string {
+  let previous: Record<string, unknown> = {};
+  if (existsSync(statePath)) {
+    try { previous = JSON.parse(readFileSync(statePath, 'utf8')) as Record<string, unknown>; } catch { previous = {}; }
+  }
+  const merged = {
+    schema: 'coretex.validator-sync-state.v1',
+    ...previous,
+    ...patch,
+    updatedAt: new Date().toISOString(),
+  };
+  return JSON.stringify(merged, null, 2) + '\n';
 }
 
 /**
@@ -312,6 +393,29 @@ export function policyAtomsModeFromManifest(manifest: { evaluator?: { profile?: 
 
 // ── one-command defaults (unit-tested directly) ───────────────────────────────
 
+/**
+ * One accepted on-chain advance that still owes a post-reveal score replay.
+ * Persisted in the state file so a validator that restarts BETWEEN the epoch
+ * secret reveal and the next sync can never permanently skip the required
+ * score verification (Finding 5). An entry is only removed once its score
+ * replay PASSES — never dropped silently.
+ */
+export interface EvalBacklogEntry {
+  readonly epochId: number;
+  /** Block the CoreTexStateAdvanced log was confirmed at (for ordering / audit). */
+  readonly advanceBlock: number;
+  /** On-chain evalReportHash == published artifactHash for this advance. */
+  readonly artifactHash: string;
+  readonly miner: string;
+  /** Replay reason this entry is still pending (e.g. awaiting reveal / context). */
+  readonly reason: 'awaiting_epoch_secret_reveal' | 'epoch-context-unavailable';
+  /** The advance's on-chain pins — used to bind the artifact on a later sync. */
+  readonly parentStateRoot: string;
+  readonly corpusRoot: string;
+  readonly coreVersionHash: string;
+  readonly patchHash: string;
+}
+
 export interface ValidatorSyncStateFile {
   readonly schema?: string;
   readonly epoch?: number;
@@ -334,6 +438,13 @@ export interface ValidatorSyncStateFile {
     readonly statePath?: string;
     readonly epochTransitions?: Record<string, number>;
   };
+  /** Accepted advances not yet score-verified (Finding 5). Survives restarts;
+   *  drained only by a PASSING score replay on a later (post-reveal) sync. */
+  readonly evalBacklog?: readonly EvalBacklogEntry[];
+  /** Highest confirmed block through which EVERY accepted advance's score has
+   *  been replayed (empty backlog up to here). Tracked independently of the
+   *  root-continuity cursor so semantic-verification completeness is explicit. */
+  readonly evalVerifiedThroughBlock?: number;
 }
 
 export function readValidatorStateFile(statePath: string): ValidatorSyncStateFile | null {
@@ -423,29 +534,223 @@ export function validatorRerankerPinsFromManifest(manifest: CoreTexBundleManifes
   return { modelId: reranker.modelId, revision: reranker.revision };
 }
 
+/**
+ * Bundle pins the scorer runtime fingerprint is asserted against before any
+ * score replay (runtime-pin assertion). modelId/revision come from
+ * model.reranker; the torch/transformers ranges + cpu-only flag come from the
+ * profile runtimePin; an optional promptTemplateHash binds the resolved
+ * template exactly when the bundle records one. A missing runtimePin is a hard
+ * error — the validator will not score against an unpinned runtime.
+ */
+export function scorerRuntimeBundlePinsFromManifest(manifest: CoreTexBundleManifest): ScorerRuntimeBundlePins {
+  const { modelId, revision } = validatorRerankerPinsFromManifest(manifest);
+  const runtimePin = manifest.evaluator?.profile?.runtimePin;
+  const torchRange = runtimePin?.versions?.['torch'];
+  const transformersRange = runtimePin?.versions?.['transformers'];
+  if (!torchRange || !transformersRange) {
+    throw new Error('bundle manifest profile has no runtimePin.versions.torch/transformers — the scorer runtime fingerprint cannot be pinned');
+  }
+  const reranker = manifest.model?.reranker as { promptTemplateHash?: string } | undefined;
+  return {
+    modelId,
+    revision,
+    torchRange,
+    transformersRange,
+    ...(runtimePin?.buildFlags ? { buildFlags: runtimePin.buildFlags } : {}),
+    ...(isBytes32(reranker?.promptTemplateHash) ? { promptTemplateHash: reranker!.promptTemplateHash } : {}),
+  };
+}
+
+// ── per-advance binding + per-epoch context (unit-tested directly) ────────────
+
+/**
+ * Finding 4: bind the fetched eval artifact to the EXACT decoded
+ * CoreTexStateAdvanced event for that advance BEFORE any rescore, so that root
+ * replay and score replay provably concern the same patch. Throws (clear
+ * error) on the first mismatch of epochId, patchHash (artifact seed-derivation,
+ * the recomputed hash of the event's compactPatchBytes, AND the event's
+ * patchHash), parentStateRoot, corpusRoot, coreVersionHash, or miner.
+ */
+export function assertArtifactBoundToAdvance(
+  artifact: CoreTexPostRevealEvalReportArtifact,
+  event: CoreTexStateAdvancedEvent,
+): void {
+  const label = `eval artifact ${artifact.artifactHash}`;
+  if (artifact.epochId !== Number(event.epoch)) {
+    throw new Error(`${label} epochId ${artifact.epochId} != advance epoch ${event.epoch}`);
+  }
+  const computedPatchHash = computePatchHash(event.compactPatchBytes);
+  if (computedPatchHash.toLowerCase() !== event.patchHash.toLowerCase()) {
+    throw new Error(`${label} advance patchHash ${event.patchHash} != recomputed ${computedPatchHash} from event compactPatchBytes`);
+  }
+  if (artifact.seedDerivation.patchHash.toLowerCase() !== event.patchHash.toLowerCase()) {
+    throw new Error(`${label} seedDerivation.patchHash ${artifact.seedDerivation.patchHash} != advance patchHash ${event.patchHash}`);
+  }
+  if (artifact.context.parentStateRoot.toLowerCase() !== event.parentStateRoot.toLowerCase()) {
+    throw new Error(`${label} context.parentStateRoot ${artifact.context.parentStateRoot} != advance parentStateRoot ${event.parentStateRoot}`);
+  }
+  if (artifact.context.corpusRoot.toLowerCase() !== event.corpusRoot.toLowerCase()) {
+    throw new Error(`${label} context.corpusRoot ${artifact.context.corpusRoot} != advance corpusRoot ${event.corpusRoot}`);
+  }
+  if (artifact.context.coreVersionHash.toLowerCase() !== event.coreVersionHash.toLowerCase()) {
+    throw new Error(`${label} context.coreVersionHash ${artifact.context.coreVersionHash} != advance coreVersionHash ${event.coreVersionHash}`);
+  }
+  if (artifact.minerAddress.toLowerCase() !== event.miner.toLowerCase()) {
+    throw new Error(`${label} minerAddress ${artifact.minerAddress} != advance miner ${event.miner}`);
+  }
+}
+
+/** The currently-loaded scorer/corpus context's pinned identity (Finding 8). */
+export interface LoadedScorerContextPins {
+  readonly corpusRoot: string;
+  readonly coreVersionHash: string;
+}
+
+export type ScorerContextSelection =
+  | { readonly action: 'rescore' }
+  | { readonly action: 'pending'; readonly reason: 'epoch-context-unavailable'; readonly detail: string };
+
+/**
+ * Finding 8 (SAFE version): select the scorer/corpus context for ONE advance.
+ * A rescore must ONLY happen with the corpus/bundle that matches the advance's
+ * on-chain pins. When the advance's pinned corpusRoot + coreVersionHash match
+ * the loaded context → rescore. When they differ (a late validator replaying an
+ * older epoch whose pinned corpus/bundle differs), we do NOT silently rescore
+ * with the wrong context — the advance is left pending with a clear
+ * `epoch-context-unavailable` reason rather than producing a bogus score.
+ */
+export function selectScorerContextForAdvance(
+  advance: { readonly corpusRoot: string; readonly coreVersionHash: string },
+  loaded: LoadedScorerContextPins,
+): ScorerContextSelection {
+  const corpusMatch = advance.corpusRoot.toLowerCase() === loaded.corpusRoot.toLowerCase();
+  const versionMatch = advance.coreVersionHash.toLowerCase() === loaded.coreVersionHash.toLowerCase();
+  if (corpusMatch && versionMatch) return { action: 'rescore' };
+  const drift: string[] = [];
+  if (!corpusMatch) drift.push(`corpusRoot ${advance.corpusRoot} != loaded ${loaded.corpusRoot}`);
+  if (!versionMatch) drift.push(`coreVersionHash ${advance.coreVersionHash} != loaded ${loaded.coreVersionHash}`);
+  return {
+    action: 'pending',
+    reason: 'epoch-context-unavailable',
+    detail: `advance pins differ from the loaded scorer context (${drift.join('; ')}); leaving pending rather than rescoring with the wrong corpus/bundle`,
+  };
+}
+
+// ── eval-verification backlog (Finding 5; unit-tested directly) ───────────────
+
+/** Build a backlog entry for one accepted advance owed a score replay. */
+export function evalBacklogEntryFromAdvance(
+  adv: CoreTexStateAdvancedEvent,
+  advanceBlock: number,
+  reason: EvalBacklogEntry['reason'],
+): EvalBacklogEntry {
+  return {
+    epochId: Number(adv.epoch),
+    advanceBlock,
+    artifactHash: adv.evalReportHash.toLowerCase(),
+    miner: adv.miner.toLowerCase(),
+    reason,
+    parentStateRoot: adv.parentStateRoot.toLowerCase(),
+    corpusRoot: adv.corpusRoot.toLowerCase(),
+    coreVersionHash: adv.coreVersionHash.toLowerCase(),
+    patchHash: adv.patchHash.toLowerCase(),
+  };
+}
+
+/** Stable key for a backlog entry: an advance is uniquely (epochId, artifactHash). */
+export function evalBacklogKey(entry: { epochId: number; artifactHash: string }): string {
+  return `${entry.epochId}:${entry.artifactHash.toLowerCase()}`;
+}
+
+/**
+ * Merge freshly-pending entries into an existing backlog WITHOUT dropping any.
+ * Existing entries are preserved (their reason may be refreshed); new entries
+ * are appended. The result is ordered by (advanceBlock, key) for determinism.
+ * Nothing is ever removed here — only a passing score replay removes an entry
+ * (see removeFromEvalBacklog).
+ */
+export function upsertEvalBacklog(
+  existing: readonly EvalBacklogEntry[] | undefined,
+  incoming: readonly EvalBacklogEntry[],
+): EvalBacklogEntry[] {
+  const byKey = new Map<string, EvalBacklogEntry>();
+  for (const e of existing ?? []) byKey.set(evalBacklogKey(e), e);
+  for (const e of incoming) {
+    const key = evalBacklogKey(e);
+    const prior = byKey.get(key);
+    // Preserve the original advanceBlock when re-observed; refresh the reason.
+    byKey.set(key, prior ? { ...e, advanceBlock: prior.advanceBlock } : e);
+  }
+  return [...byKey.values()].sort(
+    (a, b) => a.advanceBlock - b.advanceBlock || evalBacklogKey(a).localeCompare(evalBacklogKey(b)),
+  );
+}
+
+/** Remove ONE entry from the backlog (only ever called after a PASSING replay). */
+export function removeFromEvalBacklog(
+  backlog: readonly EvalBacklogEntry[],
+  entry: { epochId: number; artifactHash: string },
+): EvalBacklogEntry[] {
+  const key = evalBacklogKey(entry);
+  return backlog.filter((e) => evalBacklogKey(e) !== key);
+}
+
 // ── chain context ─────────────────────────────────────────────────────────────
 
-async function readChainContext(rpcUrl: string, registry: string, mining: string, epoch: number) {
-  const chainRegistry = decodeAddress(await ethCall(rpcUrl, mining, 'coreTexRegistry()'), 'mining.coreTexRegistry');
+/** One eth_call against a contract method at a specific block tag. Injectable
+ *  so the confirmed-tag consistency (Finding 6) is unit-testable with a fake
+ *  RPC whose 'latest' values differ from the confirmed-head values. */
+export type ChainCaller = (input: {
+  to: string;
+  signature: string;
+  args: readonly (string | number | bigint)[];
+  blockTag: string;
+}) => Promise<string>;
+
+/** Production caller: a thin closure over the real eth_call. */
+export function rpcChainCaller(rpcUrl: string): ChainCaller {
+  return ({ to, signature, args, blockTag }) => ethCall(rpcUrl, to, signature, args, blockTag);
+}
+
+/**
+ * Read ALL registry/V4 pins + liveStateRoot + transitionCount + the
+ * epoch-secret reveal status AT ONE confirmed block tag. Every value the sync
+ * later compares — including the liveStateRoot the replayed root is checked
+ * against — comes from the SAME confirmed block height the logs replay to
+ * (`blockTag` = confirmedHead). Reading liveStateRoot at 'latest' while the
+ * logs only reach confirmedHead lets a fast chain (Base, ~2s blocks) land new
+ * advances mid-sync and trip a false drift failure (or hide a real one); the
+ * single confirmed tag removes that race.
+ */
+export async function readChainContext(
+  call: ChainCaller,
+  registry: string,
+  mining: string,
+  epoch: number,
+  blockTag: string,
+) {
+  const at = (to: string, signature: string, args: readonly (string | number | bigint)[] = []) =>
+    call({ to, signature, args, blockTag });
+  const chainRegistry = decodeAddress(await at(mining, 'coreTexRegistry()'), 'mining.coreTexRegistry');
   if (chainRegistry.toLowerCase() !== registry.toLowerCase()) throw new Error(`V4 coreTexRegistry ${chainRegistry} != ${registry}`);
-  const contextSet = decodeUint(await ethCall(rpcUrl, mining, 'coreTexEpochContextSet(uint64)', [epoch]), 'mining.coreTexEpochContextSet');
+  const contextSet = decodeUint(await at(mining, 'coreTexEpochContextSet(uint64)', [epoch]), 'mining.coreTexEpochContextSet');
   if (contextSet !== 1) throw new Error(`V4 CoreTex epoch context not set for epoch ${epoch}`);
   const pins = {
-    parentStateRoot: decodeBytes32(await ethCall(rpcUrl, registry, 'epochParentStateRoot(uint64)', [epoch]), 'registry.epochParentStateRoot'),
-    liveStateRoot: decodeBytes32(await ethCall(rpcUrl, registry, 'liveStateRoot(uint64)', [epoch]), 'registry.liveStateRoot'),
-    transitionCount: decodeUint(await ethCall(rpcUrl, registry, 'transitionCount(uint64)', [epoch]), 'registry.transitionCount'),
-    coreVersionHash: decodeBytes32(await ethCall(rpcUrl, registry, 'epochCoreVersionHash(uint64)', [epoch]), 'registry.epochCoreVersionHash'),
-    corpusRoot: decodeBytes32(await ethCall(rpcUrl, registry, 'epochCorpusRoot(uint64)', [epoch]), 'registry.epochCorpusRoot'),
-    activeFrontierRoot: decodeBytes32(await ethCall(rpcUrl, registry, 'epochActiveFrontierRoot(uint64)', [epoch]), 'registry.epochActiveFrontierRoot'),
-    baselineManifestHash: decodeBytes32(await ethCall(rpcUrl, registry, 'epochBaselineManifestHash(uint64)', [epoch]), 'registry.epochBaselineManifestHash'),
-    hiddenSeedCommit: decodeBytes32(await ethCall(rpcUrl, registry, 'epochHiddenSeedCommit(uint64)', [epoch]), 'registry.epochHiddenSeedCommit'),
+    parentStateRoot: decodeBytes32(await at(registry, 'epochParentStateRoot(uint64)', [epoch]), 'registry.epochParentStateRoot'),
+    liveStateRoot: decodeBytes32(await at(registry, 'liveStateRoot(uint64)', [epoch]), 'registry.liveStateRoot'),
+    transitionCount: decodeUint(await at(registry, 'transitionCount(uint64)', [epoch]), 'registry.transitionCount'),
+    coreVersionHash: decodeBytes32(await at(registry, 'epochCoreVersionHash(uint64)', [epoch]), 'registry.epochCoreVersionHash'),
+    corpusRoot: decodeBytes32(await at(registry, 'epochCorpusRoot(uint64)', [epoch]), 'registry.epochCorpusRoot'),
+    activeFrontierRoot: decodeBytes32(await at(registry, 'epochActiveFrontierRoot(uint64)', [epoch]), 'registry.epochActiveFrontierRoot'),
+    baselineManifestHash: decodeBytes32(await at(registry, 'epochBaselineManifestHash(uint64)', [epoch]), 'registry.epochBaselineManifestHash'),
+    hiddenSeedCommit: decodeBytes32(await at(registry, 'epochHiddenSeedCommit(uint64)', [epoch]), 'registry.epochHiddenSeedCommit'),
   };
-  const epochCommit = decodeBytes32(await ethCall(rpcUrl, mining, 'epochCommit(uint64)', [epoch]), 'mining.epochCommit');
+  const epochCommit = decodeBytes32(await at(mining, 'epochCommit(uint64)', [epoch]), 'mining.epochCommit');
   if (epochCommit.toLowerCase() !== pins.hiddenSeedCommit.toLowerCase()) {
     throw new Error(`V4 epochCommit ${epochCommit} != registry hiddenSeedCommit ${pins.hiddenSeedCommit}`);
   }
   if (epochCommit.toLowerCase() === ZERO32) throw new Error(`V4 epochCommit(${epoch}) is zero`);
-  const epochSecret = decodeBytes32(await ethCall(rpcUrl, mining, 'epochSecret(uint64)', [epoch]), 'mining.epochSecret');
+  const epochSecret = decodeBytes32(await at(mining, 'epochSecret(uint64)', [epoch]), 'mining.epochSecret');
   const reveal = deriveEpochSecretRevealStatus(pins.hiddenSeedCommit, epochSecret);
   return { ...pins, ...reveal };
 }
@@ -535,6 +840,34 @@ async function buildValidatorScorerContext(
   return { corpus, profile, scoringOpts, thresholdPpm, reranker: reranker as ValidatorScorerContext['reranker'] };
 }
 
+/**
+ * RUNTIME-PIN ASSERTION: probe the scorer interpreter's --health fingerprint
+ * and assert it reproduces the bundle's pinned reranker runtime (torch /
+ * transformers versions, fp32 / tf32=false / cuda flags) PLUS the resolved
+ * model id/revision + promptTemplateHash. A mismatch is a HARD ERROR before any
+ * score replay: the 5-ppm replay tolerance absorbs CPU↔GPU fp32 drift, but a
+ * wrong torch/transformers/model/prompt pin could exceed it and silently
+ * corrupt a score replay. Never changes scores — it only refuses to score
+ * against a runtime that cannot reproduce the pinned scorer.
+ */
+function assertScorerRuntimePin(bundle: CoreTexBundleManifest): void {
+  const pins = scorerRuntimeBundlePinsFromManifest(bundle);
+  const pythonBin = process.env['CORETEX_RERANKER_PYTHON'] ?? 'python3';
+  const health = probeScorerHealth(realSyncSpawner, pythonBin, resolveRerankerScriptPath());
+  const resolved = {
+    modelId: process.env['CORETEX_RERANKER_MODEL_ID'] ?? pins.modelId,
+    revision: process.env['CORETEX_RERANKER_REVISION'] ?? pins.revision,
+    promptTemplateHash: qwenRerankerPromptTemplateHash(resolveQwenRerankerInstruction()),
+  };
+  const verdict = scorerRuntimeMatchesBundle(health, pins, resolved);
+  if (!verdict.ok) {
+    die(`scorer runtime-pin assertion FAILED before score replay: ${verdict.reason}. `
+      + `The fail-closed validator scorer must reproduce the bundle reranker pins `
+      + `(${pins.modelId}@${pins.revision}, torch ${pins.torchRange}, transformers ${pins.transformersRange}, fp32/tf32=false). `
+      + 'Re-run coretex-validator-setup to rebuild the pinned scorer venv, or fix CORETEX_RERANKER_PYTHON.');
+  }
+}
+
 function scorerForParent(ctx: ValidatorScorerContext, parentState: CortexState, epochId: number) {
   return async ({ normalizedPatchBytes, evalSeed }: { normalizedPatchBytes: Uint8Array; evalSeed: string }) => {
     const queryPack = deriveQueryPack(epochId, evalSeed, ctx.corpus, ctx.profile.hiddenPack);
@@ -562,6 +895,30 @@ async function syncMain() {
   const pinPath = opt('key-pin-file', process.env['CORETEX_KEY_PIN_PATH'] ?? join(stateDir, 'epoch-signing-key.pin.json'))!;
   const savedState = readValidatorStateFile(statePath);
   const setup = savedState?.setup;
+
+  // Finding 7: every trusted-state mutation (TOFU pin, substrate snapshot, state
+  // file) is STAGED to a temp file and committed atomically only after all
+  // mandatory checks pass. If any mandatory check throws, the finally disposes
+  // the uncommitted temp files and the prior trusted state is byte-unchanged.
+  const staging = new TrustedStateStaging();
+  try {
+    return await runSync({ stateDir, statePath, pinPath, savedState, setup, staging });
+  } finally {
+    staging.dispose();
+  }
+}
+
+interface RunSyncCtx {
+  readonly stateDir: string;
+  readonly statePath: string;
+  readonly pinPath: string;
+  readonly savedState: ValidatorSyncStateFile | null;
+  readonly setup: ValidatorSyncStateFile['setup'] | undefined;
+  readonly staging: TrustedStateStaging;
+}
+
+async function runSync({ stateDir, statePath, pinPath, savedState, setup, staging }: RunSyncCtx) {
+  const noProgressFlag = has('no-progress');
 
   const coordinatorStatusUri = opt('from-coordinator', process.env['CORETEX_COORDINATOR_STATUS_URL']);
   const status = coordinatorStatusUri ? await readJsonUri(coordinatorStatusUri) as Record<string, unknown> : null;
@@ -630,7 +987,19 @@ async function syncMain() {
     die('epoch signing public key is required (signature verification is mandatory): pass --public-key or provide coordinator status epochSigningPublicKeyUrl');
   }
 
-  const chain = await readChainContext(rpcUrl, registry, mining, epoch);
+  // ── confirmed-tag consistency (Finding 6): compute the confirmed head ONCE,
+  //    then read EVERY on-chain value (pins + liveStateRoot + transitionCount +
+  //    secret reveal) AND replay logs AND compare the reproduced root at THAT
+  //    SAME confirmed block tag. Reading liveStateRoot at 'latest' while the
+  //    logs only reach confirmedHead races a fast chain into a false drift. ──
+  const latest = await latestBlock(rpcUrl);
+  const logOpts = rangeLogOptions();
+  const confirmationDepth = BigInt(logOpts.confirmationDepth ?? CORETEX_DEFAULT_CONFIRMATION_DEPTH);
+  const confirmedHead = latest - confirmationDepth;
+  if (confirmedHead < 0n) die(`chain head ${latest} is below the confirmation depth ${confirmationDepth} — no confirmed block to sync against yet`);
+  const confirmedTag = blockHex(confirmedHead);
+
+  const chain = await readChainContext(rpcChainCaller(rpcUrl), registry, mining, epoch, confirmedTag);
   // ── self version-check against the on-chain coreVersionHash ──
   const version = checkValidatorBundleVersion(bundleManifest.bundleHash, chain.coreVersionHash, has('allow-version-mismatch'));
 
@@ -641,7 +1010,9 @@ async function syncMain() {
   const delta = parseCorpusDelta(await readJsonUri(deltaUri) as never);
   if (!verifyEpochRotationManifestSignature(rotation as never, publicKey)) throw new Error('rotation manifest signature invalid');
   if (!verifyCorpusDeltaSignature(delta, publicKey)) throw new Error('corpus delta signature invalid');
-  if (!tofu.pinned) writeTofuKeyPin(pinPath, publicKey);
+  // Finding 7: stage the first-use TOFU pin instead of writing it eagerly — it
+  // is committed atomically at the END, only after every mandatory check passes.
+  if (!tofu.pinned) staging.stage(pinPath, serializeTofuKeyPin(publicKey).body);
 
   const deltaHash = hashCorpusDelta(delta);
   const rotationHash = hashJson(rotation);
@@ -731,10 +1102,6 @@ async function syncMain() {
     parent = blankSubstrateState();
   }
 
-  const latest = await latestBlock(rpcUrl);
-  const logOpts = rangeLogOptions();
-  const confirmationDepth = BigInt(logOpts.confirmationDepth ?? CORETEX_DEFAULT_CONFIRMATION_DEPTH);
-  const confirmedHead = latest - confirmationDepth;
   const fromBlock = fromBlockResolved.fromBlock;
   // Registry log replay: surface the confirmed block window being paginated so
   // a validator sees the replay is moving (stderr only — stdout JSON unaffected).
@@ -812,7 +1179,9 @@ async function syncMain() {
   }
   const newCursorBlock = Number(confirmedHead >= fromBlock ? confirmedHead : fromBlock - 1n);
   mkdirSync(stateDir, { recursive: true });
-  writeFileSync(snapshotBinPath, pack(walkState));
+  // Finding 7: stage the substrate snapshot — committed atomically with the
+  // state file + TOFU pin only after all mandatory checks pass.
+  staging.stage(snapshotBinPath, pack(walkState));
 
   const replay = {
     ...replayResult,
@@ -838,11 +1207,63 @@ async function syncMain() {
   } = { status: chain.evalReplayStatus, verified: [], pending: [], skipped: false };
   let runtime: ReturnType<typeof applyScorerRuntimeDefaults> | undefined;
 
+  // Finding 5: the eval-verification backlog is loaded from the state file and
+  // re-drained every sync. It tracks EVERY accepted advance not yet score-
+  // verified independently of the root-continuity cursor, so a restart between
+  // reveal and the next sync can never permanently skip a required score replay.
+  let evalBacklog = upsertEvalBacklog(savedState?.evalBacklog, advanceRecords.map(
+    (rec) => evalBacklogEntryFromAdvance(rec.adv, newCursorBlock, 'awaiting_epoch_secret_reveal'),
+  ));
+  // Re-attemptable parent states for THIS pass: the current walk's per-advance
+  // parents, keyed by the advance's parentStateRoot. A backlog entry can be
+  // score-replayed only when its parent state is reconstructable here.
+  const parentByRoot = new Map<string, { adv: CoreTexStateAdvancedEvent; parentState: CortexState; parentRoot: string }>();
+  for (const rec of advanceRecords) parentByRoot.set(rec.parentRoot.toLowerCase(), rec);
+
+  // Per-epoch secret resolver (Finding 6: confirmed tag; verifies the commit).
+  const epochSecretCache = new Map<string, string | null>();
+  const epochSecretFor = async (e: number): Promise<string | null> => {
+    const key = String(e);
+    if (epochSecretCache.has(key)) return epochSecretCache.get(key)!;
+    const secret = decodeBytes32(await ethCall(rpcUrl, mining!, 'epochSecret(uint64)', [e], confirmedTag), 'mining.epochSecret');
+    let value: string | null = null;
+    if (secret.toLowerCase() !== ZERO32) {
+      const commit = decodeBytes32(await ethCall(rpcUrl, registry!, 'epochHiddenSeedCommit(uint64)', [e], confirmedTag), 'registry.epochHiddenSeedCommit');
+      const recomputed = bytesToHex(keccak256(hexToBytes(secret))).toLowerCase();
+      if (recomputed !== commit.toLowerCase()) throw new Error(`epoch ${e} epochSecret commit ${recomputed} != registry hiddenSeedCommit ${commit}`);
+      value = secret;
+    }
+    epochSecretCache.set(key, value);
+    return value;
+  };
+
   if (skipScoreReplay) {
     evalReplay.skipped = true;
     warn('WARNING: --skip-score-replay passed — post-reveal eval artifacts were NOT verified and scores were NOT re-scored. '
       + `This run does NOT attest score honesty (exit code ${SKIP_SCORE_REPLAY_EXIT_CODE}).`);
-  } else if (chain.epochSecretRevealed && advanceRecords.length > 0) {
+  } else if (evalBacklog.length > 0) {
+    // Reveal pre-scan (cheap RPC reads, no scorer): does any backlog entry have
+    // a revealed secret AND a reconstructable parent state in THIS pass? Only
+    // then do we pay for the (expensive) scorer context + runtime-pin probe.
+    let anyDrainable = false;
+    for (const entry of evalBacklog) {
+      if ((await epochSecretFor(entry.epochId)) && parentByRoot.has(entry.parentStateRoot.toLowerCase())) {
+        anyDrainable = true;
+        break;
+      }
+    }
+    if (!anyDrainable) {
+      // Nothing to score yet — record every entry as still-pending and keep the
+      // whole backlog (never dropped). No scorer is constructed.
+      for (const entry of evalBacklog) {
+        const revealed = (await epochSecretFor(entry.epochId)) !== null;
+        evalReplay.pending.push({
+          artifactHash: entry.artifactHash.toLowerCase(),
+          epoch: String(entry.epochId),
+          reason: revealed ? 'awaiting_parent_state_replay' : 'awaiting_epoch_secret_reveal',
+        });
+      }
+    } else {
     if (!artifactBase) {
       die('post-reveal eval verification requires the artifact base URL: set CORETEX_ARTIFACT_BASE_URL, pass --artifact-base-url, or run coretex-validator-setup');
     }
@@ -853,32 +1274,42 @@ async function syncMain() {
     // RUNTIME hygiene before the scorer spawns: setup-recorded venv interpreter
     // + sane thread default (operator env always wins; scores unaffected).
     runtime = applyScorerRuntimeDefaults(setup);
+    // RUNTIME-PIN ASSERTION: hard-fail BEFORE any score replay if the scorer
+    // runtime fingerprint does not reproduce the bundle reranker pins.
+    assertScorerRuntimePin(bundleManifest);
     const ctx = await buildValidatorScorerContext(bundleManifest, corpusPath);
+    const loadedPins: LoadedScorerContextPins = { corpusRoot: ctx.corpus.corpusRoot, coreVersionHash: chain.coreVersionHash };
     const rpcClient = createBaseRpcClient(rpcUrl);
     // Per-advance score-replay progress + ETA (stderr only; stdout JSON clean).
-    const scoreProgress = makeProgress({ label: 'post-reveal score replay', unit: 'advances', total: advanceRecords.length, noProgressFlag });
+    const scoreProgress = makeProgress({ label: 'post-reveal score replay', unit: 'advances', total: evalBacklog.length, noProgressFlag });
     let scoredAdvances = 0;
-    const epochSecretCache = new Map<string, string | null>();
-    const epochSecretFor = async (e: bigint): Promise<string | null> => {
-      const key = e.toString();
-      if (epochSecretCache.has(key)) return epochSecretCache.get(key)!;
-      const secret = decodeBytes32(await ethCall(rpcUrl, mining!, 'epochSecret(uint64)', [e]), 'mining.epochSecret');
-      let value: string | null = null;
-      if (secret.toLowerCase() !== ZERO32) {
-        const commit = decodeBytes32(await ethCall(rpcUrl, registry!, 'epochHiddenSeedCommit(uint64)', [e]), 'registry.epochHiddenSeedCommit');
-        const recomputed = bytesToHex(keccak256(hexToBytes(secret))).toLowerCase();
-        if (recomputed !== commit.toLowerCase()) throw new Error(`epoch ${e} epochSecret commit ${recomputed} != registry hiddenSeedCommit ${commit}`);
-        value = secret;
-      }
-      epochSecretCache.set(key, value);
-      return value;
-    };
     try {
-      for (const rec of advanceRecords) {
-        const artifactHash = rec.adv.evalReportHash.toLowerCase();
-        const secret = await epochSecretFor(rec.adv.epoch);
+      // Snapshot the backlog to iterate; entries removed only on a PASSING replay.
+      for (const entry of [...evalBacklog]) {
+        const artifactHash = entry.artifactHash.toLowerCase();
+        const secret = await epochSecretFor(entry.epochId);
         if (!secret) {
-          evalReplay.pending.push({ artifactHash, epoch: rec.adv.epoch.toString(), reason: 'awaiting_epoch_secret_reveal' });
+          // Still pre-reveal — keep it in the backlog (NOT dropped) and report it.
+          evalReplay.pending.push({ artifactHash, epoch: String(entry.epochId), reason: 'awaiting_epoch_secret_reveal' });
+          scoreProgress.update(++scoredAdvances);
+          continue;
+        }
+        // Finding 8: a rescore must only happen with the corpus/bundle matching
+        // the advance's on-chain pins. Mismatch → leave pending (never bogus).
+        const ctxSel = selectScorerContextForAdvance(entry, loadedPins);
+        if (ctxSel.action === 'pending') {
+          evalBacklog = upsertEvalBacklog(evalBacklog, [{ ...entry, reason: 'epoch-context-unavailable' }]);
+          evalReplay.pending.push({ artifactHash, epoch: String(entry.epochId), reason: `epoch-context-unavailable: ${ctxSel.detail}` });
+          warn(`[eval-backlog] epoch ${entry.epochId} ${artifactHash}: ${ctxSel.detail}`);
+          scoreProgress.update(++scoredAdvances);
+          continue;
+        }
+        // The per-advance parent state must be reconstructable in THIS pass.
+        const rec = parentByRoot.get(entry.parentStateRoot.toLowerCase());
+        if (!rec) {
+          evalReplay.pending.push({ artifactHash, epoch: String(entry.epochId), reason: 'awaiting_parent_state_replay' });
+          warn(`[eval-backlog] epoch ${entry.epochId} ${artifactHash}: parent state ${entry.parentStateRoot} not in this replay window — re-sync covering its advance to drain (kept pending, never dropped)`);
+          scoreProgress.update(++scoredAdvances);
           continue;
         }
         const artifactUrl = evalReportArtifactUrl(artifactBase, artifactHash);
@@ -886,9 +1317,9 @@ async function syncMain() {
         if (String(artifact.artifactHash).toLowerCase() !== artifactHash) {
           throw new Error(`eval artifact ${artifactUrl} carries artifactHash ${artifact.artifactHash} != on-chain evalReportHash ${artifactHash}`);
         }
-        if (artifact.context.parentStateRoot.toLowerCase() !== rec.parentRoot.toLowerCase()) {
-          throw new Error(`eval artifact ${artifactHash} context.parentStateRoot ${artifact.context.parentStateRoot} != replayed advance parent ${rec.parentRoot}`);
-        }
+        // Finding 4: bind the artifact to the EXACT decoded advance BEFORE scoring
+        // — root replay and score replay then provably concern the same patch.
+        assertArtifactBoundToAdvance(artifact, rec.adv);
         if (ctx.corpus.corpusRoot.toLowerCase() !== artifact.context.corpusRoot.toLowerCase()) {
           throw new Error(`eval artifact ${artifactHash} context.corpusRoot ${artifact.context.corpusRoot} != local materialized corpus root ${ctx.corpus.corpusRoot} — re-run coretex-validator-setup for this epoch's corpus`);
         }
@@ -900,10 +1331,12 @@ async function syncMain() {
         if (!result.ok) {
           throw new Error(`post-reveal eval verification FAILED for ${artifactUrl}: ${result.code} ${result.detail}`);
         }
+        // PASS — and only now is the entry removed from the backlog.
+        evalBacklog = removeFromEvalBacklog(evalBacklog, entry);
         evalReplay.verified.push({
           artifactHash,
           artifactUrl,
-          epoch: rec.adv.epoch.toString(),
+          epoch: String(entry.epochId),
           transitionIndex: rec.adv.transitionIndex.toString(),
           miner: rec.adv.miner,
           outcome: artifact.outcome,
@@ -916,7 +1349,15 @@ async function syncMain() {
       scoreProgress.done();
       await closeReranker(ctx.reranker);
     }
+    }
   }
+
+  // evalVerifiedThroughBlock advances only when the backlog is fully drained
+  // (every accepted advance through the confirmed head is score-verified).
+  const priorVerifiedThrough = savedState?.evalVerifiedThroughBlock ?? -1;
+  const evalVerifiedThroughBlock = evalBacklog.length === 0 && !skipScoreReplay
+    ? Math.max(priorVerifiedThrough, newCursorBlock)
+    : priorVerifiedThrough;
 
   // ── manually supplied eval artifacts (hash + optional secret-commit audit) ──
   const epochSecret = opt('epoch-secret', process.env['CORETEX_EPOCH_SECRET']);
@@ -937,7 +1378,9 @@ async function syncMain() {
     warn('status: awaiting_epoch_secret_reveal — mining epochSecret is zero/unrevealed; post-reveal eval replay must wait');
   }
 
-  mergeValidatorStateFile(statePath, {
+  // Finding 7: stage the state-file mutation. The TOFU pin + snapshot were also
+  // staged; nothing is committed until ALL mandatory checks above have passed.
+  staging.stage(statePath, serializeMergedValidatorState(statePath, {
     epoch,
     bundleHash: bundleManifest.bundleHash,
     corpusRoot: delta.nextRoot,
@@ -951,7 +1394,16 @@ async function syncMain() {
       statePath: snapshotBinPath,
       epochTransitions,
     },
-  });
+    evalBacklog,
+    evalVerifiedThroughBlock,
+  }));
+
+  // ── ATOMIC COMMIT (Finding 7): every mandatory check for this sync pass has
+  //    passed — commit the staged TOFU pin + snapshot + state file together. A
+  //    throw anywhere above leaves the prior trusted state byte-unchanged. The
+  //    post-reveal backlog is best-effort (it may remain pending without failing
+  //    the sync) but is persisted atomically here too. ──
+  staging.commit();
 
   process.stdout.write(JSON.stringify({
     ok: true,
@@ -1051,6 +1503,9 @@ async function verifyPatchMain() {
   // RUNTIME hygiene before the scorer spawns (same as sync): setup-recorded
   // venv interpreter + sane thread default. Operator env wins; scores unaffected.
   applyScorerRuntimeDefaults(setup);
+  // RUNTIME-PIN ASSERTION (same gate as sync): hard-fail before any score replay
+  // if the scorer runtime fingerprint does not reproduce the bundle reranker pins.
+  assertScorerRuntimePin(bundle);
   const ctx = await buildValidatorScorerContext(bundle, corpusPath);
   if (ctx.corpus.corpusRoot.toLowerCase() !== artifact.context.corpusRoot.toLowerCase()) {
     await closeReranker(ctx.reranker);
