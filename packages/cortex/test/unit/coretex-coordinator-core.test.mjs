@@ -515,14 +515,30 @@ describe('CoreTexCoordinatorCore — pending receipt lifecycle', () => {
     };
     const first = await coord.submit(body);
     assert.equal(first.status, 'accepted');
+    // While the receipt is still inside its TTL the (parentRoot, patchHash, outcome)
+    // tuple must dedup — no second screener credit for the same patch.
     const duplicate = await coord.submit(body);
     assert.equal(duplicate.code, 'DuplicateCoreTexPatch');
-    await new Promise((resolve) => setTimeout(resolve, 1100));
-    await coord.tick();
+    // Drive expiry deterministically. The core quantizes time to whole seconds via
+    // Math.floor(Date.now()/1000), so a single fixed sleep races the second-boundary
+    // under concurrent-runner load. Instead tick in a bounded poll loop until the
+    // receipt cache + dedup actually expire — this exercises the real TTL path
+    // (no injected clock) without any wall-clock margin flake. The cap is far above
+    // the 1s TTL so a slow host cannot false-fail; expiry normally lands on the
+    // first or second tick.
+    const deadline = Date.now() + 15_000;
+    while (coord.getReceiptByHash(first.patchHash).status !== 404) {
+      assert.ok(Date.now() < deadline, 'screener receipt did not expire within 15s of its 1s TTL');
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      await coord.tick();
+    }
+    // Expiry happened with NO prior getReceiptByHash success forcing it — the gc
+    // sweep alone retired the cache entry and released the dedup key.
     assert.equal(coord.getReceiptByHash(first.patchHash).status, 404);
+    assert.equal(coord.getMetrics().receiptExpiryCount >= 1, true);
+    // Dedup released by the same sweep: the identical patch is creditable again.
     const second = await coord.submit(body);
     assert.equal(second.status, 'accepted');
-    assert.equal(coord.getMetrics().receiptExpiryCount >= 1, true);
   });
 });
 

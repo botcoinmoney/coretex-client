@@ -1,0 +1,11 @@
+# Python bytecode must never ship — it is host/interpreter-specific scratch
+# regenerated on first run of the bundled .py tools (reranker_runner.py etc.).
+__pycache__/
+*.pyc
+*.pyo
+
+# Editor / OS / test scratch that can leak into the publish set.
+*.tsbuildinfo
+*.log
+.DS_Store
+test/
