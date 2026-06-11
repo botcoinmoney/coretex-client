@@ -85,18 +85,24 @@ export interface CoreTexEvalDedupRecord extends CoreTexEvalDedupKey {
 }
 
 /**
- * §8 anti-grinding attempt state machine. Closes the seed-redraw gap: the
- * durable dedup record (above) is written only AFTER a result, but the seed
- * (future blockhash) is drawn fresh per attempt. A crash AFTER the draw but
- * BEFORE the outcome would otherwise let a retry of the same
+ * §8 anti-grinding attempt state machine. Closes the seed-redraw gap, AND
+ * makes the seed pin and the per-miner admission charge ATOMIC: the durable
+ * dedup record (above) is written only AFTER a result, but the seed (future
+ * blockhash) is drawn fresh per attempt. A crash AFTER the draw but BEFORE the
+ * outcome would otherwise let a retry of the same
  * (epochId, parentStateRoot, patchHash) draw a FRESH blockhash → a fresh
- * hidden gate/confirm pack.
+ * hidden gate/confirm pack, and — because the admission was charged only after
+ * the result — leave the admission UNCHARGED, so a miner could exceed the
+ * per-miner cap via crash/retry.
  *
  * The attempt record PINS the seed at first draw (`state: 'drawn'`, with the
- * `seedContext`) and is upgraded to `'rejected'`/`'accepted'` after the
- * result. On a retry, an existing attempt's `seedContext` is REUSED (injected
- * into runPerPatchEvaluation), so the same packs are scored — never a fresh
- * draw. `recordSeedDrawn` MUST be durable BEFORE any scoring.
+ * `seedContext`) AND charges the admission in the SAME atomic write (carrying
+ * the `minerAddress` + an `admissionCharged` marker); it is upgraded to
+ * `'rejected'`/`'accepted'` after the result. On a retry, an existing
+ * attempt's `seedContext` is REUSED (injected into runPerPatchEvaluation), so
+ * the same packs are scored — never a fresh draw — and the admission is NOT
+ * re-charged (exactly-once across crashes/restarts).
+ * `recordSeedDrawnAndAdmission` MUST be durable BEFORE any scoring.
  */
 export interface CoreTexEvalSeedContext {
   readonly receivedAtBlock: number;
@@ -107,6 +113,12 @@ export interface CoreTexEvalSeedContext {
 export interface CoreTexEvalAttemptRecord extends CoreTexEvalDedupKey {
   readonly state: 'drawn' | 'rejected' | 'accepted';
   readonly seedContext: CoreTexEvalSeedContext;
+  /** Miner the atomic admission was charged to (lowercased). */
+  readonly minerAddress: string;
+  /** Set true by the atomic seed-draw write — the per-miner admission count is
+   *  derived from these marked rows, so seed pin and admission charge can never
+   *  diverge across a crash. */
+  readonly admissionCharged: boolean;
   readonly outcome?: CoreTexEvalDedupRecord['outcome'];
   readonly code?: string;
 }
@@ -122,17 +134,28 @@ export interface CoreTexEvalAttemptRecord extends CoreTexEvalDedupKey {
 export interface CoreTexEvalDedupStore {
   get(key: CoreTexEvalDedupKey): Promise<CoreTexEvalDedupRecord | null> | CoreTexEvalDedupRecord | null;
   put(record: CoreTexEvalDedupRecord): Promise<void> | void;
+  /** Per-miner admission count for the epoch, derived from the atomically-charged
+   *  attempt rows (admissionCharged=1) so it can never diverge from the seed
+   *  pins across a crash/restart. */
   minerAdmissions(epochId: number, minerAddress: string): Promise<number> | number;
-  recordMinerAdmission(epochId: number, minerAddress: string): Promise<void> | void;
   /** §8 seed-redraw closure: the in-flight attempt for a key (its pinned seed
    *  context + state), or null if no seed has been drawn yet. */
   getAttempt(key: CoreTexEvalDedupKey): Promise<CoreTexEvalAttemptRecord | null> | CoreTexEvalAttemptRecord | null;
-  /** Durably pin the drawn seed (state='drawn') BEFORE any scoring. Idempotent
-   *  on the key: a re-draw on an existing 'drawn' attempt must NOT overwrite the
-   *  pinned seedContext (the retry should already have reused it). */
-  recordSeedDrawn(key: CoreTexEvalDedupKey, seedContext: CoreTexEvalSeedContext): Promise<void> | void;
+  /** Atomically pin the drawn seed (state='drawn') AND charge the miner's
+   *  admission in ONE durable transaction, BEFORE any scoring. The attempt row
+   *  carries the miner + an admissionCharged marker, and `minerAddress` is the
+   *  count the per-miner cap is derived from. Idempotent on the key: a re-draw
+   *  on an existing attempt must NOT overwrite the pinned seedContext NOR charge
+   *  the admission again (the retry already reuses the pinned seed + slot) →
+   *  admission is charged exactly-once per distinct first-time draw, even across
+   *  crashes/restarts. */
+  recordSeedDrawnAndAdmission(
+    key: CoreTexEvalDedupKey,
+    seedContext: CoreTexEvalSeedContext,
+    minerAddress: string,
+  ): Promise<void> | void;
   /** Upgrade the attempt to its terminal state ('rejected'/'accepted') after the
-   *  verified result, preserving the pinned seedContext. */
+   *  verified result, preserving the pinned seedContext + the charged admission. */
   recordAttemptOutcome(
     key: CoreTexEvalDedupKey,
     state: 'rejected' | 'accepted',
@@ -147,10 +170,8 @@ export interface CoreTexEvalDedupStore {
 export function createInMemoryDedupStore(): CoreTexEvalDedupStore {
   const records = new Map<string, CoreTexEvalDedupRecord>();
   const attempts = new Map<string, CoreTexEvalAttemptRecord>();
-  const admissions = new Map<string, number>();
   const recordKey = (k: CoreTexEvalDedupKey) =>
     `${k.epochId}|${k.parentStateRoot.toLowerCase()}|${k.patchHash.toLowerCase()}`;
-  const admissionKey = (epochId: number, miner: string) => `${epochId}|${miner.toLowerCase()}`;
   const normalizeKey = (k: CoreTexEvalDedupKey): CoreTexEvalDedupKey => ({
     epochId: k.epochId,
     parentStateRoot: k.parentStateRoot.toLowerCase(),
@@ -159,27 +180,37 @@ export function createInMemoryDedupStore(): CoreTexEvalDedupStore {
   return {
     get(key) { return records.get(recordKey(key)) ?? null; },
     put(record) { records.set(recordKey(record), record); },
-    minerAdmissions(epochId, minerAddress) { return admissions.get(admissionKey(epochId, minerAddress)) ?? 0; },
-    recordMinerAdmission(epochId, minerAddress) {
-      const key = admissionKey(epochId, minerAddress);
-      admissions.set(key, (admissions.get(key) ?? 0) + 1);
+    // Admission count is DERIVED from the atomically-charged attempt rows: the
+    // count and the seed pins are the SAME write, so they can never diverge.
+    minerAdmissions(epochId, minerAddress) {
+      const miner = minerAddress.toLowerCase();
+      let count = 0;
+      for (const a of attempts.values()) {
+        if (a.epochId === epochId && a.admissionCharged && a.minerAddress === miner) count += 1;
+      }
+      return count;
     },
     getAttempt(key) { return attempts.get(recordKey(key)) ?? null; },
-    recordSeedDrawn(key, seedContext) {
+    // Atomic (single synchronous call): pin the seed AND charge the admission.
+    // Idempotent on the key — an existing attempt is left untouched (the retry
+    // reuses the pinned seed and is NOT re-charged), so admission is charged
+    // exactly-once per first-time draw.
+    recordSeedDrawnAndAdmission(key, seedContext, minerAddress) {
       const mapKey = recordKey(key);
-      // Idempotent: never overwrite an already-pinned seed (the retry reuses it).
       if (attempts.has(mapKey)) return;
       attempts.set(mapKey, {
         ...normalizeKey(key),
         state: 'drawn',
         seedContext: { ...seedContext, blockhash: seedContext.blockhash.toLowerCase() },
+        minerAddress: minerAddress.toLowerCase(),
+        admissionCharged: true,
       });
     },
     recordAttemptOutcome(key, state, outcome, code) {
       const mapKey = recordKey(key);
       const prior = attempts.get(mapKey);
       if (!prior) {
-        throw new Error('recordAttemptOutcome called before recordSeedDrawn (no pinned seed)');
+        throw new Error('recordAttemptOutcome called before recordSeedDrawnAndAdmission (no pinned seed)');
       }
       attempts.set(mapKey, { ...prior, state, outcome, ...(code ? { code } : {}) });
     },
@@ -463,20 +494,23 @@ export function createCoreTexEvaluatorCore(deps: ProductionCoreTexEvaluatorCoreD
       const priorAttempt = coordinatorPinnedSeed ? null : await deps.dedupStore.getAttempt(dedupKey);
       const injectedSeedContext: PerPatchSeedContext | undefined = coordinatorPinnedSeed
         ?? (priorAttempt ? priorAttempt.seedContext : undefined);
-      // A LOCAL-path retry (priorAttempt exists) already consumed one admission
-      // slot on its crashed first draw — feed the cap check the PRE-draw count
-      // so the retry is not wrongly blocked (or double-charged) by its own slot.
-      const rawMinerAdmissions = await deps.dedupStore.minerAdmissions(deps.epochId, miner);
-      const minerAdmissions = priorAttempt ? Math.max(0, rawMinerAdmissions - 1) : rawMinerAdmissions;
-      // Record the drawn/pinned seed into the attempt store BEFORE scoring,
-      // unless this is a LOCAL-path retry that already has a 'drawn' attempt
-      // (its seed is reused). On the remote path the coordinator-pinned seed is
-      // still mirrored into the scorer's (in-memory, defense-in-depth) store so
-      // its attempt state machine stays consistent (outcome upgrade follows a
-      // recorded draw). recordSeedDrawn is idempotent, so this never re-rolls.
+      // Cap check is for the FIRST draw only. On a retry of an existing attempt
+      // the admission was already charged atomically at its first draw (it is
+      // counted in minerAdmissions), and the reused row passed the cap then — so
+      // the retry is always admitted (feed the gate 0) and never re-charged.
+      // On a first draw the gate sees the real derived count (this key is not yet
+      // charged), so it rejects with NO draw and NO charge iff count >= cap.
+      const minerAdmissions = priorAttempt ? 0 : await deps.dedupStore.minerAdmissions(deps.epochId, miner);
+      // §8 ATOMIC seed-pin + admission-charge BEFORE scoring, unless this is a
+      // retry that already has a 'drawn' attempt (its seed is reused, its
+      // admission already charged). On the remote path the coordinator-pinned
+      // seed is still mirrored into the scorer's (in-memory, defense-in-depth)
+      // store so its attempt state machine stays consistent (outcome upgrade
+      // follows a recorded draw). recordSeedDrawnAndAdmission is idempotent on
+      // the key, so this never re-rolls the seed nor double-charges the miner.
       const onSeedDerived = priorAttempt
         ? undefined
-        : (seedContext: PerPatchSeedContext) => deps.dedupStore.recordSeedDrawn(dedupKey, seedContext);
+        : (seedContext: PerPatchSeedContext) => deps.dedupStore.recordSeedDrawnAndAdmission(dedupKey, seedContext, miner);
 
       const dual = await runPerPatchEvaluation({
         normalizedPatchBytes: patchBytes,
@@ -494,19 +528,20 @@ export function createCoreTexEvaluatorCore(deps: ProductionCoreTexEvaluatorCoreD
         corpusRoot: deps.corpusRoot,
         bundleHash: deps.bundleHash,
         // Cross-call dedup lives in the persistent store (checked above);
-        // per-miner counts come from the same store.
+        // per-miner counts come from the same store (derived from atomic rows).
         dedupCache: new Map(),
         minerAdmissions: new Map([[miner, minerAdmissions]]),
         ...(injectedSeedContext ? { seedContext: injectedSeedContext } : {}),
         ...(onSeedDerived ? { onSeedDerived } : {}),
       });
 
-      // The patch consumed a pack draw iff seeds were derived. Record both
-      // the admission and the dedup outcome through the persistent store so
-      // neither resets on coordinator restart. A reused (injected) seed on a
-      // retry must NOT double-count the admission — only the original draw did.
+      // The patch consumed a pack draw iff seeds were derived. The admission was
+      // ALREADY charged ATOMICALLY with the seed pin inside onSeedDerived (which
+      // runPerPatchEvaluation invokes only AFTER the admission gate passes and
+      // the seed is derived) — so there is no separate post-result charge to
+      // make here (exactly-once, crash-safe). We only record the dedup outcome,
+      // which is what short-circuits a completed resubmission.
       const drewPacks = dual.receivedAtBlock > 0;
-      if (drewPacks && !priorAttempt) await deps.dedupStore.recordMinerAdmission(deps.epochId, miner);
       const record = (outcome: CoreTexEvalDedupRecord['outcome'], code?: string) => {
         const attemptState = outcome === 'reject' ? 'rejected' as const : 'accepted' as const;
         return Promise.resolve(deps.dedupStore.recordAttemptOutcome(dedupKey, attemptState, outcome, code))

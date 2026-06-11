@@ -182,44 +182,53 @@ describe('createCoreTexEvaluatorCore — per-miner cap through the store', () =>
   });
 });
 
-describe('createInMemoryDedupStore — §8 attempt state machine (seed pinning)', () => {
+describe('createInMemoryDedupStore — §8 atomic seed-pin + admission-charge', () => {
   const KEY = { epochId: 7, parentStateRoot: PARENT_ROOT, patchHash: `0x${'33'.repeat(32)}` };
   const SEED = { receivedAtBlock: 1000, targetBlock: 1030, blockhash: `0x${'B2'.repeat(32)}` };
 
-  test('records the seed at draw and reuses it on getAttempt (lowercased)', () => {
+  test('records the seed + charges the admission at draw, reused on getAttempt (lowercased)', () => {
     const store = createInMemoryDedupStore();
     assert.equal(store.getAttempt(KEY), null, 'no attempt before any draw');
-    store.recordSeedDrawn(KEY, SEED);
+    assert.equal(store.minerAdmissions(7, MINER), 0, 'no admission before any draw');
+    store.recordSeedDrawnAndAdmission(KEY, SEED, MINER);
     const a = store.getAttempt(KEY);
     assert.equal(a.state, 'drawn');
     assert.equal(a.seedContext.receivedAtBlock, 1000);
     assert.equal(a.seedContext.targetBlock, 1030);
     assert.equal(a.seedContext.blockhash, `0x${'b2'.repeat(32)}`, 'blockhash normalized lowercase');
+    assert.equal(a.minerAddress, MINER.toLowerCase());
+    assert.equal(a.admissionCharged, true);
     assert.equal(a.outcome, undefined, 'drawn attempt has no outcome yet');
+    // The admission is DERIVED from the atomic row — charged in the SAME call.
+    assert.equal(store.minerAdmissions(7, MINER), 1, 'admission charged atomically with the seed');
   });
 
-  test('recordSeedDrawn is idempotent — never overwrites a pinned seed', () => {
+  test('recordSeedDrawnAndAdmission is idempotent — never overwrites a pinned seed nor re-charges', () => {
     const store = createInMemoryDedupStore();
-    store.recordSeedDrawn(KEY, SEED);
-    // A second draw with a DIFFERENT blockhash must NOT replace the pinned one.
-    store.recordSeedDrawn(KEY, { receivedAtBlock: 9999, targetBlock: 10029, blockhash: `0x${'ff'.repeat(32)}` });
+    store.recordSeedDrawnAndAdmission(KEY, SEED, MINER);
+    // A second draw with a DIFFERENT blockhash must NOT replace the pinned one
+    // NOR charge the admission again (exactly-once on the key).
+    store.recordSeedDrawnAndAdmission(KEY, { receivedAtBlock: 9999, targetBlock: 10029, blockhash: `0x${'ff'.repeat(32)}` }, MINER);
     assert.equal(store.getAttempt(KEY).seedContext.blockhash, `0x${'b2'.repeat(32)}`, 'first pinned seed survives');
     assert.equal(store.getAttempt(KEY).seedContext.receivedAtBlock, 1000);
+    assert.equal(store.minerAdmissions(7, MINER), 1, 'admission NOT double-charged on a re-draw');
   });
 
-  test('recordAttemptOutcome upgrades state but preserves the pinned seed', () => {
+  test('recordAttemptOutcome upgrades state but preserves the pinned seed + charged admission', () => {
     const store = createInMemoryDedupStore();
-    store.recordSeedDrawn(KEY, SEED);
+    store.recordSeedDrawnAndAdmission(KEY, SEED, MINER);
     store.recordAttemptOutcome(KEY, 'accepted', 'state_advance');
     const a = store.getAttempt(KEY);
     assert.equal(a.state, 'accepted');
     assert.equal(a.outcome, 'state_advance');
     assert.equal(a.seedContext.blockhash, `0x${'b2'.repeat(32)}`, 'seed preserved through the upgrade');
+    assert.equal(a.admissionCharged, true, 'admission preserved through the upgrade');
+    assert.equal(store.minerAdmissions(7, MINER), 1, 'admission still counted after the terminal upgrade');
   });
 
-  test('recordAttemptOutcome before recordSeedDrawn throws (invariant)', () => {
+  test('recordAttemptOutcome before recordSeedDrawnAndAdmission throws (invariant)', () => {
     const store = createInMemoryDedupStore();
-    assert.throws(() => store.recordAttemptOutcome(KEY, 'rejected', 'reject', 'x'), /recordSeedDrawn/);
+    assert.throws(() => store.recordAttemptOutcome(KEY, 'rejected', 'reject', 'x'), /recordSeedDrawnAndAdmission/);
   });
 });
 
@@ -235,10 +244,9 @@ describe('createCoreTexEvaluatorCore — §8 seed-redraw closure (crash-then-ret
       get: (k) => inner.get(k),
       put: (r) => { if (!crashed) { crashed = true; throw new Error('simulated crash after draw, before outcome'); } return inner.put(r); },
       getAttempt: (k) => inner.getAttempt(k),
-      recordSeedDrawn: (k, s) => inner.recordSeedDrawn(k, s),
+      recordSeedDrawnAndAdmission: (k, s, m) => inner.recordSeedDrawnAndAdmission(k, s, m),
       recordAttemptOutcome: (k, st, o, c) => inner.recordAttemptOutcome(k, st, o, c),
       minerAdmissions: (e, m) => inner.minerAdmissions(e, m),
-      recordMinerAdmission: (e, m) => inner.recordMinerAdmission(e, m),
     };
   }
 
@@ -282,15 +290,20 @@ describe('createCoreTexEvaluatorCore — §8 seed-redraw closure (crash-then-ret
     assert.deepEqual(retrySeeds, firstSeeds, 'retry derived byte-identical seeds → same hidden packs (no redraw)');
   });
 
-  test('admission is not double-counted across a crash + retry', async () => {
+  test('admission is charged EXACTLY ONCE across a crash + retry (not 0, not 2)', async () => {
     const store = crashAfterDrawStore();
     const a = makeCore({ dedupStore: store, perMinerCap: 1 });
     await assert.rejects(a.core.scorePatch({ patchBytesHex: patchBytesHex(), parentStateRoot: PARENT_ROOT, miner: MINER }), /simulated crash/);
+    // The seed pin AND the admission charge were ONE atomic write before the
+    // crash, so the admission is already present (=1) for the drawn-but-not-
+    // completed attempt — the gap where it could stay UNCHARGED (=0) is closed.
+    assert.equal(store.minerAdmissions(7, MINER), 1, 'admission charged atomically with the seed, present after the crash');
     // Retry consumes the SAME admission the first (crashed) draw recorded — the
     // miner is not charged twice — so the cap-1 retry still succeeds.
     const b = makeCore({ dedupStore: store, perMinerCap: 1 });
     const retry = await b.core.scorePatch({ patchBytesHex: patchBytesHex(), parentStateRoot: PARENT_ROOT, miner: MINER });
     assert.equal(retry.outcome, 'state_advance', 'retry not blocked by a double-charged admission cap');
+    assert.equal(store.minerAdmissions(7, MINER), 1, 'admission stays EXACTLY ONCE across the crash + retry');
   });
 });
 
