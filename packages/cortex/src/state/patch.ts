@@ -244,6 +244,16 @@ export function applyPatch(state: CortexState, patch: Patch, policyAtomsMode = f
   if (policyAtomsMode && !policyWriteIsCanonicalForState(state, patch)) {
     return patchError('E02');
   }
+  // r5 header freeze (audit F7): words 0–31 are protocol metadata
+  // (MAGIC/SCHEMA/EPOCH/SCORE_ACCUMULATOR/...), not a minable surface. The
+  // reserved-bit masks only zero RESERVED bits — the named fields were freely
+  // settable, so a miner could piggyback header corruption onto a genuinely
+  // improving MIXED patch (the composite gate never reads header words).
+  // Under policyAtomsMode NO patch type may touch the header region; the
+  // chain stays permissive (safe direction — the coordinator won't sign).
+  if (policyAtomsMode && patchTouchesHeader(patch)) {
+    return patchError('E02');
+  }
 
   // 3. No-op check
   let anyChange = false;
@@ -326,6 +336,9 @@ export function applyPatchOntoCurrent(current: CortexState, patch: Patch, policy
     return patchError('E02');
   }
   // r5 byte canonicalization (see applyPatch).
+  if (policyAtomsMode && patchTouchesHeader(patch)) {
+    return patchError('E02');
+  }
   if (policyAtomsMode && !policyWriteIsCanonicalForState(current, patch)) {
     return patchError('E02');
   }
@@ -449,6 +462,15 @@ export function patchTypeRange(patchType: number): { start: number; end: number 
  * the state-dependent check that the companion word actually changes, so no-op padding cannot reopen the
  * pure-policy alias.
  */
+/** r5: true when any targeted index falls in the header region (words 0–31). */
+export function patchTouchesHeader(patch: { readonly indices: readonly number[]; readonly wordCount: number }): boolean {
+  for (let i = 0; i < patch.wordCount; i++) {
+    const idx = patch.indices[i]!;
+    if (idx >= RANGES.HEADER_START && idx <= RANGES.HEADER_END) return true;
+  }
+  return false;
+}
+
 export function policyWriteIsCanonical(patch: { readonly patchType: number; readonly indices: readonly number[]; readonly wordCount: number }): boolean {
   let touchesPolicy = false;
   let touchesCompanion = false;
@@ -493,11 +515,19 @@ export function buildAllowedPatchTypes(opts?: { readonly pipelineVersion?: strin
   // atomic cross-region compiles: temporal pair (MemoryIndex+Temporal, e.g. [32,33,800]) and reclaimed
   // PolicyAtom surfaces that need to introduce an anchor/lens in the same patch. Pure policy writes via
   // MIXED are still rejected by policyWriteIsCanonical, so the policy-only alias stays closed.
-  const r5Suppressed = new Set<number>([PATCH_TYPE.KEY_UPDATE, PATCH_TYPE.CODEBOOK_UPDATE]);
+  // r5 additionally suppresses HEADER_UPDATE (audit F7): words 0–31 are
+  // protocol metadata, frozen against miner writes under policyAtomsMode
+  // (applyPatch rejects E02), so they are no longer advertised either.
+  const r5Suppressed = new Set<number>([PATCH_TYPE.KEY_UPDATE, PATCH_TYPE.CODEBOOK_UPDATE, PATCH_TYPE.HEADER_UPDATE]);
   const out: Array<{ name: string; byte: number; wordIndexRange: [number, number] }> = [];
   for (const [name, byte] of Object.entries(PATCH_TYPE)) {
     if (r5 && r5Suppressed.has(byte)) continue;
-    if (byte === PATCH_TYPE.MIXED) { out.push({ name, byte, wordIndexRange: [0, RANGES.CODEBOOK_END] }); continue; }
+    if (byte === PATCH_TYPE.MIXED) {
+      // Under r5 the header region is not minable: MIXED advertises from the
+      // MemoryIndex start instead of word 0.
+      out.push({ name, byte, wordIndexRange: [r5 ? RANGES.MEMORY_INDEX_START : 0, RANGES.CODEBOOK_END] });
+      continue;
+    }
     const r = patchTypeRange(byte);
     if (r) out.push({ name, byte, wordIndexRange: [r.start, r.end] });
   }

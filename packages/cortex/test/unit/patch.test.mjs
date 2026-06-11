@@ -7,6 +7,7 @@ import assert from 'node:assert/strict';
 import {
   encodeLEB128, decodeLEB128,
   encodePatch, decodePatch, applyPatch, applyPatchOntoCurrent, validatePatchType,
+  buildAllowedPatchTypes,
 } from '../../dist/state/patch.js';
 import { merkleizeState, bytesToHex } from '../../dist/state/merkle.js';
 import { RANGES, PATCH_TYPE } from '../../dist/state/types.js';
@@ -423,5 +424,51 @@ describe('applyPatch', () => {
       assert.deepEqual(newRoot1, newRoot2);
       assert.notDeepEqual(newRoot1, root);
     }
+  });
+});
+
+describe('r5 header freeze (policyAtomsMode)', () => {
+  test('HEADER_UPDATE is rejected E02 under policyAtomsMode (header words are not minable)', () => {
+    const state = makeCleanState();
+    const root = merkleizeState(state);
+    const patch = makePatch({
+      patchType: PATCH_TYPE.HEADER_UPDATE,
+      parentStateRoot: root,
+      indices: [2], // word 2: full-word writable under the r4 masks
+      newWords: [0x1234n],
+    });
+    // r4: header writes remain possible (subject to reserved masks).
+    assert.equal(applyPatch(state, patch).ok, true);
+    // r5: frozen — E02 regardless of value.
+    const r5 = applyPatch(state, patch, true);
+    assert.equal(r5.ok, false);
+    assert.equal(r5.code, 'E02');
+  });
+
+  test('MIXED touching a header word is rejected E02 under policyAtomsMode', () => {
+    const state = makeCleanState();
+    const root = merkleizeState(state);
+    const patch = makePatch({
+      patchType: PATCH_TYPE.MIXED,
+      wordCount: 2,
+      parentStateRoot: root,
+      indices: [2, 40], // header word + MemoryIndex word
+      newWords: [0x99n, 0x42n],
+    });
+    assert.equal(applyPatch(state, patch).ok, true, 'r4 unchanged');
+    const r5 = applyPatch(state, patch, true);
+    assert.equal(r5.ok, false);
+    assert.equal(r5.code, 'E02');
+  });
+
+  test('buildAllowedPatchTypes: r5 suppresses HEADER_UPDATE and MIXED starts at the MemoryIndex region', () => {
+    const r5 = buildAllowedPatchTypes({ pipelineVersion: 'coretex-retrieval-v2-policy-r5' });
+    assert.equal(r5.find((t) => t.name === 'HEADER_UPDATE'), undefined);
+    const mixed = r5.find((t) => t.name === 'MIXED');
+    assert.deepEqual(mixed.wordIndexRange, [RANGES.MEMORY_INDEX_START, RANGES.CODEBOOK_END]);
+    // r4 advertisement unchanged.
+    const r4 = buildAllowedPatchTypes();
+    assert.ok(r4.find((t) => t.name === 'HEADER_UPDATE'));
+    assert.deepEqual(r4.find((t) => t.name === 'MIXED').wordIndexRange, [0, RANGES.CODEBOOK_END]);
   });
 });
