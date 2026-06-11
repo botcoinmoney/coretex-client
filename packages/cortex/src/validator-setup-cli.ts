@@ -533,6 +533,14 @@ async function main(): Promise<void> {
       bundleManifestPath: bundleDest,
       profilePath: profileDest,
       corpusPath: corpusJsonPath,
+      // The launch/genesis materialized corpus is the universal earliest ANCESTOR
+      // of every epoch corpusRoot on the published delta chain. Record it under a
+      // STABLE, distinct field (root + path) so historical corpus auto-resolution
+      // can always walk FORWARD from this guaranteed ancestor — even when sync's
+      // loaded corpus is overridden (--corpus/CORETEX_CORPUS_PATH) to a current,
+      // post-rotation corpus that is AHEAD of (not an ancestor of) the target root.
+      baseCorpusPath: corpusJsonPath,
+      baseCorpusRoot: manifest.corpusRoot,
       materializedRoot,
       ...(base ? { artifactBaseUrl: base } : {}),
       ...(recordScorerPython ? { scorerPython: venv!.scorerPython, scorerVenvStatus: venv!.status } : {}),

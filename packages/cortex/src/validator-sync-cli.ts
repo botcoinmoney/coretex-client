@@ -452,6 +452,20 @@ export interface ValidatorSyncStateFile {
     readonly bundleManifestPath?: string;
     readonly profilePath?: string;
     readonly corpusPath?: string;
+    /**
+     * The launch/genesis materialized corpus retained as the durable REPLAY
+     * ANCESTOR (path + root). It is the universal earliest ancestor of every
+     * epoch corpusRoot on the published corpus-delta chain, so historical corpus
+     * auto-resolution can always walk FORWARD from it — even when the loaded
+     * corpus is overridden (--corpus/CORETEX_CORPUS_PATH) to a current,
+     * post-rotation corpus that is AHEAD of (not an ancestor of) the target.
+     * Recorded by setup distinctly from `corpusPath` so the override cannot lose
+     * the base reference. Absent on state files written by an older setup (sync
+     * then falls back to `corpusPath`, which an un-overridden setup also pins to
+     * the launch corpus).
+     */
+    readonly baseCorpusPath?: string;
+    readonly baseCorpusRoot?: string;
     readonly materializedRoot?: string;
     readonly artifactBaseUrl?: string;
     /** Scorer interpreter recorded by setup's venv bootstrap (BUILD 1). */
@@ -935,10 +949,12 @@ export interface AutoResolveCorpusDeps {
    *  RE-VERIFY the reconstructed corpus root against the target pin before use. */
   readonly computeRoot: (corpus: ProductionCorpus) => string;
   /** Optional: called with each INTERMEDIATE materialized corpus along the walk
-   *  (after a delta applies). The wiring caches these by root so a later entry's
-   *  walk can start from the NEAREST cached materialized root — making a multi-
-   *  epoch replay materialize each distinct corpus at most once. */
-  readonly onMaterialized?: (corpus: ProductionCorpus) => void;
+   *  (after a delta applies) AND the chain-epoch it now sits at (== the applied
+   *  delta's epoch). The wiring caches these by root so a later entry's walk can
+   *  start from the NEAREST cached ancestor — making a multi-epoch replay
+   *  materialize each distinct corpus at most once. The epoch lets the wiring
+   *  record the cached corpus's chain-epoch for ancestor selection. */
+  readonly onMaterialized?: (corpus: ProductionCorpus, epoch: number) => void;
 }
 
 export type AutoResolveCorpusResult =
@@ -999,7 +1015,9 @@ export async function autoResolveCorpusByRoot(
       return { ok: false, reason: `applying corpus-delta for epoch ${deltaEpoch} failed: ${err instanceof Error ? err.message : String(err)}` };
     }
     appliedEpochs.push(deltaEpoch);
-    deps.onMaterialized?.(corpus); // cache the intermediate so a later walk can reuse it
+    // Cache the intermediate (at chain-epoch == deltaEpoch) so a later walk can
+    // reuse it AND know its chain-epoch for ancestor selection.
+    deps.onMaterialized?.(corpus, deltaEpoch);
     if (corpus.corpusRoot.toLowerCase() === target) {
       // REFUSE unless an INDEPENDENT merkleization of the reconstructed corpus
       // equals the target pin (applyDelta already cross-checked delta.nextRoot,
@@ -1012,6 +1030,69 @@ export async function autoResolveCorpusByRoot(
     }
   }
   return { ok: false, reason: `target corpusRoot ${targetRoot} not reached after applying ${appliedEpochs.length} published delta(s) from epoch ${fromEpoch} (bound ${maxDeltas}) — leaving pending rather than rescoring with the wrong corpus` };
+}
+
+/** A materialized corpus the validator already holds, tagged with the CHAIN
+ *  EPOCH it sits at: the base/launch corpus is at chain-epoch 0; the corpus
+ *  produced by applying the published `corpus-delta-epoch-N` is at chain-epoch
+ *  N. This epoch is what makes ancestry decidable on the linear delta chain. */
+export interface KnownMaterializedCorpus {
+  readonly corpus: ProductionCorpus;
+  /** Chain-epoch this corpus sits at (0 = launch/genesis ancestor). */
+  readonly epoch: number;
+  /** Provenance label for diagnostics ('base' | 'loaded' | 'cached'). */
+  readonly origin: string;
+}
+
+export interface AutoResolveWalkStart {
+  /** The corpus to begin the forward delta-walk from — a GUARANTEED ancestor of
+   *  the target (its chain-epoch <= the target's epoch bound). */
+  readonly start: ProductionCorpus;
+  /** First published delta epoch to fetch (== start.epoch + 1). */
+  readonly fromEpoch: number;
+  /** Max deltas to apply to reach the target (== targetEpochBound - start.epoch,
+   *  floored at 1). Caps the forward walk. */
+  readonly maxDeltas: number;
+  readonly origin: string;
+}
+
+/**
+ * Choose the START of the forward corpus-delta walk so it is an ANCESTOR of the
+ * target root — never the currently-loaded corpus when it is AHEAD of the target.
+ *
+ * The corpus the advance pinned was active during the advance's epoch, so the
+ * target corpus sits at chain-epoch <= `targetEpochBound` (the advance's
+ * epochId). On the LINEAR delta chain a known corpus at chain-epoch K is an
+ * ancestor of the target iff K <= targetEpochBound. Among the known corpora
+ * (the launch BASE at epoch 0 — always an ancestor; the loaded corpus; any
+ * cached intermediate) we pick the one with the GREATEST epoch <= the bound:
+ * the NEAREST ancestor, so the forward walk applies the FEWEST deltas. The base
+ * is the guaranteed fallback (epoch 0). The loaded/cached corpus is used ONLY
+ * when its chain-epoch is known AND <= the bound; otherwise it is skipped (a
+ * post-rotation loaded corpus AHEAD of the target never becomes the start).
+ *
+ * Returns null only when not even the base is available — the caller then
+ * SAFE-FAILS ('epoch-context-unresolved') rather than rescoring.
+ */
+export function chooseAutoResolveWalkStart(
+  candidates: readonly KnownMaterializedCorpus[],
+  targetEpochBound: number,
+): AutoResolveWalkStart | null {
+  let best: KnownMaterializedCorpus | undefined;
+  for (const c of candidates) {
+    // Only corpora at chain-epoch <= the target bound are ancestors on the
+    // linear chain; a corpus AHEAD of the target can never reach it by walking
+    // FORWARD, so it is never a valid start.
+    if (c.epoch > targetEpochBound) continue;
+    if (!best || c.epoch > best.epoch) best = c;
+  }
+  if (!best) return null;
+  return {
+    start: best.corpus,
+    fromEpoch: best.epoch + 1,
+    maxDeltas: Math.max(1, targetEpochBound - best.epoch),
+    origin: best.origin,
+  };
 }
 
 /**
@@ -1676,8 +1757,9 @@ async function runSync({ stateDir, statePath, pinPath, savedState, setup, stagin
     //      corpus FILE the validator already has (`--corpus-for-root 0x…=path`,
     //      or the loaded corpus when its root already matches).
     //   2) AUTO-RESOLVE — walk the PUBLISHED, SIGNED corpus-delta chain forward
-    //      from the loaded base corpus until the materialized root == the pin,
-    //      then re-merkleize before use (autoResolveCorpusByRoot). Lazy/bounded:
+    //      from a guaranteed ANCESTOR of the target (the retained launch base, or
+    //      a nearer cached ancestor) until the materialized root == the pin, then
+    //      re-merkleize before use (autoResolveCorpusByRoot). Lazy/bounded:
     //      resolved on demand for the specific roots the backlog needs, cached.
     // Resolved contexts are cached so a given epoch's corpus is materialized at
     // MOST once; the bundle-pinned, runtime-asserted reranker is shared.
@@ -1698,13 +1780,43 @@ async function runSync({ stateDir, statePath, pinPath, savedState, setup, stagin
     const contextCache = new Map<string, ValidatorScorerContext>();
     contextCache.set(`${loadedRootLc}:${loadedBundleLc}`, ctx);
 
-    // Auto-resolution starts from the loaded (launch/genesis or setup) materialized
-    // corpus and walks the published corpus-delta chain. Each distinct target root
-    // is materialized at most once across the whole drain (LRU bound). The base is
-    // the loaded corpus; per-epoch delta-N.json is fetched + signature-verified the
+    // The launch/genesis BASE corpus is the universal earliest ANCESTOR of every
+    // epoch corpusRoot on the published delta chain. Auto-resolution must be able
+    // to walk FORWARD from a guaranteed ancestor: if the loaded corpus is AHEAD of
+    // a backlog entry's (older) target — e.g. setup materialized a current,
+    // post-rotation corpus, or the operator overrode --corpus — a forward-only walk
+    // from the loaded corpus can never reach the older root. We retain the base
+    // (recorded by setup as setup.baseCorpusPath) and default the walk to start
+    // there. The base path defaults to the loaded corpusPath when an older setup
+    // did not record it (an un-overridden setup pins corpusPath to the launch
+    // corpus). Re-merkle-verified on load; setup.baseCorpusRoot, when present, is
+    // cross-checked so a mismatched/overridden base is refused rather than trusted.
+    const baseCorpusPath = setup?.baseCorpusPath ?? setup?.corpusPath ?? corpusPath;
+    let baseCorpus = ctx.corpus;
+    if (baseCorpusPath.toLowerCase() !== corpusPath.toLowerCase()) {
+      baseCorpus = loadProductionCorpus(baseCorpusPath, { verifyCorpusRoot: true, verifySplits: true });
+    }
+    const baseRootLc = baseCorpus.corpusRoot.toLowerCase();
+    if (setup?.baseCorpusRoot && baseRootLc !== setup.baseCorpusRoot.toLowerCase()) {
+      die(`retained base corpus ${baseCorpusPath} root ${baseCorpus.corpusRoot} != setup-recorded baseCorpusRoot ${setup.baseCorpusRoot} — refusing to use a base corpus that drifted from the launch ancestor`);
+    }
+
+    // Auto-resolution walks the published corpus-delta chain forward from a known
+    // ANCESTOR of the target (the nearest available cached/loaded ancestor for
+    // efficiency, defaulting to the launch base — see chooseAutoResolveWalkStart).
+    // Each distinct target root is materialized at most once across the whole
+    // drain (LRU bound). Per-epoch delta-N.json is fetched + signature-verified the
     // SAME way the continuity path verifies deltas (signed-delta gate not bypassed).
     const materializedByRoot = new MaterializedCorpusCache();
     materializedByRoot.set(loadedRootLc, ctx.corpus);
+    materializedByRoot.set(baseRootLc, baseCorpus);
+    // Chain-epoch of every corpus we hold, keyed by lowercased root, for ancestor
+    // selection. The base sits at chain-epoch 0 (genesis/launch). The loaded corpus
+    // is recorded as epoch 0 ONLY when it IS the base (same root) — otherwise its
+    // chain-epoch is unknown and it is NOT offered as a walk start (it might be
+    // AHEAD of the target). Walk intermediates record their chain-epoch below.
+    const knownCorpusEpoch = new Map<string, number>();
+    knownCorpusEpoch.set(baseRootLc, 0);
     const fetchCorpusDeltaForEpoch = async (e: number): Promise<CorpusDelta | null> => {
       const url = corpusDeltaArtifactUrl(artifactBase, e);
       try {
@@ -1724,8 +1836,13 @@ async function runSync({ stateDir, statePath, pinPath, savedState, setup, stagin
       applyDelta: (corpus, d) => applyCorpusDelta(corpus, d, { verifyRoot: true }),
       computeRoot: (corpus) => computeCorpusRoot(corpus.events),
       // Cache each intermediate materialized root (bounded LRU) so a later entry's
-      // walk hits the cache for a recurring root instead of re-deriving it.
-      onMaterialized: (corpus) => materializedByRoot.set(corpus.corpusRoot, corpus),
+      // walk hits the cache for a recurring root instead of re-deriving it, and
+      // record its chain-epoch so a later walk can start from it as a nearer
+      // ancestor (each distinct root is materialized at most once).
+      onMaterialized: (corpus, deltaEpoch) => {
+        materializedByRoot.set(corpus.corpusRoot, corpus);
+        knownCorpusEpoch.set(corpus.corpusRoot.toLowerCase(), deltaEpoch);
+      },
     };
     // Lazily auto-resolve the corpus for ONE entry whose pins differ from the
     // loaded context. Returns the materialized corpus (cached) or a safe-fail
@@ -1741,19 +1858,46 @@ async function runSync({ stateDir, statePath, pinPath, savedState, setup, stagin
       if (entry.coreVersionHash.toLowerCase() !== loadedBundleLc) {
         return { ok: false, reason: `entry coreVersionHash ${entry.coreVersionHash} != loaded bundle ${chain.coreVersionHash}; the validator only holds the loaded bundle's pinned scorer, so the historical bundle is not resolvable here` };
       }
-      // Walk forward from the loaded base corpus (the launch/genesis materialized
-      // corpus the validator was set up with). The published corpus-delta for
-      // epoch N carries the rotation INTO epoch N's corpus and chains continuously
-      // (delta.previousRoot == prior materialized root). We start at the first
-      // rotation after genesis (epoch 1) and bound the walk by the current epoch
-      // (the most rotations that can exist); applyCorpusDelta's chain guard makes
-      // the walk self-correcting (a non-chaining delta safe-fails rather than
-      // corrupting), and we stop the instant the materialized root == the pin.
-      const fromEpoch = 1;
-      const maxDeltas = Math.max(1, epoch);
-      const resolved = await autoResolveCorpusByRoot(ctx.corpus, entry.corpusRoot, fromEpoch, maxDeltas, autoResolveDeps);
+      // Choose the walk START to be a guaranteed ANCESTOR of the target — NEVER
+      // the loaded corpus when it is AHEAD of the target. The corpus the advance
+      // pinned was active during the advance's epoch, so the target sits at
+      // chain-epoch <= entry.epochId. Among the corpora we already hold (the
+      // launch base at epoch 0 — always an ancestor; the loaded corpus only when
+      // it equals the base; any cached intermediate, tagged with its chain-epoch)
+      // we pick the nearest ancestor (greatest chain-epoch <= the bound) so the
+      // forward walk applies the FEWEST deltas, defaulting to the base.
+      const targetEpochBound = Math.max(1, entry.epochId);
+      const candidates: KnownMaterializedCorpus[] = [];
+      const seenStartRoots = new Set<string>();
+      const offerCandidate = (corpus: ProductionCorpus, origin: string): void => {
+        const rootLc = corpus.corpusRoot.toLowerCase();
+        const knownEpoch = knownCorpusEpoch.get(rootLc);
+        if (knownEpoch === undefined || seenStartRoots.has(rootLc)) return;
+        seenStartRoots.add(rootLc);
+        candidates.push({ corpus, epoch: knownEpoch, origin });
+      };
+      offerCandidate(baseCorpus, 'base');
+      offerCandidate(ctx.corpus, 'loaded'); // only used if its root is a known ancestor (== base)
+      for (const [rootLc, knownEpoch] of knownCorpusEpoch) {
+        if (knownEpoch > targetEpochBound || seenStartRoots.has(rootLc)) continue;
+        const cached = materializedByRoot.get(rootLc);
+        if (cached) { seenStartRoots.add(rootLc); candidates.push({ corpus: cached, epoch: knownEpoch, origin: 'cached' }); }
+      }
+      const startChoice = chooseAutoResolveWalkStart(candidates, targetEpochBound);
+      if (!startChoice) {
+        return { ok: false, reason: `no retained ancestor corpus available to reconstruct corpusRoot ${entry.corpusRoot} (base/launch corpus unavailable) — leaving pending rather than rescoring with the wrong corpus` };
+      }
+      // The published corpus-delta for epoch N carries the rotation INTO epoch N's
+      // corpus and chains continuously (delta.previousRoot == prior materialized
+      // root). We start at the chosen ancestor and walk from its chain-epoch+1;
+      // applyCorpusDelta's chain guard makes the walk self-correcting (a
+      // non-chaining delta safe-fails rather than corrupting), and we stop the
+      // instant the materialized root == the pin, re-merkleizing before use.
+      const resolved = await autoResolveCorpusByRoot(startChoice.start, entry.corpusRoot, startChoice.fromEpoch, startChoice.maxDeltas, autoResolveDeps);
       if (!resolved.ok) return resolved;
       materializedByRoot.set(targetLc, resolved.corpus);
+      // The target sits at chain-epoch (start.epoch + #deltas applied).
+      knownCorpusEpoch.set(targetLc, startChoice.fromEpoch - 1 + resolved.appliedEpochs.length);
       return { ok: true, corpus: resolved.corpus };
     };
 

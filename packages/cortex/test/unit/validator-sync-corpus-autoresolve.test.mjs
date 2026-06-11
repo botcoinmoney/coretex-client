@@ -19,6 +19,7 @@ import { generateKeyPairSync } from 'node:crypto';
 
 import {
   autoResolveCorpusByRoot,
+  chooseAutoResolveWalkStart,
   MaterializedCorpusCache,
   DEFAULT_MATERIALIZED_CORPUS_CACHE_LIMIT,
   corpusDeltaArtifactUrl,
@@ -265,6 +266,119 @@ describe('end-to-end drain shape — auto-resolved corpus binds to the entry, ov
     // never walks the delta chain.
     const d = resolveScorerContextDecision(entry, loaded, new Set([historicalRoot.toLowerCase()]));
     assert.equal(d.action, 'resolve-context');
+  });
+});
+
+describe('chooseAutoResolveWalkStart — start the forward walk from a guaranteed ANCESTOR', () => {
+  const { privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
+
+  test('defaults to the BASE (epoch 0) when it is the only known ancestor', () => {
+    const { genesis } = buildChain(privateKey);
+    const start = chooseAutoResolveWalkStart([{ corpus: genesis, epoch: 0, origin: 'base' }], 3);
+    assert.notEqual(start, null);
+    assert.equal(start.start, genesis);
+    assert.equal(start.fromEpoch, 1); // base.epoch + 1
+    assert.equal(start.maxDeltas, 3); // targetBound - base.epoch
+    assert.equal(start.origin, 'base');
+  });
+
+  test('prefers the NEAREST cached ancestor (greatest epoch <= bound) for fewer deltas', () => {
+    const { genesis, corpora } = buildChain(privateKey);
+    // Known: base@0 and a cached C2@2. Target bound 3 (e.g. C3). Both are ancestors;
+    // the nearer one (C2@2) is chosen → walk only delta 3.
+    const start = chooseAutoResolveWalkStart([
+      { corpus: genesis, epoch: 0, origin: 'base' },
+      { corpus: corpora[2], epoch: 2, origin: 'cached' },
+    ], 3);
+    assert.equal(start.start, corpora[2]);
+    assert.equal(start.fromEpoch, 3);
+    assert.equal(start.maxDeltas, 1);
+    assert.equal(start.origin, 'cached');
+  });
+
+  test('NEVER starts from a corpus AHEAD of the target — it is skipped, base wins', () => {
+    const { genesis, corpora } = buildChain(privateKey);
+    // The loaded corpus is C3@3 (ahead of a target at epoch-bound 1). Offering it
+    // must NOT make it the start; only the base@0 (an ancestor) is eligible.
+    const start = chooseAutoResolveWalkStart([
+      { corpus: genesis, epoch: 0, origin: 'base' },
+      { corpus: corpora[3], epoch: 3, origin: 'loaded' },
+    ], 1);
+    assert.equal(start.start, genesis);
+    assert.equal(start.origin, 'base');
+    assert.equal(start.fromEpoch, 1);
+  });
+
+  test('returns null when no ancestor (not even a base) is available → caller safe-fails', () => {
+    const { corpora } = buildChain(privateKey);
+    // Only a corpus AHEAD of the target is known → no eligible start.
+    const start = chooseAutoResolveWalkStart([{ corpus: corpora[3], epoch: 3, origin: 'loaded' }], 1);
+    assert.equal(start, null);
+  });
+});
+
+describe('historical replay when the loaded corpus is AHEAD of the target (the gap fix)', () => {
+  const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
+
+  test('loaded=C3 (ahead), target=C1: walks FORWARD from the BASE and merkle-verifies — no override needed', async () => {
+    const { genesis, corpora, deltasByEpoch } = buildChain(privateKey);
+    const targetC1 = corpora[1].corpusRoot;
+    // The forward-only walk from the LOADED corpus (C3, ahead of C1) cannot reach
+    // C1 — this is the case that previously safe-failed:
+    const { deps: fromLoaded } = depsFor(deltasByEpoch, publicKey);
+    const stuck = await autoResolveCorpusByRoot(corpora[3], targetC1, 4, 3, fromLoaded);
+    assert.equal(stuck.ok, false); // forward walk from an AHEAD corpus can't reach an older root
+
+    // The FIX: pick the walk start as a guaranteed ancestor. With base@0 and the
+    // ahead loaded@3 known, chooseAutoResolveWalkStart picks the base; the walk
+    // from the base materializes C1 and merkle-verifies it.
+    const targetEpochBound = 1; // C1's advance was accepted in epoch 1
+    const choice = chooseAutoResolveWalkStart([
+      { corpus: genesis, epoch: 0, origin: 'base' },
+      { corpus: corpora[3], epoch: 3, origin: 'loaded' },
+    ], targetEpochBound);
+    assert.equal(choice.origin, 'base');
+    const { deps } = depsFor(deltasByEpoch, publicKey);
+    const res = await autoResolveCorpusByRoot(choice.start, targetC1, choice.fromEpoch, choice.maxDeltas, deps);
+    assert.equal(res.ok, true);
+    assert.deepEqual(res.appliedEpochs, [1]);
+    assert.equal(computeCorpusRoot(res.corpus.events).toLowerCase(), targetC1.toLowerCase());
+  });
+
+  test('loaded IS an ancestor of the target: still resolves (uses the nearer ancestor)', async () => {
+    const { genesis, corpora, deltasByEpoch } = buildChain(privateKey);
+    const targetC2 = corpora[2].corpusRoot;
+    // Loaded is C1 (epoch 1, an ANCESTOR of C2). The nearer ancestor (loaded@1)
+    // is chosen → only delta 2 is applied.
+    const choice = chooseAutoResolveWalkStart([
+      { corpus: genesis, epoch: 0, origin: 'base' },
+      { corpus: corpora[1], epoch: 1, origin: 'loaded' },
+    ], 2);
+    assert.equal(choice.origin, 'loaded');
+    assert.equal(choice.fromEpoch, 2);
+    const { deps } = depsFor(deltasByEpoch, publicKey);
+    const res = await autoResolveCorpusByRoot(choice.start, targetC2, choice.fromEpoch, choice.maxDeltas, deps);
+    assert.equal(res.ok, true);
+    assert.deepEqual(res.appliedEpochs, [2]);
+    assert.equal(res.corpus.corpusRoot.toLowerCase(), targetC2.toLowerCase());
+  });
+
+  test('base/ancestor genuinely unavailable → safe-fail (no corpus rescored)', async () => {
+    const { corpora, deltasByEpoch } = buildChain(privateKey);
+    // Only an AHEAD corpus is known (no base) → no walk start → safe-fail.
+    const choice = chooseAutoResolveWalkStart([{ corpus: corpora[3], epoch: 3, origin: 'loaded' }], 1);
+    assert.equal(choice, null); // the wiring leaves the entry pending: epoch-context-unresolved
+    void deltasByEpoch;
+  });
+
+  test('base present but the chain to the target is INCOMPLETE → safe-fail (never rescored)', async () => {
+    const { genesis, corpora, deltasByEpoch } = buildChain(privateKey);
+    const targetC3 = corpora[3].corpusRoot;
+    const choice = chooseAutoResolveWalkStart([{ corpus: genesis, epoch: 0, origin: 'base' }], 3);
+    const { deps } = depsFor(deltasByEpoch, publicKey, { dropEpoch: 2 }); // delta 2 unpublished
+    const res = await autoResolveCorpusByRoot(choice.start, targetC3, choice.fromEpoch, choice.maxDeltas, deps);
+    assert.equal(res.ok, false);
+    assert.match(res.reason, /corpus-delta for epoch 2 is not published/);
   });
 });
 

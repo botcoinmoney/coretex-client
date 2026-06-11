@@ -169,6 +169,11 @@ describe('coretex-validator-setup — tiny fixture over file:// (spawned)', () =
     assert.equal(state.setup.bundleManifestPath, join(stateDir, 'artifacts', 'tiny-bundle.json'));
     assert.equal(state.setup.corpusPath, join(stateDir, 'materialized', tag, 'corpus.json'));
     assert.equal(state.setup.artifactBaseUrl, originUrl);
+    // The launch corpus is also retained DISTINCTLY as the durable replay ANCESTOR
+    // (path + root) so historical corpus auto-resolution can walk forward from a
+    // guaranteed ancestor even when sync's loaded corpus is overridden ahead of it.
+    assert.equal(state.setup.baseCorpusPath, join(stateDir, 'materialized', tag, 'corpus.json'));
+    assert.equal(state.setup.baseCorpusRoot.toLowerCase(), corpusRoot.toLowerCase());
   });
 
   test('--verify-only passes on a hydrated state dir and never downloads', { timeout: 60_000 }, () => {
