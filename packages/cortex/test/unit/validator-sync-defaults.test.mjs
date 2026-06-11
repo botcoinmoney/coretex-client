@@ -5,13 +5,15 @@
  */
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 import {
   blankSubstrateState,
   blankSubstrateStateRoot,
+  defaultEpochSigningPublicKeyUri,
+  EPOCH_SIGNING_PUBLIC_KEY_ARTIFACT_PATH,
   readValidatorStateFile,
   resolveReplayFromBlock,
   resolveReplayParentBootstrap,
@@ -161,12 +163,39 @@ describe('validator state file round-trip (setup ↔ sync)', () => {
     assert.equal(JSON.parse(readFileSync(statePath, 'utf8')).replay.epochTransitions[7], 2);
   }));
 
-  test('readValidatorStateFile returns null for missing/corrupt files (never throws)', () => withTmpDir((dir) => {
+  test('readValidatorStateFile: null for missing, HARD ERROR for corrupt (never silent re-init)', () => withTmpDir((dir) => {
     assert.equal(readValidatorStateFile(join(dir, 'missing.json')), null);
     const corrupt = join(dir, 'corrupt.json');
     writeFileSync(corrupt, '{not json');
-    assert.equal(readValidatorStateFile(corrupt), null);
+    assert.throws(() => readValidatorStateFile(corrupt), /corrupt validator state file/);
   }));
+
+  test('mergeValidatorStateFile hard-fails on a corrupt existing state file', () => withTmpDir((dir) => {
+    const statePath = join(dir, 'state.json');
+    writeFileSync(statePath, '{not json');
+    assert.throws(() => mergeValidatorStateFile(statePath, { setup: {} }), /corrupt validator state file/);
+    // The corrupt file must be left untouched for operator recovery.
+    assert.equal(readFileSync(statePath, 'utf8'), '{not json');
+  }));
+
+  test('mergeValidatorStateFile writes atomically (no .tmp leftovers, valid JSON)', () => withTmpDir((dir) => {
+    const statePath = join(dir, 'state.json');
+    mergeValidatorStateFile(statePath, { setup: { artifactBaseUrl: 'https://example.test/v16' } });
+    const state = readValidatorStateFile(statePath);
+    assert.equal(state.setup.artifactBaseUrl, 'https://example.test/v16');
+    assert.deepEqual(readdirSync(dir).filter((f) => f.includes('.tmp-')), []);
+  }));
+});
+
+describe('epoch signing public key default', () => {
+  test('defaults to <artifact-base>/epoch-rotations/epoch-signing-public.pem', () => {
+    assert.equal(
+      defaultEpochSigningPublicKeyUri('https://example.test/v16/'),
+      `https://example.test/v16/${EPOCH_SIGNING_PUBLIC_KEY_ARTIFACT_PATH}`,
+    );
+    assert.equal(EPOCH_SIGNING_PUBLIC_KEY_ARTIFACT_PATH, 'epoch-rotations/epoch-signing-public.pem');
+    assert.equal(defaultEpochSigningPublicKeyUri(undefined), undefined);
+  });
 });
 
 describe('validatorRerankerPinsFromManifest', () => {

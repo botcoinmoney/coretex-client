@@ -166,8 +166,14 @@ export function mergeValidatorStateFile(
   if (existsSync(statePath)) {
     try {
       previous = JSON.parse(readFileSync(statePath, 'utf8')) as Record<string, unknown>;
-    } catch {
-      previous = {};
+    } catch (err) {
+      // Trusted state (carries the gap-3c base-corpus anchor and, after syncs,
+      // the eval backlog/cursor): merging over a corrupt file would silently
+      // discard it. Hard-fail; recovery is an explicit operator action.
+      throw new Error(
+        `corrupt validator state file at ${statePath}: ${err instanceof Error ? err.message : String(err)}. ` +
+        'Restore it from backup, or delete it explicitly to re-run setup fresh.',
+      );
     }
   }
   const merged = {
@@ -177,7 +183,10 @@ export function mergeValidatorStateFile(
     updatedAt: new Date().toISOString(),
   };
   mkdirSync(dirname(resolve(statePath)), { recursive: true });
-  writeFileSync(statePath, JSON.stringify(merged, null, 2) + '\n');
+  // Atomic tmp+rename: a crash mid-write must never corrupt the trusted state.
+  const tmpPath = `${statePath}.tmp-${process.pid}`;
+  writeFileSync(tmpPath, JSON.stringify(merged, null, 2) + '\n');
+  renameSync(tmpPath, statePath);
   return merged;
 }
 

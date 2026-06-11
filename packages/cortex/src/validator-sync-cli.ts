@@ -233,6 +233,15 @@ function download(url: string, redirects = 0): Promise<string> {
 function joinUrl(base: string | undefined, child: string): string | undefined {
   return base ? `${base.replace(/\/+$/, '')}/${child.replace(/^\/+/, '')}` : undefined;
 }
+
+/** Canonical artifact-base location of the epoch signing public key. The
+ *  cutover/publish flow must upload the PEM here; validators default to it so
+ *  the documented four-env-var sync works without a coordinator status URL. */
+export const EPOCH_SIGNING_PUBLIC_KEY_ARTIFACT_PATH = 'epoch-rotations/epoch-signing-public.pem';
+
+export function defaultEpochSigningPublicKeyUri(artifactBase: string | undefined): string | undefined {
+  return joinUrl(artifactBase, EPOCH_SIGNING_PUBLIC_KEY_ARTIFACT_PATH);
+}
 function stringField(obj: Record<string, unknown> | null | undefined, key: string): string | undefined {
   const value = obj?.[key];
   return typeof value === 'string' && value.length > 0 ? value : undefined;
@@ -351,7 +360,9 @@ export function serializeMergedValidatorState(
 ): string {
   let previous: Record<string, unknown> = {};
   if (existsSync(statePath)) {
-    try { previous = JSON.parse(readFileSync(statePath, 'utf8')) as Record<string, unknown>; } catch { previous = {}; }
+    // Same hard-fail contract as readValidatorStateFile: never merge over a
+    // corrupt trusted-state file (that would overwrite the eval backlog/cursor).
+    previous = JSON.parse(readFileSync(statePath, 'utf8')) as Record<string, unknown>;
   }
   const merged = {
     schema: 'coretex.validator-sync-state.v1',
@@ -491,8 +502,15 @@ export function readValidatorStateFile(statePath: string): ValidatorSyncStateFil
   if (!existsSync(statePath)) return null;
   try {
     return JSON.parse(readFileSync(statePath, 'utf8')) as ValidatorSyncStateFile;
-  } catch {
-    return null;
+  } catch (err) {
+    // Trusted state: it carries the eval backlog (score-honesty guarantee) and
+    // the replay cursor. Silently re-initializing would drop both — hard-fail
+    // and make recovery an explicit operator action.
+    throw new Error(
+      `corrupt validator state file at ${statePath}: ${err instanceof Error ? err.message : String(err)}. ` +
+      'Refusing to re-initialize automatically (the file carries the eval backlog and replay cursor). ' +
+      'Restore it from backup, or delete it explicitly to start fresh (full-history replay requires CORETEX_REGISTRY_DEPLOY_BLOCK).',
+    );
   }
 }
 
@@ -1425,9 +1443,15 @@ async function runSync({ stateDir, statePath, pinPath, savedState, setup, stagin
   }
 
   // ── MANDATORY signature verification under the TOFU-pinned key ──
-  const publicKeyUri = opt('public-key', stringField(status, 'epochSigningPublicKeyUrl'));
+  //    Resolution order: --public-key → coordinator status → the canonical
+  //    artifact-base path (the operator publishes the PEM alongside the epoch
+  //    rotations; TOFU pinning protects against substitution at any source).
+  const publicKeyUri = opt(
+    'public-key',
+    stringField(status, 'epochSigningPublicKeyUrl') ?? defaultEpochSigningPublicKeyUri(artifactBase),
+  );
   if (!publicKeyUri) {
-    die('epoch signing public key is required (signature verification is mandatory): pass --public-key or provide coordinator status epochSigningPublicKeyUrl');
+    die('epoch signing public key is required (signature verification is mandatory): pass --public-key, provide coordinator status epochSigningPublicKeyUrl, or set --artifact-base-url (defaults to <artifact-base>/' + EPOCH_SIGNING_PUBLIC_KEY_ARTIFACT_PATH + ')');
   }
 
   // ── confirmed-tag consistency (Finding 6): compute the confirmed head ONCE,
