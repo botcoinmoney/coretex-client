@@ -2130,7 +2130,15 @@ async function runSync({ stateDir, statePath, pinPath, savedState, setup, stagin
   //    throw anywhere above leaves the prior trusted state byte-unchanged. The
   //    post-reveal backlog is best-effort (it may remain pending without failing
   //    the sync) but is persisted atomically here too. ──
-  staging.commit();
+  //    --allow-version-mismatch is a READ-ONLY escape: under a bundle/version
+  //    mismatch we must NOT mutate trusted state (TOFU pin, replay cursor, eval
+  //    backlog) — the staged files are disposed by the caller's finally. This
+  //    matches the loud "do NOT attest from this run" warning.
+  if (version.match) {
+    staging.commit();
+  } else {
+    warn('bundle version mismatch: trusted state was NOT committed (read-only). Re-run on the on-chain bundle to persist.');
+  }
 
   // Fix #2: with the surviving backlog (+ its freshly-committed snapshots) now
   // on disk, bound the snapshot store — GC any committed parent snapshot whose
