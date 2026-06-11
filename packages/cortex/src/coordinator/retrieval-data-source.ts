@@ -118,6 +118,7 @@ function sanitizeSubmitRejectionCode(raw: unknown): string {
   if (raw === 'PendingReceiptStale' || raw === 'StaleParentRoot' || raw === 'CoordAwaitingFinality') return raw;
   if (raw === 'epoch_cutover_in_progress' || raw === 'awaiting_baseline_recompute') return raw;
   if (raw === 'MinerReceiptChainBusy' || raw === 'duplicate_submission' || raw === 'CoordEpochMismatch') return raw;
+  if (raw === 'duplicate_in_flight') return raw;
   return 'rejected';
 }
 

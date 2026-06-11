@@ -307,6 +307,99 @@ describe('createCoreTexEvaluatorCore — §8 seed-redraw closure (crash-then-ret
   });
 });
 
+describe('createCoreTexEvaluatorCore — §8 pending-window cross-miner dedup', () => {
+  // Same crash-after-draw store as above: it leaves a real 'drawn' attempt
+  // (pinned seed + charged admission) keyed (epoch, parentRoot, patchHash),
+  // owned by the FIRST miner, with NO dedup outcome recorded.
+  function crashAfterDrawStore() {
+    const inner = createInMemoryDedupStore();
+    let crashed = false;
+    return {
+      ...inner,
+      get: (k) => inner.get(k),
+      put: (r) => { if (!crashed) { crashed = true; throw new Error('simulated crash after draw, before outcome'); } return inner.put(r); },
+      getAttempt: (k) => inner.getAttempt(k),
+      recordSeedDrawnAndAdmission: (k, s, m) => inner.recordSeedDrawnAndAdmission(k, s, m),
+      recordAttemptOutcome: (k, st, o, c) => inner.recordAttemptOutcome(k, st, o, c),
+      minerAdmissions: (e, m) => inner.minerAdmissions(e, m),
+    };
+  }
+
+  // Helper: leave a real drawn-not-completed attempt for MINER on the store.
+  async function leaveDrawnAttemptForMinerA(store) {
+    const a = makeCore({ dedupStore: store });
+    await assert.rejects(
+      a.core.scorePatch({ patchBytesHex: patchBytesHex(), parentStateRoot: PARENT_ROOT, miner: MINER }),
+      /simulated crash/,
+    );
+    // The real (epoch, parentRoot, patchHash) attempt is now 'drawn' and owned by
+    // MINER, with its admission charged exactly once (no dedup outcome recorded).
+    assert.equal(store.minerAdmissions(7, MINER), 1, 'miner A holds exactly one drawn admission');
+  }
+
+  test('a DIFFERENT miner submitting the same (epoch,parentRoot,patchHash) is REJECTED in-flight — no score, no draw, no charge', async () => {
+    const store = crashAfterDrawStore();
+    await leaveDrawnAttemptForMinerA(store);
+
+    // Miner B submits the identical patch bytes at the same parent during miner
+    // A's drawn-not-completed window. B must NOT free-ride on A's pinned seed.
+    const b = makeCore({ dedupStore: store });
+    const result = await b.core.scorePatch({ patchBytesHex: patchBytesHex(), parentStateRoot: PARENT_ROOT, miner: MINER_B });
+    assert.equal(result.outcome, 'reject');
+    assert.equal(result.code, 'duplicate_in_flight', 'cross-miner in-flight duplicate gets a distinct rejection code');
+    assert.equal(b.counters.scorer.calls, 0, 'B must NOT be scored (no free-ride on the pinned seed)');
+    assert.equal(b.counters.rpc.calls, 0, 'B must NOT draw a fresh pack');
+    assert.equal(store.minerAdmissions(7, MINER_B), 0, "B's admission stays uncharged");
+    assert.equal(store.minerAdmissions(7, MINER), 1, "miner A's admission is NOT re-charged (stays exactly 1)");
+    // The reject must carry NO score oracle.
+    assert.equal('deterministicDeltaPpm' in result, false);
+    assert.equal('requiredDeltaPpm' in result, false);
+  });
+
+  test('the SAME miner crash-retrying its own drawn attempt is UNCHANGED (reuses seed, drains, no extra charge)', async () => {
+    const store = crashAfterDrawStore();
+    await leaveDrawnAttemptForMinerA(store);
+
+    // Miner A retries its OWN attempt: the legitimate self crash-retry path is
+    // preserved — reuse the pinned seed (no fresh blockhash), no re-charge.
+    const a2 = makeCore({ dedupStore: store });
+    const retry = await a2.core.scorePatch({ patchBytesHex: patchBytesHex(), parentStateRoot: PARENT_ROOT, miner: MINER });
+    assert.equal(retry.outcome, 'state_advance', 'self retry still scores + advances');
+    assert.equal(a2.counters.rpc.calls, 0, 'self retry reuses the pinned seed (no fresh blockhash draw)');
+    assert.equal(store.minerAdmissions(7, MINER), 1, "miner A's admission stays exactly once across the self retry");
+  });
+
+  test('cross-miner in-flight reject does NOT consume the slot — miner A can still complete its own retry afterward', async () => {
+    const store = crashAfterDrawStore();
+    await leaveDrawnAttemptForMinerA(store);
+
+    // B is rejected in-flight (no state change to the attempt) ...
+    const b = makeCore({ dedupStore: store });
+    const rb = await b.core.scorePatch({ patchBytesHex: patchBytesHex(), parentStateRoot: PARENT_ROOT, miner: MINER_B });
+    assert.equal(rb.code, 'duplicate_in_flight');
+    // ... so miner A's subsequent retry still owns + completes the evaluation.
+    const a2 = makeCore({ dedupStore: store });
+    const retry = await a2.core.scorePatch({ patchBytesHex: patchBytesHex(), parentStateRoot: PARENT_ROOT, miner: MINER });
+    assert.equal(retry.outcome, 'state_advance', "B's in-flight reject left A's attempt intact");
+  });
+
+  test('once miner A COMPLETES, a resubmission (any miner) deduplicates as before (completed path unchanged)', async () => {
+    // No crash: miner A completes cleanly, writing a dedup outcome record.
+    const store = createInMemoryDedupStore();
+    const a = makeCore({ dedupStore: store });
+    const first = await a.core.scorePatch({ patchBytesHex: patchBytesHex(), parentStateRoot: PARENT_ROOT, miner: MINER });
+    assert.equal(first.outcome, 'state_advance');
+    // A completed eval short-circuits with the COMPLETED dedup code, NOT the
+    // in-flight code — the pending-window branch only triggers before completion.
+    const dupSame = await a.core.scorePatch({ patchBytesHex: patchBytesHex(), parentStateRoot: PARENT_ROOT, miner: MINER });
+    assert.equal(dupSame.code, 'duplicate_submission', 'completed self-resubmit still dedups as before');
+    const b = makeCore({ dedupStore: store });
+    const dupOther = await b.core.scorePatch({ patchBytesHex: patchBytesHex(), parentStateRoot: PARENT_ROOT, miner: MINER_B });
+    assert.equal(dupOther.code, 'duplicate_submission', 'completed cross-miner resubmit dedups via the completed path');
+    assert.equal(b.counters.scorer.calls, 0, 'completed dedup never reaches the scorer');
+  });
+});
+
 describe('createCoreTexEvaluatorCore — §8 coordinator-pinned seed (remote path)', () => {
   test('input.seedContext is injected verbatim — the scorer never draws its own blockhash', async () => {
     const seenSeeds = [];

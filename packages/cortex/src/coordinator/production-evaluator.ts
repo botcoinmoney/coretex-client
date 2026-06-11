@@ -492,6 +492,23 @@ export function createCoreTexEvaluatorCore(deps: ProductionCoreTexEvaluatorCoreD
         ? { ...input.seedContext, blockhash: input.seedContext.blockhash.toLowerCase() }
         : undefined;
       const priorAttempt = coordinatorPinnedSeed ? null : await deps.dedupStore.getAttempt(dedupKey);
+      // §8 PENDING-WINDOW dedup (cross-miner): a 'drawn'-but-not-completed attempt
+      // is the SAME (epoch, parentStateRoot, patchHash) already drawn/in-flight.
+      // The seed-reuse + skip-cap + no-recharge path below is ONLY legitimate for
+      // the SAME miner crash-retrying its own attempt. If a DIFFERENT miner submits
+      // the identical patch+parent during that window, it must NOT free-ride on the
+      // first miner's pinned seed (and bypass its own cap with admissionsB=0) — that
+      // is the same grinding the completed-eval dedup short-circuit (above) closes,
+      // just for the pending window. Reject WITHOUT a draw, score, or charge so a
+      // given (epoch, parentRoot, patchHash) yields at most one credited advance, to
+      // the first miner. The attempt record stores minerAddress lowercased.
+      if (priorAttempt && priorAttempt.minerAddress !== miner) {
+        return {
+          outcome: 'reject',
+          code: 'duplicate_in_flight',
+          reason: `patch ${patchHash} at parent ${parentStateRoot} in epoch ${deps.epochId} is already being evaluated by another miner`,
+        };
+      }
       const injectedSeedContext: PerPatchSeedContext | undefined = coordinatorPinnedSeed
         ?? (priorAttempt ? priorAttempt.seedContext : undefined);
       // Cap check is for the FIRST draw only. On a retry of an existing attempt
