@@ -62,7 +62,7 @@ import type { CortexState } from './state/types.js';
 import { keccak256 } from './state/keccak256.js';
 import { computePatchHash } from './eval/seed-derivation.js';
 import { hashCorpusDelta, hashJson, verifyEpochRotationManifestSignature } from './corpus/epoch-rotation.js';
-import { parseCorpusDelta, verifyCorpusDeltaSignature } from './corpus/delta.js';
+import { applyCorpusDelta, parseCorpusDelta, verifyCorpusDeltaSignature, type CorpusDelta } from './corpus/delta.js';
 import {
   evalReportArtifactUrl,
   hashPostRevealEvalReportArtifact,
@@ -70,7 +70,7 @@ import {
   type CoreTexPostRevealEvalReportArtifact,
 } from './replay/eval-report-artifact.js';
 import { DEFAULT_PROFILE, scoringOptionsFromProfile, type CoreTexBundleManifest } from './bundle/index.js';
-import { loadProductionCorpus, type ProductionCorpus } from './eval/retrieval-corpus.js';
+import { computeCorpusRoot, loadProductionCorpus, type ProductionCorpus } from './eval/retrieval-corpus.js';
 import { deriveQueryPack } from './eval/hidden-query-pack.js';
 import { computeAcceptanceThresholdPpm, evaluateRetrievalBenchmarkPatch } from './eval/retrieval-benchmark.js';
 import { biEncoderFromEnv } from './eval/bi-encoder.js';
@@ -119,10 +119,15 @@ Common flags (all optional overrides of setup/state-file/chain defaults):
   --from-block <n>             override the replay window start
   --parent-state <state.bin>   override the replay parent substrate
   --corpus <corpus.json>       override the setup-recorded materialized corpus
-  --corpus-for-root 0x…=path   per-epoch corpus for a cross-rotation backlog
-                               entry (corpusRoot pinned at accept differs from
-                               the loaded one); repeatable. Without one such an
-                               entry stays pending 'epoch-context-unavailable'.
+  --corpus-for-root 0x…=path   MANUAL shortcut: per-epoch corpus for a cross-
+                               rotation backlog entry (corpusRoot pinned at accept
+                               differs from the loaded one); repeatable. Not
+                               required — without it the validator AUTO-RESOLVES
+                               the historical corpus by walking the published,
+                               signed corpus-delta chain (merkle-verified before
+                               use). If neither the override nor auto-resolution
+                               can produce the pinned corpus, the entry stays
+                               pending 'epoch-context-unresolved' (never rescored).
   --state-dir <dir>            validator state dir (default .coretex-validator)
   --skip-score-replay          SKIP post-reveal score re-scoring (loud; exit ${SKIP_SCORE_REPLAY_EXIT_CODE})
   --allow-version-mismatch     read-only escape for the bundle version check
@@ -411,8 +416,13 @@ export interface EvalBacklogEntry {
   /** On-chain evalReportHash == published artifactHash for this advance. */
   readonly artifactHash: string;
   readonly miner: string;
-  /** Replay reason this entry is still pending (e.g. awaiting reveal / context). */
-  readonly reason: 'awaiting_epoch_secret_reveal' | 'epoch-context-unavailable';
+  /** Replay reason this entry is still pending (e.g. awaiting reveal / context).
+   *  'epoch-context-unavailable' — pins differ from the loaded context and the
+   *  matching corpus is not (yet) auto-resolvable via the delta chain.
+   *  'epoch-context-unresolved' — auto-resolution was ATTEMPTED but could not be
+   *  completed (a delta is missing/unpublished, a signature failed, or the
+   *  reconstructed root did not merkle-match the pin); NEVER rescored. */
+  readonly reason: 'awaiting_epoch_secret_reveal' | 'epoch-context-unavailable' | 'epoch-context-unresolved';
   /** The advance's on-chain pins — used to bind the artifact on a later sync. */
   readonly parentStateRoot: string;
   readonly corpusRoot: string;
@@ -884,6 +894,167 @@ export function resolveScorerContextDecision(
     reason: 'epoch-context-unavailable',
     detail: `${sel.detail} and no corpus matching corpusRoot ${entry.corpusRoot} is resolvable (not published/available); leaving pending rather than rescoring with the wrong corpus`,
   };
+}
+
+// ── historical-corpus auto-resolution via the published corpus-delta chain ────
+
+/**
+ * Canonical URL of the signed corpus-delta artifact for an epoch (the same
+ * `epoch-rotations/corpus-delta-epoch-N.json` the sync path already fetches for
+ * continuity). Discovery for auto-resolution walks these per-epoch deltas — they
+ * are published, signed, and merkle-chained (delta.previousRoot == prior
+ * materialized root, delta.nextRoot == next materialized root).
+ */
+export function corpusDeltaArtifactUrl(artifactBase: string, epoch: number): string {
+  return `${artifactBase.replace(/\/+$/, '')}/epoch-rotations/corpus-delta-epoch-${epoch}.json`;
+}
+
+/** A signed corpus delta fetched for auto-resolution, with the epoch it came from. */
+export interface FetchedCorpusDelta {
+  readonly epoch: number;
+  readonly delta: CorpusDelta;
+}
+
+export interface AutoResolveCorpusDeps {
+  /**
+   * Fetch the signed corpus delta for ONE epoch. Returns null when the artifact
+   * is genuinely unpublished/missing (404) — the walk then SAFE-FAILS rather
+   * than rescoring against the wrong corpus. Must throw on any OTHER error
+   * (malformed JSON, transport failure) so a transient fault never masquerades
+   * as a missing delta.
+   */
+  readonly fetchDelta: (epoch: number) => Promise<CorpusDelta | null>;
+  /** Verify a fetched delta's signature under the TOFU-pinned epoch key — the
+   *  SAME signed-delta gate the continuity path uses. Returns false to refuse. */
+  readonly verifyDeltaSignature: (delta: CorpusDelta) => boolean;
+  /** Apply a verified delta to a materialized corpus (full-root verified inside
+   *  applyCorpusDelta: it throws if delta.previousRoot != corpus root or the
+   *  recomputed nextRoot != delta.nextRoot). */
+  readonly applyDelta: (corpus: ProductionCorpus, delta: CorpusDelta) => ProductionCorpus;
+  /** Independently merkleize a materialized corpus (computeCorpusRoot) — used to
+   *  RE-VERIFY the reconstructed corpus root against the target pin before use. */
+  readonly computeRoot: (corpus: ProductionCorpus) => string;
+  /** Optional: called with each INTERMEDIATE materialized corpus along the walk
+   *  (after a delta applies). The wiring caches these by root so a later entry's
+   *  walk can start from the NEAREST cached materialized root — making a multi-
+   *  epoch replay materialize each distinct corpus at most once. */
+  readonly onMaterialized?: (corpus: ProductionCorpus) => void;
+}
+
+export type AutoResolveCorpusResult =
+  | { readonly ok: true; readonly corpus: ProductionCorpus; readonly appliedEpochs: readonly number[] }
+  | { readonly ok: false; readonly reason: string };
+
+/**
+ * Auto-resolve the corpus at a historical `targetRoot` by walking the PUBLISHED,
+ * SIGNED corpus-delta chain forward from a known-materialized `base` corpus.
+ *
+ * Starting at `base` (the launch/genesis or nearest-cached materialized corpus),
+ * for each epoch starting at `fromEpoch` we fetch corpus-delta-epoch-N.json,
+ * verify its signature under the TOFU-pinned key (the signed-delta gate is NOT
+ * bypassed), confirm it chains off the current materialized root
+ * (delta.previousRoot == current root — also enforced inside applyDelta), and
+ * apply it. We stop the instant the materialized root equals `targetRoot`, then
+ * INDEPENDENTLY re-merkleize the reconstructed corpus (computeRoot) and refuse
+ * unless it equals `targetRoot`. The walk is bounded by `maxDeltas`.
+ *
+ * SAFE-FAIL (returns { ok:false }) when: the base already overshoots an
+ * unreachable target, a delta is missing/unpublished, a signature fails, a delta
+ * does not chain (applyDelta throws), the target is not reached within
+ * `maxDeltas`, or the reconstructed root does not merkle-match the target. The
+ * caller leaves the entry pending and NEVER rescores against an unverified
+ * corpus.
+ */
+export async function autoResolveCorpusByRoot(
+  base: ProductionCorpus,
+  targetRoot: string,
+  fromEpoch: number,
+  maxDeltas: number,
+  deps: AutoResolveCorpusDeps,
+): Promise<AutoResolveCorpusResult> {
+  const target = targetRoot.toLowerCase();
+  // Already at the target? Re-merkleize before claiming so (never trust the
+  // cached corpusRoot field alone for a security-relevant equality).
+  if (deps.computeRoot(base).toLowerCase() === target) {
+    return { ok: true, corpus: base, appliedEpochs: [] };
+  }
+  let corpus = base;
+  const appliedEpochs: number[] = [];
+  for (let i = 0, deltaEpoch = fromEpoch; i < maxDeltas; i++, deltaEpoch++) {
+    let delta: CorpusDelta | null;
+    try {
+      delta = await deps.fetchDelta(deltaEpoch);
+    } catch (err) {
+      return { ok: false, reason: `fetching corpus-delta for epoch ${deltaEpoch} failed: ${err instanceof Error ? err.message : String(err)}` };
+    }
+    if (!delta) {
+      return { ok: false, reason: `corpus-delta for epoch ${deltaEpoch} is not published — cannot complete the delta chain to target corpusRoot ${targetRoot}` };
+    }
+    if (!deps.verifyDeltaSignature(delta)) {
+      return { ok: false, reason: `corpus-delta for epoch ${deltaEpoch} signature INVALID under the TOFU-pinned epoch key — refusing to reconstruct the corpus` };
+    }
+    try {
+      corpus = deps.applyDelta(corpus, delta);
+    } catch (err) {
+      return { ok: false, reason: `applying corpus-delta for epoch ${deltaEpoch} failed: ${err instanceof Error ? err.message : String(err)}` };
+    }
+    appliedEpochs.push(deltaEpoch);
+    deps.onMaterialized?.(corpus); // cache the intermediate so a later walk can reuse it
+    if (corpus.corpusRoot.toLowerCase() === target) {
+      // REFUSE unless an INDEPENDENT merkleization of the reconstructed corpus
+      // equals the target pin (applyDelta already cross-checked delta.nextRoot,
+      // but we never use the corpus without re-deriving its root ourselves).
+      const merkle = deps.computeRoot(corpus).toLowerCase();
+      if (merkle !== target) {
+        return { ok: false, reason: `reconstructed corpus merkleizes to ${merkle} != target corpusRoot ${targetRoot} after ${appliedEpochs.length} delta(s) — refusing to use` };
+      }
+      return { ok: true, corpus, appliedEpochs };
+    }
+  }
+  return { ok: false, reason: `target corpusRoot ${targetRoot} not reached after applying ${appliedEpochs.length} published delta(s) from epoch ${fromEpoch} (bound ${maxDeltas}) — leaving pending rather than rescoring with the wrong corpus` };
+}
+
+/**
+ * Default bound on the number of distinct reconstructed corpora held in memory
+ * at once during a multi-epoch drain. The launch/base corpus is held separately
+ * and is NOT counted against this bound (it is the walk's starting point and is
+ * cheap to keep). A multi-epoch replay materializes each DISTINCT target root at
+ * most once (cache hit on the second visit); the bound caps peak memory when the
+ * backlog spans many distinct historical corpora.
+ */
+export const DEFAULT_MATERIALIZED_CORPUS_CACHE_LIMIT = 4;
+
+/**
+ * Bounded LRU of materialized corpora keyed by (lowercased) corpusRoot. Used so
+ * a multi-epoch drain materializes each distinct historical corpus at MOST once.
+ * `get` refreshes recency; `set` evicts the least-recently-used entry past the
+ * limit. The `base` corpus is intentionally NOT stored here — the walk always
+ * starts from the launch base, which the caller keeps for the whole pass.
+ */
+export class MaterializedCorpusCache {
+  private readonly map = new Map<string, ProductionCorpus>();
+  constructor(private readonly limit: number = DEFAULT_MATERIALIZED_CORPUS_CACHE_LIMIT) {}
+
+  get(root: string): ProductionCorpus | undefined {
+    const key = root.toLowerCase();
+    const hit = this.map.get(key);
+    if (hit) { this.map.delete(key); this.map.set(key, hit); } // refresh recency
+    return hit;
+  }
+
+  set(root: string, corpus: ProductionCorpus): void {
+    const key = root.toLowerCase();
+    if (this.map.has(key)) this.map.delete(key);
+    this.map.set(key, corpus);
+    while (this.map.size > this.limit) {
+      const oldest = this.map.keys().next().value as string | undefined;
+      if (oldest === undefined) break;
+      this.map.delete(oldest);
+    }
+  }
+
+  has(root: string): boolean { return this.map.has(root.toLowerCase()); }
+  get size(): number { return this.map.size; }
 }
 
 // ── chain context ─────────────────────────────────────────────────────────────
@@ -1499,13 +1670,21 @@ async function runSync({ stateDir, statePath, pinPath, savedState, setup, stagin
     // Fix #5: per-(corpusRoot,coreVersionHash) scorer-context resolution for
     // CROSS-ROTATION backlog entries (a rotation happened between accept and
     // reveal, so the entry pins an OLDER corpus/bundle than the loaded one).
-    // `corpusForRoot` maps an entry's corpusRoot → a corpus FILE the validator
-    // already has (operator `--corpus-for-root 0x…=path`, or the loaded corpus
-    // when its root already matches). `resolvableCorpusRoots` is the set the
-    // pure decision uses. Resolved contexts are cached so a given epoch's corpus
-    // is materialized at MOST once; reuse the loaded reranker (same bundle pins).
+    // Two resolution sources, both refused unless the materialized corpus
+    // merkleizes to the entry's pin and the entry's bundle matches the loaded one:
+    //   1) OPERATOR SHORTCUT — `corpusForRoot` maps an entry's corpusRoot → a
+    //      corpus FILE the validator already has (`--corpus-for-root 0x…=path`,
+    //      or the loaded corpus when its root already matches).
+    //   2) AUTO-RESOLVE — walk the PUBLISHED, SIGNED corpus-delta chain forward
+    //      from the loaded base corpus until the materialized root == the pin,
+    //      then re-merkleize before use (autoResolveCorpusByRoot). Lazy/bounded:
+    //      resolved on demand for the specific roots the backlog needs, cached.
+    // Resolved contexts are cached so a given epoch's corpus is materialized at
+    // MOST once; the bundle-pinned, runtime-asserted reranker is shared.
+    const loadedRootLc = ctx.corpus.corpusRoot.toLowerCase();
+    const loadedBundleLc = chain.coreVersionHash.toLowerCase();
     const corpusForRoot = new Map<string, string>();
-    corpusForRoot.set(ctx.corpus.corpusRoot.toLowerCase(), corpusPath);
+    corpusForRoot.set(loadedRootLc, corpusPath);
     for (const pair of all('corpus-for-root')) {
       const eq = pair.indexOf('=');
       if (eq <= 0) die(`--corpus-for-root must be 0x<corpusRoot>=<path>, got ${pair}`);
@@ -1513,23 +1692,81 @@ async function runSync({ stateDir, statePath, pinPath, savedState, setup, stagin
       if (!isBytes32(root)) die(`--corpus-for-root corpusRoot must be bytes32 hex, got ${pair}`);
       corpusForRoot.set(root, pair.slice(eq + 1));
     }
+    // Roots the PURE decision treats as resolvable: operator-supplied files plus
+    // (lazily) any root the delta-chain auto-resolver succeeds in materializing.
     const resolvableCorpusRoots = new Set(corpusForRoot.keys());
     const contextCache = new Map<string, ValidatorScorerContext>();
-    contextCache.set(`${ctx.corpus.corpusRoot.toLowerCase()}:${chain.coreVersionHash.toLowerCase()}`, ctx);
-    // Build (and cache) the scorer context whose corpus root == the entry's pin.
-    // The resolved corpus is loaded with verifyCorpusRoot and its root is then
-    // re-asserted against the entry's pin: a corpus that does NOT match is
-    // refused (we never rescore against the wrong corpus). The reranker (bundle-
-    // pinned, runtime-asserted above) is shared across per-epoch corpora.
-    const resolveContextForEntry = (entry: EvalBacklogEntry): ValidatorScorerContext => {
+    contextCache.set(`${loadedRootLc}:${loadedBundleLc}`, ctx);
+
+    // Auto-resolution starts from the loaded (launch/genesis or setup) materialized
+    // corpus and walks the published corpus-delta chain. Each distinct target root
+    // is materialized at most once across the whole drain (LRU bound). The base is
+    // the loaded corpus; per-epoch delta-N.json is fetched + signature-verified the
+    // SAME way the continuity path verifies deltas (signed-delta gate not bypassed).
+    const materializedByRoot = new MaterializedCorpusCache();
+    materializedByRoot.set(loadedRootLc, ctx.corpus);
+    const fetchCorpusDeltaForEpoch = async (e: number): Promise<CorpusDelta | null> => {
+      const url = corpusDeltaArtifactUrl(artifactBase, e);
+      try {
+        return parseCorpusDelta(await readJsonUri(url) as never);
+      } catch (err) {
+        // A genuine 404 (delta not published) → null (safe-fail at the caller).
+        // Any other error (malformed/transport) re-throws so a transient fault
+        // never masquerades as a missing delta.
+        if (err instanceof Error && /HTTP 404|not found|ENOENT/i.test(err.message)) return null;
+        throw err;
+      }
+    };
+    const autoResolveDeps: AutoResolveCorpusDeps = {
+      fetchDelta: fetchCorpusDeltaForEpoch,
+      // SAME signed-delta gate as the continuity path: verify under the TOFU-pinned key.
+      verifyDeltaSignature: (d) => verifyCorpusDeltaSignature(d, publicKey),
+      applyDelta: (corpus, d) => applyCorpusDelta(corpus, d, { verifyRoot: true }),
+      computeRoot: (corpus) => computeCorpusRoot(corpus.events),
+      // Cache each intermediate materialized root (bounded LRU) so a later entry's
+      // walk hits the cache for a recurring root instead of re-deriving it.
+      onMaterialized: (corpus) => materializedByRoot.set(corpus.corpusRoot, corpus),
+    };
+    // Lazily auto-resolve the corpus for ONE entry whose pins differ from the
+    // loaded context. Returns the materialized corpus (cached) or a safe-fail
+    // reason. Refuses if the entry's bundle differs from the loaded one — the
+    // bundle-pinned reranker only reproduces the loaded coreVersionHash, so a
+    // differing historical bundle is NOT resolvable here (safe-fail, not rescore).
+    const autoResolveCorpusForEntry = async (
+      entry: EvalBacklogEntry,
+    ): Promise<{ ok: true; corpus: ProductionCorpus } | { ok: false; reason: string }> => {
+      const targetLc = entry.corpusRoot.toLowerCase();
+      const cachedCorpus = materializedByRoot.get(targetLc);
+      if (cachedCorpus) return { ok: true, corpus: cachedCorpus };
+      if (entry.coreVersionHash.toLowerCase() !== loadedBundleLc) {
+        return { ok: false, reason: `entry coreVersionHash ${entry.coreVersionHash} != loaded bundle ${chain.coreVersionHash}; the validator only holds the loaded bundle's pinned scorer, so the historical bundle is not resolvable here` };
+      }
+      // Walk forward from the loaded base corpus (the launch/genesis materialized
+      // corpus the validator was set up with). The published corpus-delta for
+      // epoch N carries the rotation INTO epoch N's corpus and chains continuously
+      // (delta.previousRoot == prior materialized root). We start at the first
+      // rotation after genesis (epoch 1) and bound the walk by the current epoch
+      // (the most rotations that can exist); applyCorpusDelta's chain guard makes
+      // the walk self-correcting (a non-chaining delta safe-fails rather than
+      // corrupting), and we stop the instant the materialized root == the pin.
+      const fromEpoch = 1;
+      const maxDeltas = Math.max(1, epoch);
+      const resolved = await autoResolveCorpusByRoot(ctx.corpus, entry.corpusRoot, fromEpoch, maxDeltas, autoResolveDeps);
+      if (!resolved.ok) return resolved;
+      materializedByRoot.set(targetLc, resolved.corpus);
+      return { ok: true, corpus: resolved.corpus };
+    };
+
+    // Build (and cache) the scorer context for a resolved per-epoch corpus. The
+    // corpus root is re-asserted against the entry's pin: a corpus that does NOT
+    // match is refused (we never rescore against the wrong corpus). The reranker
+    // (bundle-pinned, runtime-asserted above) is shared across per-epoch corpora.
+    const buildContextForCorpus = (entry: EvalBacklogEntry, epochCorpus: ProductionCorpus): ValidatorScorerContext => {
       const cacheKey = `${entry.corpusRoot.toLowerCase()}:${entry.coreVersionHash.toLowerCase()}`;
       const cached = contextCache.get(cacheKey);
       if (cached) return cached;
-      const path = corpusForRoot.get(entry.corpusRoot.toLowerCase());
-      if (!path) throw new Error(`internal: no resolvable corpus for ${entry.corpusRoot} (decision should have been unavailable)`);
-      const epochCorpus = loadProductionCorpus(path, { verifyCorpusRoot: true, verifySplits: true });
       if (epochCorpus.corpusRoot.toLowerCase() !== entry.corpusRoot.toLowerCase()) {
-        throw new Error(`resolved corpus ${path} root ${epochCorpus.corpusRoot} != entry corpusRoot ${entry.corpusRoot} — refusing to rescore against a mismatched corpus`);
+        throw new Error(`resolved corpus root ${epochCorpus.corpusRoot} != entry corpusRoot ${entry.corpusRoot} — refusing to rescore against a mismatched corpus`);
       }
       const layout = epochCorpus.biEncoderRetrievalKeyLayout;
       const biEncoder = biEncoderFromEnv(layout, { modelId: epochCorpus.biEncoderModelId, revision: epochCorpus.biEncoderRevision });
@@ -1542,6 +1779,19 @@ async function runSync({ stateDir, statePath, pinPath, savedState, setup, stagin
       const built: ValidatorScorerContext = { corpus: epochCorpus, profile: ctx.profile, scoringOpts, thresholdPpm: ctx.thresholdPpm, reranker: ctx.reranker };
       contextCache.set(cacheKey, built);
       return built;
+    };
+    // Resolve a context for an entry the OPERATOR supplied a corpus file for.
+    const operatorContextForEntry = (entry: EvalBacklogEntry): ValidatorScorerContext => {
+      const cacheKey = `${entry.corpusRoot.toLowerCase()}:${entry.coreVersionHash.toLowerCase()}`;
+      const cached = contextCache.get(cacheKey);
+      if (cached) return cached;
+      const path = corpusForRoot.get(entry.corpusRoot.toLowerCase());
+      if (!path) throw new Error(`internal: no operator corpus for ${entry.corpusRoot}`);
+      const epochCorpus = loadProductionCorpus(path, { verifyCorpusRoot: true, verifySplits: true });
+      if (epochCorpus.corpusRoot.toLowerCase() !== entry.corpusRoot.toLowerCase()) {
+        throw new Error(`resolved corpus ${path} root ${epochCorpus.corpusRoot} != entry corpusRoot ${entry.corpusRoot} — refusing to rescore against a mismatched corpus`);
+      }
+      return buildContextForCorpus(entry, epochCorpus);
     };
 
     // Per-advance score-replay progress + ETA (stderr only; stdout JSON clean).
@@ -1560,18 +1810,36 @@ async function runSync({ stateDir, statePath, pinPath, savedState, setup, stagin
         }
         // Fix #5 / Finding 8: a rescore must only happen with the corpus/bundle
         // matching the advance's on-chain pins. If they match the loaded context
-        // → use it. If they differ but the entry's corpus is resolvable → build
-        // (cache) that epoch's context. If unresolvable → leave pending with
-        // 'epoch-context-unavailable' (NEVER rescore with the wrong corpus).
+        // → use it. If they differ but the OPERATOR supplied a corpus file → use
+        // it (manual shortcut). Otherwise AUTO-RESOLVE the historical corpus by
+        // walking the published, signed corpus-delta chain (merkle-verified before
+        // use). Only if that ALSO fails do we leave the entry pending — NEVER
+        // rescoring with the wrong corpus.
+        let entryCtx: ValidatorScorerContext;
         const decision = resolveScorerContextDecision(entry, loadedPins, resolvableCorpusRoots);
-        if (decision.action === 'unavailable') {
-          evalBacklog = upsertEvalBacklog(evalBacklog, [{ ...entry, reason: 'epoch-context-unavailable' }]);
-          evalReplay.pending.push({ artifactHash, epoch: String(entry.epochId), reason: `epoch-context-unavailable: ${decision.detail}` });
-          warn(`[eval-backlog] epoch ${entry.epochId} ${artifactHash}: ${decision.detail}`);
-          scoreProgress.update(++scoredAdvances);
-          continue;
+        if (decision.action === 'matches-loaded') {
+          entryCtx = ctx;
+        } else if (decision.action === 'resolve-context') {
+          // Operator-supplied corpus file for this root (manual shortcut).
+          entryCtx = operatorContextForEntry(entry);
+        } else {
+          // No operator override — attempt to auto-resolve the corpus by walking
+          // the published, signature-verified corpus-delta chain, then re-merkleize
+          // against the entry's pin (refused unless it matches).
+          const auto = await autoResolveCorpusForEntry(entry);
+          if (!auto.ok) {
+            // SAFE-FAIL: the delta chain to the target root could not be completed
+            // (missing/unpublished delta, bad signature, bundle mismatch, or the
+            // reconstructed root did not merkle-match). Leave pending; never rescore.
+            const detail = `${decision.detail}; auto-resolve via corpus-delta chain failed: ${auto.reason}`;
+            evalBacklog = upsertEvalBacklog(evalBacklog, [{ ...entry, reason: 'epoch-context-unresolved' }]);
+            evalReplay.pending.push({ artifactHash, epoch: String(entry.epochId), reason: `epoch-context-unresolved: ${detail}` });
+            warn(`[eval-backlog] epoch ${entry.epochId} ${artifactHash}: ${detail}`);
+            scoreProgress.update(++scoredAdvances);
+            continue;
+          }
+          entryCtx = buildContextForCorpus(entry, auto.corpus);
         }
-        const entryCtx = decision.action === 'matches-loaded' ? ctx : resolveContextForEntry(entry);
         // The per-advance parent state: in-window walk record OR a persisted,
         // merkle-verified snapshot (Fix #2) — NO dependence on this window.
         const parentLoad = parentStateForEntry(entry);
