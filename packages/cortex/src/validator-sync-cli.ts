@@ -39,7 +39,7 @@
  *   and replays it through verifyPostRevealEvalReportArtifact (the single
  *   entrypoint) with the same fail-closed scorer gate.
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, unlinkSync, realpathSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, unlinkSync, readdirSync, realpathSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -119,6 +119,10 @@ Common flags (all optional overrides of setup/state-file/chain defaults):
   --from-block <n>             override the replay window start
   --parent-state <state.bin>   override the replay parent substrate
   --corpus <corpus.json>       override the setup-recorded materialized corpus
+  --corpus-for-root 0x…=path   per-epoch corpus for a cross-rotation backlog
+                               entry (corpusRoot pinned at accept differs from
+                               the loaded one); repeatable. Without one such an
+                               entry stays pending 'epoch-context-unavailable'.
   --state-dir <dir>            validator state dir (default .coretex-validator)
   --skip-score-replay          SKIP post-reveal score re-scoring (loud; exit ${SKIP_SCORE_REPLAY_EXIT_CODE})
   --allow-version-mismatch     read-only escape for the bundle version check
@@ -414,6 +418,18 @@ export interface EvalBacklogEntry {
   readonly corpusRoot: string;
   readonly coreVersionHash: string;
   readonly patchHash: string;
+  /**
+   * Relative ref (within the state dir's snapshot store) of this advance's
+   * PARENT substrate snapshot — the packed CortexState BEFORE the advance's
+   * patch was applied (Fix #2). Persisted while the entry is pending so a later
+   * sync (whose replay cursor has already moved PAST this advance) can rescore
+   * WITHOUT reconstructing the parent from the current replay window. The
+   * snapshot's merkle root is re-verified against `parentStateRoot` before use;
+   * the file is deleted only after a PASSING score replay removes the entry.
+   * Absent on entries written by an older client (the in-window parent is then
+   * the only drain path for those, exactly as before).
+   */
+  readonly parentSnapshotRef?: string;
 }
 
 export interface ValidatorSyncStateFile {
@@ -600,6 +616,46 @@ export function assertArtifactBoundToAdvance(
   }
 }
 
+/**
+ * Bind a fetched eval artifact to a persisted BACKLOG ENTRY's pins (Fix #2 drain
+ * path). When a later sync rescores an entry whose advance is NOT in the current
+ * replay window, there is no decoded CoreTexStateAdvanced event to bind against —
+ * only the entry's on-chain pins persisted at accept time. This enforces the
+ * SAME field equalities as assertArtifactBoundToAdvance (epochId, patchHash via
+ * seedDerivation, parentStateRoot, corpusRoot, coreVersionHash, miner) against
+ * the trusted entry pins, so root replay (the entry's parentStateRoot — which
+ * the snapshot was merkle-verified against) and score replay provably concern
+ * the same patch. The compactPatchBytes recomputation lives only on the
+ * in-window path (assertArtifactBoundToAdvance) where the bytes exist.
+ */
+export function assertArtifactBoundToEntry(
+  artifact: CoreTexPostRevealEvalReportArtifact,
+  entry: EvalBacklogEntry,
+): void {
+  const label = `eval artifact ${artifact.artifactHash}`;
+  if (artifact.epochId !== entry.epochId) {
+    throw new Error(`${label} epochId ${artifact.epochId} != backlog entry epoch ${entry.epochId}`);
+  }
+  if (String(artifact.artifactHash).toLowerCase() !== entry.artifactHash.toLowerCase()) {
+    throw new Error(`${label} artifactHash != backlog entry artifactHash ${entry.artifactHash}`);
+  }
+  if (artifact.seedDerivation.patchHash.toLowerCase() !== entry.patchHash.toLowerCase()) {
+    throw new Error(`${label} seedDerivation.patchHash ${artifact.seedDerivation.patchHash} != backlog entry patchHash ${entry.patchHash}`);
+  }
+  if (artifact.context.parentStateRoot.toLowerCase() !== entry.parentStateRoot.toLowerCase()) {
+    throw new Error(`${label} context.parentStateRoot ${artifact.context.parentStateRoot} != backlog entry parentStateRoot ${entry.parentStateRoot}`);
+  }
+  if (artifact.context.corpusRoot.toLowerCase() !== entry.corpusRoot.toLowerCase()) {
+    throw new Error(`${label} context.corpusRoot ${artifact.context.corpusRoot} != backlog entry corpusRoot ${entry.corpusRoot}`);
+  }
+  if (artifact.context.coreVersionHash.toLowerCase() !== entry.coreVersionHash.toLowerCase()) {
+    throw new Error(`${label} context.coreVersionHash ${artifact.context.coreVersionHash} != backlog entry coreVersionHash ${entry.coreVersionHash}`);
+  }
+  if (artifact.minerAddress.toLowerCase() !== entry.miner.toLowerCase()) {
+    throw new Error(`${label} minerAddress ${artifact.minerAddress} != backlog entry miner ${entry.miner}`);
+  }
+}
+
 /** The currently-loaded scorer/corpus context's pinned identity (Finding 8). */
 export interface LoadedScorerContextPins {
   readonly corpusRoot: string;
@@ -679,7 +735,17 @@ export function upsertEvalBacklog(
     const key = evalBacklogKey(e);
     const prior = byKey.get(key);
     // Preserve the original advanceBlock when re-observed; refresh the reason.
-    byKey.set(key, prior ? { ...e, advanceBlock: prior.advanceBlock } : e);
+    // Preserve a previously-persisted parentSnapshotRef (Fix #2) unless the
+    // incoming entry carries one — a re-observed advance keeps its snapshot.
+    byKey.set(key, prior
+      ? {
+          ...e,
+          advanceBlock: prior.advanceBlock,
+          ...(e.parentSnapshotRef ?? prior.parentSnapshotRef
+            ? { parentSnapshotRef: e.parentSnapshotRef ?? prior.parentSnapshotRef }
+            : {}),
+        }
+      : e);
   }
   return [...byKey.values()].sort(
     (a, b) => a.advanceBlock - b.advanceBlock || evalBacklogKey(a).localeCompare(evalBacklogKey(b)),
@@ -693,6 +759,131 @@ export function removeFromEvalBacklog(
 ): EvalBacklogEntry[] {
   const key = evalBacklogKey(entry);
   return backlog.filter((e) => evalBacklogKey(e) !== key);
+}
+
+// ── per-advance parent-substrate snapshot store (Fix #2) ──────────────────────
+
+/**
+ * Snapshot store layout (under the validator state dir):
+ *
+ *   <state-dir>/eval-parent-snapshots/<epochId>-<artifactHash>.bin
+ *
+ * Each file is the packed parent CortexState (pack(state), exactly PACKED_SIZE
+ * bytes) for ONE pending backlog entry — the substrate state BEFORE that
+ * advance's patch was applied. The basename is derived from the backlog key
+ * (epochId + artifactHash), so a snapshot is uniquely 1:1 with its entry and
+ * survives the replay window moving past the advance. Snapshots are staged +
+ * committed atomically (tmp+rename via TrustedStateStaging) alongside the
+ * substrate snapshot / state file, and deleted only after a PASSING replay
+ * drains the entry (or GC'd when the owning entry is gone — no unbounded growth).
+ */
+export const EVAL_PARENT_SNAPSHOT_DIR = 'eval-parent-snapshots';
+
+/** Filesystem-safe basename for a backlog entry's parent snapshot. */
+export function evalParentSnapshotRef(entry: { epochId: number; artifactHash: string }): string {
+  const safeHash = entry.artifactHash.toLowerCase().replace(/[^0-9a-fx]/g, '');
+  return `${EVAL_PARENT_SNAPSHOT_DIR}/${entry.epochId}-${safeHash}.bin`;
+}
+
+/** Absolute path of a snapshot ref within a given state dir. */
+export function evalParentSnapshotPath(stateDir: string, ref: string): string {
+  return join(stateDir, ref);
+}
+
+/**
+ * Load a persisted parent snapshot and merkle-verify it against the entry's
+ * pinned parentStateRoot BEFORE returning it — a snapshot whose pack(state)
+ * does not merkleize to parentStateRoot is REFUSED (returns null), never used.
+ * This makes the on-disk snapshot self-authenticating: a corrupt or substituted
+ * snapshot can never be silently rescored against.
+ */
+export function loadVerifiedParentSnapshot(
+  stateDir: string,
+  entry: { parentStateRoot: string; parentSnapshotRef?: string },
+): { ok: true; state: CortexState } | { ok: false; reason: string } {
+  if (!entry.parentSnapshotRef) return { ok: false, reason: 'no parentSnapshotRef recorded' };
+  const path = evalParentSnapshotPath(stateDir, entry.parentSnapshotRef);
+  if (!existsSync(path)) return { ok: false, reason: `parent snapshot ${path} missing` };
+  let state: CortexState;
+  try {
+    state = loadPackedState(path);
+  } catch (err) {
+    return { ok: false, reason: `parent snapshot ${path} unreadable: ${err instanceof Error ? err.message : String(err)}` };
+  }
+  const root = bytesToHex(merkleizeState(state)).toLowerCase();
+  if (root !== entry.parentStateRoot.toLowerCase()) {
+    return { ok: false, reason: `parent snapshot ${path} merkleizes to ${root} != entry parentStateRoot ${entry.parentStateRoot} — refusing to use` };
+  }
+  return { ok: true, state };
+}
+
+/**
+ * GC parent snapshots whose backlog entry is gone (drained / never written).
+ * Called after the backlog is finalized for the pass: any *.bin in the store
+ * not referenced by a surviving entry is removed (best-effort). Keeps the store
+ * bounded by the live backlog — drained entries leave no orphan snapshots.
+ */
+export function gcEvalParentSnapshots(stateDir: string, backlog: readonly EvalBacklogEntry[]): string[] {
+  const dir = join(stateDir, EVAL_PARENT_SNAPSHOT_DIR);
+  if (!existsSync(dir)) return [];
+  const live = new Set<string>();
+  for (const e of backlog) if (e.parentSnapshotRef) live.add(join(stateDir, e.parentSnapshotRef));
+  const removed: string[] = [];
+  let entries: string[];
+  try {
+    entries = readdirSync(dir);
+  } catch {
+    return [];
+  }
+  for (const name of entries) {
+    if (!name.endsWith('.bin')) continue;
+    const full = join(dir, name);
+    if (live.has(full)) continue;
+    try { unlinkSync(full); removed.push(full); } catch { /* already gone */ }
+  }
+  return removed;
+}
+
+// ── per-epoch scorer/corpus context resolution (Fix #5) ───────────────────────
+
+/**
+ * Fix #5: a cross-rotation backlog entry pins an OLDER epoch's corpus/bundle
+ * (corpusRoot + coreVersionHash) than the currently-loaded scorer context — a
+ * rotation happened between the advance's accept and the secret reveal. Resolving
+ * THAT epoch's context (rather than silently rescoring against the wrong corpus)
+ * requires a corpus whose corpusRoot equals the entry's corpusRoot. The decision
+ * is split out as a pure function so the safe-fail is unit-testable without a
+ * scorer:
+ *
+ *   - matches-loaded     → rescore with the already-loaded context (common case:
+ *                          the reveal lands within the same corpus epoch).
+ *   - resolve-context    → the entry's corpus is resolvable; materialize a
+ *                          per-(corpusRoot,coreVersionHash) context for it.
+ *   - unavailable        → the matching corpus is NOT resolvable; leave the
+ *                          entry pending with `epoch-context-unavailable` and
+ *                          NEVER rescore with a mismatched corpus/bundle.
+ */
+export type ResolvedScorerContextDecision =
+  | { readonly action: 'matches-loaded' }
+  | { readonly action: 'resolve-context' }
+  | { readonly action: 'unavailable'; readonly reason: 'epoch-context-unavailable'; readonly detail: string };
+
+export function resolveScorerContextDecision(
+  entry: { readonly corpusRoot: string; readonly coreVersionHash: string },
+  loaded: LoadedScorerContextPins,
+  resolvableCorpusRoots: ReadonlySet<string>,
+): ResolvedScorerContextDecision {
+  const sel = selectScorerContextForAdvance(entry, loaded);
+  if (sel.action === 'rescore') return { action: 'matches-loaded' };
+  // Pins differ. Can we materialize the corpus matching the entry's corpusRoot?
+  if (resolvableCorpusRoots.has(entry.corpusRoot.toLowerCase())) {
+    return { action: 'resolve-context' };
+  }
+  return {
+    action: 'unavailable',
+    reason: 'epoch-context-unavailable',
+    detail: `${sel.detail} and no corpus matching corpusRoot ${entry.corpusRoot} is resolvable (not published/available); leaving pending rather than rescoring with the wrong corpus`,
+  };
 }
 
 // ── chain context ─────────────────────────────────────────────────────────────
@@ -1211,14 +1402,37 @@ async function runSync({ stateDir, statePath, pinPath, savedState, setup, stagin
   // re-drained every sync. It tracks EVERY accepted advance not yet score-
   // verified independently of the root-continuity cursor, so a restart between
   // reveal and the next sync can never permanently skip a required score replay.
-  let evalBacklog = upsertEvalBacklog(savedState?.evalBacklog, advanceRecords.map(
-    (rec) => evalBacklogEntryFromAdvance(rec.adv, newCursorBlock, 'awaiting_epoch_secret_reveal'),
-  ));
+  //
+  // Fix #2: for EACH accepted advance in this window we also persist its PARENT
+  // substrate snapshot (the walkState BEFORE that advance's patch was applied)
+  // to the snapshot store and record its ref on the backlog entry. A later sync
+  // — whose replay cursor has already moved past this advance — then rescores
+  // from the persisted, merkle-verified snapshot with NO dependence on the
+  // current replay window. Snapshots are staged here and committed atomically
+  // with the rest of the trusted state; entries already carrying a snapshot ref
+  // keep it (upsert preserves it).
+  const incomingEntries = advanceRecords.map((rec) => {
+    const base = evalBacklogEntryFromAdvance(rec.adv, newCursorBlock, 'awaiting_epoch_secret_reveal');
+    const ref = evalParentSnapshotRef(base);
+    staging.stage(evalParentSnapshotPath(stateDir, ref), pack(rec.parentState));
+    return { ...base, parentSnapshotRef: ref };
+  });
+  let evalBacklog = upsertEvalBacklog(savedState?.evalBacklog, incomingEntries);
   // Re-attemptable parent states for THIS pass: the current walk's per-advance
-  // parents, keyed by the advance's parentStateRoot. A backlog entry can be
-  // score-replayed only when its parent state is reconstructable here.
+  // parents, keyed by the advance's parentStateRoot. A backlog entry whose
+  // parent is in THIS window can be replayed from memory; entries from older
+  // windows are replayed from their persisted (Fix #2) snapshot instead.
   const parentByRoot = new Map<string, { adv: CoreTexStateAdvancedEvent; parentState: CortexState; parentRoot: string }>();
   for (const rec of advanceRecords) parentByRoot.set(rec.parentRoot.toLowerCase(), rec);
+  // Parent state for a backlog entry: prefer the in-window walk record (already
+  // proven by the canonical replay above); else load the persisted snapshot and
+  // merkle-verify it against the entry's parentStateRoot BEFORE use (Fix #2 —
+  // a snapshot that does not merkleize to the pinned root is REFUSED, not used).
+  const parentStateForEntry = (entry: EvalBacklogEntry): { ok: true; state: CortexState } | { ok: false; reason: string } => {
+    const rec = parentByRoot.get(entry.parentStateRoot.toLowerCase());
+    if (rec) return { ok: true, state: rec.parentState };
+    return loadVerifiedParentSnapshot(stateDir, entry);
+  };
 
   // Per-epoch secret resolver (Finding 6: confirmed tag; verifies the commit).
   const epochSecretCache = new Map<string, string | null>();
@@ -1243,11 +1457,12 @@ async function runSync({ stateDir, statePath, pinPath, savedState, setup, stagin
       + `This run does NOT attest score honesty (exit code ${SKIP_SCORE_REPLAY_EXIT_CODE}).`);
   } else if (evalBacklog.length > 0) {
     // Reveal pre-scan (cheap RPC reads, no scorer): does any backlog entry have
-    // a revealed secret AND a reconstructable parent state in THIS pass? Only
-    // then do we pay for the (expensive) scorer context + runtime-pin probe.
+    // a revealed secret AND a recoverable parent state (in THIS window OR from a
+    // persisted, merkle-verified snapshot)? Only then do we pay for the
+    // (expensive) scorer context + runtime-pin probe.
     let anyDrainable = false;
     for (const entry of evalBacklog) {
-      if ((await epochSecretFor(entry.epochId)) && parentByRoot.has(entry.parentStateRoot.toLowerCase())) {
+      if ((await epochSecretFor(entry.epochId)) && parentStateForEntry(entry).ok) {
         anyDrainable = true;
         break;
       }
@@ -1280,6 +1495,55 @@ async function runSync({ stateDir, statePath, pinPath, savedState, setup, stagin
     const ctx = await buildValidatorScorerContext(bundleManifest, corpusPath);
     const loadedPins: LoadedScorerContextPins = { corpusRoot: ctx.corpus.corpusRoot, coreVersionHash: chain.coreVersionHash };
     const rpcClient = createBaseRpcClient(rpcUrl);
+
+    // Fix #5: per-(corpusRoot,coreVersionHash) scorer-context resolution for
+    // CROSS-ROTATION backlog entries (a rotation happened between accept and
+    // reveal, so the entry pins an OLDER corpus/bundle than the loaded one).
+    // `corpusForRoot` maps an entry's corpusRoot → a corpus FILE the validator
+    // already has (operator `--corpus-for-root 0x…=path`, or the loaded corpus
+    // when its root already matches). `resolvableCorpusRoots` is the set the
+    // pure decision uses. Resolved contexts are cached so a given epoch's corpus
+    // is materialized at MOST once; reuse the loaded reranker (same bundle pins).
+    const corpusForRoot = new Map<string, string>();
+    corpusForRoot.set(ctx.corpus.corpusRoot.toLowerCase(), corpusPath);
+    for (const pair of all('corpus-for-root')) {
+      const eq = pair.indexOf('=');
+      if (eq <= 0) die(`--corpus-for-root must be 0x<corpusRoot>=<path>, got ${pair}`);
+      const root = pair.slice(0, eq).toLowerCase();
+      if (!isBytes32(root)) die(`--corpus-for-root corpusRoot must be bytes32 hex, got ${pair}`);
+      corpusForRoot.set(root, pair.slice(eq + 1));
+    }
+    const resolvableCorpusRoots = new Set(corpusForRoot.keys());
+    const contextCache = new Map<string, ValidatorScorerContext>();
+    contextCache.set(`${ctx.corpus.corpusRoot.toLowerCase()}:${chain.coreVersionHash.toLowerCase()}`, ctx);
+    // Build (and cache) the scorer context whose corpus root == the entry's pin.
+    // The resolved corpus is loaded with verifyCorpusRoot and its root is then
+    // re-asserted against the entry's pin: a corpus that does NOT match is
+    // refused (we never rescore against the wrong corpus). The reranker (bundle-
+    // pinned, runtime-asserted above) is shared across per-epoch corpora.
+    const resolveContextForEntry = (entry: EvalBacklogEntry): ValidatorScorerContext => {
+      const cacheKey = `${entry.corpusRoot.toLowerCase()}:${entry.coreVersionHash.toLowerCase()}`;
+      const cached = contextCache.get(cacheKey);
+      if (cached) return cached;
+      const path = corpusForRoot.get(entry.corpusRoot.toLowerCase());
+      if (!path) throw new Error(`internal: no resolvable corpus for ${entry.corpusRoot} (decision should have been unavailable)`);
+      const epochCorpus = loadProductionCorpus(path, { verifyCorpusRoot: true, verifySplits: true });
+      if (epochCorpus.corpusRoot.toLowerCase() !== entry.corpusRoot.toLowerCase()) {
+        throw new Error(`resolved corpus ${path} root ${epochCorpus.corpusRoot} != entry corpusRoot ${entry.corpusRoot} — refusing to rescore against a mismatched corpus`);
+      }
+      const layout = epochCorpus.biEncoderRetrievalKeyLayout;
+      const biEncoder = biEncoderFromEnv(layout, { modelId: epochCorpus.biEncoderModelId, revision: epochCorpus.biEncoderRevision });
+      const scoringOpts = scoringOptionsFromProfile(ctx.profile, {
+        biEncoder,
+        reranker: ctx.reranker as never,
+        biEncoderHash: biEncoderModelIdHash(epochCorpus.biEncoderModelId, epochCorpus.biEncoderRevision, 'dense'),
+        retrievalKeyLayout: layout,
+      });
+      const built: ValidatorScorerContext = { corpus: epochCorpus, profile: ctx.profile, scoringOpts, thresholdPpm: ctx.thresholdPpm, reranker: ctx.reranker };
+      contextCache.set(cacheKey, built);
+      return built;
+    };
+
     // Per-advance score-replay progress + ETA (stderr only; stdout JSON clean).
     const scoreProgress = makeProgress({ label: 'post-reveal score replay', unit: 'advances', total: evalBacklog.length, noProgressFlag });
     let scoredAdvances = 0;
@@ -1294,51 +1558,66 @@ async function runSync({ stateDir, statePath, pinPath, savedState, setup, stagin
           scoreProgress.update(++scoredAdvances);
           continue;
         }
-        // Finding 8: a rescore must only happen with the corpus/bundle matching
-        // the advance's on-chain pins. Mismatch → leave pending (never bogus).
-        const ctxSel = selectScorerContextForAdvance(entry, loadedPins);
-        if (ctxSel.action === 'pending') {
+        // Fix #5 / Finding 8: a rescore must only happen with the corpus/bundle
+        // matching the advance's on-chain pins. If they match the loaded context
+        // → use it. If they differ but the entry's corpus is resolvable → build
+        // (cache) that epoch's context. If unresolvable → leave pending with
+        // 'epoch-context-unavailable' (NEVER rescore with the wrong corpus).
+        const decision = resolveScorerContextDecision(entry, loadedPins, resolvableCorpusRoots);
+        if (decision.action === 'unavailable') {
           evalBacklog = upsertEvalBacklog(evalBacklog, [{ ...entry, reason: 'epoch-context-unavailable' }]);
-          evalReplay.pending.push({ artifactHash, epoch: String(entry.epochId), reason: `epoch-context-unavailable: ${ctxSel.detail}` });
-          warn(`[eval-backlog] epoch ${entry.epochId} ${artifactHash}: ${ctxSel.detail}`);
+          evalReplay.pending.push({ artifactHash, epoch: String(entry.epochId), reason: `epoch-context-unavailable: ${decision.detail}` });
+          warn(`[eval-backlog] epoch ${entry.epochId} ${artifactHash}: ${decision.detail}`);
           scoreProgress.update(++scoredAdvances);
           continue;
         }
-        // The per-advance parent state must be reconstructable in THIS pass.
-        const rec = parentByRoot.get(entry.parentStateRoot.toLowerCase());
-        if (!rec) {
+        const entryCtx = decision.action === 'matches-loaded' ? ctx : resolveContextForEntry(entry);
+        // The per-advance parent state: in-window walk record OR a persisted,
+        // merkle-verified snapshot (Fix #2) — NO dependence on this window.
+        const parentLoad = parentStateForEntry(entry);
+        if (!parentLoad.ok) {
           evalReplay.pending.push({ artifactHash, epoch: String(entry.epochId), reason: 'awaiting_parent_state_replay' });
-          warn(`[eval-backlog] epoch ${entry.epochId} ${artifactHash}: parent state ${entry.parentStateRoot} not in this replay window — re-sync covering its advance to drain (kept pending, never dropped)`);
+          warn(`[eval-backlog] epoch ${entry.epochId} ${artifactHash}: parent state ${entry.parentStateRoot} unavailable (${parentLoad.reason}) — re-sync covering its advance to drain (kept pending, never dropped)`);
           scoreProgress.update(++scoredAdvances);
           continue;
         }
+        const parentState = parentLoad.state;
         const artifactUrl = evalReportArtifactUrl(artifactBase, artifactHash);
         const artifact = await readJsonUri(artifactUrl) as CoreTexPostRevealEvalReportArtifact;
         if (String(artifact.artifactHash).toLowerCase() !== artifactHash) {
           throw new Error(`eval artifact ${artifactUrl} carries artifactHash ${artifact.artifactHash} != on-chain evalReportHash ${artifactHash}`);
         }
-        // Finding 4: bind the artifact to the EXACT decoded advance BEFORE scoring
-        // — root replay and score replay then provably concern the same patch.
-        assertArtifactBoundToAdvance(artifact, rec.adv);
-        if (ctx.corpus.corpusRoot.toLowerCase() !== artifact.context.corpusRoot.toLowerCase()) {
-          throw new Error(`eval artifact ${artifactHash} context.corpusRoot ${artifact.context.corpusRoot} != local materialized corpus root ${ctx.corpus.corpusRoot} — re-run coretex-validator-setup for this epoch's corpus`);
+        // Finding 4: bind the artifact to the entry's pins BEFORE scoring — root
+        // replay and score replay then provably concern the same patch. The
+        // in-window decoded advance is used when present (also re-checks the
+        // event's compactPatchBytes); else the entry's persisted pins bind it.
+        const rec = parentByRoot.get(entry.parentStateRoot.toLowerCase());
+        if (rec) {
+          assertArtifactBoundToAdvance(artifact, rec.adv);
+        } else {
+          assertArtifactBoundToEntry(artifact, entry);
+        }
+        if (entryCtx.corpus.corpusRoot.toLowerCase() !== artifact.context.corpusRoot.toLowerCase()) {
+          throw new Error(`eval artifact ${artifactHash} context.corpusRoot ${artifact.context.corpusRoot} != resolved corpus root ${entryCtx.corpus.corpusRoot} — re-run coretex-validator-setup for this epoch's corpus`);
         }
         const result = await verifyPostRevealEvalReportArtifact(artifact, {
           rpcClient,
           epochSecret: secret,
-          scorer: scorerForParent(ctx, rec.parentState, artifact.epochId),
+          scorer: scorerForParent(entryCtx, parentState, artifact.epochId),
         });
         if (!result.ok) {
           throw new Error(`post-reveal eval verification FAILED for ${artifactUrl}: ${result.code} ${result.detail}`);
         }
-        // PASS — and only now is the entry removed from the backlog.
+        // PASS — and only now is the entry removed from the backlog. Its
+        // persisted parent snapshot is GC'd AFTER the atomic commit (no
+        // committed trusted-state file is mutated mid-pass; no unbounded growth).
         evalBacklog = removeFromEvalBacklog(evalBacklog, entry);
         evalReplay.verified.push({
           artifactHash,
           artifactUrl,
           epoch: String(entry.epochId),
-          transitionIndex: rec.adv.transitionIndex.toString(),
-          miner: rec.adv.miner,
+          transitionIndex: rec ? rec.adv.transitionIndex.toString() : 'snapshot',
+          miner: entry.miner,
           outcome: artifact.outcome,
           gateDeltaPpm: result.gateDeltaPpm,
           confirmDeltaPpm: result.confirmDeltaPpm,
@@ -1404,6 +1683,12 @@ async function runSync({ stateDir, statePath, pinPath, savedState, setup, stagin
   //    post-reveal backlog is best-effort (it may remain pending without failing
   //    the sync) but is persisted atomically here too. ──
   staging.commit();
+
+  // Fix #2: with the surviving backlog (+ its freshly-committed snapshots) now
+  // on disk, bound the snapshot store — GC any committed parent snapshot whose
+  // owning backlog entry has drained / is gone (no unbounded growth). Runs AFTER
+  // commit so it sees the final on-disk state and never deletes a live snapshot.
+  gcEvalParentSnapshots(stateDir, evalBacklog);
 
   process.stdout.write(JSON.stringify({
     ok: true,
