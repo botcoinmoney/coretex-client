@@ -1601,17 +1601,46 @@ async function runSync({ stateDir, statePath, pinPath, savedState, setup, stagin
     .sort((a, b) => cmpBig(a.epoch, b.epoch) || cmpBig(a.transitionIndex, b.transitionIndex));
   const crossEpochWindow = advances.some((a) => a.epoch !== BigInt(epoch));
 
+  // A bootstrap window replaying multiple epochs cannot pin every advance to the
+  // CURRENT epoch's context (older epochs legitimately carried older pins). Pre-
+  // read EACH epoch's pins from the registry (at the confirmed tag) and check
+  // every advance against ITS epoch's pins — restoring the per-advance pin
+  // cross-check across the whole window instead of dropping it. Same source as
+  // the single-epoch path (readChainContext), one read per distinct epoch.
+  let expectedPinsForEpoch: ((e: bigint) => { coreVersionHash?: string; corpusRoot?: string; activeFrontierRoot?: string; baselineManifestHash?: string } | undefined) | undefined;
+  if (crossEpochWindow) {
+    const call = rpcChainCaller(rpcUrl);
+    const pinsByEpoch = new Map<bigint, { coreVersionHash: string; corpusRoot: string; activeFrontierRoot: string; baselineManifestHash: string }>();
+    for (const e of [...new Set(advances.map((a) => a.epoch))].sort(cmpBig)) {
+      if (e === BigInt(epoch)) {
+        pinsByEpoch.set(e, {
+          coreVersionHash: chain.coreVersionHash,
+          corpusRoot: chain.corpusRoot,
+          activeFrontierRoot: chain.activeFrontierRoot,
+          baselineManifestHash: chain.baselineManifestHash,
+        });
+        continue;
+      }
+      pinsByEpoch.set(e, {
+        coreVersionHash: decodeBytes32(await call({ to: registry, signature: 'epochCoreVersionHash(uint64)', args: [e], blockTag: confirmedTag }), 'registry.epochCoreVersionHash'),
+        corpusRoot: decodeBytes32(await call({ to: registry, signature: 'epochCorpusRoot(uint64)', args: [e], blockTag: confirmedTag }), 'registry.epochCorpusRoot'),
+        activeFrontierRoot: decodeBytes32(await call({ to: registry, signature: 'epochActiveFrontierRoot(uint64)', args: [e], blockTag: confirmedTag }), 'registry.epochActiveFrontierRoot'),
+        baselineManifestHash: decodeBytes32(await call({ to: registry, signature: 'epochBaselineManifestHash(uint64)', args: [e], blockTag: confirmedTag }), 'registry.epochBaselineManifestHash'),
+      });
+    }
+    expectedPinsForEpoch = (e) => pinsByEpoch.get(e);
+  }
+
+  // Single-epoch sync: the flat current-epoch pins apply. Cross-epoch bootstrap:
+  // the per-epoch resolver takes precedence (it returns a value for every epoch
+  // in the window, including the current one), so the flat fields are unused.
   const replayResult = replayCoreTexFromLogs(parent, logs, {
-    // A bootstrap window replaying multiple epochs cannot pin every advance to
-    // the CURRENT epoch's context (older epochs legitimately carried older
-    // pins) — root continuity + the final liveStateRoot check still hold.
-    ...(crossEpochWindow ? {} : {
-      expectedBundleHash: chain.coreVersionHash,
-      expectedCorpusRoot: chain.corpusRoot,
-      expectedActiveFrontierRoot: chain.activeFrontierRoot,
-      expectedBaselineManifestHash: chain.baselineManifestHash,
-      expectedHiddenSeedCommit: chain.hiddenSeedCommit,
-    }),
+    expectedBundleHash: chain.coreVersionHash,
+    expectedCorpusRoot: chain.corpusRoot,
+    expectedActiveFrontierRoot: chain.activeFrontierRoot,
+    expectedBaselineManifestHash: chain.baselineManifestHash,
+    expectedHiddenSeedCommit: chain.hiddenSeedCommit,
+    ...(expectedPinsForEpoch ? { expectedPinsForEpoch } : {}),
     policyAtomsMode,
     acknowledgedRevertedEpochs: all('acknowledge-reverted-epoch').map((v) => Number(v)),
   });

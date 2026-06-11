@@ -191,6 +191,18 @@ export function replayCoreTexFromLogs(
     expectedActiveFrontierRoot?: string;
     expectedBaselineManifestHash?: string;
     expectedHiddenSeedCommit?: string;
+    /** Per-epoch expected pins (cross-epoch bootstrap replay): older epochs
+     *  legitimately carried older pins, so a single flat expected set cannot
+     *  apply. When provided, each advance/finalize is checked against ITS
+     *  epoch's pins (the caller pre-reads them from the registry), restoring
+     *  the per-advance pin cross-check across the whole window. Takes
+     *  precedence over the flat expected* fields for any epoch it resolves. */
+    expectedPinsForEpoch?: (epoch: bigint) => {
+      coreVersionHash?: string;
+      corpusRoot?: string;
+      activeFrontierRoot?: string;
+      baselineManifestHash?: string;
+    } | undefined;
     policyAtomsMode?: boolean;
     acknowledgedRevertedEpochs?: readonly (number | bigint)[];
   } = {},
@@ -227,14 +239,15 @@ export function replayCoreTexFromLogs(
       return { ok: false, code: 'OUT_OF_ORDER', message: `epoch ${adv.epoch} transitionIndex ${adv.transitionIndex} != expected ${expectedIdx}`, transitions, ...(revertedEpochs.length ? { revertedEpochs } : {}) };
     }
     expectedIdxByEpoch.set(adv.epoch, expectedIdx + 1n);
-    if (opts.expectedBundleHash && !eqHex(adv.coreVersionHash, opts.expectedBundleHash)) {
-      return { ok: false, code: 'CORE_VERSION_MISMATCH', message: `advance ${adv.transitionIndex} coreVersionHash ${adv.coreVersionHash} != expected ${opts.expectedBundleHash}`, transitions: Number(adv.transitionIndex) };
+    const advPins = resolveEpochPins(opts, adv.epoch);
+    if (advPins.coreVersionHash && !eqHex(adv.coreVersionHash, advPins.coreVersionHash)) {
+      return { ok: false, code: 'CORE_VERSION_MISMATCH', message: `advance ${adv.transitionIndex} coreVersionHash ${adv.coreVersionHash} != expected ${advPins.coreVersionHash}`, transitions: Number(adv.transitionIndex) };
     }
-    if (opts.expectedCorpusRoot && !eqHex(adv.corpusRoot, opts.expectedCorpusRoot)) {
-      return { ok: false, code: 'CORPUS_ROOT_MISMATCH', message: `advance ${adv.transitionIndex} corpusRoot ${adv.corpusRoot} != expected ${opts.expectedCorpusRoot}`, transitions: Number(adv.transitionIndex) };
+    if (advPins.corpusRoot && !eqHex(adv.corpusRoot, advPins.corpusRoot)) {
+      return { ok: false, code: 'CORPUS_ROOT_MISMATCH', message: `advance ${adv.transitionIndex} corpusRoot ${adv.corpusRoot} != expected ${advPins.corpusRoot}`, transitions: Number(adv.transitionIndex) };
     }
-    if (opts.expectedActiveFrontierRoot && !eqHex(adv.activeFrontierRoot, opts.expectedActiveFrontierRoot)) {
-      return { ok: false, code: 'ACTIVE_FRONTIER_ROOT_MISMATCH', message: `advance ${adv.transitionIndex} activeFrontierRoot ${adv.activeFrontierRoot} != expected ${opts.expectedActiveFrontierRoot}`, transitions: Number(adv.transitionIndex) };
+    if (advPins.activeFrontierRoot && !eqHex(adv.activeFrontierRoot, advPins.activeFrontierRoot)) {
+      return { ok: false, code: 'ACTIVE_FRONTIER_ROOT_MISMATCH', message: `advance ${adv.transitionIndex} activeFrontierRoot ${adv.activeFrontierRoot} != expected ${advPins.activeFrontierRoot}`, transitions: Number(adv.transitionIndex) };
     }
     if (!eqHex(adv.parentStateRoot, root)) {
       return { ok: false, code: 'STATE_PARENT_MISMATCH', message: `advance ${adv.transitionIndex} parent ${adv.parentStateRoot} != live ${root}`, transitions: Number(adv.transitionIndex) };
@@ -262,7 +275,7 @@ export function replayCoreTexFromLogs(
   }
 
   if (finalized) {
-    const pinMismatch = checkFinalizedPins(finalized, opts, advances.length);
+    const pinMismatch = checkFinalizedPins(finalized, resolveEpochPins(opts, finalized.epoch), advances.length);
     if (pinMismatch) return pinMismatch;
   }
   if (finalized && !eqHex(finalized.finalStateRoot, root)) {
@@ -277,27 +290,51 @@ export function replayCoreTexFromLogs(
   return result;
 }
 
-function checkFinalizedPins(
-  finalized: CoreTexEpochFinalizedEvent,
+interface ResolvedEpochPins {
+  coreVersionHash?: string;
+  corpusRoot?: string;
+  activeFrontierRoot?: string;
+  baselineManifestHash?: string;
+}
+
+/** Resolve the expected pins for one epoch: the per-epoch resolver when given
+ *  (cross-epoch bootstrap), else the flat expected* fields (single-epoch sync). */
+function resolveEpochPins(
   opts: {
     expectedBundleHash?: string;
     expectedCorpusRoot?: string;
     expectedActiveFrontierRoot?: string;
     expectedBaselineManifestHash?: string;
+    expectedPinsForEpoch?: (epoch: bigint) => ResolvedEpochPins | undefined;
   },
+  epoch: bigint,
+): ResolvedEpochPins {
+  const perEpoch = opts.expectedPinsForEpoch?.(epoch);
+  if (perEpoch) return perEpoch;
+  const pins: ResolvedEpochPins = {};
+  if (opts.expectedBundleHash) pins.coreVersionHash = opts.expectedBundleHash;
+  if (opts.expectedCorpusRoot) pins.corpusRoot = opts.expectedCorpusRoot;
+  if (opts.expectedActiveFrontierRoot) pins.activeFrontierRoot = opts.expectedActiveFrontierRoot;
+  if (opts.expectedBaselineManifestHash) pins.baselineManifestHash = opts.expectedBaselineManifestHash;
+  return pins;
+}
+
+function checkFinalizedPins(
+  finalized: CoreTexEpochFinalizedEvent,
+  pins: ResolvedEpochPins,
   transitions: number,
 ): ({ ok: false; code: NonNullable<CoreTexReplayResult['code']>; message: string; transitions: number }) | null {
-  if (opts.expectedBundleHash && !eqHex(finalized.coreVersionHash, opts.expectedBundleHash)) {
-    return { ok: false, code: 'CORE_VERSION_MISMATCH', message: `epochFinalized.coreVersionHash ${finalized.coreVersionHash} != expected ${opts.expectedBundleHash}`, transitions };
+  if (pins.coreVersionHash && !eqHex(finalized.coreVersionHash, pins.coreVersionHash)) {
+    return { ok: false, code: 'CORE_VERSION_MISMATCH', message: `epochFinalized.coreVersionHash ${finalized.coreVersionHash} != expected ${pins.coreVersionHash}`, transitions };
   }
-  if (opts.expectedCorpusRoot && !eqHex(finalized.corpusRoot, opts.expectedCorpusRoot)) {
-    return { ok: false, code: 'CORPUS_ROOT_MISMATCH', message: `epochFinalized.corpusRoot ${finalized.corpusRoot} != expected ${opts.expectedCorpusRoot}`, transitions };
+  if (pins.corpusRoot && !eqHex(finalized.corpusRoot, pins.corpusRoot)) {
+    return { ok: false, code: 'CORPUS_ROOT_MISMATCH', message: `epochFinalized.corpusRoot ${finalized.corpusRoot} != expected ${pins.corpusRoot}`, transitions };
   }
-  if (opts.expectedActiveFrontierRoot && !eqHex(finalized.activeFrontierRoot, opts.expectedActiveFrontierRoot)) {
-    return { ok: false, code: 'ACTIVE_FRONTIER_ROOT_MISMATCH', message: `epochFinalized.activeFrontierRoot ${finalized.activeFrontierRoot} != expected ${opts.expectedActiveFrontierRoot}`, transitions };
+  if (pins.activeFrontierRoot && !eqHex(finalized.activeFrontierRoot, pins.activeFrontierRoot)) {
+    return { ok: false, code: 'ACTIVE_FRONTIER_ROOT_MISMATCH', message: `epochFinalized.activeFrontierRoot ${finalized.activeFrontierRoot} != expected ${pins.activeFrontierRoot}`, transitions };
   }
-  if (opts.expectedBaselineManifestHash && !eqHex(finalized.baselineManifestHash, opts.expectedBaselineManifestHash)) {
-    return { ok: false, code: 'BASELINE_MANIFEST_HASH_MISMATCH', message: `epochFinalized.baselineManifestHash ${finalized.baselineManifestHash} != expected ${opts.expectedBaselineManifestHash}`, transitions };
+  if (pins.baselineManifestHash && !eqHex(finalized.baselineManifestHash, pins.baselineManifestHash)) {
+    return { ok: false, code: 'BASELINE_MANIFEST_HASH_MISMATCH', message: `epochFinalized.baselineManifestHash ${finalized.baselineManifestHash} != expected ${pins.baselineManifestHash}`, transitions };
   }
   return null;
 }

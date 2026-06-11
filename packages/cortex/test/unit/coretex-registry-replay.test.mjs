@@ -194,6 +194,22 @@ describe('CoreTexRegistry replay — r5 grammar enforcement (canonical replay ==
     const r = replayCoreTexFromLogs(empty, [adv0], { expectedBundleHash: BUNDLE, policyAtomsMode: true });
     assert.equal(r.ok, true);
   });
+
+  test('expectedPinsForEpoch checks each advance against ITS epoch pins (cross-epoch window)', () => {
+    // Correct per-epoch pins → ok (resolver takes precedence over the flat set).
+    const okR = replayCoreTexFromLogs(empty, [adv0, adv1, finalizedLog], {
+      expectedBundleHash: '0xdeadbeef'.padEnd(66, '0'), // wrong flat pin, MUST be ignored
+      expectedPinsForEpoch: (e) => (e === 7n ? { coreVersionHash: BUNDLE, corpusRoot: CORPUS, activeFrontierRoot: FRONTIER, baselineManifestHash: '0x' + 'ba'.repeat(32) } : undefined),
+    });
+    assert.equal(okR.ok, true, okR.message);
+
+    // A wrong per-epoch corpusRoot for epoch 7 → that epoch's advance is rejected.
+    const badR = replayCoreTexFromLogs(empty, [adv0, adv1], {
+      expectedPinsForEpoch: (e) => (e === 7n ? { coreVersionHash: BUNDLE, corpusRoot: '0x' + 'c9'.repeat(32) } : undefined),
+    });
+    assert.equal(badR.ok, false);
+    assert.equal(badR.code, 'CORPUS_ROOT_MISMATCH');
+  });
 });
 
 describe('CoreTexRegistry replay — per-epoch transitionIndex + epoch revert semantics', () => {
