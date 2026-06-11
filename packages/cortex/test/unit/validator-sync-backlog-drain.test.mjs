@@ -35,7 +35,7 @@ import {
   removeFromEvalBacklog,
   TrustedStateStaging,
 } from '../../dist/validator-sync-cli.js';
-import { pack, unpack, merkleizeState, bytesToHex, PACKED_SIZE, computePatchHash } from '../../dist/index.js';
+import { pack, unpack, merkleizeState, bytesToHex, PACKED_SIZE, computePatchHash, semanticPatchHash, encodePatch, PATCH_TYPE } from '../../dist/index.js';
 
 function withTmpDir(fn) {
   const dir = mkdtempSync(join(tmpdir(), 'coretex-backlog-drain-'));
@@ -53,8 +53,18 @@ const EPOCH = 7;
 const MINER = addr('a1');
 const CORPUS = b32('22');
 const CORE_VERSION = b32('33');
-const PATCH_BYTES = new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]);
-const PATCH_HASH = computePatchHash(PATCH_BYTES);
+// A REAL compact patch in the coordinator-rewritten on-chain form (scoreDelta
+// = the real ppm delta). The eval artifact binds via the SEMANTIC hash.
+const PATCH_BYTES = encodePatch({
+  patchType: PATCH_TYPE.SLOT_REPLACE,
+  wordCount: 1,
+  scoreDelta: 1000n,
+  parentStateRoot: new Uint8Array(32).fill(0x11),
+  indices: [40],
+  newWords: [0x42n],
+});
+const PATCH_HASH = computePatchHash(PATCH_BYTES);            // literal on-chain hash
+const SEMANTIC_PATCH_HASH = semanticPatchHash(PATCH_BYTES);  // artifact / backlog-entry hash
 const EVAL_HASH = b32('cd');
 
 /** A packed CortexState whose first byte is `seed` (a non-blank substrate). */
@@ -94,7 +104,7 @@ function makeArtifact(parentRoot, overrides = {}) {
     epochId: EPOCH,
     minerAddress: MINER,
     outcome: 'STATE_ADVANCE',
-    seedDerivation: { patchHash: PATCH_HASH },
+    seedDerivation: { patchHash: SEMANTIC_PATCH_HASH },
     context: { parentStateRoot: parentRoot, corpusRoot: CORPUS, coreVersionHash: CORE_VERSION },
     ...overrides,
   };

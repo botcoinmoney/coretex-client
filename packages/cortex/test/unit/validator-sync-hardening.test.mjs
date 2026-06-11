@@ -34,7 +34,7 @@ import {
   scorerRuntimeMatchesBundle,
   scorerVersionMatchesRange,
 } from '../../dist/validator-runtime.js';
-import { computePatchHash } from '../../dist/index.js';
+import { computePatchHash, semanticPatchHash, encodePatch, PATCH_TYPE } from '../../dist/index.js';
 
 function withTmpDir(fn) {
   const dir = mkdtempSync(join(tmpdir(), 'coretex-sync-hardening-'));
@@ -54,9 +54,28 @@ const PARENT = b32('11');
 const CORPUS = b32('22');
 const CORE_VERSION = b32('33');
 const FRONTIER = b32('44');
-const PATCH_BYTES = new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]);
-const PATCH_HASH = computePatchHash(PATCH_BYTES);
+// A REAL compact patch (SLOT_REPLACE, one word). The coordinator REWRITES
+// scoreDelta to the real ppm delta before signing, so the on-chain bytes carry
+// scoreDelta=1000 while the artifact was scored over the scoreDelta=0 form.
+const PATCH_BASE = {
+  patchType: PATCH_TYPE.SLOT_REPLACE,
+  wordCount: 1,
+  scoreDelta: 0n,
+  parentStateRoot: hexToBytes(PARENT),
+  indices: [40],
+  newWords: [0x42n],
+};
+const PATCH_BYTES = encodePatch({ ...PATCH_BASE, scoreDelta: 1000n }); // on-chain rewritten form
+const PATCH_HASH = computePatchHash(PATCH_BYTES);                       // literal on-chain patchHash
+const SEMANTIC_PATCH_HASH = semanticPatchHash(PATCH_BYTES);             // artifact seedDerivation hash
 const EVAL_HASH = b32('cd');
+
+function hexToBytes(hex) {
+  const h = hex.replace(/^0x/, '');
+  const out = new Uint8Array(h.length / 2);
+  for (let i = 0; i < out.length; i++) out[i] = parseInt(h.slice(i * 2, i * 2 + 2), 16);
+  return out;
+}
 
 /** A decoded-advance-shaped event with a self-consistent patchHash. */
 function makeAdvance(overrides = {}) {
@@ -86,7 +105,7 @@ function makeArtifact(overrides = {}) {
     epochId: EPOCH,
     minerAddress: MINER,
     outcome: 'STATE_ADVANCE',
-    seedDerivation: { patchHash: PATCH_HASH },
+    seedDerivation: { patchHash: SEMANTIC_PATCH_HASH },
     context: { parentStateRoot: PARENT, corpusRoot: CORPUS, coreVersionHash: CORE_VERSION },
     ...overrides,
   };
@@ -109,8 +128,22 @@ describe('Finding 4 — assertArtifactBoundToAdvance', () => {
   test('a wrong seedDerivation.patchHash is rejected', () => {
     assert.throws(
       () => assertArtifactBoundToAdvance(makeArtifact({ seedDerivation: { patchHash: b32('ee') } }), makeAdvance()),
-      /seedDerivation\.patchHash .* != advance patchHash/,
+      /seedDerivation\.patchHash .* != semantic advance patchHash/,
     );
+  });
+
+  test('B1: the artifact binds via the SEMANTIC hash across the coordinator scoreDelta rewrite', () => {
+    // Same word writes, a DIFFERENT rewritten scoreDelta → different literal
+    // on-chain patchHash, but the SAME semantic hash → binds to the same artifact.
+    const rewritten2 = encodePatch({ ...PATCH_BASE, scoreDelta: 7777n });
+    const advance2 = makeAdvance({
+      compactPatchBytes: rewritten2,
+      patchHash: computePatchHash(rewritten2),
+    });
+    assert.notEqual(computePatchHash(rewritten2).toLowerCase(), PATCH_HASH.toLowerCase());
+    assert.doesNotThrow(() => assertArtifactBoundToAdvance(makeArtifact(), advance2));
+    // The literal on-chain hash must NOT be what the artifact carries.
+    assert.notEqual(SEMANTIC_PATCH_HASH.toLowerCase(), PATCH_HASH.toLowerCase());
   });
 
   test('an advance whose patchHash does not match its compactPatchBytes is rejected', () => {

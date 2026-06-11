@@ -978,11 +978,28 @@ export class CoreTexCoordinatorCore {
     if (wireParent !== parsed.parentStateRoot) {
       return this.rejectSubmission('E01', 'wire parentStateRoot != request parentStateRoot', { currentStateRoot: this.liveRoot });
     }
-    const originalPatchHash = computePatchHash(parsed.patchBytes).toLowerCase();
+    // B2: STRUCTURAL validation BEFORE the evaluator. applyPatch enforces
+    // type/range/reserved-bit/no-op + the r5 header freeze; running it here
+    // means a structurally-invalid or no-op patch never consumes a
+    // future-blockhash seed draw, a per-miner admission, or scorer work.
+    const preApplied = applyPatch(this.liveState, decoded, true);
+    if (!preApplied.ok) {
+      return this.rejectSubmission(preApplied.code, `apply: ${preApplied.code}`);
+    }
+    // B1: canonicalize scoreDelta OUT of the hash/dedup/seed/artifact domain.
+    // scoreDelta is miner-controlled and does not change the state transition;
+    // hashing it would let a miner reroll the hidden pack for the same semantic
+    // patch and would break state-advance replay binding (the coordinator
+    // rewrites scoreDelta before signing). The evaluator receives the
+    // scoreDelta=0 bytes, so its patchHash/dedupKey/seed are all semantic; the
+    // on-chain receipt still carries the real scoreDelta (contract-enforced).
+    const canonicalBytes = encodePatch({ ...decoded, scoreDelta: 0n });
+    const canonicalHex = bytesToHex(canonicalBytes).toLowerCase();
+    const originalPatchHash = computePatchHash(canonicalBytes).toLowerCase();
     let evalResult: EvalResult;
     try {
       evalResult = await this.evaluator.scorePatch({
-        patchBytesHex: parsed.patchBytesHex,
+        patchBytesHex: canonicalHex,
         parentStateRoot: parsed.parentStateRoot,
         miner: parsed.miner,
         parentState: this.liveState,
@@ -1051,12 +1068,11 @@ export class CoreTexCoordinatorCore {
       });
     }
 
-    const applied = applyPatch(this.liveState, decoded, true);
-    if (!applied.ok) {
-      return this.rejectSubmission(applied.code, `apply: ${applied.code}`);
-    }
-
-    let compactPatchBytes = parsed.patchBytesHex;
+    // Structural validity was already enforced before the evaluator (B2); the
+    // on-chain bytes carry the canonical (scoreDelta=0) form for a screener, so
+    // keccak(compactPatchBytes) == the signed semantic patchHash. A state
+    // advance overwrites both below with the coordinator-rewritten bytes.
+    let compactPatchBytes = canonicalHex;
     let signedPatchHash = originalPatchHash;
     let newStateRoot = parsed.parentStateRoot;
     let stateWordCount = 0;

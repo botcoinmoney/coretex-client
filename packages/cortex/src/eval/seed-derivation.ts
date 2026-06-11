@@ -162,6 +162,42 @@ export function computePatchHash(normalizedPatchBytes: Uint8Array): string {
 }
 
 /**
+ * Wire offset + width of the compact-patch `scoreDelta` field: it sits at
+ * bytes [2, 10) of the fixed 42-byte header (patchType[1] · wordCount[1] ·
+ * scoreDelta[8] · parentStateRoot[32]). Pinned against the contract by the
+ * patch-type Solidity parity test.
+ */
+export const SCORE_DELTA_WIRE_OFFSET = 2;
+export const SCORE_DELTA_WIRE_BYTES = 8;
+
+/**
+ * Semantic patch hash — `computePatchHash` over the wire bytes with the
+ * `scoreDelta` field ZEROED. `scoreDelta` is miner-controlled and does NOT
+ * affect the state transition (it is not a word write). Keying dedup, the
+ * future-blockhash seed, and the eval artifact off the LITERAL bytes let a
+ * miner vary those 8 bytes to redraw the hidden pack for the same semantic
+ * patch (a grinding reroll) AND made state-advance post-reveal replay binding
+ * impossible (the coordinator rewrites `scoreDelta` to `scoreAfter-scoreBefore`
+ * before signing, so the on-chain bytes never matched the artifact's hash).
+ * Hashing the scoreDelta-zeroed bytes makes one semantic patch one hash:
+ * dedup/seed/artifact are reroll-proof, and the rewritten on-chain advance
+ * binds to the same artifact (the validator compares this hash, not the literal
+ * on-chain patchHash). The contract still enforces the real scoreDelta in the
+ * wire bytes via its independent `scoreDelta == scoreAfter-scoreBefore` check.
+ */
+export function semanticPatchHash(compactPatchBytes: Uint8Array): string {
+  if (!(compactPatchBytes instanceof Uint8Array)) {
+    throw new TypeError('semanticPatchHash: compactPatchBytes must be Uint8Array');
+  }
+  if (compactPatchBytes.length < SCORE_DELTA_WIRE_OFFSET + SCORE_DELTA_WIRE_BYTES) {
+    throw new Error('semanticPatchHash: compact patch shorter than the fixed header');
+  }
+  const norm = compactPatchBytes.slice();
+  norm.fill(0, SCORE_DELTA_WIRE_OFFSET, SCORE_DELTA_WIRE_OFFSET + SCORE_DELTA_WIRE_BYTES);
+  return computePatchHash(norm);
+}
+
+/**
  * Canonical dedup key — used by the live-eval dedup cache. Patches
  * with the same (parentRoot, normalizedPatchBytes) share a dedup key
  * and get cached verdicts (anti-probing-via-resubmission).

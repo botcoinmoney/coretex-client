@@ -20,6 +20,9 @@ import {
   deriveConfirmEvalSeed,
   computePatchHash,
   computeDedupKey,
+  semanticPatchHash,
+  encodePatch,
+  PATCH_TYPE,
   EVAL_SEED_GATE_DOMAIN_PREFIX,
   EVAL_SEED_CONFIRM_DOMAIN_PREFIX,
   DEDUP_KEY_DOMAIN_PREFIX,
@@ -222,5 +225,42 @@ describe('cross-helper domain separation', () => {
 
     const all = new Set([patchH, dedupK, gateS, conS]);
     assert.equal(all.size, 4, 'all four outputs must be distinct');
+  });
+});
+
+describe('semanticPatchHash (B1: scoreDelta-independent)', () => {
+  const base = {
+    patchType: PATCH_TYPE.SLOT_REPLACE,
+    wordCount: 1,
+    scoreDelta: 0n,
+    parentStateRoot: new Uint8Array(32).fill(0x11),
+    indices: [40],
+    newWords: [0x42n],
+  };
+
+  test('identical word writes with DIFFERENT scoreDelta produce the SAME semantic hash', () => {
+    const a = encodePatch({ ...base, scoreDelta: 0n });
+    const b = encodePatch({ ...base, scoreDelta: 1000n });
+    const c = encodePatch({ ...base, scoreDelta: 9_223_372_036_854_775_000n });
+    // Literal hashes all differ...
+    assert.notEqual(computePatchHash(a), computePatchHash(b));
+    assert.notEqual(computePatchHash(b), computePatchHash(c));
+    // ...but the semantic hash collapses them to one (reroll closed).
+    assert.equal(semanticPatchHash(a), semanticPatchHash(b));
+    assert.equal(semanticPatchHash(b), semanticPatchHash(c));
+    // And on the scoreDelta=0 form, semantic == literal.
+    assert.equal(semanticPatchHash(a), computePatchHash(a));
+  });
+
+  test('DIFFERENT word writes produce DIFFERENT semantic hashes', () => {
+    const a = encodePatch({ ...base, scoreDelta: 5n });
+    const b = encodePatch({ ...base, scoreDelta: 5n, newWords: [0x43n] });
+    const c = encodePatch({ ...base, scoreDelta: 5n, indices: [41] });
+    assert.notEqual(semanticPatchHash(a), semanticPatchHash(b));
+    assert.notEqual(semanticPatchHash(a), semanticPatchHash(c));
+  });
+
+  test('rejects a buffer shorter than the fixed header', () => {
+    assert.throws(() => semanticPatchHash(new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8])), /shorter than the fixed header/);
   });
 });

@@ -60,7 +60,7 @@ import { pack, unpack, PACKED_SIZE } from './state/codec.js';
 import { applyPatch, decodePatch } from './state/patch.js';
 import type { CortexState } from './state/types.js';
 import { keccak256 } from './state/keccak256.js';
-import { computePatchHash } from './eval/seed-derivation.js';
+import { computePatchHash, semanticPatchHash } from './eval/seed-derivation.js';
 import { hashCorpusDelta, hashJson, verifyEpochRotationManifestSignature } from './corpus/epoch-rotation.js';
 import { applyCorpusDelta, parseCorpusDelta, verifyCorpusDeltaSignature, type CorpusDelta } from './corpus/delta.js';
 import {
@@ -637,12 +637,21 @@ export function assertArtifactBoundToAdvance(
   if (artifact.epochId !== Number(event.epoch)) {
     throw new Error(`${label} epochId ${artifact.epochId} != advance epoch ${event.epoch}`);
   }
+  // The on-chain event.patchHash is the LITERAL hash of the rewritten bytes
+  // (scoreDelta = scoreAfter-scoreBefore). Verify that self-consistency first.
   const computedPatchHash = computePatchHash(event.compactPatchBytes);
   if (computedPatchHash.toLowerCase() !== event.patchHash.toLowerCase()) {
     throw new Error(`${label} advance patchHash ${event.patchHash} != recomputed ${computedPatchHash} from event compactPatchBytes`);
   }
-  if (artifact.seedDerivation.patchHash.toLowerCase() !== event.patchHash.toLowerCase()) {
-    throw new Error(`${label} seedDerivation.patchHash ${artifact.seedDerivation.patchHash} != advance patchHash ${event.patchHash}`);
+  // The artifact binds via the SEMANTIC hash (scoreDelta-zeroed): the
+  // coordinator rewrites scoreDelta before signing, so the artifact's
+  // seedDerivation.patchHash (derived from the scoreDelta=0 submission) can
+  // never equal the literal on-chain hash. Compare the semantic hash of the
+  // on-chain bytes instead — this is what makes the rewritten advance bind to
+  // the exact artifact whose seeds it was scored under.
+  const semanticEventHash = semanticPatchHash(event.compactPatchBytes);
+  if (artifact.seedDerivation.patchHash.toLowerCase() !== semanticEventHash.toLowerCase()) {
+    throw new Error(`${label} seedDerivation.patchHash ${artifact.seedDerivation.patchHash} != semantic advance patchHash ${semanticEventHash}`);
   }
   if (artifact.context.parentStateRoot.toLowerCase() !== event.parentStateRoot.toLowerCase()) {
     throw new Error(`${label} context.parentStateRoot ${artifact.context.parentStateRoot} != advance parentStateRoot ${event.parentStateRoot}`);
@@ -751,7 +760,10 @@ export function evalBacklogEntryFromAdvance(
     parentStateRoot: adv.parentStateRoot.toLowerCase(),
     corpusRoot: adv.corpusRoot.toLowerCase(),
     coreVersionHash: adv.coreVersionHash.toLowerCase(),
-    patchHash: adv.patchHash.toLowerCase(),
+    // Persist the SEMANTIC hash (scoreDelta-zeroed): assertArtifactBoundToEntry
+    // compares it to artifact.seedDerivation.patchHash, which is semantic. The
+    // on-chain adv.patchHash is the literal rewritten hash and would never bind.
+    patchHash: semanticPatchHash(adv.compactPatchBytes),
   };
 }
 
