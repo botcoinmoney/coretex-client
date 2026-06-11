@@ -182,6 +182,143 @@ describe('createCoreTexEvaluatorCore — per-miner cap through the store', () =>
   });
 });
 
+describe('createInMemoryDedupStore — §8 attempt state machine (seed pinning)', () => {
+  const KEY = { epochId: 7, parentStateRoot: PARENT_ROOT, patchHash: `0x${'33'.repeat(32)}` };
+  const SEED = { receivedAtBlock: 1000, targetBlock: 1030, blockhash: `0x${'B2'.repeat(32)}` };
+
+  test('records the seed at draw and reuses it on getAttempt (lowercased)', () => {
+    const store = createInMemoryDedupStore();
+    assert.equal(store.getAttempt(KEY), null, 'no attempt before any draw');
+    store.recordSeedDrawn(KEY, SEED);
+    const a = store.getAttempt(KEY);
+    assert.equal(a.state, 'drawn');
+    assert.equal(a.seedContext.receivedAtBlock, 1000);
+    assert.equal(a.seedContext.targetBlock, 1030);
+    assert.equal(a.seedContext.blockhash, `0x${'b2'.repeat(32)}`, 'blockhash normalized lowercase');
+    assert.equal(a.outcome, undefined, 'drawn attempt has no outcome yet');
+  });
+
+  test('recordSeedDrawn is idempotent — never overwrites a pinned seed', () => {
+    const store = createInMemoryDedupStore();
+    store.recordSeedDrawn(KEY, SEED);
+    // A second draw with a DIFFERENT blockhash must NOT replace the pinned one.
+    store.recordSeedDrawn(KEY, { receivedAtBlock: 9999, targetBlock: 10029, blockhash: `0x${'ff'.repeat(32)}` });
+    assert.equal(store.getAttempt(KEY).seedContext.blockhash, `0x${'b2'.repeat(32)}`, 'first pinned seed survives');
+    assert.equal(store.getAttempt(KEY).seedContext.receivedAtBlock, 1000);
+  });
+
+  test('recordAttemptOutcome upgrades state but preserves the pinned seed', () => {
+    const store = createInMemoryDedupStore();
+    store.recordSeedDrawn(KEY, SEED);
+    store.recordAttemptOutcome(KEY, 'accepted', 'state_advance');
+    const a = store.getAttempt(KEY);
+    assert.equal(a.state, 'accepted');
+    assert.equal(a.outcome, 'state_advance');
+    assert.equal(a.seedContext.blockhash, `0x${'b2'.repeat(32)}`, 'seed preserved through the upgrade');
+  });
+
+  test('recordAttemptOutcome before recordSeedDrawn throws (invariant)', () => {
+    const store = createInMemoryDedupStore();
+    assert.throws(() => store.recordAttemptOutcome(KEY, 'rejected', 'reject', 'x'), /recordSeedDrawn/);
+  });
+});
+
+describe('createCoreTexEvaluatorCore — §8 seed-redraw closure (crash-then-retry)', () => {
+  // A store that swallows the FIRST recordAttemptOutcome (simulating a crash
+  // after the seed is durably drawn but before the outcome lands), then behaves
+  // normally. The seed-draw record persists; the dedup record does NOT.
+  function crashAfterDrawStore() {
+    const inner = createInMemoryDedupStore();
+    let crashed = false;
+    return {
+      ...inner,
+      get: (k) => inner.get(k),
+      put: (r) => { if (!crashed) { crashed = true; throw new Error('simulated crash after draw, before outcome'); } return inner.put(r); },
+      getAttempt: (k) => inner.getAttempt(k),
+      recordSeedDrawn: (k, s) => inner.recordSeedDrawn(k, s),
+      recordAttemptOutcome: (k, st, o, c) => inner.recordAttemptOutcome(k, st, o, c),
+      minerAdmissions: (e, m) => inner.minerAdmissions(e, m),
+      recordMinerAdmission: (e, m) => inner.recordMinerAdmission(e, m),
+    };
+  }
+
+  test('a crash after the draw leaves a pinned seed; the retry REUSES it (no fresh blockhash draw)', async () => {
+    const store = crashAfterDrawStore();
+    // First attempt: draws a fresh blockhash, records the seed, then crashes on
+    // put() (no dedup record written).
+    const a = makeCore({ dedupStore: store });
+    await assert.rejects(
+      a.core.scorePatch({ patchBytesHex: patchBytesHex(), parentStateRoot: PARENT_ROOT, miner: MINER }),
+      /simulated crash/,
+    );
+    assert.ok(a.counters.rpc.calls >= 1, 'first attempt drew a fresh blockhash');
+    // Retry through a NEW core over the SAME durable store (no dedup record, so
+    // no short-circuit): it must REUSE the pinned seed, NOT draw a fresh one.
+    const b = makeCore({ dedupStore: store });
+    const retry = await b.core.scorePatch({ patchBytesHex: patchBytesHex(), parentStateRoot: PARENT_ROOT, miner: MINER });
+    assert.equal(b.counters.rpc.calls, 0, 'the retry must NOT draw a fresh blockhash (seed reused from the pinned attempt)');
+    assert.equal(retry.outcome, 'state_advance');
+  });
+
+  test('the reused seed produces the SAME packs as the pinned draw (injection parity)', async () => {
+    // Capture the seeds derived on the (crashing) first attempt, then assert the
+    // retry derives byte-identical gate/confirm seeds (so the same hidden packs
+    // are scored). We capture via the seedScorer's evalSeed arguments.
+    const firstSeeds = [];
+    const retrySeeds = [];
+    const store = crashAfterDrawStore();
+    const a = makeCore({
+      dedupStore: store,
+      seedScorer: async ({ evalSeed }) => { firstSeeds.push(evalSeed.toLowerCase()); return { accepted: true, before: { composite: 0.4 }, after: { composite: 0.45 }, deltaPpm: 50_000, perFamilyDelta: {} }; },
+    });
+    await assert.rejects(a.core.scorePatch({ patchBytesHex: patchBytesHex(), parentStateRoot: PARENT_ROOT, miner: MINER }), /simulated crash/);
+
+    const b = makeCore({
+      dedupStore: store,
+      seedScorer: async ({ evalSeed }) => { retrySeeds.push(evalSeed.toLowerCase()); return { accepted: true, before: { composite: 0.4 }, after: { composite: 0.45 }, deltaPpm: 50_000, perFamilyDelta: {} }; },
+    });
+    await b.core.scorePatch({ patchBytesHex: patchBytesHex(), parentStateRoot: PARENT_ROOT, miner: MINER });
+    assert.ok(firstSeeds.length >= 1 && retrySeeds.length >= 1, 'both attempts scored at least one pack');
+    assert.deepEqual(retrySeeds, firstSeeds, 'retry derived byte-identical seeds → same hidden packs (no redraw)');
+  });
+
+  test('admission is not double-counted across a crash + retry', async () => {
+    const store = crashAfterDrawStore();
+    const a = makeCore({ dedupStore: store, perMinerCap: 1 });
+    await assert.rejects(a.core.scorePatch({ patchBytesHex: patchBytesHex(), parentStateRoot: PARENT_ROOT, miner: MINER }), /simulated crash/);
+    // Retry consumes the SAME admission the first (crashed) draw recorded — the
+    // miner is not charged twice — so the cap-1 retry still succeeds.
+    const b = makeCore({ dedupStore: store, perMinerCap: 1 });
+    const retry = await b.core.scorePatch({ patchBytesHex: patchBytesHex(), parentStateRoot: PARENT_ROOT, miner: MINER });
+    assert.equal(retry.outcome, 'state_advance', 'retry not blocked by a double-charged admission cap');
+  });
+});
+
+describe('createCoreTexEvaluatorCore — §8 coordinator-pinned seed (remote path)', () => {
+  test('input.seedContext is injected verbatim — the scorer never draws its own blockhash', async () => {
+    const seenSeeds = [];
+    const { core, counters } = makeCore({
+      seedScorer: async ({ evalSeed }) => { seenSeeds.push(evalSeed.toLowerCase()); return { accepted: true, before: { composite: 0.4 }, after: { composite: 0.45 }, deltaPpm: 50_000, perFamilyDelta: {} }; },
+    });
+    const PINNED = { receivedAtBlock: 5_000_000, targetBlock: 5_000_030, blockhash: `0x${'7c'.repeat(32)}` };
+    const result = await core.scorePatch({ patchBytesHex: patchBytesHex(), parentStateRoot: PARENT_ROOT, miner: MINER, seedContext: PINNED });
+    assert.equal(result.outcome, 'state_advance');
+    assert.equal(counters.rpc.calls, 0, 'a coordinator-pinned seed means NO RPC blockhash draw on the scorer');
+    // The artifact's seed derivation must echo the pinned seed.
+    assert.equal(result.evalReportHash, result.artifactHash);
+  });
+
+  test('the pinned seed flows into the committed artifact seedDerivation', async () => {
+    const { core, artifacts } = makeCore();
+    const PINNED = { receivedAtBlock: 5_000_000, targetBlock: 5_000_030, blockhash: `0x${'7c'.repeat(32)}` };
+    await core.scorePatch({ patchBytesHex: patchBytesHex(), parentStateRoot: PARENT_ROOT, miner: MINER, seedContext: PINNED });
+    assert.equal(artifacts.length, 1);
+    assert.equal(artifacts[0].seedDerivation.receivedAtBlock, 5_000_000);
+    assert.equal(artifacts[0].seedDerivation.targetBlock, 5_000_030);
+    assert.equal(artifacts[0].seedDerivation.blockhash, `0x${'7c'.repeat(32)}`);
+  });
+});
+
 describe('createCoreTexEvaluatorCore — envelope strip (§8)', () => {
   test('reject results carry NO deterministicDeltaPpm / requiredDeltaPpm', async () => {
     const { core } = makeCore({ seedScorer: makeSeedScorer({ calls: 0 }, { deltaPpm: 10 }) });

@@ -257,6 +257,82 @@ describe('runPerPatchEvaluation — anti-pre-testing properties', () => {
   });
 });
 
+describe('runPerPatchEvaluation — §8 injected seed context (seam)', () => {
+  test('injecting a seedContext SKIPS the RPC draw and pins the receipt to it', async () => {
+    let rpcCalled = false;
+    const rpcClient = {
+      async getLatestBlockNumber() { rpcCalled = true; return 99_999; },
+      async getBlockHash() { return `0x${'ee'.repeat(32)}`; },
+      async waitForBlock(n) { rpcCalled = true; return { number: n, blockhash: `0x${'ee'.repeat(32)}`, timestamp: 0 }; },
+    };
+    const seedContext = { receivedAtBlock: 7_000_000, targetBlock: 7_000_030, blockhash: `0x${'77'.repeat(32)}` };
+    const r = await runPerPatchEvaluation(makeRequest(), makeDeps({ rpcClient, seedContext }));
+    assert.equal(rpcCalled, false, 'a pinned seedContext means the orchestrator never touches the chain');
+    assert.equal(r.receivedAtBlock, 7_000_000);
+    assert.equal(r.targetBlock, 7_000_030);
+    assert.equal(r.blockhash, `0x${'77'.repeat(32)}`);
+    assert.equal(r.accepted, true);
+  });
+
+  test('PARITY: an injected seed produces the SAME receipt as deriving that seed fresh', async () => {
+    // A fresh-draw run whose RPC returns blockhash X at head H.
+    const fresh = await runPerPatchEvaluation(makeRequest(), makeDeps({
+      rpcClient: makeRpcClient(`0x${'5a'.repeat(32)}`, 4_242),
+      targetBlockOffset: 30,
+    }));
+    // An injection run with the SAME (receivedAtBlock, targetBlock, blockhash)
+    // and a chain client that would draw something DIFFERENT — proving the
+    // pinned seed (not the chain) drove the seeds.
+    const injected = await runPerPatchEvaluation(makeRequest(), makeDeps({
+      rpcClient: makeRpcClient(`0x${'ff'.repeat(32)}`, 1),
+      targetBlockOffset: 30,
+      seedContext: { receivedAtBlock: 4_242, targetBlock: 4_272, blockhash: `0x${'5a'.repeat(32)}` },
+    }));
+    assert.deepEqual(injected, fresh, 'injection parity: byte-identical receipt incl. gate/confirm seeds');
+  });
+
+  test('onSeedDerived fires AFTER the seed is derived and BEFORE any scoring', async () => {
+    const order = [];
+    const scorer = async ({ which }) => { order.push(`score:${which}`); return { scorePpm: 50_000, accepted: true }; };
+    const onSeedDerived = (seedContext) => { order.push(`seed:${seedContext.blockhash}`); };
+    const r = await runPerPatchEvaluation(makeRequest(), makeDeps({ scorer, onSeedDerived }));
+    assert.equal(r.accepted, true);
+    assert.equal(order[0], `seed:${BLOCKHASH}`, 'onSeedDerived runs before the first scorer call');
+    assert.deepEqual(order, [`seed:${BLOCKHASH}`, 'score:gate', 'score:confirm']);
+  });
+
+  test('onSeedDerived receives the SAME seed context that lands in the receipt', async () => {
+    let captured;
+    const onSeedDerived = (seedContext) => { captured = seedContext; };
+    const r = await runPerPatchEvaluation(makeRequest(), makeDeps({
+      rpcClient: makeRpcClient(BLOCKHASH, 8_080),
+      onSeedDerived,
+    }));
+    assert.deepEqual(captured, { receivedAtBlock: 8_080, targetBlock: 8_110, blockhash: BLOCKHASH });
+    assert.equal(r.receivedAtBlock, captured.receivedAtBlock);
+    assert.equal(r.blockhash, captured.blockhash);
+  });
+
+  test('onSeedDerived is NOT called on an admission rejection (no seed drawn)', async () => {
+    let called = false;
+    const onSeedDerived = () => { called = true; };
+    const r = await runPerPatchEvaluation(makeRequest({ structurallyValid: false }), makeDeps({ onSeedDerived }));
+    assert.equal(r.accepted, false);
+    assert.equal(called, false, 'no seed is drawn for a rejected admission → no record');
+  });
+
+  test('an onSeedDerived throw aborts BEFORE any scoring (durable-record failure fails closed)', async () => {
+    let scored = false;
+    const scorer = async () => { scored = true; return { scorePpm: 50_000, accepted: true }; };
+    const onSeedDerived = () => { throw new Error('durable record failed'); };
+    await assert.rejects(
+      runPerPatchEvaluation(makeRequest(), makeDeps({ scorer, onSeedDerived })),
+      /durable record failed/,
+    );
+    assert.equal(scored, false, 'no pack may be scored if the seed could not be durably recorded');
+  });
+});
+
 describe('runPerPatchEvaluation — RPC failure modes', () => {
   test('waitForBlock timeout propagates as throw', async () => {
     const rpcClient = {

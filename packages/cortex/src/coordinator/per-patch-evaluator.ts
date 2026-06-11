@@ -76,6 +76,20 @@ export type PerPatchScorer = (args: {
   readonly which: 'gate' | 'confirm'; // tag so the scorer can log / inspect
 }) => Promise<PerPatchScoreResult>;
 
+/**
+ * The chain-derived seed context that pins the gate/confirm packs: the
+ * future-blockhash binding (receivedAtBlock → targetBlock → blockhash) drawn
+ * once at first evaluation. §8 anti-grinding closure: this is recorded
+ * DURABLY at first draw and REUSED on every retry of the same
+ * (epochId, parentStateRoot, patchHash), so a crash AFTER the draw but BEFORE
+ * the outcome can never re-roll a fresh blockhash (and thus fresh packs).
+ */
+export interface PerPatchSeedContext {
+  readonly receivedAtBlock: number;
+  readonly targetBlock: number;
+  readonly blockhash: string;          // bytes32 hex
+}
+
 export interface PerPatchEvaluatorDeps {
   readonly rpcClient: BaseRpcClient;
   readonly scorer: PerPatchScorer;
@@ -100,6 +114,24 @@ export interface PerPatchEvaluatorDeps {
    *  60 s budget at targetBlockOffset=30) — generous enough that
    *  Base must be genuinely stalled for this to fire. */
   readonly waitTimeoutMs?: number;
+  /** §8 anti-grinding — OPTIONAL pinned seed context. When supplied, the
+   *  orchestrator SKIPS the `receivedAtBlock` fetch + the future-blockhash
+   *  wait and derives the gate/confirm seeds from THIS context instead. The
+   *  caller is responsible for it being the SAME context drawn on the first
+   *  attempt (reused on retry) — so a crash between the draw and the recorded
+   *  outcome can never re-roll a fresh blockhash → fresh packs. Scoring given
+   *  a seed is byte-unchanged; only the seed's SOURCE changes (pinned, not
+   *  freshly fetched). The parity harness's fixed BaseRpcClient and this seam
+   *  are equivalent for pinning the blockhash; this seam additionally lets the
+   *  caller reuse a DURABLY recorded draw without a live (even fake) client. */
+  readonly seedContext?: PerPatchSeedContext;
+  /** §8 anti-grinding — OPTIONAL callback invoked AFTER the seed context is
+   *  derived (fetched or injected) but BEFORE any (expensive) scoring. The
+   *  LOCAL path passes a hook that DURABLY records the drawn seed before the
+   *  first scorer call, so a retry can reuse it. Awaited; a throw aborts the
+   *  evaluation before any pack is scored. Never invoked on an admission
+   *  rejection (no seed is drawn) or a dedup-cache hit. */
+  readonly onSeedDerived?: (seedContext: PerPatchSeedContext) => Promise<void> | void;
 }
 
 export interface PerPatchReceipt {
@@ -270,12 +302,31 @@ export async function runPerPatchEvaluation(
   // the blockhash literally doesn't exist when the patch arrived, so
   // neither the coordinator nor the miner could have computed the
   // seeds in advance.
-  const receivedAtBlock = await deps.rpcClient.getLatestBlockNumber();
-  const targetBlock = receivedAtBlock + deps.targetBlockOffset;
-  const { blockhash } = await deps.rpcClient.waitForBlock(
-    targetBlock,
-    deps.waitTimeoutMs ?? 120_000,
-  );
+  //
+  // §8 anti-grinding: when a pinned `seedContext` is injected, the
+  // blockhash was already drawn (and DURABLY recorded) on a prior
+  // attempt — reuse it byte-for-byte instead of re-rolling. Otherwise
+  // draw it fresh from the chain.
+  let receivedAtBlock: number;
+  let targetBlock: number;
+  let blockhash: string;
+  if (deps.seedContext) {
+    ({ receivedAtBlock, targetBlock, blockhash } = deps.seedContext);
+  } else {
+    receivedAtBlock = await deps.rpcClient.getLatestBlockNumber();
+    targetBlock = receivedAtBlock + deps.targetBlockOffset;
+    ({ blockhash } = await deps.rpcClient.waitForBlock(
+      targetBlock,
+      deps.waitTimeoutMs ?? 120_000,
+    ));
+  }
+  // Hand the (fresh or pinned) seed context to the durable-record hook BEFORE
+  // any scoring runs, so a crash mid-eval leaves a 'drawn' record the retry
+  // reuses (same packs). On a fresh draw this is the first durable write of
+  // the pinned blockhash; on a reused injection it is a no-op the caller skips.
+  if (deps.onSeedDerived) {
+    await deps.onSeedDerived({ receivedAtBlock, targetBlock, blockhash });
+  }
 
   // 6: derive both seeds from the same blockhash via different domain
   // prefixes. Same anti-pre-testing property holds for both. Miner

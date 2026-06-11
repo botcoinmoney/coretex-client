@@ -166,6 +166,17 @@ export interface RealEvaluator {
      *  re-derives the final decision from the returned scores vs the live
      *  threshold regardless. */
     screenerThresholdPpm?: number;
+    /** OPTIONAL §8 coordinator-pinned future-blockhash seed context (keyless
+     *  remote path). The keyless scorer server passes the seed the coordinator
+     *  drew + durably recorded so the scorer injects it verbatim and never
+     *  re-rolls a fresh blockhash on a retry. The local CPU evaluator path omits
+     *  it (it pins via its durable attempt store). The coordinator core never
+     *  sets it directly. */
+    seedContext?: {
+      readonly receivedAtBlock: number;
+      readonly targetBlock: number;
+      readonly blockhash: string;
+    };
   }): Promise<EvalResult> | EvalResult;
 }
 

@@ -37,6 +37,7 @@ import { execFileSync } from 'node:child_process';
 import {
   createProductionCoreTexEvaluator,
   createInMemoryDedupStore,
+  type CoreTexEvalSeedContext,
   type ProductionCoreTexEvaluator,
   type ProductionRerankerPlan,
 } from './coordinator/production-evaluator.js';
@@ -72,9 +73,14 @@ export interface ScorerExpectedPins {
 }
 
 export interface ScorerPublicEvalContext {
-  /** Future-blockhash dual-pack public inputs the evaluator's RPC client
-   *  would otherwise fetch; surfaced here for visibility / replay. The scorer
-   *  still runs the canonical blockhash binding via its own BASE_RPC_URL. */
+  /** §8 anti-grinding — the COORDINATOR-PINNED future-blockhash dual-pack seed
+   *  context. On the keyless remote path the coordinator draws + DURABLY records
+   *  this seed and ships it with the job; the scorer injects it verbatim and
+   *  NEVER draws its own (seed is coordinator-authoritative + crash-safe). When
+   *  receivedAtBlock/targetBlock/blockhash are all present the scorer uses THEM;
+   *  if absent (legacy / local replay) the scorer falls back to its own
+   *  BASE_RPC_URL blockhash binding. targetBlockOffset / hiddenSeedCommit are
+   *  surfaced for visibility / replay. */
   readonly receivedAtBlock?: number;
   readonly targetBlock?: number;
   readonly blockhash?: string;
@@ -231,6 +237,47 @@ export function verifyJobParentState(
   return { ok: true, state };
 }
 
+/**
+ * Resolve the §8 coordinator-pinned seed context from the job's
+ * publicEvalContext. The keyless scorer is NEVER allowed to draw its own
+ * future blockhash on the remote path: the seed is coordinator-authoritative.
+ * Returns:
+ *   - `{ seedContext }` when receivedAtBlock + targetBlock + blockhash are ALL
+ *     present and well-formed (the scorer injects it verbatim);
+ *   - `{}` when ALL three are absent (legacy/local replay — the scorer may fall
+ *     back to its own BASE_RPC_URL blockhash binding);
+ *   - `{ error }` on a PARTIAL or malformed seed (fail-closed — a half-pinned
+ *     seed must never silently fall back to a fresh draw). Pure — unit-tested.
+ */
+export function resolveJobSeedContext(
+  job: Pick<ScorerJobRequest, 'publicEvalContext'>,
+): { readonly seedContext?: CoreTexEvalSeedContext; readonly error?: string } {
+  const ctx = job.publicEvalContext;
+  const has = (v: unknown) => v !== undefined && v !== null;
+  const present = ctx ? [ctx.receivedAtBlock, ctx.targetBlock, ctx.blockhash].filter(has).length : 0;
+  if (!ctx || present === 0) return {};
+  if (present !== 3) {
+    return { error: 'publicEvalContext seed must carry receivedAtBlock + targetBlock + blockhash together (no partial pin)' };
+  }
+  const { receivedAtBlock, targetBlock, blockhash } = ctx;
+  if (!Number.isSafeInteger(receivedAtBlock) || (receivedAtBlock as number) <= 0) {
+    return { error: `publicEvalContext.receivedAtBlock must be a positive integer (got ${String(receivedAtBlock)})` };
+  }
+  if (!Number.isSafeInteger(targetBlock) || (targetBlock as number) <= 0) {
+    return { error: `publicEvalContext.targetBlock must be a positive integer (got ${String(targetBlock)})` };
+  }
+  if (typeof blockhash !== 'string' || !/^0x[0-9a-fA-F]{64}$/.test(blockhash)) {
+    return { error: 'publicEvalContext.blockhash must be bytes32' };
+  }
+  return {
+    seedContext: {
+      receivedAtBlock: receivedAtBlock as number,
+      targetBlock: targetBlock as number,
+      blockhash: blockhash.toLowerCase(),
+    },
+  };
+}
+
 function validateJobShape(job: unknown): string | null {
   if (!job || typeof job !== 'object') return 'job must be an object';
   const j = job as Record<string, unknown>;
@@ -297,6 +344,15 @@ export async function handleScoreJob(
     return { status: 422, body: { error: 'SCORER_PARENT_STATE_MISMATCH', reason: parent.reason } };
   }
 
+  // §8 anti-grinding: when the coordinator ships a PINNED seed context with the
+  // job, the scorer injects it verbatim and NEVER draws its own future blockhash
+  // (the seed is coordinator-authoritative + crash-safe). A retry of the same
+  // (epochId, parentStateRoot, patchHash) thus scores the SAME hidden packs.
+  const pinnedSeed = resolveJobSeedContext(job);
+  if (pinnedSeed.error) {
+    return { status: 422, body: { error: 'SCORER_SEED_CONTEXT_INVALID', reason: pinnedSeed.error } };
+  }
+
   const now = deps.now ?? (() => Date.now());
   // Per-job trace: every scored pair in THIS job folds into a fresh chain.
   deps.tracedReranker.resetTrace();
@@ -312,6 +368,9 @@ export async function handleScoreJob(
       // coordinator shipped with the job — never CORETEX_SCREENER_THRESHOLD_PPM
       // env — for its advisory accept/reject + the committed artifact threshold.
       screenerThresholdPpm: job.thresholdPpm,
+      // §8: inject the coordinator-pinned seed (when present) so the scorer
+      // never re-rolls a fresh blockhash on a retry.
+      ...(pinnedSeed.seedContext ? { seedContext: pinnedSeed.seedContext } : {}),
     });
   } catch (e) {
     return { status: 500, body: { error: 'eval-failure', reason: (e as Error)?.message ?? 'scorePatch threw' } };

@@ -66,6 +66,7 @@ import {
   dualPackProofFromPerPatchReceipt,
   type PerPatchReceipt,
   type PerPatchScorer,
+  type PerPatchSeedContext,
 } from './per-patch-evaluator.js';
 import type { BaseBlockResponse, BaseRpcClient } from './base-blockhash.js';
 import type { EvalResult, RealEvaluator } from './coretex-coordinator-core.js';
@@ -84,6 +85,33 @@ export interface CoreTexEvalDedupRecord extends CoreTexEvalDedupKey {
 }
 
 /**
+ * §8 anti-grinding attempt state machine. Closes the seed-redraw gap: the
+ * durable dedup record (above) is written only AFTER a result, but the seed
+ * (future blockhash) is drawn fresh per attempt. A crash AFTER the draw but
+ * BEFORE the outcome would otherwise let a retry of the same
+ * (epochId, parentStateRoot, patchHash) draw a FRESH blockhash → a fresh
+ * hidden gate/confirm pack.
+ *
+ * The attempt record PINS the seed at first draw (`state: 'drawn'`, with the
+ * `seedContext`) and is upgraded to `'rejected'`/`'accepted'` after the
+ * result. On a retry, an existing attempt's `seedContext` is REUSED (injected
+ * into runPerPatchEvaluation), so the same packs are scored — never a fresh
+ * draw. `recordSeedDrawn` MUST be durable BEFORE any scoring.
+ */
+export interface CoreTexEvalSeedContext {
+  readonly receivedAtBlock: number;
+  readonly targetBlock: number;
+  readonly blockhash: string;         // bytes32 hex, lowercase
+}
+
+export interface CoreTexEvalAttemptRecord extends CoreTexEvalDedupKey {
+  readonly state: 'drawn' | 'rejected' | 'accepted';
+  readonly seedContext: CoreTexEvalSeedContext;
+  readonly outcome?: CoreTexEvalDedupRecord['outcome'];
+  readonly code?: string;
+}
+
+/**
  * Persistence interface the host MUST provide. Records every evaluated
  * (epochId, parentStateRoot, patchHash) outcome so resubmitting identical
  * patch bytes can NEVER draw a fresh gate/confirm pack (the seeds include
@@ -96,6 +124,21 @@ export interface CoreTexEvalDedupStore {
   put(record: CoreTexEvalDedupRecord): Promise<void> | void;
   minerAdmissions(epochId: number, minerAddress: string): Promise<number> | number;
   recordMinerAdmission(epochId: number, minerAddress: string): Promise<void> | void;
+  /** §8 seed-redraw closure: the in-flight attempt for a key (its pinned seed
+   *  context + state), or null if no seed has been drawn yet. */
+  getAttempt(key: CoreTexEvalDedupKey): Promise<CoreTexEvalAttemptRecord | null> | CoreTexEvalAttemptRecord | null;
+  /** Durably pin the drawn seed (state='drawn') BEFORE any scoring. Idempotent
+   *  on the key: a re-draw on an existing 'drawn' attempt must NOT overwrite the
+   *  pinned seedContext (the retry should already have reused it). */
+  recordSeedDrawn(key: CoreTexEvalDedupKey, seedContext: CoreTexEvalSeedContext): Promise<void> | void;
+  /** Upgrade the attempt to its terminal state ('rejected'/'accepted') after the
+   *  verified result, preserving the pinned seedContext. */
+  recordAttemptOutcome(
+    key: CoreTexEvalDedupKey,
+    state: 'rejected' | 'accepted',
+    outcome: CoreTexEvalDedupRecord['outcome'],
+    code?: string,
+  ): Promise<void> | void;
 }
 
 /** In-memory store for tests and for a persistent sidecar to wrap. The
@@ -103,10 +146,16 @@ export interface CoreTexEvalDedupStore {
  *  actually persists across restarts. */
 export function createInMemoryDedupStore(): CoreTexEvalDedupStore {
   const records = new Map<string, CoreTexEvalDedupRecord>();
+  const attempts = new Map<string, CoreTexEvalAttemptRecord>();
   const admissions = new Map<string, number>();
   const recordKey = (k: CoreTexEvalDedupKey) =>
     `${k.epochId}|${k.parentStateRoot.toLowerCase()}|${k.patchHash.toLowerCase()}`;
   const admissionKey = (epochId: number, miner: string) => `${epochId}|${miner.toLowerCase()}`;
+  const normalizeKey = (k: CoreTexEvalDedupKey): CoreTexEvalDedupKey => ({
+    epochId: k.epochId,
+    parentStateRoot: k.parentStateRoot.toLowerCase(),
+    patchHash: k.patchHash.toLowerCase(),
+  });
   return {
     get(key) { return records.get(recordKey(key)) ?? null; },
     put(record) { records.set(recordKey(record), record); },
@@ -114,6 +163,25 @@ export function createInMemoryDedupStore(): CoreTexEvalDedupStore {
     recordMinerAdmission(epochId, minerAddress) {
       const key = admissionKey(epochId, minerAddress);
       admissions.set(key, (admissions.get(key) ?? 0) + 1);
+    },
+    getAttempt(key) { return attempts.get(recordKey(key)) ?? null; },
+    recordSeedDrawn(key, seedContext) {
+      const mapKey = recordKey(key);
+      // Idempotent: never overwrite an already-pinned seed (the retry reuses it).
+      if (attempts.has(mapKey)) return;
+      attempts.set(mapKey, {
+        ...normalizeKey(key),
+        state: 'drawn',
+        seedContext: { ...seedContext, blockhash: seedContext.blockhash.toLowerCase() },
+      });
+    },
+    recordAttemptOutcome(key, state, outcome, code) {
+      const mapKey = recordKey(key);
+      const prior = attempts.get(mapKey);
+      if (!prior) {
+        throw new Error('recordAttemptOutcome called before recordSeedDrawn (no pinned seed)');
+      }
+      attempts.set(mapKey, { ...prior, state, outcome, ...(code ? { code } : {}) });
     },
   };
 }
@@ -249,6 +317,15 @@ export type ProductionCoreTexEvaluator = RealEvaluator & {
      *  (the local CPU path is unchanged). The coordinator still re-derives the
      *  final decision from the returned scores vs its live threshold. */
     screenerThresholdPpm?: number;
+    /** §8 anti-grinding (REMOTE/keyless path) — the coordinator-pinned seed
+     *  context. On the keyless scorer path the COORDINATOR draws + DURABLY
+     *  records the future-blockhash seed and ships it with the job; the scorer
+     *  NEVER draws its own (seed is coordinator-authoritative + crash-safe).
+     *  When supplied, it is injected into runPerPatchEvaluation verbatim (no RPC
+     *  blockhash wait, no attempt-store draw of its own). The LOCAL CPU path
+     *  omits this and pins via the durable attempt store instead. Scoring given
+     *  the seed is byte-unchanged either way. */
+    seedContext?: CoreTexEvalSeedContext;
   }): Promise<ProductionEvalResult>;
   /** Hash-bound boot attestation (§2): resolved model id + revision +
    *  reranker mode + instruction + prompt-template hash + Memory-IR mode. */
@@ -354,7 +431,6 @@ export function createCoreTexEvaluatorCore(deps: ProductionCoreTexEvaluatorCoreD
       }
 
       const miner = input.miner.toLowerCase();
-      const minerAdmissions = await deps.dedupStore.minerAdmissions(deps.epochId, miner);
       const parent = input.parentState ?? await deps.parentStateLoader(input.parentStateRoot);
       const perSeed = new Map<string, PatchEvalResult>();
       const scorer: PerPatchScorer = async ({ normalizedPatchBytes, evalSeed }) => {
@@ -366,6 +442,42 @@ export function createCoreTexEvaluatorCore(deps: ProductionCoreTexEvaluatorCoreD
         };
         return result.reason ? { ...score, rejectionReason: result.reason } : score;
       };
+
+      // §8 SEED-REDRAW CLOSURE. Two ways the seed is pinned:
+      //
+      //  REMOTE/keyless path (input.seedContext supplied): the COORDINATOR drew
+      //  + DURABLY recorded the seed and shipped it with the job. The scorer
+      //  injects it verbatim and NEVER draws its own (seed is coordinator-
+      //  authoritative + crash-safe). No attempt-store draw happens here.
+      //
+      //  LOCAL CPU path (no input.seedContext): pin the future-blockhash seed at
+      //  first draw and REUSE it on retry. A crash AFTER the draw but BEFORE the
+      //  recorded outcome leaves a 'drawn' attempt; the retry below injects that
+      //  pinned seed (no fresh blockhash → no fresh hidden pack). On the first
+      //  attempt we pass `onSeedDerived` to record it DURABLY before any scoring.
+      //  (The dedup short-circuit above already handles a COMPLETED prior eval;
+      //  this handles the crashed-mid-eval window.)
+      const coordinatorPinnedSeed: PerPatchSeedContext | undefined = input.seedContext
+        ? { ...input.seedContext, blockhash: input.seedContext.blockhash.toLowerCase() }
+        : undefined;
+      const priorAttempt = coordinatorPinnedSeed ? null : await deps.dedupStore.getAttempt(dedupKey);
+      const injectedSeedContext: PerPatchSeedContext | undefined = coordinatorPinnedSeed
+        ?? (priorAttempt ? priorAttempt.seedContext : undefined);
+      // A LOCAL-path retry (priorAttempt exists) already consumed one admission
+      // slot on its crashed first draw — feed the cap check the PRE-draw count
+      // so the retry is not wrongly blocked (or double-charged) by its own slot.
+      const rawMinerAdmissions = await deps.dedupStore.minerAdmissions(deps.epochId, miner);
+      const minerAdmissions = priorAttempt ? Math.max(0, rawMinerAdmissions - 1) : rawMinerAdmissions;
+      // Record the drawn/pinned seed into the attempt store BEFORE scoring,
+      // unless this is a LOCAL-path retry that already has a 'drawn' attempt
+      // (its seed is reused). On the remote path the coordinator-pinned seed is
+      // still mirrored into the scorer's (in-memory, defense-in-depth) store so
+      // its attempt state machine stays consistent (outcome upgrade follows a
+      // recorded draw). recordSeedDrawn is idempotent, so this never re-rolls.
+      const onSeedDerived = priorAttempt
+        ? undefined
+        : (seedContext: PerPatchSeedContext) => deps.dedupStore.recordSeedDrawn(dedupKey, seedContext);
+
       const dual = await runPerPatchEvaluation({
         normalizedPatchBytes: patchBytes,
         parentRoot: parentStateRoot,
@@ -385,15 +497,21 @@ export function createCoreTexEvaluatorCore(deps: ProductionCoreTexEvaluatorCoreD
         // per-miner counts come from the same store.
         dedupCache: new Map(),
         minerAdmissions: new Map([[miner, minerAdmissions]]),
+        ...(injectedSeedContext ? { seedContext: injectedSeedContext } : {}),
+        ...(onSeedDerived ? { onSeedDerived } : {}),
       });
 
       // The patch consumed a pack draw iff seeds were derived. Record both
       // the admission and the dedup outcome through the persistent store so
-      // neither resets on coordinator restart.
+      // neither resets on coordinator restart. A reused (injected) seed on a
+      // retry must NOT double-count the admission — only the original draw did.
       const drewPacks = dual.receivedAtBlock > 0;
-      if (drewPacks) await deps.dedupStore.recordMinerAdmission(deps.epochId, miner);
-      const record = (outcome: CoreTexEvalDedupRecord['outcome'], code?: string) =>
-        deps.dedupStore.put({ ...dedupKey, outcome, ...(code ? { code } : {}) });
+      if (drewPacks && !priorAttempt) await deps.dedupStore.recordMinerAdmission(deps.epochId, miner);
+      const record = (outcome: CoreTexEvalDedupRecord['outcome'], code?: string) => {
+        const attemptState = outcome === 'reject' ? 'rejected' as const : 'accepted' as const;
+        return Promise.resolve(deps.dedupStore.recordAttemptOutcome(dedupKey, attemptState, outcome, code))
+          .then(() => deps.dedupStore.put({ ...dedupKey, outcome, ...(code ? { code } : {}) }));
+      };
 
       if (!dual.accepted) {
         const code = dual.rejectionReason ?? 'no_retrieval_improvement';
