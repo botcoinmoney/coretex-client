@@ -13,11 +13,15 @@ post-reveal with the pinned production scorer.
 npm install @botcoin/cortex
 ```
 
-Host requirements for score replay: Node ≥ 20.10 and a CPU-only `python3`
-with `torch` + `transformers` (see the bundle manifest `runtimePin`). The
-canonical Python reranker runner ships inside this package at
-`scripts/reranker_runner.py` and is resolved automatically in both repo and
-installed layouts (`CORETEX_RERANKER_SCRIPT` overrides explicitly).
+Host requirements for score replay: Node ≥ 20.10 and `python3`. By default,
+`coretex-validator-setup` bootstraps a pinned CPU-only scorer venv under the
+validator state dir, installs the bundle-compatible `torch` + `transformers`
+runtime, verifies it with the in-package runner, and records that interpreter
+for future syncs. Operators may provide their own interpreter with
+`CORETEX_RERANKER_PYTHON` or opt out with `--no-venv-bootstrap`, but the default
+path is one-command. The canonical Python reranker runner ships inside this
+package at `scripts/reranker_runner.py` and is resolved automatically in both
+repo and installed layouts (`CORETEX_RERANKER_SCRIPT` overrides explicitly).
 
 ## Quick start (one command each)
 
@@ -32,7 +36,8 @@ export CORETEX_ARTIFACT_BASE_URL=https://…/coretex/launch/v16
 #    corpus/embeddings/bundle/profile with SHA-256 + size verification into
 #    .coretex-validator/, materializes the production corpus, and records the
 #    bundle manifest path + previous corpus root + registry deploy block in
-#    the validator state file.
+#    the validator state file. It also bootstraps/verifies the pinned CPU scorer
+#    venv unless explicitly disabled. Progress and ETA print to stderr.
 npx coretex-validator-setup --registry-deploy-block <deployBlock>
 
 # 2. Sync — epoch from V4 currentEpoch(), signed rotation/delta verification
@@ -40,7 +45,9 @@ npx coretex-validator-setup --registry-deploy-block <deployBlock>
 #    substrate (or the previous sync's snapshot), local live root == chain
 #    liveStateRoot, and — once the epoch secret is revealed — automatic
 #    fetch + verification (with score re-scoring) of every accepted advance's
-#    post-reveal eval artifact.
+#    post-reveal eval artifact. Sync uses the setup-recorded scorer venv,
+#    selects a conservative CPU thread default, and prints progress/ETA to
+#    stderr while keeping stdout machine-readable.
 npx coretex-validator-sync
 
 # 3. Spot-audit one accepted receipt by its on-chain evalReportHash.
