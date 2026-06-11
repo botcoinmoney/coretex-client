@@ -317,6 +317,14 @@ export interface CoreTexCoordinatorConfig {
   readonly patchWordRanges?: readonly unknown[];
   readonly exampleValidPatch?: unknown;
   readonly activeSubstrateSurfaces?: readonly string[];
+  /** OPTIONAL public URL where the epoch signing public key (PEM) is published.
+   *  When set it is emitted on `/coretex/status` so the validator-sync client can
+   *  auto-discover the key (fallback for `--public-key`). Omitted when unset. */
+  readonly epochSigningPublicKeyUrl?: string;
+  /** OPTIONAL operator-facing id of the epoch signing key (e.g. AWS KMS key id). */
+  readonly epochSigningPublicKeyId?: string;
+  /** OPTIONAL bytes32 fingerprint of the published epoch signing public key. */
+  readonly epochSigningPublicKeyFingerprint?: string;
   readonly pipelineVersion?: string;
   readonly memoryIRSchemaVersion?: string;
   readonly runwayTelemetry?: Record<string, unknown>;
@@ -851,6 +859,11 @@ export class CoreTexCoordinatorCore {
       corpusRoot: this.config.expectedEpochPins.corpusRoot,
       activeFrontierRoot: this.config.expectedEpochPins.activeFrontierRoot,
       baselineManifestHash: this.config.expectedEpochPins.baselineManifestHash,
+      // OPTIONAL epoch signing key metadata: emitted only when the operator
+      // publishes the key, so validator-sync can auto-discover `--public-key`.
+      ...(this.config.epochSigningPublicKeyUrl ? { epochSigningPublicKeyUrl: this.config.epochSigningPublicKeyUrl } : {}),
+      ...(this.config.epochSigningPublicKeyId ? { epochSigningPublicKeyId: this.config.epochSigningPublicKeyId } : {}),
+      ...(this.config.epochSigningPublicKeyFingerprint ? { epochSigningPublicKeyFingerprint: this.config.epochSigningPublicKeyFingerprint } : {}),
       rulesVersion: this.config.rulesVersion ?? DEFAULT_CORETEX_WORK_POLICY.rulesVersion,
       workPolicyHash: this.config.workPolicyHash,
       patchWordBudget: this.config.patchWordBudget ?? 4,

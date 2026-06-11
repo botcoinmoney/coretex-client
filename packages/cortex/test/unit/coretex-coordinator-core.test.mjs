@@ -844,4 +844,30 @@ describe('CoreTexCoordinatorCore — /coretex/health shape', () => {
     assert.equal(status.baselineVariancePpm, undefined);
     assert.equal(status.fixedPackRepeatabilityPpm, 0);
   });
+
+  test('status emits epoch signing key metadata when configured', async () => {
+    const chain = new MockChain({ head: 1000 });
+    const coord = new CoreTexCoordinatorCore({
+      ...baseConfig,
+      epochSigningPublicKeyUrl: 'https://coretex.example/epoch-keys/epoch-106.pem',
+      epochSigningPublicKeyId: 'coretex-epoch-operator',
+      epochSigningPublicKeyFingerprint: `0x${'7b'.repeat(32)}`,
+    }, chain, loadGenesis, evaluator);
+    await coord.boot();
+    const status = await coord.getStatus();
+    assert.equal(status.epochSigningPublicKeyUrl, 'https://coretex.example/epoch-keys/epoch-106.pem');
+    assert.equal(status.epochSigningPublicKeyId, 'coretex-epoch-operator');
+    assert.equal(status.epochSigningPublicKeyFingerprint, `0x${'7b'.repeat(32)}`);
+  });
+
+  test('status omits epoch signing key metadata when unset', async () => {
+    const chain = new MockChain({ head: 1000 });
+    const coord = new CoreTexCoordinatorCore(baseConfig, chain, loadGenesis, evaluator);
+    await coord.boot();
+    const status = await coord.getStatus();
+    assert.equal(status.epochSigningPublicKeyUrl, undefined);
+    assert.equal(status.epochSigningPublicKeyId, undefined);
+    assert.equal(status.epochSigningPublicKeyFingerprint, undefined);
+    assert.ok(!('epochSigningPublicKeyUrl' in status), 'URL key absent when unset');
+  });
 });
