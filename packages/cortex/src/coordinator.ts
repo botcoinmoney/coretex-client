@@ -28,6 +28,9 @@ export type {
 } from './coordinator/coretex-coordinator-core.js';
 export * from './coordinator/per-patch-evaluator.js';
 export * from './coordinator/production-evaluator.js';
+// Canonical verify-before-sign for the keyless remote scorer (the integration
+// adapter imports this instead of carrying its own copy).
+export * from './coordinator/remote-scorer-verify.js';
 export * from './coordinator/scorer-pair-trace.js';
 export * from './coordinator/epoch-frontier.js';
 // Keyless GPU scorer-server handler boundary (pure, evaluator-injectable) — so
