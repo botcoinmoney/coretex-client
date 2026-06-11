@@ -32,6 +32,7 @@ import type { RetrievalKeyLayout } from '../eval/retrieval-corpus.js';
 import type { ScoringOptions } from '../eval/retrieval-benchmark.js';
 import type { BiEncoder } from '../eval/bi-encoder.js';
 import type { CrossEncoderReranker } from '../eval/reranker.js';
+import { canonicalJson } from '../canonical/json.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -1208,20 +1209,6 @@ export function compareSemverVersions(a: string, b: string): number {
   return compareSemver(a, b);
 }
 
-function canonicalJson(value: unknown): string {
-  if (value === null) return 'null';
-  if (typeof value === 'undefined') return 'null';
-  if (typeof value === 'boolean') return value ? 'true' : 'false';
-  if (typeof value === 'number') return JSON.stringify(value);
-  if (typeof value === 'string') return JSON.stringify(value);
-  if (typeof value === 'bigint') return JSON.stringify(value.toString());
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
-  if (typeof value === 'object') {
-    const obj = value as Record<string, unknown>;
-    return `{${Object.keys(obj).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(obj[key])}`).join(',')}}`;
-  }
-  throw new TypeError(`canonicalJson: unsupported ${typeof value}`);
-}
 
 function hashFile(repoRoot: string, filePath: string, role: string): BundleFile {
   const abs = resolve(repoRoot, filePath);

@@ -2,6 +2,7 @@ import { createHash, createSign, createVerify } from 'node:crypto';
 
 import type { CorpusDelta } from './delta.js';
 import { corpusDeltaSha256 } from './delta.js';
+import { canonicalJson } from '../canonical/json.js';
 
 export interface EpochRotationManifestSigner {
   readonly keyId: string;
@@ -195,16 +196,3 @@ function withoutSigner(manifest: EpochRotationManifest): Omit<EpochRotationManif
   return unsigned;
 }
 
-function canonicalJson(value: unknown): string {
-  if (value === null) return 'null';
-  if (typeof value === 'boolean') return value ? 'true' : 'false';
-  if (typeof value === 'number') return JSON.stringify(value);
-  if (typeof value === 'string') return JSON.stringify(value);
-  if (typeof value === 'bigint') return JSON.stringify(value.toString());
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
-  if (typeof value === 'object') {
-    const obj = value as Record<string, unknown>;
-    return `{${Object.keys(obj).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(obj[key])}`).join(',')}}`;
-  }
-  throw new TypeError(`canonicalJson: unsupported ${typeof value}`);
-}

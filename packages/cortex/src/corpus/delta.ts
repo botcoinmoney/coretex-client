@@ -20,6 +20,7 @@ import type {
   RetrievalKeyLayout,
 } from '../eval/retrieval-corpus.js';
 import { computeCorpusRoot, expectedSplitForRecord, updateCorpusRootLeafCache } from '../eval/retrieval-corpus.js';
+import { canonicalJson, bytesToBareHex as uint8ToHex } from '../canonical/json.js';
 
 // ── Delta shape ───────────────────────────────────────────────────────────────
 
@@ -282,33 +283,6 @@ function eventFromDisk(e: ProductionCorpusEventOnDisk): ProductionCorpusEvent {
   };
 }
 
-function canonicalJson(value: unknown): string {
-  if (value === null) return 'null';
-  if (typeof value === 'undefined') return 'null';
-  if (typeof value === 'boolean') return value ? 'true' : 'false';
-  if (typeof value === 'number') return JSON.stringify(value);
-  if (typeof value === 'string') return JSON.stringify(value);
-  if (typeof value === 'bigint') return JSON.stringify(value.toString());
-  if (value instanceof Uint8Array) return JSON.stringify(uint8ToHex(value));
-  if (value instanceof Map) {
-    const obj: Record<string, unknown> = {};
-    for (const [k, v] of value) obj[String(k)] = v;
-    return canonicalJson(obj);
-  }
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
-  if (typeof value === 'object') {
-    const obj = value as Record<string, unknown>;
-    const keys = Object.keys(obj).sort();
-    return `{${keys.map((k) => `${JSON.stringify(k)}:${canonicalJson(obj[k])}`).join(',')}}`;
-  }
-  throw new TypeError(`canonicalJson: unsupported ${typeof value}`);
-}
-
-function uint8ToHex(bytes: Uint8Array): string {
-  let hex = '';
-  for (const b of bytes) hex += b.toString(16).padStart(2, '0');
-  return hex;
-}
 
 function hexToUint8(hex: string): Uint8Array {
   const clean = hex.startsWith('0x') ? hex.slice(2) : hex;

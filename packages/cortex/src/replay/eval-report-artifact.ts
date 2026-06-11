@@ -19,6 +19,7 @@ import { keccak256 } from '../state/keccak256.js';
 import { bytesToHex } from '../state/merkle.js';
 import type { PerPatchReceipt } from '../coordinator/per-patch-evaluator.js';
 import { verifyPerPatchReceipt, type PerPatchVerificationDeps, type PerPatchVerificationResult } from './per-patch.js';
+import { canonicalJson } from '../canonical/json.js';
 
 /** Public seed-derivation inputs — everything `deriveGate/ConfirmEvalSeed`
  *  consumes except the (post-reveal) epochSecret. */
@@ -210,18 +211,6 @@ function validateSeedDerivationBinding(artifact: CoreTexPostRevealEvalReportArti
   return null;
 }
 
-function canonicalJson(value: unknown): string {
-  if (value === null) return 'null';
-  if (typeof value === 'boolean') return value ? 'true' : 'false';
-  if (typeof value === 'number') return String(value);
-  if (typeof value === 'string') return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
-  if (typeof value === 'object') {
-    const obj = value as Record<string, unknown>;
-    return `{${Object.keys(obj).sort().map((k) => `${JSON.stringify(k)}:${canonicalJson(obj[k])}`).join(',')}}`;
-  }
-  throw new TypeError(`canonicalJson: unsupported ${typeof value}`);
-}
 
 function hexEq(a: string, b: string): boolean {
   return a.toLowerCase() === b.toLowerCase();

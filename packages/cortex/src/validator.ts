@@ -7,6 +7,8 @@
 export { CORTEX_CLIENT_VERSION as VERSION } from './version.js';
 export { CORTEX_CLIENT_VERSION } from './version.js';
 
+// THE canonical-JSON serializer for hash/signature surfaces (one copy, no drift).
+export { canonicalJson, bytesToBareHex, type CanonicalJsonOptions } from './canonical/json.js';
 export * from './state/index.js';
 export * from './eval/index.js';
 export * from './workers/pool.js';

@@ -15,6 +15,7 @@
 
 import { bytesToHex } from '../state/merkle.js';
 import { keccak256 } from '../state/keccak256.js';
+import { canonicalJson } from '../canonical/json.js';
 
 export const WORK_BPS_DIVISOR = 10_000n;
 export const LANE_CORETEX = 2;
@@ -308,7 +309,8 @@ export function evaluateCoreTexWorkQualification(input: CoreTexWorkQualification
 
 export function coreTexWorkPolicyHash(policy: CoreTexWorkPolicy = DEFAULT_CORETEX_WORK_POLICY): string {
   assertValidCoreTexWorkPolicy(policy);
-  return bytesToHex(keccak256(new TextEncoder().encode(canonicalValue(policy))));
+  // safe-integer policy: this hash is mirrored by integer-only consumers.
+  return bytesToHex(keccak256(new TextEncoder().encode(canonicalJson(policy, { numbers: 'safe-integer' }))));
 }
 
 export function assertValidCoreTexWorkPolicy(policy: CoreTexWorkPolicy): void {
@@ -415,19 +417,3 @@ function clamp(value: bigint, lo: bigint, hi: bigint): bigint {
   return min(max(value, lo), hi);
 }
 
-function canonicalValue(value: unknown): string {
-  if (value === null) return 'null';
-  if (typeof value === 'boolean') return value ? 'true' : 'false';
-  if (typeof value === 'number') {
-    if (!Number.isSafeInteger(value)) throw new TypeError('canonicalValue: numbers must be safe integers');
-    return String(value);
-  }
-  if (typeof value === 'string') return JSON.stringify(value);
-  if (typeof value === 'bigint') return JSON.stringify(value.toString());
-  if (Array.isArray(value)) return '[' + value.map(canonicalValue).join(',') + ']';
-  if (typeof value === 'object') {
-    const obj = value as Record<string, unknown>;
-    return '{' + Object.keys(obj).sort().map((k) => `${JSON.stringify(k)}:${canonicalValue(obj[k])}`).join(',') + '}';
-  }
-  throw new TypeError(`canonicalValue: unsupported type ${typeof value}`);
-}
