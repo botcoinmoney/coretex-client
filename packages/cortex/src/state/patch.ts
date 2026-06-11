@@ -7,7 +7,7 @@
  */
 
 import type { CortexState, Patch, PatchError, PatchResult } from './types.js';
-import { ERROR_NAMES, PATCH_TYPE, RANGES } from './types.js';
+import { ERROR_NAMES, PATCH_TYPE, PATCH_TYPE_RANGE_TABLE, RANGES } from './types.js';
 import { writeBigEndian32, readBigEndian32 } from './codec.js';
 import { merkleizeState } from './merkle.js';
 import { hasNonZeroReservedBits, validatePolicyRegions } from './validate.js';
@@ -420,27 +420,10 @@ export function validatePatchType(
 // Exported as the CANONICAL patch-type → writable-word-range authority so harnesses (miner-API
 // challenge, screener allowedPatchTypes) call this instead of hand-mirroring the switch (drift hazard).
 export function patchTypeRange(patchType: number): { start: number; end: number } | undefined {
-  switch (patchType) {
-    case PATCH_TYPE.KEY_UPDATE:
-      return { start: RANGES.RETRIEVAL_KEYS_START, end: RANGES.RETRIEVAL_KEYS_END };
-    case PATCH_TYPE.SLOT_REPLACE:
-      return { start: RANGES.MEMORY_INDEX_START, end: RANGES.MEMORY_INDEX_END };
-    case PATCH_TYPE.TEMPORAL_UPDATE:
-      return { start: RANGES.TEMPORAL_START, end: RANGES.TEMPORAL_END };
-    case PATCH_TYPE.RELATION_UPDATE:
-      return { start: RANGES.RELATIONS_START, end: RANGES.RELATIONS_END };
-    case PATCH_TYPE.CODEBOOK_UPDATE:
-      return { start: RANGES.CODEBOOK_START, end: RANGES.CODEBOOK_END };
-    case PATCH_TYPE.HEADER_UPDATE:
-      return { start: RANGES.HEADER_START, end: RANGES.HEADER_END };
-    case PATCH_TYPE.POLICY_UPDATE:
-      // r5: the three contiguous PolicyAtom regions (evidence 384–511, conflict 512–639,
-      // abstention 640–671). The reserved r5 policy region (896–991) is intentionally NOT
-      // writable via POLICY_UPDATE — it must stay zero (no miner spam surface).
-      return { start: RANGES.POLICY_EVIDENCE_START, end: RANGES.POLICY_ABSTENTION_END };
-    default:
-      return undefined;
-  }
+  // Derived from the single descriptor table in state/types.ts — the same
+  // table the TS↔Solidity parity test checks against _wordMatchesPatchType.
+  const row = PATCH_TYPE_RANGE_TABLE.find((r) => r.typeByte === patchType);
+  return row ? { start: row.start, end: row.end } : undefined;
 }
 
 /**

@@ -103,6 +103,34 @@ export const RANGES = {
   POLICY_RESERVED_START:    896,  POLICY_RESERVED_END:    991,  //  96w reserved r5 policy capacity (MUST be zero)
 } as const;
 
+/**
+ * THE patch-type → word-range descriptor table (audit Q2). Single source of
+ * truth shared by the TS codec (`patchTypeRange`) and the TS↔Solidity parity
+ * test, which parses `_wordMatchesPatchType` out of BotcoinMiningV4.sol and
+ * asserts it matches THIS table — cross-language drift becomes a failing
+ * test, not an audit finding. MIXED (0xFF) is intentionally absent: it spans
+ * every non-reserved word (0 .. RESERVED_START-1) and is special-cased by
+ * both sides.
+ */
+export const PATCH_TYPE_RANGE_TABLE: ReadonlyArray<{
+  readonly name: keyof typeof PATCH_TYPE;
+  readonly typeByte: number;
+  readonly start: number;
+  readonly end: number;
+}> = [
+  { name: 'KEY_UPDATE',      typeByte: PATCH_TYPE.KEY_UPDATE,      start: RANGES.RETRIEVAL_KEYS_START,  end: RANGES.RETRIEVAL_KEYS_END },
+  { name: 'SLOT_REPLACE',    typeByte: PATCH_TYPE.SLOT_REPLACE,    start: RANGES.MEMORY_INDEX_START,    end: RANGES.MEMORY_INDEX_END },
+  { name: 'TEMPORAL_UPDATE', typeByte: PATCH_TYPE.TEMPORAL_UPDATE, start: RANGES.TEMPORAL_START,        end: RANGES.TEMPORAL_END },
+  { name: 'RELATION_UPDATE', typeByte: PATCH_TYPE.RELATION_UPDATE, start: RANGES.RELATIONS_START,       end: RANGES.RELATIONS_END },
+  { name: 'CODEBOOK_UPDATE', typeByte: PATCH_TYPE.CODEBOOK_UPDATE, start: RANGES.CODEBOOK_START,        end: RANGES.CODEBOOK_END },
+  { name: 'HEADER_UPDATE',   typeByte: PATCH_TYPE.HEADER_UPDATE,   start: RANGES.HEADER_START,          end: RANGES.HEADER_END },
+  // r5: the three contiguous PolicyAtom regions (evidence 384–511, conflict
+  // 512–639, abstention 640–671). The reserved r5 policy region (896–991) is
+  // intentionally NOT writable via POLICY_UPDATE — it must stay zero (no
+  // miner spam surface).
+  { name: 'POLICY_UPDATE',   typeByte: PATCH_TYPE.POLICY_UPDATE,   start: RANGES.POLICY_EVIDENCE_START, end: RANGES.POLICY_ABSTENTION_END },
+];
+
 /** Schema magic constant for word 0. */
 export const MAGIC = 0xC07En;
 export const SCHEMA_VERSION_CoreTex = 0x0000n;
