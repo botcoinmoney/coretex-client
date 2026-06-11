@@ -19,6 +19,7 @@ import {
 import { merkleizeState, bytesToHex } from '../state/merkle.js';
 import { keccak256 } from '../state/keccak256.js';
 import { computePatchHash } from '../eval/seed-derivation.js';
+import { evaluateAndApplyOntoCurrent } from './accept-core.js';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -229,41 +230,36 @@ export function reduce(
       continue;
     }
 
-    // 2b. Semantic-conflict guard — marginal gain on current state
-    const marginalGain = item.marginalEvaluator(current, item.patch);
-    if (marginalGain < threshold) {
+    // 2b + 2c. Shared accept-step kernel (threshold check, apply-onto-current,
+    // E-code map). Batch lane: gain >= threshold (strictImprovement: false).
+    const step = evaluateAndApplyOntoCurrent<RejectionCode>({
+      current,
+      patch: item.patch,
+      marginalEvaluator: item.marginalEvaluator,
+      threshold,
+      strictImprovement: false,
+      policyAtomsMode,
+      codes: {
+        notImprovement: 'R02_SEMANTIC_CONFLICT',
+        wrongParent: 'R03_WRONG_PARENT_ROOT',
+        reservedBit: 'R05_RESERVED_BIT_SET',
+        invalidTarget: 'R04_INVALID_TARGET',
+      },
+    });
+    if (!step.ok) {
       rejectedSet.push({
         patch: item.patch,
         patchBytes: item.patchBytes,
-        reason: 'R02_SEMANTIC_CONFLICT',
+        reason: step.reason,
       });
       continue;
     }
 
-    // 2c. Apply patch onto current (skips the now-stale parent root check).
-    const applyResult = applyPatchOntoCurrent(current, item.patch, policyAtomsMode);
-    if (!applyResult.ok) {
-      // The only failures here are E02 (invalid target index), E03 (over-budget),
-      // E04 (reserved-bit set in resulting state), or E05 (no-op vs current
-      // — meaning earlier accepted patches already wrote those exact words).
-      // Map them to stable reducer codes.
-      const reason: RejectionCode =
-        applyResult.code === 'E04' ? 'R05_RESERVED_BIT_SET'
-        : applyResult.code === 'E05' ? 'R02_SEMANTIC_CONFLICT'
-        : 'R04_INVALID_TARGET';
-      rejectedSet.push({
-        patch: item.patch,
-        patchBytes: item.patchBytes,
-        reason,
-      });
-      continue;
-    }
-
-    current = applyResult.state;
+    current = step.state;
     acceptedSet.push({
       patch: item.patch,
       patchBytes: item.patchBytes,
-      marginalGain,
+      marginalGain: step.marginalGain,
       acceptanceIndex: acceptedSet.length,
     });
     for (const idx of item.patch.indices) {

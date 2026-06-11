@@ -19,6 +19,7 @@ import {
   computeCoreTexWorkUnitsBps,
   type CoreTexWorkPolicy,
 } from '../rewards/index.js';
+import { evaluateAndApplyOntoCurrent } from './accept-core.js';
 
 export type LiveRejectionCode = RejectionCode | 'L01_NOT_IMPROVEMENT';
 
@@ -106,34 +107,34 @@ export function advanceEpochState(
       continue;
     }
 
-    const marginalGain = item.marginalEvaluator(current, item.patch);
-    if (marginalGain <= threshold) {
+    // Shared accept-step kernel. Live lane: STRICT improvement (gain >
+    // threshold), mirroring the on-chain scoreAfterPpm <= scoreBeforePpm revert.
+    const step = evaluateAndApplyOntoCurrent<LiveRejectionCode>({
+      current,
+      patch: item.patch,
+      marginalEvaluator: item.marginalEvaluator,
+      threshold,
+      strictImprovement: true,
+      policyAtomsMode: rewardOptions.policyAtomsMode === true,
+      codes: {
+        notImprovement: 'L01_NOT_IMPROVEMENT',
+        wrongParent: 'R03_WRONG_PARENT_ROOT',
+        reservedBit: 'R05_RESERVED_BIT_SET',
+        invalidTarget: 'R04_INVALID_TARGET',
+      },
+    });
+    if (!step.ok) {
       rejected.push({
         miner: item.miner,
         patch: item.patch,
         patchBytes: item.patchBytes,
-        reason: 'L01_NOT_IMPROVEMENT',
+        reason: step.reason,
       });
       continue;
     }
 
-    const applyResult = applyPatchOntoCurrent(current, item.patch, rewardOptions.policyAtomsMode === true);
-    if (!applyResult.ok) {
-      const reason: LiveRejectionCode =
-        applyResult.code === 'E01' ? 'R03_WRONG_PARENT_ROOT'
-        : applyResult.code === 'E04' ? 'R05_RESERVED_BIT_SET'
-        : applyResult.code === 'E05' ? 'L01_NOT_IMPROVEMENT'
-        : 'R04_INVALID_TARGET';
-      rejected.push({
-        miner: item.miner,
-        patch: item.patch,
-        patchBytes: item.patchBytes,
-        reason,
-      });
-      continue;
-    }
-
-    current = applyResult.state;
+    const marginalGain = step.marginalGain;
+    current = step.state;
     currentMerkle = updateMerkleCache(
       currentMerkle,
       item.patch.indices.map((index, i) => ({ index, word: item.patch.newWords[i] ?? 0n })),
