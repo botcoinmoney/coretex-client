@@ -184,6 +184,12 @@ export interface EvaluatorProfile {
    *  `coretex-retrieval-v2-policy-r5` = the PolicyAtom epoch (reclaimed RetrievalKeys+Codebook
    *  words read as typed PolicyAtoms; r4 stays replayable). */
   readonly pipelineVersion?: 'coretex-retrieval-v2-lens' | 'coretex-retrieval-v2-lens-r2' | 'coretex-retrieval-v2-lens-r3' | 'coretex-retrieval-v2-lens-r4' | 'coretex-retrieval-v2-policy-r5';
+  /** Calibration-blessed list of reward-active substrate surfaces (named for
+   *  the miner API). The reward-active set is this list UNION the surfaces
+   *  derived from the per-family enable flags — see rewardActiveSubstrateSurfaces. */
+  readonly activeSubstrateSurfaces?: readonly string[];
+  /** Surfaces explicitly held OFF (documentation/audit; not reward-active). */
+  readonly disabledSubstrateSurfaces?: readonly string[];
   // ─── r5 PolicyAtom knobs (active only when pipelineVersion = …-policy-r5) ───
   /** Per-family enables. A disabled family is decoded but its atoms are NOT applied. */
   readonly enableEvidenceBundleAtoms?: boolean;
@@ -1053,6 +1059,53 @@ export function controllerParamsFromProfile(
     underTargetRecoveryRatio: cp.underTargetRecoveryRatio ?? DEFAULT_CONTROLLER_PARAMS.underTargetRecoveryRatio,
     qualityHighThreshold: mult * targetAdvances,
   };
+}
+
+/**
+ * THE reward-active substrate surfaces for a profile (audit B6). Single source
+ * of truth: the profile's own `activeSubstrateSurfaces` list UNION the
+ * surfaces derived from the reward-active enable flags. The production
+ * coordinator advertises `activeSubstrateSurfaces` to miners from a
+ * hand-maintained env list; `assertActiveSurfacesRewardActive` validates that
+ * list against THIS set at boot so an operator cannot advertise a surface the
+ * bundle does not actually reward (miners would mine dead surface).
+ *
+ * NOTE (calibration, operator-owned): this preserves the established mapping —
+ * including `validity_atom` being reward-active unless `enableValidityAtoms`
+ * is explicitly false. Demoting zero-runway surfaces and requiring a supply
+ * gate are calibration decisions made in the profile, not here.
+ */
+export function rewardActiveSubstrateSurfaces(profile: EvaluatorProfile): ReadonlySet<string> {
+  const set = new Set<string>(profile.activeSubstrateSurfaces ?? []);
+  if (profile.temporalStaleContrast !== false) set.add('temporal_update');
+  if (profile.policyRelationTypedAdmission === true) set.add('relation_category_routing');
+  if (profile.enableEvidenceBundleAtoms === true) set.add('evidence_bundle');
+  if (profile.enableConflictLifecycleAtoms === true) set.add('conflict_lifecycle');
+  if (profile.enableAbstentionAtoms === true) set.add('abstention_top1');
+  if (profile.enableValidityAtoms !== false) set.add('validity_atom');
+  if (profile.enableScopeAtoms === true) set.add('scope_atom');
+  if (profile.enableEntityResolutionAtoms === true) set.add('entity_resolution_atom');
+  return set;
+}
+
+/**
+ * Assert every operator-advertised substrate surface is genuinely reward-active
+ * for the pinned profile (audit B6). Throws (fail-closed) naming the offending
+ * surface(s) — the coordinator must not advertise dead surface to miners.
+ */
+export function assertActiveSurfacesRewardActive(
+  advertised: readonly string[],
+  profile: EvaluatorProfile,
+): void {
+  const rewardActive = rewardActiveSubstrateSurfaces(profile);
+  const dead = advertised.filter((s) => !rewardActive.has(s));
+  if (dead.length > 0) {
+    throw new Error(
+      `advertised activeSubstrateSurfaces include surface(s) that are NOT reward-active for the pinned profile: ${dead.join(', ')}. ` +
+      `Reward-active surfaces: ${[...rewardActive].sort().join(', ')}. ` +
+      'Fix CORETEX_ACTIVE_SUBSTRATE_SURFACES or the bundle profile so advertised == reward-active.',
+    );
+  }
 }
 
 // ─── Build / verify ──────────────────────────────────────────────────────────
