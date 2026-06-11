@@ -27,6 +27,7 @@ import {
   evalParentSnapshotPath,
   loadVerifiedParentSnapshot,
   gcEvalParentSnapshots,
+  commitTrustedStateAndMaybeGc,
   resolveScorerContextDecision,
   assertArtifactBoundToEntry,
   evalBacklogEntryFromAdvance,
@@ -208,6 +209,57 @@ describe('Fix #2 — parent-substrate snapshot store', () => {
     const removed = gcEvalParentSnapshots(dir, []);
     assert.equal(removed.length, 1);
     assert.equal(readdirSync(join(dir, EVAL_PARENT_SNAPSHOT_DIR)).length, 0);
+  }));
+
+  test('--allow-version-mismatch commit path is read-only: no commit and no snapshot GC', () => withTmpDir((dir) => {
+    mkdirSync(join(dir, EVAL_PARENT_SNAPSHOT_DIR), { recursive: true });
+    const orphan = { ...evalBacklogEntryFromAdvance(makeAdvance(b32('11')), 1, 'awaiting_epoch_secret_reveal') };
+    const orphanRef = evalParentSnapshotRef(orphan);
+    const statePath = join(dir, 'validator-sync-state.json');
+    const staging = new TrustedStateStaging();
+    staging.stage(evalParentSnapshotPath(dir, orphanRef), pack(stateWithSeed(4)));
+    staging.commit();
+
+    staging.stage(statePath, '{"mutated":true}\n');
+    const warnings = [];
+    const result = commitTrustedStateAndMaybeGc({
+      version: { match: false },
+      staging,
+      stateDir: dir,
+      evalBacklog: [],
+      warnFn: (m) => warnings.push(m),
+    });
+    staging.dispose();
+
+    assert.deepEqual(result, { committed: false, gcRemoved: [] });
+    assert.match(warnings[0], /read-only/i);
+    assert.equal(existsSync(statePath), false);
+    assert.equal(existsSync(evalParentSnapshotPath(dir, orphanRef)), true);
+  }));
+
+  test('matching-version commit path commits first, then GCs drained snapshots', () => withTmpDir((dir) => {
+    mkdirSync(join(dir, EVAL_PARENT_SNAPSHOT_DIR), { recursive: true });
+    const orphan = { ...evalBacklogEntryFromAdvance(makeAdvance(b32('11')), 1, 'awaiting_epoch_secret_reveal') };
+    const orphanRef = evalParentSnapshotRef(orphan);
+    const statePath = join(dir, 'validator-sync-state.json');
+    const staging = new TrustedStateStaging();
+    staging.stage(evalParentSnapshotPath(dir, orphanRef), pack(stateWithSeed(5)));
+    staging.commit();
+
+    const nextStaging = new TrustedStateStaging();
+    nextStaging.stage(statePath, '{"mutated":true}\n');
+    const result = commitTrustedStateAndMaybeGc({
+      version: { match: true },
+      staging: nextStaging,
+      stateDir: dir,
+      evalBacklog: [],
+      warnFn: () => { throw new Error('unexpected warning'); },
+    });
+
+    assert.equal(result.committed, true);
+    assert.equal(result.gcRemoved.length, 1);
+    assert.equal(existsSync(statePath), true);
+    assert.equal(existsSync(evalParentSnapshotPath(dir, orphanRef)), false);
   }));
 
   test('upsert preserves a previously-persisted parentSnapshotRef across re-observation', () => {

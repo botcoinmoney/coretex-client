@@ -908,7 +908,7 @@ export const DEFAULT_PROFILE: EvaluatorProfile = {
   rerankerTopK: 10,
   retrievalKeyTopK: 50,
   relationEdgeTypes: DEFAULT_RELATION_EDGE_TYPES,
-  revealGracePeriodSeconds: 60 * 60 * 6,  // 6h pre-calibration; calibrate replaces
+  revealGracePeriodSeconds: 0,            // no claim/audit delay in launch policy
   negCategoryRelevanceMap: DEFAULT_NEG_CATEGORY_RELEVANCE_MAP,
   baseRpcConfig: DEFAULT_BASE_RPC_CONFIG,
 

@@ -19,14 +19,12 @@ import { rpcCall, type RpcLog } from './v4.js';
 // ── canonical event signatures (param TYPES only, indexed kept in the type list) ──
 const SIG_STATE_ADVANCED = 'CoreTexStateAdvanced(uint64,uint64,address,bytes32,bytes32,bytes32,bytes32,bytes32,bytes32,bytes32,uint256,uint16,bytes)';
 const SIG_EPOCH_FINALIZED = 'CoreTexEpochFinalized(uint64,bytes32,bytes32,bytes32,bytes32,bytes32,bytes32,bytes32,bytes32)';
-const SIG_EPOCH_REVERTED = 'CoreTexEpochReverted(uint64,address)';
 
 function eventTopic(sig: string): string { return bytesToHex(keccak256(new TextEncoder().encode(sig))); }
 
 export const CORETEX_EVENT_TOPICS = {
   CoreTexStateAdvanced: eventTopic(SIG_STATE_ADVANCED),
   CoreTexEpochFinalized: eventTopic(SIG_EPOCH_FINALIZED),
-  CoreTexEpochReverted: eventTopic(SIG_EPOCH_REVERTED),
 } as const;
 
 export interface CoreTexStateAdvancedEvent {
@@ -57,11 +55,6 @@ export interface CoreTexEpochFinalizedEvent {
   readonly baselineManifestHash: string;
 }
 
-export interface CoreTexEpochRevertedEvent {
-  readonly epoch: bigint;
-  readonly by: string;
-}
-
 // ── decode helpers ──
 function eqHex(a: string | undefined, b: string): boolean { return (a ?? '').toLowerCase() === b.toLowerCase(); }
 function word(data: Uint8Array, i: number): string { return bytesToHex(data.subarray(i * 32, i * 32 + 32)); }
@@ -84,7 +77,7 @@ export interface CoreTexRangeLogOptions {
 }
 
 /**
- * Fetch all canonical CoreTexRegistry logs (advanced/finalized/reverted) in a block range.
+ * Fetch all canonical CoreTexRegistry logs (advanced/finalized) in a block range.
  * Pages eth_getLogs in bounded chunks and caps toBlock at (latest - confirmationDepth) so
  * replay never ingests reorg-prone head blocks or trips provider range limits.
  */
@@ -112,7 +105,6 @@ export async function coretexRangeLogs(
       topics: [[
         CORETEX_EVENT_TOPICS.CoreTexStateAdvanced,
         CORETEX_EVENT_TOPICS.CoreTexEpochFinalized,
-        CORETEX_EVENT_TOPICS.CoreTexEpochReverted,
       ]],
     };
     if (address) params.address = address;
@@ -148,25 +140,16 @@ export function decodeCoreTexEpochFinalized(log: RpcLog): CoreTexEpochFinalizedE
   };
 }
 
-export function decodeCoreTexEpochReverted(log: RpcLog): CoreTexEpochRevertedEvent | null {
-  if (!eqHex(log.topics[0], CORETEX_EVENT_TOPICS.CoreTexEpochReverted)) return null;
-  // CoreTexEpochReverted(uint64 indexed epoch, address indexed by) — both params indexed, empty data.
-  return { epoch: topicBig(log.topics[1]), by: topicAddr(log.topics[2]) };
-}
-
 export interface CoreTexReplayResult {
   readonly ok: boolean;
   readonly code?: 'STATE_PARENT_MISMATCH' | 'PATCH_HASH_MISMATCH'
     | 'APPLY_FAILED' | 'NEW_ROOT_MISMATCH' | 'CORE_VERSION_MISMATCH' | 'OUT_OF_ORDER'
     | 'CORPUS_ROOT_MISMATCH' | 'ACTIVE_FRONTIER_ROOT_MISMATCH' | 'BASELINE_MANIFEST_HASH_MISMATCH'
-    | 'HIDDEN_SEED_COMMIT_MISMATCH' | 'FINAL_ROOT_MISMATCH' | 'NO_PATCH_BYTES'
-    | 'EPOCH_REVERT_UNACKNOWLEDGED';
+    | 'HIDDEN_SEED_COMMIT_MISMATCH' | 'FINAL_ROOT_MISMATCH' | 'NO_PATCH_BYTES';
   readonly message?: string;
   readonly transitions: number;
   readonly reproducedFinalRoot?: string;
   readonly onChainFinalRoot?: string;
-  /** Epochs with a CoreTexEpochReverted log in the replayed range (their advances are excluded). */
-  readonly revertedEpochs?: readonly number[];
 }
 
 function cmpBig(a: bigint, b: bigint): number { return a < b ? -1 : a > b ? 1 : 0; }
@@ -178,9 +161,6 @@ function cmpBig(a: bigint, b: bigint): number { return a < b ? -1 : a > b ? 1 : 
  * If a CoreTexEpochFinalized log is present, its finalStateRoot must equal the reproduced final root.
  *
  * transitionIndex restarts at 0 each epoch, so expected-index continuity is tracked PER EPOCH.
- * A CoreTexEpochReverted log unwinds its epoch: that epoch's advances + finalize are excluded from
- * the replayed live root, and replay refuses to report clean unless the caller explicitly
- * acknowledged the revert via `acknowledgedRevertedEpochs` (local state must account for it).
  */
 export function replayCoreTexFromLogs(
   parentState: CortexState,
@@ -204,27 +184,11 @@ export function replayCoreTexFromLogs(
       baselineManifestHash?: string;
     } | undefined;
     policyAtomsMode?: boolean;
-    acknowledgedRevertedEpochs?: readonly (number | bigint)[];
   } = {},
 ): CoreTexReplayResult {
-  const reverts = logs.map(decodeCoreTexEpochReverted).filter((v): v is CoreTexEpochRevertedEvent => v !== null);
-  const revertedEpochSet = new Set(reverts.map((r) => r.epoch));
-  const revertedEpochs = [...revertedEpochSet].sort(cmpBig).map((e) => Number(e));
-  const acknowledged = new Set((opts.acknowledgedRevertedEpochs ?? []).map((e) => BigInt(e)));
-  const unacknowledged = [...revertedEpochSet].filter((e) => !acknowledged.has(e)).sort(cmpBig);
-  if (unacknowledged.length > 0) {
-    return {
-      ok: false, code: 'EPOCH_REVERT_UNACKNOWLEDGED',
-      message: `CoreTexEpochReverted for epoch(s) ${unacknowledged.join(', ')} not acknowledged by local state (pass acknowledgedRevertedEpochs after auditing the revert)`,
-      transitions: 0, revertedEpochs,
-    };
-  }
-
   const advances = logs.map(decodeCoreTexStateAdvanced).filter((v): v is CoreTexStateAdvancedEvent => v !== null)
-    .filter((a) => !revertedEpochSet.has(a.epoch))
     .sort((a, b) => cmpBig(a.epoch, b.epoch) || cmpBig(a.transitionIndex, b.transitionIndex));
   const finalized = logs.map(decodeCoreTexEpochFinalized).filter((v): v is CoreTexEpochFinalizedEvent => v !== null)
-    .filter((f) => !revertedEpochSet.has(f.epoch))
     .sort((a, b) => cmpBig(a.epoch, b.epoch))
     .at(-1);
 
@@ -236,7 +200,7 @@ export function replayCoreTexFromLogs(
   for (const adv of advances) {
     const expectedIdx = expectedIdxByEpoch.get(adv.epoch) ?? 0n;
     if (adv.transitionIndex !== expectedIdx) {
-      return { ok: false, code: 'OUT_OF_ORDER', message: `epoch ${adv.epoch} transitionIndex ${adv.transitionIndex} != expected ${expectedIdx}`, transitions, ...(revertedEpochs.length ? { revertedEpochs } : {}) };
+      return { ok: false, code: 'OUT_OF_ORDER', message: `epoch ${adv.epoch} transitionIndex ${adv.transitionIndex} != expected ${expectedIdx}`, transitions };
     }
     expectedIdxByEpoch.set(adv.epoch, expectedIdx + 1n);
     const advPins = resolveEpochPins(opts, adv.epoch);
@@ -283,10 +247,9 @@ export function replayCoreTexFromLogs(
   }
   const result: {
     ok: true; transitions: number; reproducedFinalRoot: string;
-    onChainFinalRoot?: string; revertedEpochs?: readonly number[];
+    onChainFinalRoot?: string;
   } = { ok: true, transitions: advances.length, reproducedFinalRoot: root };
   if (finalized) result.onChainFinalRoot = finalized.finalStateRoot;
-  if (revertedEpochs.length > 0) result.revertedEpochs = revertedEpochs;
   return result;
 }
 

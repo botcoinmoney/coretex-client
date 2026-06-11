@@ -129,7 +129,11 @@ Common flags (all optional overrides of setup/state-file/chain defaults):
                                can produce the pinned corpus, the entry stays
                                pending 'epoch-context-unresolved' (never rescored).
   --state-dir <dir>            validator state dir (default .coretex-validator)
-  --skip-score-replay          SKIP post-reveal score re-scoring (loud; exit ${SKIP_SCORE_REPLAY_EXIT_CODE})
+  --skip-score-replay          SKIP post-reveal score re-scoring (loud). Exit
+                               ${SKIP_SCORE_REPLAY_EXIT_CODE} means the sync otherwise SUCCEEDED but score
+                               replay was intentionally skipped; config/chain
+                               failures still exit 1 — the flag never skips
+                               mandatory chain reads or checks.
   --allow-version-mismatch     read-only escape for the bundle version check
   --no-progress                suppress stderr progress/ETA (auto-off on CI=1 / non-TTY)
   --help                       this text
@@ -898,6 +902,25 @@ export function gcEvalParentSnapshots(stateDir: string, backlog: readonly EvalBa
   return removed;
 }
 
+export function commitTrustedStateAndMaybeGc(inputs: {
+  readonly version: { readonly match: boolean };
+  readonly staging: TrustedStateStaging;
+  readonly stateDir: string;
+  readonly evalBacklog: readonly EvalBacklogEntry[];
+  readonly warnFn?: (message: string) => void;
+}): { committed: boolean; gcRemoved: string[] } {
+  const warnFn = inputs.warnFn ?? warn;
+  if (!inputs.version.match) {
+    warnFn('bundle version mismatch: trusted state was NOT committed (read-only). Re-run on the on-chain bundle to persist.');
+    return { committed: false, gcRemoved: [] };
+  }
+  inputs.staging.commit();
+  return {
+    committed: true,
+    gcRemoved: gcEvalParentSnapshots(inputs.stateDir, inputs.evalBacklog),
+  };
+}
+
 // ── per-epoch scorer/corpus context resolution (Fix #5) ───────────────────────
 
 /**
@@ -1481,6 +1504,7 @@ async function runSync({ stateDir, statePath, pinPath, savedState, setup, stagin
   const chain = await readChainContext(rpcChainCaller(rpcUrl), registry, mining, epoch, confirmedTag);
   // ── self version-check against the on-chain coreVersionHash ──
   const version = checkValidatorBundleVersion(bundleManifest.bundleHash, chain.coreVersionHash, has('allow-version-mismatch'));
+  const readOnlyVersionMismatch = !version.match;
 
   const publicKey = await readTextUri(publicKeyUri);
   const tofu = checkTofuKeyPin(pinPath, publicKey);
@@ -1491,7 +1515,7 @@ async function runSync({ stateDir, statePath, pinPath, savedState, setup, stagin
   if (!verifyCorpusDeltaSignature(delta, publicKey)) throw new Error('corpus delta signature invalid');
   // Finding 7: stage the first-use TOFU pin instead of writing it eagerly — it
   // is committed atomically at the END, only after every mandatory check passes.
-  if (!tofu.pinned) staging.stage(pinPath, serializeTofuKeyPin(publicKey).body);
+  if (!readOnlyVersionMismatch && !tofu.pinned) staging.stage(pinPath, serializeTofuKeyPin(publicKey).body);
 
   const deltaHash = hashCorpusDelta(delta);
   const rotationHash = hashJson(rotation);
@@ -1642,7 +1666,6 @@ async function runSync({ stateDir, statePath, pinPath, savedState, setup, stagin
     expectedHiddenSeedCommit: chain.hiddenSeedCommit,
     ...(expectedPinsForEpoch ? { expectedPinsForEpoch } : {}),
     policyAtomsMode,
-    acknowledgedRevertedEpochs: all('acknowledge-reverted-epoch').map((v) => Number(v)),
   });
   if (!replayResult.ok) throw new Error(`registry replay failed: ${replayResult.code} ${replayResult.message ?? ''}`);
   const reproducedFinalRoot = replayResult.reproducedFinalRoot;
@@ -1689,7 +1712,7 @@ async function runSync({ stateDir, statePath, pinPath, savedState, setup, stagin
   mkdirSync(stateDir, { recursive: true });
   // Finding 7: stage the substrate snapshot — committed atomically with the
   // state file + TOFU pin only after all mandatory checks pass.
-  staging.stage(snapshotBinPath, pack(walkState));
+  if (!readOnlyVersionMismatch) staging.stage(snapshotBinPath, pack(walkState));
 
   const replay = {
     ...replayResult,
@@ -1731,7 +1754,7 @@ async function runSync({ stateDir, statePath, pinPath, savedState, setup, stagin
   const incomingEntries = advanceRecords.map((rec) => {
     const base = evalBacklogEntryFromAdvance(rec.adv, newCursorBlock, 'awaiting_epoch_secret_reveal');
     const ref = evalParentSnapshotRef(base);
-    staging.stage(evalParentSnapshotPath(stateDir, ref), pack(rec.parentState));
+    if (!readOnlyVersionMismatch) staging.stage(evalParentSnapshotPath(stateDir, ref), pack(rec.parentState));
     return { ...base, parentSnapshotRef: ref };
   });
   let evalBacklog = upsertEvalBacklog(savedState?.evalBacklog, incomingEntries);
@@ -2134,25 +2157,29 @@ async function runSync({ stateDir, statePath, pinPath, savedState, setup, stagin
     warn('status: awaiting_epoch_secret_reveal — mining epochSecret is zero/unrevealed; post-reveal eval replay must wait');
   }
 
-  // Finding 7: stage the state-file mutation. The TOFU pin + snapshot were also
-  // staged; nothing is committed until ALL mandatory checks above have passed.
-  staging.stage(statePath, serializeMergedValidatorState(statePath, {
-    epoch,
-    bundleHash: bundleManifest.bundleHash,
-    corpusRoot: delta.nextRoot,
-    rotationManifestHash: rotationHash,
-    corpusDeltaHash: deltaHash,
-    evalReplayStatus: chain.evalReplayStatus,
-    epochSigningKeyFingerprint: tofu.fingerprint,
-    replay: {
-      stateRoot: finalRoot,
-      cursorBlock: newCursorBlock,
-      statePath: snapshotBinPath,
-      epochTransitions,
-    },
-    evalBacklog,
-    evalVerifiedThroughBlock,
-  }));
+  // Finding 7: stage the state-file mutation. In normal mode the TOFU pin +
+  // snapshots were also staged; nothing is committed until ALL mandatory checks
+  // above have passed. In --allow-version-mismatch mode this remains read-only:
+  // no trusted-state writes are staged and no snapshot GC runs.
+  if (!readOnlyVersionMismatch) {
+    staging.stage(statePath, serializeMergedValidatorState(statePath, {
+      epoch,
+      bundleHash: bundleManifest.bundleHash,
+      corpusRoot: delta.nextRoot,
+      rotationManifestHash: rotationHash,
+      corpusDeltaHash: deltaHash,
+      evalReplayStatus: chain.evalReplayStatus,
+      epochSigningKeyFingerprint: tofu.fingerprint,
+      replay: {
+        stateRoot: finalRoot,
+        cursorBlock: newCursorBlock,
+        statePath: snapshotBinPath,
+        epochTransitions,
+      },
+      evalBacklog,
+      evalVerifiedThroughBlock,
+    }));
+  }
 
   // ── ATOMIC COMMIT (Finding 7): every mandatory check for this sync pass has
   //    passed — commit the staged TOFU pin + snapshot + state file together. A
@@ -2163,17 +2190,12 @@ async function runSync({ stateDir, statePath, pinPath, savedState, setup, stagin
   //    mismatch we must NOT mutate trusted state (TOFU pin, replay cursor, eval
   //    backlog) — the staged files are disposed by the caller's finally. This
   //    matches the loud "do NOT attest from this run" warning.
-  if (version.match) {
-    staging.commit();
-  } else {
-    warn('bundle version mismatch: trusted state was NOT committed (read-only). Re-run on the on-chain bundle to persist.');
-  }
-
   // Fix #2: with the surviving backlog (+ its freshly-committed snapshots) now
   // on disk, bound the snapshot store — GC any committed parent snapshot whose
-  // owning backlog entry has drained / is gone (no unbounded growth). Runs AFTER
-  // commit so it sees the final on-disk state and never deletes a live snapshot.
-  gcEvalParentSnapshots(stateDir, evalBacklog);
+  // owning backlog entry has drained / is gone (no unbounded growth). This is
+  // deliberately coupled to the commit: --allow-version-mismatch is read-only
+  // and must not delete snapshots from the older trusted state.
+  commitTrustedStateAndMaybeGc({ version, staging, stateDir, evalBacklog });
 
   process.stdout.write(JSON.stringify({
     ok: true,

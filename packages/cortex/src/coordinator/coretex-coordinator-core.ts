@@ -52,8 +52,8 @@
  *      and ticks become no-ops until `unfreeze()`.
  *  10. Baseline runtime semantics (audit §7, bundle-attested
  *      `baselineRecompute='activeRootChanged'`): the effective baseline is
- *      tracked PER STATE ROOT. The launch baseline (production-scorer baseline
- *      for the pinned epoch context) MUST be configured — boot hard-fails
+ *      tracked PER STATE ROOT. The epoch-start baseline (production-scorer
+ *      baseline for the pinned parent root) MUST be configured — boot hard-fails
  *      without it. Each chain-confirmed state advance that matches a receipt
  *      this coordinator signed moves the effective baseline to the accepted
  *      `scoreAfterPpm`; the screener gate derives the live threshold from that
@@ -1303,7 +1303,7 @@ export class CoreTexCoordinatorCore {
   private launchBaselinePpm(): number {
     const baseline = this.config.baselineParentScorePpm ?? this.config.baselineScorePpm;
     if (!Number.isSafeInteger(baseline) || (baseline as number) < 0) {
-      throw new Error('coord: launch baselineParentScorePpm (production-scorer baseline for the pinned context) must be configured');
+      throw new Error('coord: launch baselineParentScorePpm (production-scorer baseline for the pinned epoch-start parent root) must be configured');
     }
     return baseline as number;
   }

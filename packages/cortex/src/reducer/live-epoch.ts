@@ -3,7 +3,7 @@
  *
  * Unlike the end-of-epoch greedy reducer, this path processes verified
  * improvements in arrival order and advances the public Cortex state during
- * the epoch. The 24-hour epoch remains the accounting/audit window; state does
+ * the epoch. The 24-hour epoch remains the accounting window; state does
  * not wait until epoch close to absorb useful, non-conflicting improvements.
  */
 
