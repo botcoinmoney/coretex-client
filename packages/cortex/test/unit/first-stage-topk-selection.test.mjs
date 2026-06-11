@@ -12,11 +12,13 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { verifyBundleManifest } from '../../dist/index.js';
 
-const MANIFEST_PATH = '/root/cortex/release/bundle/bundle-manifest-v2-ownerscope-candidate.json';
-const REPO_ROOT = '/root/cortex';
+const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
+const MANIFEST_PATH = resolve(REPO_ROOT, 'release/bundle/bundle-manifest-v2-ownerscope-candidate.json');
 
 function baseManifest() {
   return JSON.parse(readFileSync(MANIFEST_PATH, 'utf8'));

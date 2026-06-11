@@ -9,7 +9,7 @@
  */
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import {
   admitActiveLiveEvalEvents,
   deriveQueryPack,
@@ -22,6 +22,12 @@ import {
 } from '../../dist/index.js';
 
 const LAYOUT = { dim: 8, headerBytes: 9, quantization: 'int8' };
+const LAUNCH_PROFILE_PATH = new URL('../../../../release/calibration/2026-06-04-memory-atom-v16/evaluator-profile-v2-dgen1-policy-r5-atom-v16-300k-enabled.json', import.meta.url);
+const LAUNCH_CORPUS_PATH = new URL('../../../../release/calibration/2026-06-04-memory-atom-v16/materialized/78336d1d/corpus.json', import.meta.url);
+const launchMaterializedCorpusSkip = existsSync(LAUNCH_CORPUS_PATH)
+  ? false
+  : 'launch materialized corpus is a generated local artifact, not a tracked unit-test fixture';
+
 function ev(id, family, ownerEntityId, ownerScoped) {
   return {
     id, family, domain: 'd', split: 'eval_hidden', queryText: `q ${id}`,
@@ -233,11 +239,9 @@ describe('deriveQueryPack on V2 families', () => {
     assert.equal(overlay.pack.events.filter((e) => eventSatisfiesStratum(e, 'family=near_collision')).length, 1);
   });
 
-  test('v16 launch hidden pack excludes disabled aspect_constraint and overlay cannot reintroduce it', () => {
-    const profilePath = new URL('../../../../release/calibration/2026-06-04-memory-atom-v16/evaluator-profile-v2-dgen1-policy-r5-atom-v16-300k-enabled.json', import.meta.url);
-    const corpusPath = new URL('../../../../release/calibration/2026-06-04-memory-atom-v16/materialized/78336d1d/corpus.json', import.meta.url);
-    const profile = JSON.parse(readFileSync(profilePath, 'utf8'));
-    const corpus = loadProductionCorpus(corpusPath.pathname, { verifyCorpusRoot: false, verifySplits: false });
+  test('v16 launch hidden pack excludes disabled aspect_constraint and overlay cannot reintroduce it', { skip: launchMaterializedCorpusSkip }, () => {
+    const profile = JSON.parse(readFileSync(LAUNCH_PROFILE_PATH, 'utf8'));
+    const corpus = loadProductionCorpus(LAUNCH_CORPUS_PATH.pathname, { verifyCorpusRoot: false, verifySplits: false });
     const rawAspectCount = corpus.events.filter((e) => e.split === 'eval_hidden' && ((e.logicalFamily ?? e.family) === 'aspect_constraint')).length;
     assert.ok(rawAspectCount > 0, 'fixture must contain aspect eval_hidden rows so this test proves filtering');
 
