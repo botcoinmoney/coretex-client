@@ -33,6 +33,7 @@
 import http from 'node:http';
 import { readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
+import { timingSafeEqual } from 'node:crypto';
 
 import {
   createProductionCoreTexEvaluator,
@@ -56,7 +57,7 @@ import {
 import { loadProductionCorpus } from './eval/retrieval-corpus.js';
 import type { CoreTexBundleManifest } from './bundle/index.js';
 import type { ProductionEvalResult } from './coordinator/production-evaluator.js';
-import { unpack, merkleizeState, bytesToHex, hexToBytes, PACKED_SIZE } from './index.js';
+import { unpack, merkleizeState, bytesToHex, hexToBytes, keccak256, PACKED_SIZE } from './index.js';
 import type { CortexState } from './index.js';
 
 // ─── Wire schemas ─────────────────────────────────────────────────────────────
@@ -74,16 +75,22 @@ export interface ScorerExpectedPins {
 
 export interface ScorerPublicEvalContext {
   /** §8 anti-grinding — the COORDINATOR-PINNED future-blockhash dual-pack seed
-   *  context. On the keyless remote path the coordinator draws + DURABLY records
+   *  context. MANDATORY on every job: the coordinator draws + DURABLY records
    *  this seed and ships it with the job; the scorer injects it verbatim and
-   *  NEVER draws its own (seed is coordinator-authoritative + crash-safe). When
-   *  receivedAtBlock/targetBlock/blockhash are all present the scorer uses THEM;
-   *  if absent (legacy / local replay) the scorer falls back to its own
-   *  BASE_RPC_URL blockhash binding. targetBlockOffset / hiddenSeedCommit are
-   *  surfaced for visibility / replay. */
+   *  NEVER draws its own (the legacy scorer-side BASE_RPC_URL fallback was
+   *  removed — a job without a complete pinned seed is refused, 422).
+   *  targetBlockOffset / hiddenSeedCommit are surfaced for visibility /
+   *  replay (hiddenSeedCommit, when present, must match the scorer's loaded
+   *  commit). */
   readonly receivedAtBlock?: number;
   readonly targetBlock?: number;
   readonly blockhash?: string;
+  /** Coordinator-derived eval seeds (the scorer host is keyless AND
+   *  secretless: it never receives CORETEX_EPOCH_SECRET; the coordinator
+   *  derives gate/confirm seeds under the pinned blockhash and ships them).
+   *  MANDATORY together with the seed pin above. */
+  readonly gateSeed?: string;
+  readonly confirmSeed?: string;
   readonly targetBlockOffset?: number;
   readonly hiddenSeedCommit?: string;
 }
@@ -184,6 +191,10 @@ export interface ScorerLoadedPins {
   readonly bundleHash: string;
   readonly corpusRoot: string;
   readonly coreVersionHash: string;
+  /** keccak256(epochSecret) the scorer was booted against (the secretless host
+   *  is configured with the public commit, never the secret). When a job's
+   *  publicEvalContext carries hiddenSeedCommit, it must match this. */
+  readonly hiddenSeedCommit?: string;
 }
 
 function hexEq(a: string | undefined, b: string | undefined): boolean {
@@ -210,6 +221,10 @@ export function checkScorerJobPins(job: ScorerJobRequest, loaded: ScorerLoadedPi
   if (!hexEq(job.corpusRoot, loaded.corpusRoot)) return `job.corpusRoot != loaded ${loaded.corpusRoot}`;
   if (!hexEq(job.bundleHash, loaded.bundleHash)) return `job.bundleHash != loaded ${loaded.bundleHash}`;
   if (!hexEq(job.coreVersionHash, loaded.coreVersionHash)) return `job.coreVersionHash != loaded ${loaded.coreVersionHash}`;
+  const jobCommit = job.publicEvalContext?.hiddenSeedCommit;
+  if (jobCommit !== undefined && loaded.hiddenSeedCommit !== undefined && !hexEq(jobCommit, loaded.hiddenSeedCommit)) {
+    return `publicEvalContext.hiddenSeedCommit != loaded ${loaded.hiddenSeedCommit}`;
+  }
   return null;
 }
 
@@ -238,28 +253,29 @@ export function verifyJobParentState(
 }
 
 /**
- * Resolve the §8 coordinator-pinned seed context from the job's
- * publicEvalContext. The keyless scorer is NEVER allowed to draw its own
- * future blockhash on the remote path: the seed is coordinator-authoritative.
+ * Resolve the §8 coordinator-pinned seed context + coordinator-derived eval
+ * seeds from the job's publicEvalContext. The keyless scorer NEVER draws its
+ * own future blockhash and NEVER derives seeds (it holds no epoch secret):
+ * the seed pin AND both seeds are coordinator-authoritative and MANDATORY.
  * Returns:
- *   - `{ seedContext }` when receivedAtBlock + targetBlock + blockhash are ALL
- *     present and well-formed (the scorer injects it verbatim);
- *   - `{}` when ALL three are absent (legacy/local replay — the scorer may fall
- *     back to its own BASE_RPC_URL blockhash binding);
- *   - `{ error }` on a PARTIAL or malformed seed (fail-closed — a half-pinned
- *     seed must never silently fall back to a fresh draw). Pure — unit-tested.
+ *   - `{ seedContext, injectedSeeds }` when receivedAtBlock + targetBlock +
+ *     blockhash + gateSeed + confirmSeed are ALL present and well-formed;
+ *   - `{ error }` otherwise (fail-closed — the legacy scorer-side
+ *     BASE_RPC_URL fallback was removed; an unpinned or half-pinned job is a
+ *     latent grinding hole). Pure — unit-tested.
  */
 export function resolveJobSeedContext(
   job: Pick<ScorerJobRequest, 'publicEvalContext'>,
-): { readonly seedContext?: CoreTexEvalSeedContext; readonly error?: string } {
+): {
+  readonly seedContext?: CoreTexEvalSeedContext;
+  readonly injectedSeeds?: { readonly gateSeed: string; readonly confirmSeed: string };
+  readonly error?: string;
+} {
   const ctx = job.publicEvalContext;
-  const has = (v: unknown) => v !== undefined && v !== null;
-  const present = ctx ? [ctx.receivedAtBlock, ctx.targetBlock, ctx.blockhash].filter(has).length : 0;
-  if (!ctx || present === 0) return {};
-  if (present !== 3) {
-    return { error: 'publicEvalContext seed must carry receivedAtBlock + targetBlock + blockhash together (no partial pin)' };
+  if (!ctx) {
+    return { error: 'publicEvalContext is required: every job must carry the coordinator-pinned seed (receivedAtBlock + targetBlock + blockhash) and the coordinator-derived gateSeed + confirmSeed' };
   }
-  const { receivedAtBlock, targetBlock, blockhash } = ctx;
+  const { receivedAtBlock, targetBlock, blockhash, gateSeed, confirmSeed } = ctx;
   if (!Number.isSafeInteger(receivedAtBlock) || (receivedAtBlock as number) <= 0) {
     return { error: `publicEvalContext.receivedAtBlock must be a positive integer (got ${String(receivedAtBlock)})` };
   }
@@ -269,11 +285,20 @@ export function resolveJobSeedContext(
   if (typeof blockhash !== 'string' || !/^0x[0-9a-fA-F]{64}$/.test(blockhash)) {
     return { error: 'publicEvalContext.blockhash must be bytes32' };
   }
+  for (const [name, value] of [['gateSeed', gateSeed], ['confirmSeed', confirmSeed]] as const) {
+    if (typeof value !== 'string' || !/^0x[0-9a-fA-F]{64}$/.test(value)) {
+      return { error: `publicEvalContext.${name} must be bytes32 (the coordinator derives both eval seeds; the keyless scorer holds no epoch secret)` };
+    }
+  }
   return {
     seedContext: {
       receivedAtBlock: receivedAtBlock as number,
       targetBlock: targetBlock as number,
       blockhash: blockhash.toLowerCase(),
+    },
+    injectedSeeds: {
+      gateSeed: (gateSeed as string).toLowerCase(),
+      confirmSeed: (confirmSeed as string).toLowerCase(),
     },
   };
 }
@@ -344,13 +369,14 @@ export async function handleScoreJob(
     return { status: 422, body: { error: 'SCORER_PARENT_STATE_MISMATCH', reason: parent.reason } };
   }
 
-  // §8 anti-grinding: when the coordinator ships a PINNED seed context with the
-  // job, the scorer injects it verbatim and NEVER draws its own future blockhash
-  // (the seed is coordinator-authoritative + crash-safe). A retry of the same
-  // (epochId, parentStateRoot, patchHash) thus scores the SAME hidden packs.
+  // §8 anti-grinding: the coordinator ships the PINNED seed context AND the
+  // coordinator-derived gate/confirm seeds with EVERY job; the scorer injects
+  // both verbatim — it never draws a blockhash nor derives a seed (it holds no
+  // epoch secret). A retry of the same (epochId, parentStateRoot, patchHash)
+  // thus scores the SAME hidden packs.
   const pinnedSeed = resolveJobSeedContext(job);
-  if (pinnedSeed.error) {
-    return { status: 422, body: { error: 'SCORER_SEED_CONTEXT_INVALID', reason: pinnedSeed.error } };
+  if (pinnedSeed.error || !pinnedSeed.seedContext || !pinnedSeed.injectedSeeds) {
+    return { status: 422, body: { error: 'SCORER_SEED_CONTEXT_INVALID', reason: pinnedSeed.error ?? 'missing pinned seed context' } };
   }
 
   const now = deps.now ?? (() => Date.now());
@@ -368,9 +394,10 @@ export async function handleScoreJob(
       // coordinator shipped with the job — never CORETEX_SCREENER_THRESHOLD_PPM
       // env — for its advisory accept/reject + the committed artifact threshold.
       screenerThresholdPpm: job.thresholdPpm,
-      // §8: inject the coordinator-pinned seed (when present) so the scorer
-      // never re-rolls a fresh blockhash on a retry.
-      ...(pinnedSeed.seedContext ? { seedContext: pinnedSeed.seedContext } : {}),
+      // §8: inject the coordinator-pinned seed + coordinator-derived eval
+      // seeds — the scorer never re-rolls a blockhash nor touches a secret.
+      seedContext: pinnedSeed.seedContext,
+      injectedSeeds: pinnedSeed.injectedSeeds,
     });
   } catch (e) {
     return { status: 500, body: { error: 'eval-failure', reason: (e as Error)?.message ?? 'scorePatch threw' } };
@@ -491,7 +518,20 @@ async function bootScorer(env: NodeJS.ProcessEnv): Promise<BootedScorer> {
   const bundleManifestPath = requiredEnv(env, 'CORETEX_BUNDLE_MANIFEST_PATH');
   const corpusPath = requiredEnv(env, 'CORETEX_CORPUS_PATH');
   const epochId = Number(requiredEnv(env, 'CORETEX_EPOCH_ID'));
-  const epochSecret = requiredEnv(env, 'CORETEX_EPOCH_SECRET');
+  // SECRETLESS host: the pre-reveal epoch secret must never be provisioned on
+  // the scorer box (a compromised GPU host must not leak the grinding secret).
+  // The coordinator derives + ships the eval seeds with each job; the scorer
+  // only needs the PUBLIC commitment to bind artifacts/proofs.
+  if (env['CORETEX_EPOCH_SECRET']) {
+    throw new Error(
+      'coretex-scorer-server is keyless AND secretless: unset CORETEX_EPOCH_SECRET on this host. ' +
+      'Provision CORETEX_HIDDEN_SEED_COMMIT (= keccak256(epochSecret), public) instead; the coordinator ships the derived gate/confirm seeds with each job.',
+    );
+  }
+  const hiddenSeedCommit = requiredEnv(env, 'CORETEX_HIDDEN_SEED_COMMIT').toLowerCase();
+  if (!/^0x[0-9a-f]{64}$/.test(hiddenSeedCommit)) {
+    throw new Error('CORETEX_HIDDEN_SEED_COMMIT must be bytes32 (keccak256 of the epoch secret)');
+  }
   const perMinerCap = Number(requiredEnv(env, 'CORETEX_PER_MINER_SCREENER_CAP'));
   const innerBatch = Number(env['RERANKER_INNER_BATCH'] ?? '8') || 8;
 
@@ -528,7 +568,7 @@ async function bootScorer(env: NodeJS.ProcessEnv): Promise<BootedScorer> {
 
   const evaluator = await createProductionCoreTexEvaluator({
     epochId,
-    epochSecret,
+    hiddenSeedCommit,
     corpusPath,
     bundleManifestPath,
     // Keyless: the scorer holds no chain state. Every /score-job ships the
@@ -554,6 +594,7 @@ async function bootScorer(env: NodeJS.ProcessEnv): Promise<BootedScorer> {
     bundleHash: bundle.bundleHash.toLowerCase(),
     corpusRoot: corpus.corpusRoot.toLowerCase(),
     coreVersionHash: bundle.bundleHash.toLowerCase(),
+    hiddenSeedCommit,
   };
   const runtime = probeRuntimeHealth();
   const scorerHealth: ScorerHealth = {
@@ -627,9 +668,43 @@ function readJsonBody(req: http.IncomingMessage, maxBytes: number): Promise<unkn
   });
 }
 
+/** Loopback hosts where an unauthenticated bind is tolerable (same-host
+ *  coordinator). Any other bind REQUIRES a bearer token. */
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1']);
+
+/** Resolve the scorer auth policy from env. Fail-closed: a non-loopback bind
+ *  without CORETEX_SCORER_AUTH_TOKEN is a boot error — /score-job is a
+ *  per-pair scoring oracle and must never be reachable unauthenticated off the
+ *  host. Pure — unit-tested. */
+export function resolveScorerAuth(env: NodeJS.ProcessEnv): { readonly host: string; readonly token?: string } {
+  const host = env['CORETEX_SCORER_HOST'] ?? '127.0.0.1';
+  const token = env['CORETEX_SCORER_AUTH_TOKEN']?.trim() || undefined;
+  if (!LOOPBACK_HOSTS.has(host) && !token) {
+    throw new Error(
+      `coretex-scorer-server: CORETEX_SCORER_HOST=${host} is not loopback — CORETEX_SCORER_AUTH_TOKEN is required ` +
+      '(/score-job is a per-pair scoring oracle; an unauthenticated non-loopback bind would be a grinding oracle bypassing coordinator dedup/admission)',
+    );
+  }
+  return token ? { host, token } : { host };
+}
+
+/** Constant-time bearer-token check. Returns true when no token is configured
+ *  (loopback-only deployments) or the Authorization header matches. */
+export function scorerRequestAuthorized(authorizationHeader: string | undefined, token: string | undefined): boolean {
+  if (!token) return true;
+  if (typeof authorizationHeader !== 'string') return false;
+  const m = /^Bearer\s+(.+)$/.exec(authorizationHeader.trim());
+  if (!m) return false;
+  // Compare keccak digests so timingSafeEqual gets equal-length buffers.
+  const a = keccak256(new TextEncoder().encode(m[1]!));
+  const b = keccak256(new TextEncoder().encode(token));
+  return timingSafeEqual(a, b);
+}
+
 async function main(): Promise<void> {
   const port = Number(process.env['CORETEX_SCORER_PORT'] ?? '8888') || 8888;
-  const host = process.env['CORETEX_SCORER_HOST'] ?? '127.0.0.1';
+  const auth = resolveScorerAuth(process.env);
+  const host = auth.host;
   // The body now carries packedParentStateHex (PACKED_SIZE×2 ≈ 64 KB of hex)
   // plus the patch bytes + public context, so the default limit is raised well
   // clear of that (4 MB) — overridable via CORETEX_SCORER_BODY_LIMIT_BYTES.
@@ -651,6 +726,10 @@ async function main(): Promise<void> {
       res.end(json);
     };
     void (async () => {
+      if (!scorerRequestAuthorized(req.headers.authorization, auth.token)) {
+        send(401, { error: 'unauthorized', reason: 'missing or invalid bearer token' });
+        return;
+      }
       if (req.method === 'GET' && req.url === '/healthz') {
         send(200, { ok: true, loadedPins: booted.loadedPins, scorerHealth: booted.scorerHealth });
         return;

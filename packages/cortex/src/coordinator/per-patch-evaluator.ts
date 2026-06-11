@@ -99,8 +99,11 @@ export interface PerPatchEvaluatorDeps {
   readonly thresholdPpm: number;
   /** Live-eval admission cap per miner per epoch. Host owns the value. */
   readonly perMinerCap: number;
-  /** Inputs the seed derivation needs that are constant across an epoch. */
-  readonly epochSecret: string;       // bytes32 hex
+  /** Inputs the seed derivation needs that are constant across an epoch.
+   *  OPTIONAL when `injectedSeeds` is supplied per call (keyless scorer path:
+   *  the scorer host never holds the pre-reveal epoch secret). When neither
+   *  the secret nor injected seeds are available, evaluation hard-fails. */
+  readonly epochSecret?: string;      // bytes32 hex
   readonly corpusRoot: string;        // bytes32 hex
   readonly bundleHash: string;        // bytes32 hex
   /** Dedup cache the host maintains across receipts in this epoch.
@@ -132,6 +135,15 @@ export interface PerPatchEvaluatorDeps {
    *  evaluation before any pack is scored. Never invoked on an admission
    *  rejection (no seed is drawn) or a dedup-cache hit. */
   readonly onSeedDerived?: (seedContext: PerPatchSeedContext) => Promise<void> | void;
+  /** §8 keyless-scorer path — OPTIONAL coordinator-derived gate/confirm seeds.
+   *  The COORDINATOR (which holds the epoch secret) derives both seeds with
+   *  deriveGate/ConfirmEvalSeed and ships them with the job, so the scorer
+   *  host never receives the pre-reveal secret. Requires `seedContext` (the
+   *  pinned blockhash the seeds were derived under) — the artifact's
+   *  seedDerivation section still records the full witness, and the validator's
+   *  post-reveal re-derivation from the revealed secret is the integrity
+   *  backstop against a mis-derived injection. */
+  readonly injectedSeeds?: { readonly gateSeed: string; readonly confirmSeed: string };
 }
 
 export interface PerPatchReceipt {
@@ -334,17 +346,38 @@ export async function runPerPatchEvaluation(
   // shared (parentRoot, patchBytes) dedup cache, so including
   // minerAddress in the seed would create ambiguity without
   // preventing sybil rerolls.
-  const seedInput = {
-    epochSecret: deps.epochSecret,
-    blockhash,
-    epochId: request.epochId,
-    patchHash,
-    parentRoot: request.parentRoot,
-    corpusRoot: deps.corpusRoot,
-    bundleHash: deps.bundleHash,
-  };
-  const gateSeed = deriveGateEvalSeed(seedInput);
-  const confirmSeed = deriveConfirmEvalSeed(seedInput);
+  let gateSeed: string;
+  let confirmSeed: string;
+  if (deps.injectedSeeds) {
+    // Keyless-scorer path: the coordinator derived both seeds (it holds the
+    // secret) and pinned them with the seed context. Validate shape only —
+    // correctness is enforced by the validator's post-reveal re-derivation.
+    if (!deps.seedContext) {
+      throw new Error('runPerPatchEvaluation: injectedSeeds require a pinned seedContext (no scorer-side blockhash draw with injected seeds)');
+    }
+    for (const [name, value] of [['gateSeed', deps.injectedSeeds.gateSeed], ['confirmSeed', deps.injectedSeeds.confirmSeed]] as const) {
+      if (typeof value !== 'string' || !/^0x[0-9a-fA-F]{64}$/.test(value)) {
+        throw new Error(`runPerPatchEvaluation: injectedSeeds.${name} must be bytes32`);
+      }
+    }
+    gateSeed = deps.injectedSeeds.gateSeed.toLowerCase();
+    confirmSeed = deps.injectedSeeds.confirmSeed.toLowerCase();
+  } else {
+    if (!deps.epochSecret) {
+      throw new Error('runPerPatchEvaluation: epochSecret is required when no injectedSeeds are supplied (the keyless scorer host must receive coordinator-derived seeds, never the secret)');
+    }
+    const seedInput = {
+      epochSecret: deps.epochSecret,
+      blockhash,
+      epochId: request.epochId,
+      patchHash,
+      parentRoot: request.parentRoot,
+      corpusRoot: deps.corpusRoot,
+      bundleHash: deps.bundleHash,
+    };
+    gateSeed = deriveGateEvalSeed(seedInput);
+    confirmSeed = deriveConfirmEvalSeed(seedInput);
+  }
 
   // 7 & 8: dual-pack scoring + acceptance. Run sequentially so we can
   // short-circuit on a gate-fail before paying the confirm-pack CPU

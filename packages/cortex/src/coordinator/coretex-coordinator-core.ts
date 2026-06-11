@@ -177,6 +177,11 @@ export interface RealEvaluator {
       readonly targetBlock: number;
       readonly blockhash: string;
     };
+    /** OPTIONAL §8 coordinator-derived gate/confirm eval seeds (keyless remote
+     *  path). The coordinator holds the epoch secret and derives both seeds
+     *  under the pinned blockhash; the secretless scorer injects them verbatim.
+     *  Requires seedContext. The local CPU evaluator path omits it. */
+    injectedSeeds?: { readonly gateSeed: string; readonly confirmSeed: string };
   }): Promise<EvalResult> | EvalResult;
 }
 

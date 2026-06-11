@@ -18,6 +18,9 @@ import {
   handleScoreJob,
   checkScorerJobPins,
   verifyJobParentState,
+  resolveJobSeedContext,
+  resolveScorerAuth,
+  scorerRequestAuthorized,
 } from '../../dist/scorer-server-cli.js';
 import { wrapRerankerWithPairTrace } from '../../dist/coordinator/scorer-pair-trace.js';
 import { pack, merkleizeState, bytesToHex, RANGES, PACKED_SIZE } from '../../dist/index.js';
@@ -66,6 +69,16 @@ const HEALTH = {
   python: '3.11.9',
 };
 
+// MANDATORY coordinator-pinned seed + coordinator-derived eval seeds: the
+// scorer is keyless AND secretless — every job must ship the full pin.
+const PINNED_SEED_CONTEXT = {
+  receivedAtBlock: 1_000,
+  targetBlock: 1_030,
+  blockhash: B32('5e'),
+  gateSeed: B32('6a'),
+  confirmSeed: B32('6b'),
+};
+
 function baseJob(over = {}) {
   return {
     jobId: 'job-1',
@@ -78,6 +91,7 @@ function baseJob(over = {}) {
     coreVersionHash: LOADED_PINS.coreVersionHash,
     thresholdPpm: 1_000,
     policyHash: LOADED_PINS.coreVersionHash,
+    publicEvalContext: { ...PINNED_SEED_CONTEXT },
     compactPatchBytesHex: '0x1234',
     miner: `0x${'10'.repeat(20)}`,
     expectedScorerPins: {
@@ -392,5 +406,115 @@ describe('scorer-server — pair-trace parity with the CPU harness', () => {
     traced.resetTrace();
     instrumented.resetTrace();
     assert.equal(traced.traceSnapshot().pairTraceHash, instrumented.traceSnapshot().pairTraceHash);
+  });
+});
+
+describe('scorer-server — mandatory pinned seed + secretless host', () => {
+  const handlerDeps = (counter = { calls: 0 }) => ({
+    evaluator: fakeEvaluator(stateAdvanceResult(), counter),
+    tracedReranker: fakeTracedReranker(),
+    loadedPins: LOADED_PINS,
+    scorerHealth: HEALTH,
+  });
+
+  test('a job WITHOUT publicEvalContext is refused 422 (no scorer-side seed draw, ever)', async () => {
+    const counter = { calls: 0 };
+    const job = baseJob();
+    delete job.publicEvalContext;
+    const res = await handleScoreJob(job, handlerDeps(counter));
+    assert.equal(res.status, 422);
+    assert.equal(res.body.error, 'SCORER_SEED_CONTEXT_INVALID');
+    assert.equal(counter.calls, 0);
+  });
+
+  test('a partial seed pin (no blockhash) is refused 422', async () => {
+    const ctx = { ...PINNED_SEED_CONTEXT };
+    delete ctx.blockhash;
+    const res = await handleScoreJob(baseJob({ publicEvalContext: ctx }), handlerDeps());
+    assert.equal(res.status, 422);
+  });
+
+  test('missing gateSeed/confirmSeed is refused 422 (coordinator must derive the seeds)', async () => {
+    for (const missing of ['gateSeed', 'confirmSeed']) {
+      const ctx = { ...PINNED_SEED_CONTEXT };
+      delete ctx[missing];
+      const res = await handleScoreJob(baseJob({ publicEvalContext: ctx }), handlerDeps());
+      assert.equal(res.status, 422, `missing ${missing} must refuse`);
+      assert.match(res.body.reason, new RegExp(missing));
+    }
+  });
+
+  test('resolveJobSeedContext normalizes the pin + seeds to lowercase', () => {
+    const out = resolveJobSeedContext({ publicEvalContext: {
+      ...PINNED_SEED_CONTEXT,
+      blockhash: PINNED_SEED_CONTEXT.blockhash.toUpperCase().replace('0X', '0x'),
+    } });
+    assert.equal(out.error, undefined);
+    assert.equal(out.seedContext.blockhash, PINNED_SEED_CONTEXT.blockhash.toLowerCase());
+    assert.equal(out.injectedSeeds.gateSeed, PINNED_SEED_CONTEXT.gateSeed.toLowerCase());
+    assert.equal(out.injectedSeeds.confirmSeed, PINNED_SEED_CONTEXT.confirmSeed.toLowerCase());
+  });
+
+  test('handleScoreJob threads seedContext + injectedSeeds into scorePatch', async () => {
+    const counter = { calls: 0 };
+    const res = await handleScoreJob(baseJob(), handlerDeps(counter));
+    assert.equal(res.status, 200);
+    assert.deepEqual(counter.lastInput.seedContext, {
+      receivedAtBlock: PINNED_SEED_CONTEXT.receivedAtBlock,
+      targetBlock: PINNED_SEED_CONTEXT.targetBlock,
+      blockhash: PINNED_SEED_CONTEXT.blockhash.toLowerCase(),
+    });
+    assert.deepEqual(counter.lastInput.injectedSeeds, {
+      gateSeed: PINNED_SEED_CONTEXT.gateSeed.toLowerCase(),
+      confirmSeed: PINNED_SEED_CONTEXT.confirmSeed.toLowerCase(),
+    });
+  });
+
+  test('hiddenSeedCommit mismatch vs the loaded commit is a 409 pin mismatch', async () => {
+    const counter = { calls: 0 };
+    const res = await handleScoreJob(
+      baseJob({ publicEvalContext: { ...PINNED_SEED_CONTEXT, hiddenSeedCommit: B32('99') } }),
+      { ...handlerDeps(counter), loadedPins: { ...LOADED_PINS, hiddenSeedCommit: B32('11') } },
+    );
+    assert.equal(res.status, 409);
+    assert.equal(counter.calls, 0);
+  });
+
+  test('matching hiddenSeedCommit passes', async () => {
+    const res = await handleScoreJob(
+      baseJob({ publicEvalContext: { ...PINNED_SEED_CONTEXT, hiddenSeedCommit: B32('11') } }),
+      { ...handlerDeps(), loadedPins: { ...LOADED_PINS, hiddenSeedCommit: B32('11') } },
+    );
+    assert.equal(res.status, 200);
+  });
+});
+
+describe('scorer-server — auth policy', () => {
+  test('loopback bind without a token is allowed', () => {
+    assert.deepEqual(resolveScorerAuth({}), { host: '127.0.0.1' });
+    assert.deepEqual(resolveScorerAuth({ CORETEX_SCORER_HOST: 'localhost' }), { host: 'localhost' });
+  });
+
+  test('non-loopback bind WITHOUT a token is a boot error (oracle exposure)', () => {
+    assert.throws(
+      () => resolveScorerAuth({ CORETEX_SCORER_HOST: '0.0.0.0' }),
+      /CORETEX_SCORER_AUTH_TOKEN is required/,
+    );
+  });
+
+  test('non-loopback bind WITH a token boots', () => {
+    assert.deepEqual(
+      resolveScorerAuth({ CORETEX_SCORER_HOST: '0.0.0.0', CORETEX_SCORER_AUTH_TOKEN: 's3cret' }),
+      { host: '0.0.0.0', token: 's3cret' },
+    );
+  });
+
+  test('scorerRequestAuthorized: no configured token → open; configured → exact bearer required', () => {
+    assert.equal(scorerRequestAuthorized(undefined, undefined), true);
+    assert.equal(scorerRequestAuthorized(undefined, 'tok'), false);
+    assert.equal(scorerRequestAuthorized('Bearer tok', 'tok'), true);
+    assert.equal(scorerRequestAuthorized('Bearer wrong', 'tok'), false);
+    assert.equal(scorerRequestAuthorized('tok', 'tok'), false);
+    assert.equal(scorerRequestAuthorized('Basic tok', 'tok'), false);
   });
 });

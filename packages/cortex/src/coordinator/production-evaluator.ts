@@ -357,6 +357,12 @@ export type ProductionCoreTexEvaluator = RealEvaluator & {
      *  omits this and pins via the durable attempt store instead. Scoring given
      *  the seed is byte-unchanged either way. */
     seedContext?: CoreTexEvalSeedContext;
+    /** §8 keyless-scorer path — coordinator-derived gate/confirm seeds. The
+     *  scorer host never holds the pre-reveal epoch secret; the coordinator
+     *  derives both seeds and ships them with the job alongside the pinned
+     *  seedContext. Requires seedContext. The validator's post-reveal
+     *  re-derivation from the revealed secret is the integrity backstop. */
+    injectedSeeds?: { readonly gateSeed: string; readonly confirmSeed: string };
   }): Promise<ProductionEvalResult>;
   /** Hash-bound boot attestation (§2): resolved model id + revision +
    *  reranker mode + instruction + prompt-template hash + Memory-IR mode. */
@@ -366,7 +372,14 @@ export type ProductionCoreTexEvaluator = RealEvaluator & {
 
 export interface ProductionCoreTexEvaluatorOptions {
   readonly epochId: number;
-  readonly epochSecret: string;
+  /** Pre-reveal epoch secret. OPTIONAL on the keyless scorer host: provide
+   *  `hiddenSeedCommit` instead, and every scorePatch call must then carry
+   *  coordinator-derived `injectedSeeds` (the secret never leaves the
+   *  coordinator). Exactly one of the two must be configured. */
+  readonly epochSecret?: string;
+  /** keccak256(epochSecret) — the public commitment. Required (and only
+   *  meaningful) when `epochSecret` is not provisioned. */
+  readonly hiddenSeedCommit?: string;
   readonly corpusPath: string;
   readonly bundleManifestPath: string;
   readonly parentStateLoader: (parentStateRoot: string) => Promise<CortexState> | CortexState;
@@ -397,7 +410,12 @@ export interface ProductionCoreTexEvaluatorOptions {
 
 export interface ProductionCoreTexEvaluatorCoreDeps {
   readonly epochId: number;
-  readonly epochSecret: string;       // bytes32 hex
+  /** Pre-reveal epoch secret. OPTIONAL on the keyless scorer host (provide
+   *  hiddenSeedCommit + per-call injectedSeeds instead). */
+  readonly epochSecret?: string;      // bytes32 hex
+  /** keccak256(epochSecret). Required when epochSecret is absent; when both
+   *  are supplied they must agree (construction error otherwise). */
+  readonly hiddenSeedCommit?: string; // bytes32 hex
   readonly corpusRoot: string;        // bytes32 hex
   readonly bundleHash: string;        // bytes32 hex
   readonly stateThresholdPpm: number;
@@ -430,7 +448,19 @@ export function createCoreTexEvaluatorCore(deps: ProductionCoreTexEvaluatorCoreD
   if (!deps.dedupStore) {
     throw new Error('production CoreTex evaluator requires a CoreTexEvalDedupStore (fail-closed: no in-memory default)');
   }
-  const hiddenSeedCommit = bytesToHex(keccak256(parseHex(deps.epochSecret, 'epochSecret'))).toLowerCase();
+  const hiddenSeedCommit = (() => {
+    if (deps.epochSecret) {
+      const derived = bytesToHex(keccak256(parseHex(deps.epochSecret, 'epochSecret'))).toLowerCase();
+      if (deps.hiddenSeedCommit && deps.hiddenSeedCommit.toLowerCase() !== derived) {
+        throw new Error(`hiddenSeedCommit ${deps.hiddenSeedCommit} != keccak256(epochSecret) ${derived}`);
+      }
+      return derived;
+    }
+    if (!deps.hiddenSeedCommit || !/^0x[0-9a-fA-F]{64}$/.test(deps.hiddenSeedCommit)) {
+      throw new Error('production CoreTex evaluator requires epochSecret OR a bytes32 hiddenSeedCommit (keyless scorer host: commit + per-job injected seeds, never the secret)');
+    }
+    return deps.hiddenSeedCommit.toLowerCase();
+  })();
 
   const evaluator: ProductionCoreTexEvaluator = {
     bootAttestation: deps.bootAttestation,
@@ -541,7 +571,7 @@ export function createCoreTexEvaluatorCore(deps: ProductionCoreTexEvaluatorCoreD
         targetBlockOffset: deps.targetBlockOffset,
         thresholdPpm: effectiveThresholdPpm,
         perMinerCap: deps.perMinerCap,
-        epochSecret: deps.epochSecret,
+        ...(deps.epochSecret ? { epochSecret: deps.epochSecret } : {}),
         corpusRoot: deps.corpusRoot,
         bundleHash: deps.bundleHash,
         // Cross-call dedup lives in the persistent store (checked above);
@@ -549,6 +579,7 @@ export function createCoreTexEvaluatorCore(deps: ProductionCoreTexEvaluatorCoreD
         dedupCache: new Map(),
         minerAdmissions: new Map([[miner, minerAdmissions]]),
         ...(injectedSeedContext ? { seedContext: injectedSeedContext } : {}),
+        ...(input.injectedSeeds ? { injectedSeeds: input.injectedSeeds } : {}),
         ...(onSeedDerived ? { onSeedDerived } : {}),
       });
 
@@ -703,7 +734,8 @@ export async function createProductionCoreTexEvaluator(
   const closable = reranker as CrossEncoderReranker & { close?: () => Promise<void> };
   return createCoreTexEvaluatorCore({
     epochId: options.epochId,
-    epochSecret: options.epochSecret,
+    ...(options.epochSecret ? { epochSecret: options.epochSecret } : {}),
+    ...(options.hiddenSeedCommit ? { hiddenSeedCommit: options.hiddenSeedCommit } : {}),
     corpusRoot: corpus.corpusRoot,
     bundleHash: bundle.bundleHash,
     stateThresholdPpm,
