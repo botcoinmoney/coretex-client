@@ -198,4 +198,14 @@ describe('validator-sync CLI — fail-closed scorer gate (spawned)', () => {
     const out = JSON.parse(proc.stdout);
     assert.match(out.scoreReplay, /SKIPPED/);
   }));
+
+  test('--skip-score-replay never masks config failures: missing chain config still exits 1, not 3', () => {
+    // Exit 3 strictly means "sync otherwise succeeded, score replay skipped".
+    // An early config/chain failure must keep the hard-failure exit code even
+    // when the skip flag is passed — the flag skips ONLY the score replay.
+    const proc = runCli(['--skip-score-replay']);
+    assert.equal(proc.status, 1, `expected hard failure exit 1, got ${proc.status}; stderr: ${proc.stderr}`);
+    assert.notEqual(proc.status, SKIP_SCORE_REPLAY_EXIT_CODE);
+    assert.match(proc.stderr, /HARD FAIL/);
+  });
 });

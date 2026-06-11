@@ -44,6 +44,9 @@ import http from 'node:http';
 import https from 'node:https';
 
 import { verifyBundleManifest, type CoreTexBundleManifest } from './bundle/index.js';
+import { rpcCall } from './replay/v4.js';
+import { bytesToHex } from './state/merkle.js';
+import { keccak256 } from './state/keccak256.js';
 import { resolveCortexPackageRoot, resolveRerankerScriptPath } from './eval/reranker.js';
 import {
   bootstrapScorerVenv,
@@ -66,6 +69,7 @@ Usage:
                           [--state-dir <dir>] [--registry-deploy-block <n>]
                           [--verify-only] [--no-download] [--repo-root <dir>]
                           [--no-venv-bootstrap] [--no-progress]
+                          [--verify-chain-config]
 
 Env:
   CORETEX_ARTIFACT_BASE_URL      artifact base URL (manifest + payloads)
@@ -73,6 +77,15 @@ Env:
   CORETEX_REGISTRY_DEPLOY_BLOCK  registry deploy block recorded for sync replay
   CORETEX_RERANKER_PYTHON        operator scorer interpreter (skips venv bootstrap when valid)
   CORETEX_VALIDATOR_SKIP_VENV=1  skip the Python venv bootstrap (same as --no-venv-bootstrap)
+
+Setup is artifact hydration and works fully offline — it never requires an RPC.
+Chain-config env vars (BASE_RPC_URL, CORETEX_REGISTRY_ADDRESS,
+BOTCOIN_MINING_CONTRACT_ADDRESS) are OPTIONAL here, but when present they are
+syntax-checked up front (before any expensive download/materialization) and
+cross-checked against the manifest's published chain config. Pass
+--verify-chain-config to additionally probe the RPC (chainId, deployed code at
+both addresses, registry→V4 pin) — requires BASE_RPC_URL + both addresses
+(env or manifest).
 
 By default setup also bootstraps a self-contained CPU scorer venv under
 <state-dir>/scorer-venv (idempotent; skipped when CORETEX_RERANKER_PYTHON
@@ -110,6 +123,18 @@ export interface LaunchArtifactPayload {
   readonly bytes?: number;
 }
 
+/** Final chain config published with the launch artifacts so operators never
+ *  hand-copy addresses: setup records it into the validator state file and
+ *  cross-checks any operator-provided env against it. Optional — absent until
+ *  the final deployment is cut. */
+export interface LaunchManifestChainConfig {
+  readonly chainId: number;
+  readonly registryAddress: string;
+  readonly miningContractAddress: string;
+  readonly registryDeployBlock?: number;
+  readonly confirmationDepth?: number;
+}
+
 export interface LaunchArtifactManifest {
   readonly schema: string;
   readonly name: string;
@@ -123,6 +148,18 @@ export interface LaunchArtifactManifest {
   readonly bundleSha256: string;
   readonly profilePath: string;
   readonly profileSha256: string;
+  readonly chain?: LaunchManifestChainConfig;
+}
+
+export function isEvmAddress(value: unknown): value is string {
+  return typeof value === 'string' && /^0x[0-9a-fA-F]{40}$/.test(value);
+}
+
+/** Chain-config addresses must be syntactically valid AND non-zero: the zero
+ *  address is never a deployed contract, so a zeroed-but-well-formed value is
+ *  exactly the placeholder mistake this validation exists to catch. */
+export function isUsableContractAddress(value: unknown): value is string {
+  return isEvmAddress(value) && !/^0x0{40}$/.test(value);
 }
 
 export function parseLaunchArtifactManifest(raw: unknown): LaunchArtifactManifest {
@@ -142,7 +179,52 @@ export function parseLaunchArtifactManifest(raw: unknown): LaunchArtifactManifes
       throw new Error(`launch artifact payload malformed (role=${String(payload.role)})`);
     }
   }
+  if (m.chain !== undefined) {
+    const c = m.chain;
+    if (!c || typeof c !== 'object') throw new Error('launch artifact manifest chain config is not an object');
+    if (!Number.isSafeInteger(c.chainId) || c.chainId <= 0) throw new Error('manifest chain.chainId must be a positive integer');
+    if (!isUsableContractAddress(c.registryAddress)) throw new Error('manifest chain.registryAddress must be a non-zero 0x-prefixed 20-byte address');
+    if (!isUsableContractAddress(c.miningContractAddress)) throw new Error('manifest chain.miningContractAddress must be a non-zero 0x-prefixed 20-byte address');
+    if (c.registryDeployBlock !== undefined && (!Number.isSafeInteger(c.registryDeployBlock) || c.registryDeployBlock < 0)) {
+      throw new Error('manifest chain.registryDeployBlock must be a non-negative integer');
+    }
+    if (c.confirmationDepth !== undefined && (!Number.isSafeInteger(c.confirmationDepth) || c.confirmationDepth < 0)) {
+      throw new Error('manifest chain.confirmationDepth must be a non-negative integer');
+    }
+  }
   return m;
+}
+
+/**
+ * Optional RPC probe behind --verify-chain-config: setup itself stays
+ * offline-capable artifact hydration; this is an explicit opt-in that catches
+ * bad chain config BEFORE the first sync. Checks: RPC reachable, chainId
+ * matches (when expected is known), deployed code at both addresses, and the
+ * registry's botcoinMiningV4 pin equals the V4 address.
+ */
+export async function verifyChainConfig(inputs: {
+  readonly rpcUrl: string;
+  readonly registryAddress: string;
+  readonly miningContractAddress: string;
+  readonly expectedChainId?: number;
+}): Promise<{ chainId: number }> {
+  const { rpcUrl, registryAddress, miningContractAddress, expectedChainId } = inputs;
+  const chainIdHex = await rpcCall<string>(rpcUrl, 'eth_chainId', []);
+  const chainId = Number(BigInt(chainIdHex));
+  if (expectedChainId !== undefined && chainId !== expectedChainId) {
+    throw new Error(`chain config: RPC chainId ${chainId} != expected ${expectedChainId}`);
+  }
+  for (const [label, address] of [['registry', registryAddress], ['mining contract', miningContractAddress]] as const) {
+    const code = await rpcCall<string>(rpcUrl, 'eth_getCode', [address, 'latest']);
+    if (!code || code === '0x') throw new Error(`chain config: no deployed code at ${label} address ${address}`);
+  }
+  const selector = bytesToHex(keccak256(new TextEncoder().encode('botcoinMiningV4()'))).slice(0, 10);
+  const pinned = await rpcCall<string>(rpcUrl, 'eth_call', [{ to: registryAddress, data: selector }, 'latest']);
+  const pinnedAddress = `0x${(pinned ?? '').slice(-40)}`.toLowerCase();
+  if (pinnedAddress !== miningContractAddress.toLowerCase()) {
+    throw new Error(`chain config: registry.botcoinMiningV4() = ${pinnedAddress} != configured mining contract ${miningContractAddress}`);
+  }
+  return { chainId };
 }
 
 /** `<base>/coretex-launch-v16-artifacts.json` */
@@ -397,6 +479,24 @@ async function main(): Promise<void> {
     die('--registry-deploy-block must be a non-negative integer');
   }
 
+  // ── early chain-config syntax checks (BEFORE any expensive work) ──
+  // Setup never requires these envs (it is offline artifact hydration), but a
+  // malformed value provided now would only surface on the first sync — after
+  // downloads + materialization. Fail fast instead.
+  const envRegistry = process.env['CORETEX_REGISTRY_ADDRESS'];
+  const envMining = process.env['BOTCOIN_MINING_CONTRACT_ADDRESS'];
+  const envRpcUrl = process.env['BASE_RPC_URL'];
+  if (envRegistry !== undefined && !isUsableContractAddress(envRegistry)) {
+    die(`CORETEX_REGISTRY_ADDRESS is set but malformed or zero (${envRegistry}): expected a non-zero 0x-prefixed 20-byte address`);
+  }
+  if (envMining !== undefined && !isUsableContractAddress(envMining)) {
+    die(`BOTCOIN_MINING_CONTRACT_ADDRESS is set but malformed or zero (${envMining}): expected a non-zero 0x-prefixed 20-byte address`);
+  }
+  if (envRpcUrl !== undefined && !/^(https?|wss?):\/\/\S+$/.test(envRpcUrl)) {
+    die(`BASE_RPC_URL is set but malformed (${envRpcUrl}): expected an http(s)/ws(s) URL`);
+  }
+  const verifyChain = has('verify-chain-config');
+
   // Base dir for resolving relative paths: repo root in repo mode, cwd otherwise.
   const baseDir = repoRoot ? resolve(repoRoot) : process.cwd();
 
@@ -414,6 +514,40 @@ async function main(): Promise<void> {
     ?? null;
   log(`manifest: ${manifestSource}`);
   log(`launch artifact: ${manifest.name}`);
+
+  // ── chain config: manifest-vs-env cross-check + optional RPC probe ──
+  // Both run BEFORE payload hydration so bad chain config never costs a full
+  // download/materialization pass.
+  if (manifest.chain) {
+    if (envRegistry && envRegistry.toLowerCase() !== manifest.chain.registryAddress.toLowerCase()) {
+      die(`CORETEX_REGISTRY_ADDRESS (${envRegistry}) != manifest chain.registryAddress (${manifest.chain.registryAddress})`);
+    }
+    if (envMining && envMining.toLowerCase() !== manifest.chain.miningContractAddress.toLowerCase()) {
+      die(`BOTCOIN_MINING_CONTRACT_ADDRESS (${envMining}) != manifest chain.miningContractAddress (${manifest.chain.miningContractAddress})`);
+    }
+    log(`chain config (manifest): chainId=${manifest.chain.chainId} registry=${manifest.chain.registryAddress} v4=${manifest.chain.miningContractAddress}`
+      + (manifest.chain.registryDeployBlock !== undefined ? ` deployBlock=${manifest.chain.registryDeployBlock}` : '')
+      + (manifest.chain.confirmationDepth !== undefined ? ` confirmationDepth=${manifest.chain.confirmationDepth}` : ''));
+  }
+  if (verifyChain) {
+    const registryAddress = envRegistry ?? manifest.chain?.registryAddress;
+    const miningContractAddress = envMining ?? manifest.chain?.miningContractAddress;
+    if (!envRpcUrl) die('--verify-chain-config requires BASE_RPC_URL');
+    if (!registryAddress || !miningContractAddress) {
+      die('--verify-chain-config requires CORETEX_REGISTRY_ADDRESS + BOTCOIN_MINING_CONTRACT_ADDRESS (env) or a manifest chain config');
+    }
+    try {
+      const probe = await verifyChainConfig({
+        rpcUrl: envRpcUrl,
+        registryAddress,
+        miningContractAddress,
+        ...(manifest.chain ? { expectedChainId: manifest.chain.chainId } : {}),
+      });
+      log(`chain config VERIFIED on-chain: chainId=${probe.chainId} registry=${registryAddress} v4=${miningContractAddress} (code present, registry→V4 pin matches)`);
+    } catch (err) {
+      die(err instanceof Error ? err.message : String(err));
+    }
+  }
 
   // ── payload destinations ──
   const artifactsDir = repoRoot ? baseDir : join(stateDir, 'artifacts');
@@ -531,10 +665,16 @@ async function main(): Promise<void> {
 
   // ── validator state file: sync needs no manual flags after this ──
   const recordScorerPython = venv && venv.status !== 'skipped-opt-out';
+  // Explicit operator deploy block wins; otherwise fall back to the manifest's
+  // published chain config so sync replay needs no hand-copied value.
+  const registryDeployBlock = deployBlockRaw !== undefined
+    ? Number(deployBlockRaw)
+    : manifest.chain?.registryDeployBlock;
   const state = mergeValidatorStateFile(statePath, {
     bundleHash: manifest.bundleHash,
     corpusRoot: manifest.corpusRoot,
-    ...(deployBlockRaw !== undefined ? { registryDeployBlock: Number(deployBlockRaw) } : {}),
+    ...(registryDeployBlock !== undefined ? { registryDeployBlock } : {}),
+    ...(manifest.chain ? { chain: manifest.chain } : {}),
     setup: {
       completedAt: new Date().toISOString(),
       launchName: manifest.name,

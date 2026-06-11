@@ -17,6 +17,8 @@ import {
   launchManifestUrl,
   payloadDownloadUrl,
   parseLaunchArtifactManifest,
+  isEvmAddress,
+  isUsableContractAddress,
   LAUNCH_ARTIFACT_MANIFEST_FILENAME,
 } from '../../dist/validator-setup-cli.js';
 
@@ -133,6 +135,53 @@ describe('launch manifest helpers', () => {
       /missing corpusRoot/,
     );
   });
+
+  test('parseLaunchArtifactManifest validates the optional published chain config', () => {
+    const base = {
+      schema: 'coretex.launch-artifacts.v1',
+      name: 'n', corpusRoot: 'r', materializedRoot: 'm',
+      bundlePath: 'b', bundleHash: 'h', bundleSha256: 's',
+      profilePath: 'p', profileSha256: 'q',
+      payloads: [{ role: 'corpus', path: 'x', sha256: 'y' }],
+    };
+    const chain = {
+      chainId: 8453,
+      registryAddress: `0x${'ab'.repeat(20)}`,
+      miningContractAddress: `0x${'cd'.repeat(20)}`,
+      registryDeployBlock: 31_000_000,
+      confirmationDepth: 12,
+    };
+    // No chain block stays valid (pre-final-deploy manifests).
+    assert.equal(parseLaunchArtifactManifest(base).chain, undefined);
+    // A well-formed chain block round-trips.
+    assert.deepEqual(parseLaunchArtifactManifest({ ...base, chain }).chain, chain);
+    // Malformed fields are hard parse failures.
+    assert.throws(() => parseLaunchArtifactManifest({ ...base, chain: { ...chain, registryAddress: '0x123' } }), /registryAddress/);
+    assert.throws(() => parseLaunchArtifactManifest({ ...base, chain: { ...chain, miningContractAddress: 'not-an-address' } }), /miningContractAddress/);
+    // The zero address is syntactically valid hex but never a deployed
+    // contract — exactly the placeholder mistake this validation must catch.
+    assert.throws(() => parseLaunchArtifactManifest({ ...base, chain: { ...chain, registryAddress: `0x${'00'.repeat(20)}` } }), /registryAddress.*non-zero/);
+    assert.throws(() => parseLaunchArtifactManifest({ ...base, chain: { ...chain, miningContractAddress: `0x${'00'.repeat(20)}` } }), /miningContractAddress.*non-zero/);
+    assert.throws(() => parseLaunchArtifactManifest({ ...base, chain: { ...chain, chainId: 0 } }), /chainId/);
+    assert.throws(() => parseLaunchArtifactManifest({ ...base, chain: { ...chain, registryDeployBlock: -1 } }), /registryDeployBlock/);
+    assert.throws(() => parseLaunchArtifactManifest({ ...base, chain: { ...chain, confirmationDepth: 1.5 } }), /confirmationDepth/);
+  });
+
+  test('isEvmAddress accepts 20-byte 0x hex and rejects everything else', () => {
+    assert.equal(isEvmAddress(`0x${'ab'.repeat(20)}`), true);
+    assert.equal(isEvmAddress(`0x${'AB'.repeat(20)}`), true);
+    assert.equal(isEvmAddress(`0x${'ab'.repeat(19)}`), false);
+    assert.equal(isEvmAddress(`${'ab'.repeat(20)}`), false);
+    assert.equal(isEvmAddress(undefined), false);
+    assert.equal(isEvmAddress(42), false);
+  });
+
+  test('isUsableContractAddress additionally rejects the zero address', () => {
+    assert.equal(isUsableContractAddress(`0x${'ab'.repeat(20)}`), true);
+    assert.equal(isUsableContractAddress(`0x${'00'.repeat(20)}`), false);
+    assert.equal(isUsableContractAddress('0x123'), false);
+    assert.equal(isUsableContractAddress(undefined), false);
+  });
 });
 
 describe('coretex-validator-setup — tiny fixture over file:// (spawned)', () => {
@@ -196,6 +245,39 @@ describe('coretex-validator-setup — tiny fixture over file:// (spawned)', () =
     assert.equal(proc.status, 0);
     assert.match(proc.stdout, /coretex-validator-setup/);
     assert.match(proc.stdout, /--artifact-base-url/);
+  });
+
+  test('malformed chain-config env fails fast BEFORE any download/materialization', () => {
+    // Setup stays offline-capable (these envs are optional), but a present-and-
+    // malformed value must die up front, not after hydrating gigabytes.
+    const proc = runSetup(
+      ['--artifact-base-url', originUrl, '--state-dir', join(root, 'state-badenv'), '--no-venv-bootstrap'],
+      { CORETEX_REGISTRY_ADDRESS: '0x123-not-an-address' },
+    );
+    assert.equal(proc.status, 1, `stderr: ${proc.stderr}`);
+    assert.match(proc.stderr, /CORETEX_REGISTRY_ADDRESS is set but malformed/);
+    // Died before the manifest/payload stage: no artifact log lines.
+    assert.doesNotMatch(proc.stdout, /launch artifact:/);
+    assert.equal(existsSync(join(root, 'state-badenv')), false);
+
+    // The zero address is syntactically valid but never a deployed contract —
+    // a zeroed placeholder env must fail just as fast.
+    const zeroProc = runSetup(
+      ['--artifact-base-url', originUrl, '--state-dir', join(root, 'state-zeroenv'), '--no-venv-bootstrap'],
+      { BOTCOIN_MINING_CONTRACT_ADDRESS: `0x${'00'.repeat(20)}` },
+    );
+    assert.equal(zeroProc.status, 1, `stderr: ${zeroProc.stderr}`);
+    assert.match(zeroProc.stderr, /BOTCOIN_MINING_CONTRACT_ADDRESS is set but malformed or zero/);
+    assert.equal(existsSync(join(root, 'state-zeroenv')), false);
+  });
+
+  test('--verify-chain-config without BASE_RPC_URL is a hard, early failure', () => {
+    const proc = runSetup(
+      ['--artifact-base-url', originUrl, '--state-dir', join(root, 'state-nochain'), '--no-venv-bootstrap', '--verify-chain-config'],
+      { BASE_RPC_URL: undefined },
+    );
+    assert.equal(proc.status, 1, `stderr: ${proc.stderr}`);
+    assert.match(proc.stderr, /--verify-chain-config requires BASE_RPC_URL/);
   });
 
   test('--no-venv-bootstrap skips the venv (no torch install); summary on stderr, stdout clean', { timeout: 120_000 }, () => {
