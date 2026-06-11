@@ -23,6 +23,8 @@ import { merkleizeState, bytesToHex, hexToBytes } from './state/merkle.js';
 import { applyPatch, decodePatch, encodePatch } from './state/patch.js';
 import { decodeSubstrate } from './substrate/retrieval-decoder.js';
 import { evalPatch, StubCorpusLoader } from './eval/index.js';
+import { reduce, makeReducerInput, type ReducerInputPatch } from './reducer/reducer.js';
+import { computePatchHash } from './eval/seed-derivation.js';
 import { verifyEpoch } from './verify-epoch/index.js';
 import type {
   PatchAcceptedEvent,
@@ -150,7 +152,7 @@ switch (cmd) {
     const newRoot = bytesToHex(merkleizeState(result.state));
     process.stdout.write(toJsonOutput({
       ok: true,
-      newStateRoot: '0x' + newRoot,
+      newStateRoot: newRoot,
       newStatePacked: Buffer.from(pack(result.state)).toString('hex'),
     }) + '\n');
     break;
@@ -192,12 +194,9 @@ switch (cmd) {
     const stateBytes = fs.readFileSync(stateFile);
     const patchesJson = JSON.parse(fs.readFileSync(patchesFile, 'utf8'), bigIntReviver) as unknown[];
     const state = unpack(new Uint8Array(stateBytes));
-    let currentState = state;
-    const applied: string[] = [];
-    const usedIndices = new Set<number>();
     const parentRoot = bytesToHex(merkleizeState(state));
+    const policyAtomsMode = args.includes('--policy-atoms-mode') || args.includes('--r5');
 
-    // Sort by scoreDelta desc, wordCount asc, patchHash asc
     type PatchRecord = {
       compactPatchBytesHex: string;
       patchHash: string;
@@ -205,34 +204,30 @@ switch (cmd) {
       scoreDelta?: bigint;
     };
     const records = patchesJson as PatchRecord[];
-    const decoded = records
-      .filter((r) => r.parentStateRoot.toLowerCase() === parentRoot.toLowerCase())
-      .map((r) => ({
-        r,
-        patch: decodePatch(hexToBytes(r.compactPatchBytesHex.startsWith('0x') ? r.compactPatchBytesHex : '0x' + r.compactPatchBytesHex)),
-      }));
-    decoded.sort((a, b) => {
-      const sa = a.r.scoreDelta ?? 0n;
-      const sb = b.r.scoreDelta ?? 0n;
-      if (sa > sb) return -1;
-      if (sa < sb) return 1;
-      if (a.patch.wordCount !== b.patch.wordCount) return a.patch.wordCount - b.patch.wordCount;
-      return a.r.patchHash < b.r.patchHash ? -1 : 1;
-    });
-
-    for (const { r, patch } of decoded) {
-      if (patch.indices.some((i) => usedIndices.has(i))) continue;
-      const result = applyPatch(currentState, patch);
-      if (!result.ok) continue;
-      for (const i of patch.indices) usedIndices.add(i);
-      currentState = result.state;
-      applied.push(r.patchHash);
+    // Delegate ordering + same-parent application to the canonical reducer
+    // (applyPatchOntoCurrent + epoch-parent pre-pass + domain-prefixed
+    // patchHash tiebreak). The previous inline loop re-validated each patch's
+    // parent against the ALREADY-ADVANCED state, so it could only ever apply
+    // one patch per epoch.
+    const inputs: ReducerInputPatch[] = [];
+    const recordByBytes = new Map<string, PatchRecord>();
+    for (const r of records) {
+      if (r.parentStateRoot.toLowerCase() !== parentRoot.toLowerCase()) continue;
+      const wire = hexToBytes(r.compactPatchBytesHex.startsWith('0x') ? r.compactPatchBytesHex : '0x' + r.compactPatchBytesHex);
+      const patch = decodePatch(wire);
+      recordByBytes.set(Buffer.from(wire).toString('hex'), r);
+      inputs.push({ ...makeReducerInput(patch, wire), scoreDelta: r.scoreDelta ?? patch.scoreDelta });
     }
+    const output = reduce(state, inputs, 0n, policyAtomsMode);
+    const applied = output.accepted.map((a) =>
+      recordByBytes.get(Buffer.from(a.patchBytes).toString('hex'))?.patchHash
+        ?? computePatchHash(a.patchBytes),
+    );
 
-    const newRoot = bytesToHex(merkleizeState(currentState));
     process.stdout.write(toJsonOutput({
       ok: true,
-      newStateRoot: newRoot,
+      newStateRoot: output.newStateRootHex,
+      patchSetRoot: output.patchSetRootHex,
       patchesApplied: applied.length,
       acceptedPatchHashes: applied,
     }) + '\n');
