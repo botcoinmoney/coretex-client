@@ -238,10 +238,13 @@ describe('evolve multi-epoch continuity (production script flow, chained 3 epoch
     rmSync(outRoot, { recursive: true, force: true });
   });
 
-  test('genesis bootstrap guards: --launch-genesis epoch-1-only, no silent genesis default', () => {
-    // --launch-genesis is rejected for epoch != 1
-    const r1 = runEvolve(epochArgs(2, { extra: ['--launch-genesis'] }), { expectExit: 1 });
-    assert.match(r1.stderr, /--launch-genesis is only valid for --epoch 1/);
+  test('genesis bootstrap guards: launch genesis must evolve FROM the launch corpus, no silent genesis default', () => {
+    // d0bbd22 allows --launch-genesis at chain epochs > 1 (a chain can launch
+    // CoreTex after contract epoch 1). The surviving guard: an explicit
+    // launch-genesis run must evolve from the LAUNCH corpus root — any other
+    // previous corpus is refused.
+    const r1 = runEvolve(epochArgs(2, { previousCorpusEpoch: 0, extra: ['--launch-genesis'] }), { expectExit: 1 });
+    assert.match(r1.stderr, /launch genesis must evolve from launch corpus root/);
     // missing --logical-state without --launch-genesis is rejected (the silent-genesis defect)
     const r2 = runEvolve([
       ...COMMON, '--epoch', '1',
