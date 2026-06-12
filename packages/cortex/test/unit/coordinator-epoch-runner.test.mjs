@@ -7,8 +7,10 @@ import { resolve } from 'node:path';
 import {
   FORBIDDEN_PRODUCTION_RUNNER_FLAGS,
   frontierCount,
+  metricsRequiredForEpoch,
   mergeCoordinatorEpochMetrics,
   readinessCheckedItems,
+  shouldDeriveParentStateRootFromChain,
   validateCoordinatorEpochMetrics,
 } from '../../../../scripts/coretex-coordinator-epoch-runner.mjs';
 
@@ -130,6 +132,36 @@ describe('coretex coordinator epoch runner readiness honesty', () => {
       s3GetRehashVerified: false,
     });
     assert.ok(!items.includes('baseline_manifest_hash_binds_rotation_manifest'));
+  });
+});
+
+describe('coretex coordinator epoch runner launch genesis guards', () => {
+  test('prior-epoch metrics are required after genesis except for explicit launch genesis', () => {
+    assert.equal(metricsRequiredForEpoch(1, false), false);
+    assert.equal(metricsRequiredForEpoch(2, false), true);
+    assert.equal(metricsRequiredForEpoch(112, false), true);
+    assert.equal(metricsRequiredForEpoch(112, true), false);
+  });
+
+  test('explicit launch parent root is not replaced by a previous chain epoch read', () => {
+    assert.equal(shouldDeriveParentStateRootFromChain({
+      rpcUrl: 'https://example.invalid',
+      registry: '0x' + '11'.repeat(20),
+      parentStateRoot: '0x' + '22'.repeat(32),
+      launchGenesis: true,
+    }), false);
+    assert.equal(shouldDeriveParentStateRootFromChain({
+      rpcUrl: 'https://example.invalid',
+      registry: '0x' + '11'.repeat(20),
+      parentStateRoot: '0x' + '22'.repeat(32),
+      launchGenesis: false,
+    }), true);
+    assert.equal(shouldDeriveParentStateRootFromChain({
+      rpcUrl: 'https://example.invalid',
+      registry: '0x' + '11'.repeat(20),
+      parentStateRoot: null,
+      launchGenesis: true,
+    }), true);
   });
 });
 
