@@ -24,6 +24,7 @@ export interface RemoteScorerActiveContext {
   readonly corpusRoot: string;
   readonly bundleHash: string;
   readonly coreVersionHash: string;
+  readonly workPolicyHash: string;
   /** Live screener threshold (ppm) — min(gate, confirm) must clear this for an
    *  accepted result. The coordinator owns this number, NOT the scorer. */
   readonly thresholdPpm: number;
@@ -166,6 +167,9 @@ export function verifyScorerResult(args: {
   }
   if (!hexEq(job.coreVersionHash, active.coreVersionHash)) {
     return { ok: false, code: "SCORER_STALE_CONTEXT", reason: `job coreVersionHash != active ${active.coreVersionHash}` };
+  }
+  if (!hexEq(job.policyHash, active.workPolicyHash)) {
+    return { ok: false, code: "SCORER_STALE_CONTEXT", reason: `job policyHash != active ${active.workPolicyHash}` };
   }
 
   // (5) scorerHealth reports the expected model/revision/promptTemplateHash and

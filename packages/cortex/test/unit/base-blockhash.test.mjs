@@ -54,6 +54,26 @@ describe('createBaseRpcClient', () => {
     assert.equal(await client.getLatestBlockNumber(), 4660);
   });
 
+  test('credentialed RPC URLs are normalized before fetch', async () => {
+    const mockFetch = async (url, init) => {
+      assert.equal(url, 'https://rpc.example.com/v3/key');
+      assert.doesNotThrow(() => new Request(url));
+      assert.match(init.headers.authorization, /^Basic /);
+      assert.equal(
+        Buffer.from(init.headers.authorization.slice('Basic '.length), 'base64').toString('utf8'),
+        'user:p/ss+word',
+      );
+      const body = JSON.parse(init.body);
+      return {
+        ok: true,
+        status: 200,
+        async json() { return { jsonrpc: '2.0', id: body.id, result: '0x1234' }; },
+      };
+    };
+    const client = createBaseRpcClient('https://user:p%2Fss%2Bword@rpc.example.com/v3/key', { fetchImpl: mockFetch });
+    assert.equal(await client.getLatestBlockNumber(), 4660);
+  });
+
   test('getBlockHash returns lowercased hash', async () => {
     const mockFetch = makeMockFetch(async (body) => {
       assert.equal(body.method, 'eth_getBlockByNumber');

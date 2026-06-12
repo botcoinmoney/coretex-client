@@ -60,8 +60,9 @@ const baseConfig = {
   confirmationDepth: 4,
   receiptTtlSec: 60,
   perMinerScreenerCap: 50,
-  // §7 launch baseline for the pinned (genesis) context. 288438 under the
-  // default policy derives a live screener threshold of 355ppm.
+  // §7 launch baseline for the pinned (genesis) context. 288438 with the
+  // default policy and 2700ppm state threshold derives a live screener
+  // threshold of 1350ppm.
   baselineParentScorePpm: 288438,
   screenerThresholdPpm: 355,
   minImprovementPpm: 2500,
@@ -499,7 +500,7 @@ describe('CoreTexCoordinatorCore — pending receipt lifecycle', () => {
     const evalOk = {
       scorePatch: () => ({
         outcome: 'screener_pass',
-        deterministicDeltaPpm: 500,
+        deterministicDeltaPpm: 1500,
         evalReportHash: '0x' + 'e1'.repeat(32),
         artifactHash: '0x' + 'a1'.repeat(32),
         evaluationProof: dualProofFor(ev.compactPatchBytes),
@@ -551,7 +552,7 @@ describe('CoreTexCoordinatorCore — production submit path', () => {
         calls.push(input);
         return {
           outcome: 'screener_pass',
-          deterministicDeltaPpm: 500,
+          deterministicDeltaPpm: 1500,
           evalReportHash: '0x' + 'e1'.repeat(32),
           artifactHash: '0x' + 'a1'.repeat(32),
           evaluationProof: dualProofFor(ev.compactPatchBytes),
@@ -590,7 +591,7 @@ describe('CoreTexCoordinatorCore — production submit path', () => {
     const acceptedWithoutProof = {
       scorePatch: () => ({
         outcome: 'screener_pass',
-        deterministicDeltaPpm: 500,
+        deterministicDeltaPpm: 1500,
         evalReportHash: '0x' + 'e1'.repeat(32),
         artifactHash: '0x' + 'a1'.repeat(32),
       }),
@@ -605,7 +606,7 @@ describe('CoreTexCoordinatorCore — production submit path', () => {
     const badProof = {
       scorePatch: () => ({
         outcome: 'screener_pass',
-        deterministicDeltaPpm: 500,
+        deterministicDeltaPpm: 1500,
         evalReportHash: '0x' + 'e1'.repeat(32),
         artifactHash: '0x' + 'a1'.repeat(32),
         evaluationProof: dualProofFor(ev.compactPatchBytes, GENESIS_ROOT, { blockhash: '0x' + '00'.repeat(32) }),
@@ -789,7 +790,7 @@ describe('CoreTexCoordinatorCore — production submit path', () => {
     const evalOk = {
       scorePatch: () => ({
         outcome: 'screener_pass',
-        deterministicDeltaPpm: 500,
+        deterministicDeltaPpm: 1500,
         evalReportHash: '0x' + 'e1'.repeat(32),
         artifactHash: '0x' + 'a1'.repeat(32),
         evaluationProof: dualProofFor(ev.compactPatchBytes),

@@ -57,7 +57,8 @@
  *      without it. Each chain-confirmed state advance that matches a receipt
  *      this coordinator signed moves the effective baseline to the accepted
  *      `scoreAfterPpm`; the screener gate derives the live threshold from that
- *      baseline via `computeCoreTexScreenerThresholdPpm` (the configured
+ *      baseline and the real state-advance threshold via
+ *      `computeCoreTexScreenerThresholdPpm` (the configured
  *      `screenerThresholdPpm` is a static floor, not an override). When the
  *      active root changes without a known baseline (foreign advance, corpus /
  *      frontier rotation, orchestrator invalidation), submits are refused with
@@ -321,8 +322,9 @@ export interface CoreTexCoordinatorConfig {
   readonly receiptTtlSec: number;
   readonly perMinerScreenerCap?: number;
   /** Static FLOOR for the live screener threshold. The effective threshold is
-   *  `max(screenerThresholdPpm, computeCoreTexScreenerThresholdPpm(liveBaseline))`
-   *  so the gate tracks the live baseline per the attested policy. */
+   *  `max(screenerThresholdPpm, computeCoreTexScreenerThresholdPpm(liveBaseline,
+   *  stateAdvanceThresholdPpm))` so the gate tracks the live baseline and cannot
+   *  drift far below the state-advance line. */
   readonly screenerThresholdPpm?: number;
   readonly minImprovementPpm?: number;
   readonly replayTolerancePpm?: number;
@@ -853,6 +855,7 @@ export class CoreTexCoordinatorCore {
     const baselineVariancePpm = this.currentBaselineVariancePpm;
     const recentNoiseFloorPpm = this.config.recentNoiseFloorPpm ?? 0;
     const minImprovementPpm = this.config.minImprovementPpm ?? Number(DEFAULT_CORETEX_WORK_POLICY.stateAdvance.minDeterministicDeltaPpm);
+    const stateAdvanceThresholdPpm = this.effectiveStateAdvanceThresholdPpm();
     const screenerThresholdPpm = baselineParentScorePpm === null
       ? null
       : this.effectiveScreenerThresholdPpm(baselineParentScorePpm);
@@ -886,6 +889,7 @@ export class CoreTexCoordinatorCore {
       patchWordBudget: this.config.patchWordBudget ?? 4,
       minImprovementPpm,
       replayTolerancePpm: this.config.replayTolerancePpm ?? 0,
+      stateAdvanceThresholdPpm,
       screenerThresholdPpm,
       baselineScorePpm: baselineParentScorePpm,
       baselineParentScorePpm,
@@ -913,6 +917,7 @@ export class CoreTexCoordinatorCore {
       thresholds: {
         minImprovementPpm,
         replayTolerancePpm: this.config.replayTolerancePpm ?? 0,
+        stateAdvanceThresholdPpm,
         screenerThresholdPpm,
         baselineParentScorePpm,
         baselineState,
@@ -1398,12 +1403,14 @@ export class CoreTexCoordinatorCore {
   }
 
   /** Live screener threshold per the attested policy: derived from the
-   *  effective baseline via computeCoreTexScreenerThresholdPpm, floored by the
-   *  configured static screenerThresholdPpm. */
+   *  effective baseline and real state-advance threshold via
+   *  computeCoreTexScreenerThresholdPpm, floored by the configured static
+   *  screenerThresholdPpm. */
   private effectiveScreenerThresholdPpm(baselinePpm: number): number {
     const computed = Number(computeCoreTexScreenerThresholdPpm({
       baselineScorePpm: baselinePpm,
       recentNoiseFloorPpm: this.config.recentNoiseFloorPpm ?? 0,
+      stateAdvanceThresholdPpm: this.effectiveStateAdvanceThresholdPpm(),
       policy: this.config.workPolicy ?? DEFAULT_CORETEX_WORK_POLICY,
     }));
     return Math.max(this.config.screenerThresholdPpm ?? 0, computed);

@@ -24,6 +24,14 @@ const {
   assertValidCoreTexWorkPolicy,
 } = rewards;
 
+const LAUNCH_STATE_ADVANCE_THRESHOLD_PPM = 2_750;
+
+function legacyDynamicScreenerPolicy() {
+  const policy = structuredClone(DEFAULT_CORETEX_WORK_POLICY);
+  policy.screenerPass.calibration.stateAdvanceThresholdFloorBps = '0';
+  return policy;
+}
+
 describe('CoreTex V4 work-unit policy', () => {
   test('default policy pins V4 lane constants', () => {
     assert.equal(WORK_BPS_DIVISOR, 10_000n);
@@ -31,7 +39,7 @@ describe('CoreTex V4 work-unit policy', () => {
     assert.equal(OUTCOME_CORETEX_SCREENER_PASS, 1);
     assert.equal(OUTCOME_CORETEX_STATE_ADVANCE, 2);
     assert.equal(CORETEX_WORK_RULES_VERSION, 0xC0);
-    assert.equal(DEFAULT_CORETEX_WORK_POLICY.version, 2);
+    assert.equal(DEFAULT_CORETEX_WORK_POLICY.version, 3);
     assert.doesNotThrow(() => assertValidCoreTexWorkPolicy(DEFAULT_CORETEX_WORK_POLICY));
   });
 
@@ -93,48 +101,105 @@ describe('CoreTex V4 work-unit policy', () => {
   });
 
   test('screener threshold adapts to baseline headroom and measured noise', () => {
+    const policy = legacyDynamicScreenerPolicy();
     assert.equal(
-      computeCoreTexScreenerThresholdPpm({ baselineScorePpm: 0, recentNoiseFloorPpm: 0 }),
+      computeCoreTexScreenerThresholdPpm({ baselineScorePpm: 0, recentNoiseFloorPpm: 0, policy }),
       500n,
     );
     assert.equal(
-      computeCoreTexScreenerThresholdPpm({ baselineScorePpm: 900_000, recentNoiseFloorPpm: 0 }),
+      computeCoreTexScreenerThresholdPpm({ baselineScorePpm: 900_000, recentNoiseFloorPpm: 0, policy }),
       50n,
     );
     assert.equal(
-      computeCoreTexScreenerThresholdPpm({ baselineScorePpm: 900_000, recentNoiseFloorPpm: 80 }),
+      computeCoreTexScreenerThresholdPpm({ baselineScorePpm: 900_000, recentNoiseFloorPpm: 80, policy }),
       160n,
     );
     assert.equal(
-      computeCoreTexScreenerThresholdPpm({ baselineScorePpm: 0, recentNoiseFloorPpm: 10_000 }),
-      5_000n,
+      computeCoreTexScreenerThresholdPpm({ baselineScorePpm: 0, recentNoiseFloorPpm: 10_000, policy }),
+      20_000n,
+    );
+  });
+
+  test('state-threshold floor fails closed when the real state threshold is absent', () => {
+    assert.throws(
+      () => computeCoreTexScreenerThresholdPpm({ baselineScorePpm: 288_438, recentNoiseFloorPpm: 0 }),
+      /stateAdvanceThresholdPpm is required/,
+    );
+    assert.throws(
+      () => computeCoreTexScreenerThresholdPpm({
+        baselineScorePpm: 288_438,
+        recentNoiseFloorPpm: 0,
+        stateAdvanceThresholdPpm: 0,
+      }),
+      /stateAdvanceThresholdPpm must be positive/,
+    );
+  });
+
+  test('screener threshold is floored by the real state-advance threshold when supplied', () => {
+    const launchStateThreshold = 2_750n;
+    const expectedFloor = 1_375n;
+    assert.equal(
+      computeCoreTexScreenerThresholdPpm({
+        baselineScorePpm: 288_438,
+        recentNoiseFloorPpm: 0,
+        stateAdvanceThresholdPpm: launchStateThreshold,
+      }),
+      expectedFloor,
+    );
+    assert.equal(
+      computeCoreTexScreenerThresholdPpm({
+        baselineScorePpm: 900_000,
+        recentNoiseFloorPpm: 0,
+        stateAdvanceThresholdPpm: launchStateThreshold,
+      }),
+      expectedFloor,
+    );
+    assert.equal(
+      computeCoreTexScreenerThresholdPpm({
+        baselineScorePpm: 900_000,
+        recentNoiseFloorPpm: 1_000,
+        stateAdvanceThresholdPpm: launchStateThreshold,
+      }),
+      2_000n,
+    );
+    assert.equal(
+      computeCoreTexScreenerThresholdPpm({
+        baselineScorePpm: 900_000,
+        recentNoiseFloorPpm: 1_000_000,
+        stateAdvanceThresholdPpm: launchStateThreshold,
+      }),
+      launchStateThreshold,
+      'probe/noise hardening cannot push the screener above the state-advance threshold',
     );
   });
 
   test('screener threshold moves monotonically with baseline improvement', () => {
+    const policy = legacyDynamicScreenerPolicy();
     // Better baseline score => less remaining headroom => lower required threshold.
-    const t0 = computeCoreTexScreenerThresholdPpm({ baselineScorePpm: 0, recentNoiseFloorPpm: 0 });
-    const t25 = computeCoreTexScreenerThresholdPpm({ baselineScorePpm: 250_000, recentNoiseFloorPpm: 0 });
-    const t50 = computeCoreTexScreenerThresholdPpm({ baselineScorePpm: 500_000, recentNoiseFloorPpm: 0 });
-    const t75 = computeCoreTexScreenerThresholdPpm({ baselineScorePpm: 750_000, recentNoiseFloorPpm: 0 });
-    const t90 = computeCoreTexScreenerThresholdPpm({ baselineScorePpm: 900_000, recentNoiseFloorPpm: 0 });
+    const t0 = computeCoreTexScreenerThresholdPpm({ baselineScorePpm: 0, recentNoiseFloorPpm: 0, policy });
+    const t25 = computeCoreTexScreenerThresholdPpm({ baselineScorePpm: 250_000, recentNoiseFloorPpm: 0, policy });
+    const t50 = computeCoreTexScreenerThresholdPpm({ baselineScorePpm: 500_000, recentNoiseFloorPpm: 0, policy });
+    const t75 = computeCoreTexScreenerThresholdPpm({ baselineScorePpm: 750_000, recentNoiseFloorPpm: 0, policy });
+    const t90 = computeCoreTexScreenerThresholdPpm({ baselineScorePpm: 900_000, recentNoiseFloorPpm: 0, policy });
 
     assert.ok(t0 >= t25 && t25 >= t50 && t50 >= t75 && t75 >= t90);
     assert.deepEqual([t0, t25, t50, t75, t90], [500n, 375n, 250n, 125n, 50n]);
   });
 
   test('screener threshold rises monotonically with measured noise', () => {
-    const t0 = computeCoreTexScreenerThresholdPpm({ baselineScorePpm: 900_000, recentNoiseFloorPpm: 0 });
-    const t10 = computeCoreTexScreenerThresholdPpm({ baselineScorePpm: 900_000, recentNoiseFloorPpm: 10 });
-    const t40 = computeCoreTexScreenerThresholdPpm({ baselineScorePpm: 900_000, recentNoiseFloorPpm: 40 });
-    const t80 = computeCoreTexScreenerThresholdPpm({ baselineScorePpm: 900_000, recentNoiseFloorPpm: 80 });
-    const t120 = computeCoreTexScreenerThresholdPpm({ baselineScorePpm: 900_000, recentNoiseFloorPpm: 120 });
+    const policy = legacyDynamicScreenerPolicy();
+    const t0 = computeCoreTexScreenerThresholdPpm({ baselineScorePpm: 900_000, recentNoiseFloorPpm: 0, policy });
+    const t10 = computeCoreTexScreenerThresholdPpm({ baselineScorePpm: 900_000, recentNoiseFloorPpm: 10, policy });
+    const t40 = computeCoreTexScreenerThresholdPpm({ baselineScorePpm: 900_000, recentNoiseFloorPpm: 40, policy });
+    const t80 = computeCoreTexScreenerThresholdPpm({ baselineScorePpm: 900_000, recentNoiseFloorPpm: 80, policy });
+    const t120 = computeCoreTexScreenerThresholdPpm({ baselineScorePpm: 900_000, recentNoiseFloorPpm: 120, policy });
 
     assert.ok(t0 <= t10 && t10 <= t40 && t40 <= t80 && t80 <= t120);
     assert.deepEqual([t0, t10, t40, t80, t120], [50n, 50n, 80n, 160n, 240n]);
   });
 
   test('screener threshold eases only the headroom component under state-advance plateau pressure', () => {
+    const policy = legacyDynamicScreenerPolicy();
     assert.equal(
       computeCoreTexScreenerThresholdPpm({
         baselineScorePpm: 0,
@@ -142,6 +207,7 @@ describe('CoreTex V4 work-unit policy', () => {
         targetStateAdvances: 2,
         recentStateAdvances: 0,
         recentScreenerPasses: 1,
+        policy,
       }),
       375n,
     );
@@ -152,6 +218,7 @@ describe('CoreTex V4 work-unit policy', () => {
         targetStateAdvances: 2,
         recentStateAdvances: 0,
         recentScreenerPasses: 2,
+        policy,
       }),
       250n,
     );
@@ -162,6 +229,7 @@ describe('CoreTex V4 work-unit policy', () => {
         targetStateAdvances: 2,
         recentStateAdvances: 0,
         recentScreenerPasses: 2,
+        policy,
       }),
       600n,
       'clean-noise floor is never eased away',
@@ -169,11 +237,13 @@ describe('CoreTex V4 work-unit policy', () => {
   });
 
   test('screener threshold hardens when random or hillclimb probes pass', () => {
+    const policy = legacyDynamicScreenerPolicy();
     assert.equal(
       computeCoreTexScreenerThresholdPpm({
         baselineScorePpm: 0,
         recentNoiseFloorPpm: 0,
         recentProbePassRatePpm: 50_000,
+        policy,
       }),
       550n,
     );
@@ -182,21 +252,23 @@ describe('CoreTex V4 work-unit policy', () => {
         baselineScorePpm: 0,
         recentNoiseFloorPpm: 0,
         recentProbePassRatePpm: 1_000_000,
+        policy,
       }),
       1_500n,
     );
   });
 
   test('screener threshold hard-clamps at policy min and max', () => {
+    const policy = legacyDynamicScreenerPolicy();
     // minDelta clamp (50ppm default)
     assert.equal(
-      computeCoreTexScreenerThresholdPpm({ baselineScorePpm: 999_999, recentNoiseFloorPpm: 0 }),
+      computeCoreTexScreenerThresholdPpm({ baselineScorePpm: 999_999, recentNoiseFloorPpm: 0, policy }),
       50n,
     );
-    // maxThreshold clamp (5000ppm default)
+    // maxThreshold clamp (150000ppm default)
     assert.equal(
-      computeCoreTexScreenerThresholdPpm({ baselineScorePpm: 0, recentNoiseFloorPpm: 1_000_000 }),
-      5_000n,
+      computeCoreTexScreenerThresholdPpm({ baselineScorePpm: 0, recentNoiseFloorPpm: 1_000_000, policy }),
+      150_000n,
     );
   });
 
@@ -204,12 +276,13 @@ describe('CoreTex V4 work-unit policy', () => {
     assert.deepEqual(
       evaluateCoreTexWorkQualification({
         outcome: OUTCOME_CORETEX_SCREENER_PASS,
-        deterministicDeltaPpm: 500,
+        deterministicDeltaPpm: 1_375,
         baselineScorePpm: 0,
+        stateAdvanceThresholdPpm: LAUNCH_STATE_ADVANCE_THRESHOLD_PPM,
         localModelDeltaPpm: 0,
         parentMatchesLiveRoot: true,
       }),
-      { qualified: true, reason: 'OK', workUnitsBps: 10_000n, requiredDeterministicDeltaPpm: 500n },
+      { qualified: true, reason: 'OK', workUnitsBps: 10_000n, requiredDeterministicDeltaPpm: 1_375n },
     );
 
     assert.equal(
@@ -226,6 +299,7 @@ describe('CoreTex V4 work-unit policy', () => {
         outcome: OUTCOME_CORETEX_SCREENER_PASS,
         deterministicDeltaPpm: 0,
         baselineScorePpm: 0,
+        stateAdvanceThresholdPpm: LAUNCH_STATE_ADVANCE_THRESHOLD_PPM,
         parentMatchesLiveRoot: true,
       }).reason,
       'W03_DETERMINISTIC_DELTA_TOO_LOW',
@@ -236,6 +310,7 @@ describe('CoreTex V4 work-unit policy', () => {
         outcome: OUTCOME_CORETEX_SCREENER_PASS,
         deterministicDeltaPpm: 49,
         baselineScorePpm: 900_000,
+        stateAdvanceThresholdPpm: LAUNCH_STATE_ADVANCE_THRESHOLD_PPM,
         parentMatchesLiveRoot: true,
       }).reason,
       'W03_DETERMINISTIC_DELTA_TOO_LOW',
@@ -245,12 +320,14 @@ describe('CoreTex V4 work-unit policy', () => {
     const dynamicThreshold = computeCoreTexScreenerThresholdPpm({
       baselineScorePpm: 900_000,
       recentNoiseFloorPpm: 80,
+      stateAdvanceThresholdPpm: LAUNCH_STATE_ADVANCE_THRESHOLD_PPM,
     });
     const passAtThreshold = evaluateCoreTexWorkQualification({
       outcome: OUTCOME_CORETEX_SCREENER_PASS,
       deterministicDeltaPpm: Number(dynamicThreshold),
       baselineScorePpm: 900_000,
       recentNoiseFloorPpm: 80,
+      stateAdvanceThresholdPpm: LAUNCH_STATE_ADVANCE_THRESHOLD_PPM,
       parentMatchesLiveRoot: true,
     });
     const failBelowThreshold = evaluateCoreTexWorkQualification({
@@ -258,6 +335,7 @@ describe('CoreTex V4 work-unit policy', () => {
       deterministicDeltaPpm: Number(dynamicThreshold - 1n),
       baselineScorePpm: 900_000,
       recentNoiseFloorPpm: 80,
+      stateAdvanceThresholdPpm: LAUNCH_STATE_ADVANCE_THRESHOLD_PPM,
       parentMatchesLiveRoot: true,
     });
     assert.equal(passAtThreshold.qualified, true);
@@ -267,24 +345,26 @@ describe('CoreTex V4 work-unit policy', () => {
 
     const plateauEasedPass = evaluateCoreTexWorkQualification({
       outcome: OUTCOME_CORETEX_SCREENER_PASS,
-      deterministicDeltaPpm: 250,
+      deterministicDeltaPpm: 1_375,
       baselineScorePpm: 0,
       recentNoiseFloorPpm: 0,
+      stateAdvanceThresholdPpm: LAUNCH_STATE_ADVANCE_THRESHOLD_PPM,
       targetStateAdvances: 2,
       recentStateAdvances: 0,
       recentScreenerPasses: 2,
       parentMatchesLiveRoot: true,
     });
     assert.equal(plateauEasedPass.qualified, true);
-    assert.equal(plateauEasedPass.requiredDeterministicDeltaPpm, 250n);
+    assert.equal(plateauEasedPass.requiredDeterministicDeltaPpm, 1_375n);
   });
 
   test('state advance requires live advance and local model no-regression', () => {
     assert.equal(
       evaluateCoreTexWorkQualification({
         outcome: OUTCOME_CORETEX_STATE_ADVANCE,
-        deterministicDeltaPpm: 500,
+        deterministicDeltaPpm: LAUNCH_STATE_ADVANCE_THRESHOLD_PPM,
         baselineScorePpm: 0,
+        stateAdvanceThresholdPpm: LAUNCH_STATE_ADVANCE_THRESHOLD_PPM,
         localModelDeltaPpm: 0,
         parentMatchesLiveRoot: true,
         liveStateAdvanced: false,
@@ -295,8 +375,9 @@ describe('CoreTex V4 work-unit policy', () => {
     assert.equal(
       evaluateCoreTexWorkQualification({
         outcome: OUTCOME_CORETEX_STATE_ADVANCE,
-        deterministicDeltaPpm: 500,
+        deterministicDeltaPpm: LAUNCH_STATE_ADVANCE_THRESHOLD_PPM,
         baselineScorePpm: 0,
+        stateAdvanceThresholdPpm: LAUNCH_STATE_ADVANCE_THRESHOLD_PPM,
         localModelDeltaPpm: -1,
         parentMatchesLiveRoot: true,
         liveStateAdvanced: true,
@@ -307,48 +388,52 @@ describe('CoreTex V4 work-unit policy', () => {
     assert.deepEqual(
       evaluateCoreTexWorkQualification({
         outcome: OUTCOME_CORETEX_STATE_ADVANCE,
-        deterministicDeltaPpm: 500,
+        deterministicDeltaPpm: LAUNCH_STATE_ADVANCE_THRESHOLD_PPM,
         baselineScorePpm: 0,
+        stateAdvanceThresholdPpm: LAUNCH_STATE_ADVANCE_THRESHOLD_PPM,
         localModelDeltaPpm: 0,
         parentMatchesLiveRoot: true,
         liveStateAdvanced: true,
         qualifiedScreenerPassesSinceLastStateAdvance: 500,
       }),
-      { qualified: true, reason: 'OK', workUnitsBps: 120_000n, requiredDeterministicDeltaPpm: 500n },
+      { qualified: true, reason: 'OK', workUnitsBps: 120_000n, requiredDeterministicDeltaPpm: 2_750n },
     );
 
-    // State-advance minimum deterministic delta uses max(policy.min, screenerThreshold).
+    // State-advance minimum deterministic delta uses max(policy.min, screenerThreshold, real state threshold).
     const withLowNoise = evaluateCoreTexWorkQualification({
       outcome: OUTCOME_CORETEX_STATE_ADVANCE,
-      deterministicDeltaPpm: 499,
+      deterministicDeltaPpm: 2_749,
       baselineScorePpm: 0,
       recentNoiseFloorPpm: 0,
+      stateAdvanceThresholdPpm: LAUNCH_STATE_ADVANCE_THRESHOLD_PPM,
       localModelDeltaPpm: 0,
       parentMatchesLiveRoot: true,
       liveStateAdvanced: true,
     });
     const withHighNoise = evaluateCoreTexWorkQualification({
       outcome: OUTCOME_CORETEX_STATE_ADVANCE,
-      deterministicDeltaPpm: 4_999,
+      deterministicDeltaPpm: 2_749,
       baselineScorePpm: 0,
       recentNoiseFloorPpm: 50_000,
+      stateAdvanceThresholdPpm: LAUNCH_STATE_ADVANCE_THRESHOLD_PPM,
       localModelDeltaPpm: 0,
       parentMatchesLiveRoot: true,
       liveStateAdvanced: true,
     });
 
     assert.equal(withLowNoise.reason, 'W03_DETERMINISTIC_DELTA_TOO_LOW');
-    assert.equal(withLowNoise.requiredDeterministicDeltaPpm, 500n);
+    assert.equal(withLowNoise.requiredDeterministicDeltaPpm, 2_750n);
     assert.equal(withHighNoise.reason, 'W03_DETERMINISTIC_DELTA_TOO_LOW');
-    assert.equal(withHighNoise.requiredDeterministicDeltaPpm, 5_000n);
+    assert.equal(withHighNoise.requiredDeterministicDeltaPpm, 2_750n);
   });
 
   test('relevant near-collision scorer is a gate, not a reward shortcut', () => {
     assert.equal(
       evaluateCoreTexWorkQualification({
         outcome: OUTCOME_CORETEX_SCREENER_PASS,
-        deterministicDeltaPpm: 500,
+        deterministicDeltaPpm: 5_000,
         baselineScorePpm: 0,
+        stateAdvanceThresholdPpm: LAUNCH_STATE_ADVANCE_THRESHOLD_PPM,
         localModelDeltaPpm: 0,
         relevantNearCollisionPpm: 250_001,
         parentMatchesLiveRoot: true,

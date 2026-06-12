@@ -61,6 +61,7 @@ import {
   type CoreTexPostRevealEvalReportArtifact,
 } from '../replay/eval-report-artifact.js';
 import { rpcFetchTarget } from '../replay/v4.js';
+import { computeCoreTexScreenerThresholdPpm } from '../rewards/work-units.js';
 import {
   runPerPatchEvaluation,
   dualPackProofFromPerPatchReceipt,
@@ -392,6 +393,10 @@ export interface ProductionCoreTexEvaluatorOptions {
   readonly perMinerCap: number;
   readonly rpcClient?: BaseRpcClient;
   readonly targetBlockOffset?: number;
+  /** Baseline/noise inputs used only when no explicit screenerThresholdPpm is
+   *  supplied. Coordinator core normally ships the live threshold per job. */
+  readonly baselineScorePpm?: number;
+  readonly recentNoiseFloorPpm?: number;
   readonly screenerThresholdPpm?: number;
   /** Publish hook for the canonical eval-report artifact. Called BEFORE the
    *  accepted result is returned; a publish failure fails the evaluation
@@ -729,7 +734,11 @@ export async function createProductionCoreTexEvaluator(
     retrievalKeyLayout: layout,
   });
   const stateThresholdPpm = computeAcceptanceThresholdPpm(profile);
-  const screenerThresholdPpm = options.screenerThresholdPpm ?? Math.min(stateThresholdPpm, 355);
+  const screenerThresholdPpm = options.screenerThresholdPpm ?? Number(computeCoreTexScreenerThresholdPpm({
+    baselineScorePpm: options.baselineScorePpm ?? profile.baselineParentScorePpm ?? 0,
+    recentNoiseFloorPpm: options.recentNoiseFloorPpm ?? 0,
+    stateAdvanceThresholdPpm: stateThresholdPpm,
+  }));
 
   const closable = reranker as CrossEncoderReranker & { close?: () => Promise<void> };
   return createCoreTexEvaluatorCore({

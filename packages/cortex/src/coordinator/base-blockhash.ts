@@ -17,6 +17,8 @@
  * No I/O at import time. Construct via `createBaseRpcClient(rpcUrl)`.
  */
 
+import { rpcFetchTarget } from '../replay/v4.js';
+
 export interface BaseBlockResponse {
   /** Block number as a plain JS number (safe up to ~2^53, Base block
    * heights stay well under that for decades). */
@@ -70,9 +72,10 @@ export function createBaseRpcClient(
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), requestTimeoutMs);
     try {
-      const res = await doFetch(rpcUrl, {
+      const { url, headers } = rpcFetchTarget(rpcUrl);
+      const res = await doFetch(url, {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers,
         body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
         signal: controller.signal,
       });

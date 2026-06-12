@@ -45,6 +45,12 @@ export interface CoreTexWorkPolicy {
       readonly remainingHeadroomBps: string | bigint | number;
       readonly noiseFloorMultiplierBps: string | bigint | number;
       readonly plateauEasingMaxBps: string | bigint | number;
+      /**
+       * Floor the screener threshold as a fraction of the real state-advance
+       * acceptance threshold. This keeps screeners easier than advances while
+       * preventing them from becoming cheap credit as baseline headroom shrinks.
+       */
+      readonly stateAdvanceThresholdFloorBps?: string | bigint | number;
       readonly antiGamingProbeMultiplierBps: string | bigint | number;
       readonly maxAntiGamingPenaltyBps: string | bigint | number;
       readonly maxThresholdPpm: string | bigint | number;
@@ -68,7 +74,7 @@ export interface CoreTexWorkPolicy {
 
 export const DEFAULT_CORETEX_WORK_POLICY: CoreTexWorkPolicy = Object.freeze({
   name: 'botcoin-coretex-work-policy',
-  version: 2,
+  version: 3,
   rulesVersion: CORTEX_RULES_VERSION,
   lane: LANE_CORETEX,
   bpsDivisor: '10000',
@@ -83,9 +89,10 @@ export const DEFAULT_CORETEX_WORK_POLICY: CoreTexWorkPolicy = Object.freeze({
       remainingHeadroomBps: '5',
       noiseFloorMultiplierBps: '20000',
       plateauEasingMaxBps: '5000',
+      stateAdvanceThresholdFloorBps: '5000',
       antiGamingProbeMultiplierBps: '20000',
       maxAntiGamingPenaltyBps: '50000',
-      maxThresholdPpm: '5000',
+      maxThresholdPpm: '150000',
     }),
   }),
   stateAdvance: Object.freeze({
@@ -124,6 +131,7 @@ export interface CoreTexWorkQualificationInput extends ComputeCoreTexWorkUnitsIn
   readonly recentStateAdvances?: string | bigint | number;
   readonly targetStateAdvances?: string | bigint | number;
   readonly recentProbePassRatePpm?: string | bigint | number;
+  readonly stateAdvanceThresholdPpm?: string | bigint | number;
   readonly localModelDeltaPpm?: string | bigint | number;
   readonly relevantNearCollisionPpm?: string | bigint | number;
   readonly parentMatchesLiveRoot: boolean;
@@ -160,6 +168,11 @@ export interface ComputeCoreTexScreenerThresholdInput {
    * raises the threshold; clean probes leave the threshold unchanged.
    */
   readonly recentProbePassRatePpm?: string | bigint | number;
+  /**
+   * The real state-advance acceptance threshold in ppm:
+   * minImprovementPpm + replayTolerancePpm + production baselineVariancePpm.
+   */
+  readonly stateAdvanceThresholdPpm?: string | bigint | number;
   readonly policy?: CoreTexWorkPolicy;
 }
 
@@ -209,6 +222,20 @@ export function computeCoreTexScreenerThresholdPpm(input: ComputeCoreTexScreener
   const noiseDelta =
     (toBigInt(input.recentNoiseFloorPpm ?? 0n, 'recentNoiseFloorPpm')
       * toBigInt(calibration.noiseFloorMultiplierBps, 'screenerPass.calibration.noiseFloorMultiplierBps')) / WORK_BPS_DIVISOR;
+  const stateAdvanceFloorBps = toBigInt(
+    calibration.stateAdvanceThresholdFloorBps ?? 0n,
+    'screenerPass.calibration.stateAdvanceThresholdFloorBps',
+  );
+  if (stateAdvanceFloorBps > 0n && input.stateAdvanceThresholdPpm === undefined) {
+    throw new RangeError('stateAdvanceThresholdPpm is required when stateAdvanceThresholdFloorBps is enabled');
+  }
+  const stateAdvanceThreshold = toBigInt(input.stateAdvanceThresholdPpm ?? 0n, 'stateAdvanceThresholdPpm');
+  if (stateAdvanceFloorBps > 0n && stateAdvanceThreshold <= 0n) {
+    throw new RangeError('stateAdvanceThresholdPpm must be positive when stateAdvanceThresholdFloorBps is enabled');
+  }
+  const stateAdvanceFloorDelta = stateAdvanceThreshold > 0n && stateAdvanceFloorBps > 0n
+    ? ceilDiv(stateAdvanceThreshold * stateAdvanceFloorBps, WORK_BPS_DIVISOR)
+    : 0n;
   const plateauEasingMaxBps = toBigInt(calibration.plateauEasingMaxBps, 'screenerPass.calibration.plateauEasingMaxBps');
   let adjustedHeadroomDelta = headroomDelta;
   const targetStateAdvances = toBigInt(input.targetStateAdvances ?? 0n, 'targetStateAdvances');
@@ -232,9 +259,10 @@ export function computeCoreTexScreenerThresholdPpm(input: ComputeCoreTexScreener
   );
   const maxThreshold = toBigInt(calibration.maxThresholdPpm, 'screenerPass.calibration.maxThresholdPpm');
 
-  const rawThreshold = max(minDelta, max(adjustedHeadroomDelta, noiseDelta));
+  const rawThreshold = max(max(minDelta, stateAdvanceFloorDelta), max(adjustedHeadroomDelta, noiseDelta));
   const penalizedThreshold = (rawThreshold * (WORK_BPS_DIVISOR + antiGamingPenaltyBps)) / WORK_BPS_DIVISOR;
-  return min(penalizedThreshold, maxThreshold);
+  const dynamicCeiling = stateAdvanceThreshold > 0n ? min(maxThreshold, stateAdvanceThreshold) : maxThreshold;
+  return min(penalizedThreshold, dynamicCeiling);
 }
 
 export function evaluateCoreTexWorkQualification(input: CoreTexWorkQualificationInput): CoreTexWorkQualification {
@@ -258,6 +286,7 @@ export function evaluateCoreTexWorkQualification(input: CoreTexWorkQualification
     recentStateAdvances?: string | bigint | number;
     targetStateAdvances?: string | bigint | number;
     recentProbePassRatePpm?: string | bigint | number;
+    stateAdvanceThresholdPpm?: string | bigint | number;
     policy: CoreTexWorkPolicy;
   } = { policy };
   if (input.baselineScorePpm !== undefined) thresholdInput.baselineScorePpm = input.baselineScorePpm;
@@ -266,9 +295,16 @@ export function evaluateCoreTexWorkQualification(input: CoreTexWorkQualification
   if (input.recentStateAdvances !== undefined) thresholdInput.recentStateAdvances = input.recentStateAdvances;
   if (input.targetStateAdvances !== undefined) thresholdInput.targetStateAdvances = input.targetStateAdvances;
   if (input.recentProbePassRatePpm !== undefined) thresholdInput.recentProbePassRatePpm = input.recentProbePassRatePpm;
+  if (input.stateAdvanceThresholdPpm !== undefined) thresholdInput.stateAdvanceThresholdPpm = input.stateAdvanceThresholdPpm;
   const screenerThreshold = computeCoreTexScreenerThresholdPpm(thresholdInput);
+  const stateAdvanceThreshold = input.stateAdvanceThresholdPpm !== undefined
+    ? toBigInt(input.stateAdvanceThresholdPpm, 'stateAdvanceThresholdPpm')
+    : 0n;
   const minDeterministic = isStateAdvance
-    ? max(toBigInt(policy.stateAdvance.minDeterministicDeltaPpm, 'stateAdvance.minDeterministicDeltaPpm'), screenerThreshold)
+    ? max(max(
+        toBigInt(policy.stateAdvance.minDeterministicDeltaPpm, 'stateAdvance.minDeterministicDeltaPpm'),
+        screenerThreshold,
+      ), stateAdvanceThreshold)
     : screenerThreshold;
   const minLocal = toBigInt(
     isStateAdvance ? policy.stateAdvance.minLocalModelDeltaPpm : policy.screenerPass.minLocalModelDeltaPpm,
@@ -329,6 +365,10 @@ export function assertValidCoreTexWorkPolicy(policy: CoreTexWorkPolicy): void {
   const minDelta = toBigInt(calibration.minDeltaPpm, 'screenerPass.calibration.minDeltaPpm');
   const maxThreshold = toBigInt(calibration.maxThresholdPpm, 'screenerPass.calibration.maxThresholdPpm');
   const plateauEasingMaxBps = toBigInt(calibration.plateauEasingMaxBps, 'screenerPass.calibration.plateauEasingMaxBps');
+  const stateAdvanceThresholdFloorBps = toBigInt(
+    calibration.stateAdvanceThresholdFloorBps ?? 0n,
+    'screenerPass.calibration.stateAdvanceThresholdFloorBps',
+  );
   const maxAntiGamingPenaltyBps = toBigInt(calibration.maxAntiGamingPenaltyBps, 'screenerPass.calibration.maxAntiGamingPenaltyBps');
   if (scoreScale !== 1_000_000n) throw new RangeError('scoreScalePpm must be 1000000');
   if (minDelta < 10n) throw new RangeError('screener minimum delta is too low');
@@ -341,6 +381,9 @@ export function assertValidCoreTexWorkPolicy(policy: CoreTexWorkPolicy): void {
   }
   if (plateauEasingMaxBps > WORK_BPS_DIVISOR) {
     throw new RangeError('plateauEasingMaxBps must be <= 10000');
+  }
+  if (stateAdvanceThresholdFloorBps > WORK_BPS_DIVISOR) {
+    throw new RangeError('stateAdvanceThresholdFloorBps must be <= 10000');
   }
   if (toBigInt(calibration.antiGamingProbeMultiplierBps, 'screenerPass.calibration.antiGamingProbeMultiplierBps') === 0n) {
     throw new RangeError('antiGamingProbeMultiplierBps must be positive');
@@ -417,3 +460,7 @@ function clamp(value: bigint, lo: bigint, hi: bigint): bigint {
   return min(max(value, lo), hi);
 }
 
+function ceilDiv(numerator: bigint, denominator: bigint): bigint {
+  if (denominator <= 0n) throw new RangeError('ceilDiv denominator must be positive');
+  return (numerator + denominator - 1n) / denominator;
+}

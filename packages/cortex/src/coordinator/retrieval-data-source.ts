@@ -255,6 +255,7 @@ function sanitizeStatusResponse(raw: unknown, manifestBundleHash: string): Recor
   copyNonNegativeIntField(out, r, 'rulesVersion');
   copyNonNegativeIntField(out, r, 'minImprovementPpm');
   copyNonNegativeIntField(out, r, 'replayTolerancePpm');
+  copyNonNegativeIntField(out, r, 'stateAdvanceThresholdPpm');
   copyNonNegativeIntField(out, r, 'screenerThresholdPpm');
   copyNonNegativeIntField(out, r, 'patchWordBudget');
   copyNonNegativeIntField(out, r, 'perMinerScreenerCap');

@@ -20,6 +20,7 @@ export interface EpochRotationManifest {
   readonly challengeBookHash: string;
   readonly bundleHash: string;
   readonly minImprovementPpm: number;
+  readonly stateAdvanceThresholdPpm?: number;
   readonly baselineParentScorePpm?: number;
   readonly baselineVariancePpm?: number;
   readonly baselineVarianceSource?: 'rotating_pack' | 'broad_sampling' | 'unavailable';
@@ -44,6 +45,7 @@ export interface BuildEpochRotationManifestOptions {
   readonly challengeBook: unknown;
   readonly bundleHash: string;
   readonly minImprovementPpm: number;
+  readonly stateAdvanceThresholdPpm?: number;
   readonly baselineParentScorePpm?: number;
   readonly baselineVariancePpm?: number;
   readonly baselineVarianceSource?: 'rotating_pack' | 'broad_sampling' | 'unavailable';
@@ -73,6 +75,7 @@ export function buildEpochRotationManifest(opts: BuildEpochRotationManifestOptio
     challengeBookHash: hashJson(opts.challengeBook),
     bundleHash: opts.bundleHash.toLowerCase(),
     minImprovementPpm: opts.minImprovementPpm,
+    ...(opts.stateAdvanceThresholdPpm !== undefined ? { stateAdvanceThresholdPpm: opts.stateAdvanceThresholdPpm } : {}),
     ...(opts.baselineParentScorePpm !== undefined ? { baselineParentScorePpm: opts.baselineParentScorePpm } : {}),
     ...(opts.baselineVariancePpm !== undefined ? { baselineVariancePpm: opts.baselineVariancePpm } : {}),
     ...(opts.baselineVarianceSource !== undefined ? { baselineVarianceSource: opts.baselineVarianceSource } : {}),
