@@ -15,7 +15,7 @@ env:
 # test/e2e/ tree and always exited 0), a fork test contract that does not exist
 # (CortexForkTest), and a context.md convention this repo never adopted — all
 # permanently green while testing nothing. The real coverage they carried
-# (cortex-py pytest, from the old e2e-phase-1b job) lives in python-tests below.
+# (coretex-py pytest, from the old e2e-phase-1b job) lives in python-tests below.
 
 jobs:
   lint-type-unit:
@@ -36,7 +36,7 @@ jobs:
       - run: npm run test:unit --if-present
 
   python-tests:
-    name: Python cross-impl parity (cortex-py)
+    name: Python cross-impl parity (coretex-py)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -45,10 +45,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.10"
-      - name: Install Python cortex-py deps
+      - name: Install Python coretex-py deps
         run: pip install pycryptodome pytest
       - name: Python unit tests
-        run: python3 -m pytest packages/cortex-py/cortex_py/tests/ -v
+        run: python3 -m pytest packages/coretex-py/coretex_py/tests/ -v
 
   contracts:
     name: Contracts (forge)

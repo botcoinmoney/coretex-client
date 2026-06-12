@@ -1,0 +1,137 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://botcoinmoney.github.io/cortex/specs/coretex_schema.json",
+  "title": "CoreTex state — typed slot schema",
+  "description": "Full typed slot registry for all 1024 words of CoreTex state. Each slot is described by its word index, bit range (hi:lo, both inclusive), field name, type, and description. Reserved bits are all fields not listed; they MUST be zero. All values are big-endian.",
+  "type": "object",
+  "required": ["version", "wordCount", "ranges", "slots"],
+  "additionalProperties": false,
+  "properties": {
+    "version": { "const": "current" },
+    "wordCount": { "const": 1024 },
+    "ranges": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "header",
+        "memoryIndex",
+        "retrievalKeys",
+        "relations",
+        "temporal",
+        "codebook",
+        "reserved"
+      ],
+      "properties": {
+        "header":        { "$ref": "#/$defs/range", "description": "Protocol header, schema hash fragments, score counters, epoch metadata" },
+        "memoryIndex":   { "$ref": "#/$defs/range", "description": "Memory-object index slots" },
+        "retrievalKeys": { "$ref": "#/$defs/range", "description": "Binary / multi-vector retrieval keys" },
+        "relations":     { "$ref": "#/$defs/range", "description": "Relation and routing weights" },
+        "temporal":      { "$ref": "#/$defs/range", "description": "Temporal validity / revocation map" },
+        "codebook":      { "$ref": "#/$defs/range", "description": "Codebook / operator table" },
+        "reserved":      { "$ref": "#/$defs/range", "description": "Reserved / experimental / future compatibility; all bits MUST be zero" }
+      }
+    },
+    "slots": {
+      "type": "array",
+      "description": "Flat list of all named typed fields. Reserved gaps are implied by absence.",
+      "items": { "$ref": "#/$defs/slot" }
+    },
+    "errorCodes": {
+      "type": "object",
+      "description": "Stable error code registry for the rejection taxonomy.",
+      "additionalProperties": { "type": "string" }
+    },
+    "patchTypes": {
+      "type": "array",
+      "description": "Valid patch type codes.",
+      "items": { "$ref": "#/$defs/patchType" }
+    }
+  },
+  "$defs": {
+    "range": {
+      "type": "object",
+      "required": ["start", "end"],
+      "additionalProperties": false,
+      "properties": {
+        "start": { "type": "integer", "minimum": 0, "maximum": 1023 },
+        "end":   { "type": "integer", "minimum": 0, "maximum": 1023 }
+      }
+    },
+    "slot": {
+      "type": "object",
+      "required": ["word", "bitsHi", "bitsLo", "name", "fieldType", "range", "description"],
+      "additionalProperties": false,
+      "properties": {
+        "word":        { "type": "integer", "minimum": 0, "maximum": 1023 },
+        "bitsHi":      { "type": "integer", "minimum": 0, "maximum": 255 },
+        "bitsLo":      { "type": "integer", "minimum": 0, "maximum": 255 },
+        "name":        { "type": "string" },
+        "fieldType":   { "enum": ["uint8","uint16","uint32","uint64","uint128","bytes32","bool","reserved"] },
+        "range":       { "enum": ["header","memoryIndex","retrievalKeys","relations","temporal","codebook","reserved"] },
+        "description": { "type": "string" },
+        "fixedValue":  { "type": "integer", "description": "If present, the only valid value for this field" }
+      }
+    },
+    "patchType": {
+      "type": "object",
+      "required": ["code", "name", "description"],
+      "additionalProperties": false,
+      "properties": {
+        "code":        { "type": "integer", "minimum": 0, "maximum": 255 },
+        "name":        { "type": "string" },
+        "description": { "type": "string" }
+      }
+    }
+  },
+
+  "x-ranges": {
+    "header":        { "start": 0,   "end": 31 },
+    "memoryIndex":   { "start": 32,  "end": 383 },
+    "retrievalKeys": { "start": 384, "end": 671 },
+    "relations":     { "start": 672, "end": 799 },
+    "temporal":      { "start": 800, "end": 895 },
+    "codebook":      { "start": 896, "end": 991 },
+    "reserved":      { "start": 992, "end": 1023 }
+  },
+
+  "x-slots": [
+    { "word": 0, "bitsHi": 255, "bitsLo": 240, "name": "MAGIC",                 "fieldType": "uint16",  "range": "header",        "description": "Fixed sentinel 0xC07E", "fixedValue": 49278 },
+    { "word": 0, "bitsHi": 239, "bitsLo": 224, "name": "SCHEMA_VERSION",        "fieldType": "uint16",  "range": "header",        "description": "Schema version; CoreTex = 0x0000", "fixedValue": 0 },
+    { "word": 0, "bitsHi": 223, "bitsLo": 208, "name": "WORD_COUNT",             "fieldType": "uint16",  "range": "header",        "description": "Must equal 1024", "fixedValue": 1024 },
+    { "word": 0, "bitsHi": 207, "bitsLo": 192, "name": "FLAGS",                  "fieldType": "uint16",  "range": "header",        "description": "Bit 0: genesis_state. Bits 1-15: reserved MUST zero" },
+    { "word": 1, "bitsHi": 255, "bitsLo": 192, "name": "EPOCH",                  "fieldType": "uint64",  "range": "header",        "description": "Current epoch number" },
+    { "word": 1, "bitsHi": 191, "bitsLo": 128, "name": "EPOCH_START_TIMESTAMP", "fieldType": "uint64",  "range": "header",        "description": "Unix timestamp (seconds) at epoch start" },
+    { "word": 2, "bitsHi": 255, "bitsLo": 0,   "name": "STATE_ROOT_PREV",       "fieldType": "bytes32", "range": "header",        "description": "State root of the parent state" },
+    { "word": 3, "bitsHi": 255, "bitsLo": 0,   "name": "CORE_VERSION_HASH",     "fieldType": "bytes32", "range": "header",        "description": "keccak256 of Core decoder version string" },
+    { "word": 4, "bitsHi": 255, "bitsLo": 0,   "name": "SCHEMA_HASH_LO",        "fieldType": "bytes32", "range": "header",        "description": "keccak256 of schema JSON" },
+    { "word": 5, "bitsHi": 255, "bitsLo": 0,   "name": "EXPERIENCE_CORPUS_ROOT","fieldType": "bytes32", "range": "header",        "description": "Merkle root of the current experience corpus" },
+    { "word": 6, "bitsHi": 255, "bitsLo": 0,   "name": "BENCHMARK_COMMITMENT",  "fieldType": "bytes32", "range": "header",        "description": "keccak256 commitment to benchmark parameters" },
+    { "word": 7, "bitsHi": 255, "bitsLo": 192, "name": "SCORE_ACCUMULATOR",     "fieldType": "uint64",  "range": "header",        "description": "Accumulated composite score × 1e6, saturating" },
+    { "word": 7, "bitsHi": 191, "bitsLo": 128, "name": "SCORE_EPOCH_BASELINE",  "fieldType": "uint64",  "range": "header",        "description": "Baseline score for this epoch × 1e6" },
+    { "word": 7, "bitsHi": 127, "bitsLo": 64,  "name": "PATCH_COUNT_EPOCH",     "fieldType": "uint64",  "range": "header",        "description": "Accepted patches this epoch" },
+    { "word": 7, "bitsHi": 63,  "bitsLo": 0,   "name": "PATCH_COUNT_TOTAL",     "fieldType": "uint64",  "range": "header",        "description": "Accepted patches all-time" },
+    { "word": 8, "bitsHi": 255, "bitsLo": 192, "name": "LAST_SNAPSHOT_EPOCH",   "fieldType": "uint64",  "range": "header",        "description": "Epoch of last full-state snapshot" },
+    { "word": 8, "bitsHi": 191, "bitsLo": 128, "name": "SNAPSHOT_INTERVAL",     "fieldType": "uint64",  "range": "header",        "description": "Snapshot cadence (default 100)" },
+    { "word": 8, "bitsHi": 127, "bitsLo": 64,  "name": "REDUCER_NONCE",         "fieldType": "uint64",  "range": "header",        "description": "Monotonically increasing reducer invocation nonce" },
+    { "word": 9, "bitsHi": 255, "bitsLo": 0,   "name": "PATCH_SET_ROOT",        "fieldType": "bytes32", "range": "header",        "description": "Merkle root of accepted patch set this epoch" },
+    { "word": 10,"bitsHi": 255, "bitsLo": 0,   "name": "SCORE_ROOT",            "fieldType": "bytes32", "range": "header",        "description": "Merkle root of per-miner score ledger" }
+  ],
+
+  "x-errorCodes": {
+    "WRONG_PARENT_ROOT":  "E01 — patch.parentStateRoot does not match the current state root",
+    "WRONG_TYPE_FIELD":   "E02 — patch targets a word whose range type is incompatible with the patch type",
+    "OVER_BUDGET":        "E03 — patch.wordCount exceeds the allowed patch budget (current max: 4 words)",
+    "RESERVED_BIT_SET":   "E04 — one or more reserved bits in the resulting state are non-zero",
+    "NOOP_PATCH":         "E05 — every target word in the patch is identical to the current state word (no change)"
+  },
+
+  "x-patchTypes": [
+    { "code": 0x01, "name": "KEY_UPDATE",      "description": "Replace one or more words in the RetrievalKeys range" },
+    { "code": 0x02, "name": "SLOT_REPLACE",    "description": "Replace one or more words in the MemoryIndex range" },
+    { "code": 0x03, "name": "TEMPORAL_UPDATE", "description": "Replace one or more words in the Temporal range" },
+    { "code": 0x04, "name": "RELATION_UPDATE", "description": "Replace one or more words in the Relations range" },
+    { "code": 0x05, "name": "CODEBOOK_UPDATE", "description": "Replace one or more words in the Codebook range" },
+    { "code": 0x06, "name": "HEADER_UPDATE",   "description": "Replace one or more words in the Header range (restricted)" },
+    { "code": 0xFF, "name": "MIXED",           "description": "Targets words in more than one range" }
+  ]
+}
