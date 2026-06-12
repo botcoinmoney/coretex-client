@@ -487,8 +487,11 @@ function probeRuntimeHealth(): Pick<ScorerHealth, 'cuda' | 'device' | 'torch' | 
       python: typeof h.python === 'string' ? h.python : null,
     };
   } catch (e) {
-    process.stderr.write(`[scorer] runtime health probe failed: ${(e as Error).message}\n`);
-    return { cuda: false, device: 'unknown', torch: null, transformers: null, python: null };
+    // Fail-closed: the env contract requires a probeable CUDA runtime
+    // (CORETEX_RERANKER_ALLOW_CUDA=1). Booting with a sentinel fingerprint
+    // would serve /score-job while attesting cuda:false, delegating the
+    // refusal to the coordinator's remote health check; refuse at boot instead.
+    throw new Error(`scorer runtime health probe failed (refusing to boot with an unverified GPU runtime): ${(e as Error)?.message ?? String(e)}`);
   }
 }
 

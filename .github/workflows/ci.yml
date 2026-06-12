@@ -10,6 +10,13 @@ on:
 env:
   NODE_VERSION: "22"
 
+# The former e2e-phase-* matrix, contracts-fork, and context-freshness jobs were
+# removed 2026-06-12: they invoked scripts/run-e2e.mjs (which walked a deleted
+# test/e2e/ tree and always exited 0), a fork test contract that does not exist
+# (CortexForkTest), and a context.md convention this repo never adopted — all
+# permanently green while testing nothing. The real coverage they carried
+# (cortex-py pytest, from the old e2e-phase-1b job) lives in python-tests below.
+
 jobs:
   lint-type-unit:
     name: Lint + Type + Unit
@@ -28,6 +35,21 @@ jobs:
       - run: npm run build --if-present
       - run: npm run test:unit --if-present
 
+  python-tests:
+    name: Python cross-impl parity (cortex-py)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: Install Python cortex-py deps
+        run: pip install pycryptodome pytest
+      - name: Python unit tests
+        run: python3 -m pytest packages/cortex-py/cortex_py/tests/ -v
+
   contracts:
     name: Contracts (forge)
     runs-on: ubuntu-latest
@@ -38,176 +60,3 @@ jobs:
       - uses: foundry-rs/foundry-toolchain@v1
       - run: forge build --root contracts --sizes
       - run: forge test --root contracts -vv
-
-  contracts-fork:
-    name: Contracts (forge fork against Base mainnet)
-    runs-on: ubuntu-latest
-    needs: contracts
-    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
-    env:
-      BASE_RPC_URL: ${{ secrets.BASE_RPC_URL || 'https://mainnet.base.org' }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-      - uses: foundry-rs/foundry-toolchain@v1
-      - run: forge test --root contracts --match-contract CortexForkTest -vv
-
-  context-freshness:
-    name: context.md freshness
-    runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: Verify context.md was touched if any checklist items flipped
-        run: node scripts/check-context-freshness.mjs
-
-  e2e-phase-1:
-    name: E2E phase-1 (state spec)
-    runs-on: ubuntu-latest
-    needs: lint-type-unit
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-      - uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: npm
-      - run: npm ci
-      - run: npm run test:e2e -- --filter phase-1
-
-  e2e-phase-1b:
-    name: E2E phase-1b (Python cross-impl parity)
-    runs-on: ubuntu-latest
-    needs: lint-type-unit
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-      - uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: npm
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.10"
-      - run: npm ci
-      - name: Install Python cortex-py deps
-        run: pip install pycryptodome pytest
-      - run: npm run build --workspace=packages/cortex --if-present
-      - name: Python unit tests
-        run: python3 -m pytest packages/cortex-py/cortex_py/tests/ -v
-      - run: npm run test:e2e -- --filter phase-1b
-
-  e2e-phase-2:
-    name: E2E phase-2 (contracts)
-    runs-on: ubuntu-latest
-    needs: contracts
-    env:
-      BASE_RPC_URL: ${{ secrets.BASE_RPC_URL || 'https://mainnet.base.org' }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-      - uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: npm
-      - uses: foundry-rs/foundry-toolchain@v1
-      - run: npm ci
-      - run: npm run test:e2e -- --filter phase-2
-
-  e2e-phase-3:
-    name: E2E phase-3 (Core decoder)
-    runs-on: ubuntu-latest
-    needs: lint-type-unit
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-      - uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: npm
-      - run: npm ci
-      - run: npm run test:e2e -- --filter phase-3
-
-  e2e-phase-4:
-    name: E2E phase-4 (CoreTex benchmark)
-    runs-on: ubuntu-latest
-    needs: lint-type-unit
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-      - uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: npm
-      - run: npm ci
-      - run: npm run test:e2e -- --filter phase-4
-
-  e2e-phase-6:
-    name: E2E phase-6 (reducer + credit)
-    runs-on: ubuntu-latest
-    needs: lint-type-unit
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-      - uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: npm
-      - run: npm ci
-      - run: npm run test:e2e -- --filter phase-6
-
-  e2e-phase-7:
-    name: E2E phase-7 (baselines)
-    runs-on: ubuntu-latest
-    needs: lint-type-unit
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-      - uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: npm
-      - run: npm ci
-      - run: npm run test:e2e -- --filter phase-7
-
-  e2e-phase-9:
-    name: E2E phase-9 (mainnet ops + receipt-mapping observability)
-    runs-on: ubuntu-latest
-    needs: lint-type-unit
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-      - uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: npm
-      - run: npm ci
-      - run: npm run test:e2e -- --filter phase-9
-
-  e2e-all:
-    name: E2E all (merge gate)
-    runs-on: ubuntu-latest
-    needs:
-      - e2e-phase-1
-      - e2e-phase-1b
-      - e2e-phase-2
-      - e2e-phase-3
-      - e2e-phase-4
-      - e2e-phase-6
-      - e2e-phase-7
-      - e2e-phase-9
-    if: github.ref == 'refs/heads/main' || github.event_name == 'pull_request'
-    steps:
-      - uses: actions/checkout@v4
-      - run: echo "All phase E2Es green."

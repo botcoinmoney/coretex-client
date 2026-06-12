@@ -69,7 +69,10 @@
  * interface the test harness mocks. NO `cast` shellouts here.
  */
 
-import { merkleizeState, bytesToHex, decodePatch, encodePatch, applyPatch, keccak256, computePatchHash } from '../index.js';
+import { merkleizeState, bytesToHex } from '../state/merkle.js';
+import { decodePatch, encodePatch, applyPatch } from '../state/patch.js';
+import { keccak256 } from '../state/keccak256.js';
+import { computePatchHash } from '../eval/seed-derivation.js';
 import {
   DEFAULT_CORETEX_WORK_POLICY,
   OUTCOME_CORETEX_SCREENER_PASS,

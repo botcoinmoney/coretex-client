@@ -28,8 +28,11 @@ import { buildV2ProductionCorpus } from './lib/build-v2-production-corpus.mjs';
 const C = await import(distIndex);
 const { computeCorpusEventLeafHash, buildCorpusRootLeafCacheFromLeaves } = C;
 
-// Local profileHash: keccak/sha256 over a deterministic JSON of the profile (sorted keys).
-// No canonical export exists; this gives a stable per-profile identity for the artifact manifest.
+// Local profileHash: sha256 over a deterministic JSON of the profile (sorted keys).
+// FROZEN local copy: this serializer defines the profileHash identity of
+// already-materialized artifacts, so it must not be swapped for the package's
+// canonicalJson (canonical/json.ts) outside a deliberate re-materialization
+// (output is identical for plain-JSON profiles, but the identity is pinned here).
 function canonicalJsonSorted(v) {
   if (v === null || typeof v !== 'object') return JSON.stringify(v);
   if (Array.isArray(v)) return `[${v.map(canonicalJsonSorted).join(',')}]`;
