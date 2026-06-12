@@ -21,6 +21,7 @@ import {
   resolveJobSeedContext,
   resolveScorerAuth,
   scorerRequestAuthorized,
+  createScorerJobQueue,
 } from '../../dist/scorer-server-cli.js';
 import { wrapRerankerWithPairTrace } from '../../dist/coordinator/scorer-pair-trace.js';
 import { pack, merkleizeState, bytesToHex, RANGES, PACKED_SIZE } from '../../dist/index.js';
@@ -516,5 +517,42 @@ describe('scorer-server — auth policy', () => {
     assert.equal(scorerRequestAuthorized('Bearer wrong', 'tok'), false);
     assert.equal(scorerRequestAuthorized('tok', 'tok'), false);
     assert.equal(scorerRequestAuthorized('Basic tok', 'tok'), false);
+  });
+});
+
+describe('scorer-server — bounded FIFO queue', () => {
+  test('serializes GPU jobs and rejects once the waiting queue is full', async () => {
+    const order = [];
+    const releases = [];
+    const queue = createScorerJobQueue({
+      concurrency: 1,
+      maxQueueDepth: 1,
+      run: async (job) => {
+        order.push(`start:${job.jobId}`);
+        await new Promise((resolve) => releases.push(resolve));
+        order.push(`finish:${job.jobId}`);
+        return { status: 200, body: { jobId: job.jobId } };
+      },
+    });
+
+    const a = queue.enqueue(baseJob({ jobId: 'a' }));
+    const b = queue.enqueue(baseJob({ jobId: 'b' }));
+    const c = await queue.enqueue(baseJob({ jobId: 'c' }));
+
+    assert.deepEqual(order, ['start:a']);
+    assert.deepEqual(queue.snapshot(), { active: 1, queued: 1, maxQueueDepth: 1, concurrency: 1 });
+    assert.equal(c.status, 503);
+    assert.equal(c.body.error, 'scorer-queue-full');
+
+    releases.shift()();
+    assert.deepEqual(await a, { status: 200, body: { jobId: 'a' } });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(order, ['start:a', 'finish:a', 'start:b']);
+
+    releases.shift()();
+    assert.deepEqual(await b, { status: 200, body: { jobId: 'b' } });
+    assert.deepEqual(order, ['start:a', 'finish:a', 'start:b', 'finish:b']);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(queue.snapshot(), { active: 0, queued: 0, maxQueueDepth: 1, concurrency: 1 });
   });
 });

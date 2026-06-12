@@ -646,6 +646,73 @@ function requiredEnv(env: NodeJS.ProcessEnv, name: string): string {
  *  CORETEX_SCORER_BODY_LIMIT_BYTES. */
 export const DEFAULT_SCORER_BODY_LIMIT_BYTES = 4 * 1024 * 1024;
 
+export interface ScorerJobQueueSnapshot {
+  readonly active: number;
+  readonly queued: number;
+  readonly maxQueueDepth: number;
+  readonly concurrency: number;
+}
+
+export interface ScorerJobQueue {
+  enqueue(job: ScorerJobRequest): Promise<ScorerJobResponse>;
+  snapshot(): ScorerJobQueueSnapshot;
+}
+
+/**
+ * Bounded scorer-side FIFO. The coordinator already serializes CoreTex submit
+ * evaluation, but the keyless GPU server is a separate trust/performance
+ * boundary: direct probes, future coordinator replicas, or retry storms must
+ * not create concurrent full-model jobs against one shared traced reranker.
+ */
+export function createScorerJobQueue(opts: {
+  readonly run: (job: ScorerJobRequest) => Promise<ScorerJobResponse>;
+  readonly maxQueueDepth?: number;
+  readonly concurrency?: number;
+}): ScorerJobQueue {
+  const maxQueueDepth = Math.max(0, Math.floor(opts.maxQueueDepth ?? 8));
+  const concurrency = Math.max(1, Math.floor(opts.concurrency ?? 1));
+  const queue: Array<{
+    readonly job: ScorerJobRequest;
+    readonly resolve: (response: ScorerJobResponse) => void;
+    readonly reject: (err: unknown) => void;
+  }> = [];
+  let active = 0;
+
+  const drain = () => {
+    while (active < concurrency && queue.length > 0) {
+      const item = queue.shift()!;
+      active += 1;
+      void opts.run(item.job)
+        .then(item.resolve, item.reject)
+        .finally(() => {
+          active -= 1;
+          drain();
+        });
+    }
+  };
+
+  return {
+    enqueue(job: ScorerJobRequest): Promise<ScorerJobResponse> {
+      if (queue.length >= maxQueueDepth) {
+        return Promise.resolve({
+          status: 503,
+          body: {
+            error: 'scorer-queue-full',
+            reason: `scorer queue is full (${maxQueueDepth} waiting, ${active} active); retry shortly`,
+          },
+        });
+      }
+      return new Promise((resolve, reject) => {
+        queue.push({ job, resolve, reject });
+        drain();
+      });
+    },
+    snapshot(): ScorerJobQueueSnapshot {
+      return { active, queued: queue.length, maxQueueDepth, concurrency };
+    },
+  };
+}
+
 function readJsonBody(req: http.IncomingMessage, maxBytes: number): Promise<unknown> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
@@ -712,9 +779,16 @@ async function main(): Promise<void> {
   // plus the patch bytes + public context, so the default limit is raised well
   // clear of that (4 MB) — overridable via CORETEX_SCORER_BODY_LIMIT_BYTES.
   const bodyLimit = Number(process.env['CORETEX_SCORER_BODY_LIMIT_BYTES'] ?? String(DEFAULT_SCORER_BODY_LIMIT_BYTES)) || DEFAULT_SCORER_BODY_LIMIT_BYTES;
+  const scorerConcurrency = Number(process.env['CORETEX_SCORER_CONCURRENCY'] ?? '1') || 1;
+  const scorerMaxQueueDepth = Number(process.env['CORETEX_SCORER_MAX_QUEUE_DEPTH'] ?? '8') || 8;
 
   process.stdout.write('[scorer] booting keyless GPU production evaluator (this loads the model once)...\n');
   const booted = await bootScorer(process.env);
+  const scoreQueue = createScorerJobQueue({
+    concurrency: scorerConcurrency,
+    maxQueueDepth: scorerMaxQueueDepth,
+    run: (job) => handleScoreJob(job, booted),
+  });
   process.stdout.write(
     `[scorer] ready: model=${booted.loadedPins.modelId}@${booted.loadedPins.revision} ` +
     `bundle=${booted.loadedPins.bundleHash} corpus=${booted.loadedPins.corpusRoot} ` +
@@ -734,7 +808,7 @@ async function main(): Promise<void> {
         return;
       }
       if (req.method === 'GET' && req.url === '/healthz') {
-        send(200, { ok: true, loadedPins: booted.loadedPins, scorerHealth: booted.scorerHealth });
+        send(200, { ok: true, loadedPins: booted.loadedPins, scorerHealth: booted.scorerHealth, queue: scoreQueue.snapshot() });
         return;
       }
       if (req.method === 'POST' && (req.url === '/score-job' || req.url?.startsWith('/score-job?'))) {
@@ -745,7 +819,7 @@ async function main(): Promise<void> {
           send((e as Error).message.includes('too large') ? 413 : 400, { error: 'bad-body', reason: (e as Error).message });
           return;
         }
-        const response = await handleScoreJob(job as ScorerJobRequest, booted);
+        const response = await scoreQueue.enqueue(job as ScorerJobRequest);
         send(response.status, response.body);
         return;
       }
