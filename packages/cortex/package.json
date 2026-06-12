@@ -37,7 +37,7 @@
     "prebuild": "npm run clean",
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test:unit": "node --test --test-reporter=spec ./test/unit/*.test.mjs"
+    "test:unit": "node --test --test-concurrency=2 --test-reporter=spec ./test/unit/*.test.mjs"
   },
   "files": [
     "dist",
