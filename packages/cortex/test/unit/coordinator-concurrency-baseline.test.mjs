@@ -581,3 +581,105 @@ describe('CoreTexCoordinatorCore §7 — baseline runtime semantics', () => {
     assert.equal((await coord.getStatus()).baselineState, 'awaiting_baseline_recompute');
   });
 });
+
+// ── Submit intake guards: queue bound, per-miner cap, disconnect skip ────────
+describe('CoreTexCoordinatorCore — submit intake guards', () => {
+  function deferred() {
+    let resolve;
+    const promise = new Promise((r) => (resolve = r));
+    return { promise, resolve };
+  }
+  function blockedEvaluator(gate, calls = { n: 0 }) {
+    return {
+      calls,
+      scorePatch: async (input) => {
+        calls.n += 1;
+        await gate.promise;
+        return screenerResult(input.patchBytesHex, input.parentStateRoot);
+      },
+    };
+  }
+  async function bootCore(config, evaluator) {
+    const coord = new CoreTexCoordinatorCore(config, new MockChain(), loadGenesis, evaluator, plainSigner);
+    await coord.boot();
+    return coord;
+  }
+
+  test('QueueFull: overflow rejects fast and the slot frees when the head completes', async () => {
+    const gate = deferred();
+    const ev = blockedEvaluator(gate);
+    const coord = await bootCore({ ...baseConfig, maxQueuedSubmits: 1 }, ev);
+    const first = coord.submit(submitBody(makePatchHex(GENESIS_ROOT, 40, 1), MINER_A));
+    await flushTasks();
+    const overflow = await coord.submit(submitBody(makePatchHex(GENESIS_ROOT, 41, 2), MINER_B));
+    assert.equal(overflow.status, 'rejected');
+    assert.equal(overflow.code, 'QueueFull');
+    assert.equal(overflow.retryAfterSeconds, 30);
+    gate.resolve();
+    const r1 = await first;
+    assert.notEqual(r1.status, 'rejected');
+    // Slot released: a new submit is admitted (no QueueFull).
+    const after = await coord.submit(submitBody(makePatchHex(GENESIS_ROOT, 42, 3), MINER_B));
+    assert.notEqual(after.code, 'QueueFull');
+  });
+
+  test('MinerQueueFull: per-miner cap blocks monopolization but not other miners; releases on completion', async () => {
+    const gate = deferred();
+    const ev = blockedEvaluator(gate);
+    const coord = await bootCore({ ...baseConfig, maxQueuedSubmits: 8, maxQueuedSubmitsPerMiner: 1 }, ev);
+    const a1 = coord.submit(submitBody(makePatchHex(GENESIS_ROOT, 43, 1), MINER_A));
+    await flushTasks();
+    const a2 = await coord.submit(submitBody(makePatchHex(GENESIS_ROOT, 44, 2), MINER_A));
+    assert.equal(a2.status, 'rejected');
+    assert.equal(a2.code, 'MinerQueueFull');
+    // A different miner queues normally behind the blocked head.
+    const b1 = coord.submit(submitBody(makePatchHex(GENESIS_ROOT, 45, 3), MINER_B));
+    gate.resolve();
+    assert.notEqual((await a1).status, 'rejected');
+    assert.notEqual((await b1).code, 'MinerQueueFull');
+    // Cap released after completion: same miner admitted again.
+    const a3 = await coord.submit(submitBody(makePatchHex(GENESIS_ROOT, 46, 4), MINER_A));
+    assert.notEqual(a3.code, 'MinerQueueFull');
+  });
+
+  test('default per-miner cap (4) preserves designed same-miner receipt chaining (2 concurrent pass intake)', async () => {
+    const gate = deferred();
+    const ev = blockedEvaluator(gate);
+    const record = [];
+    const coord = new CoreTexCoordinatorCore(baseConfig, new MockChain(), loadGenesis, ev, chainingSigner(record));
+    await coord.boot();
+    const p1 = coord.submit(submitBody(makePatchHex(GENESIS_ROOT, 47, 1), MINER_A));
+    const p2 = coord.submit(submitBody(makePatchHex(GENESIS_ROOT, 48, 2), MINER_A));
+    gate.resolve();
+    const [r1, r2] = await Promise.all([p1, p2]);
+    assert.notEqual(r1.code, 'MinerQueueFull');
+    assert.notEqual(r2.code, 'MinerQueueFull');
+  });
+
+  test('ClientDisconnected: an already-aborted signal skips the evaluation entirely at dequeue', async () => {
+    const gate = deferred();
+    gate.resolve(); // evaluator unblocked — must not even be called
+    const calls = { n: 0 };
+    const coord = await bootCore(baseConfig, blockedEvaluator(gate, calls));
+    const ctl = new AbortController();
+    ctl.abort();
+    const r = await coord.submit(submitBody(makePatchHex(GENESIS_ROOT, 49, 1), MINER_A), { signal: ctl.signal });
+    assert.equal(r.status, 'rejected');
+    assert.equal(r.code, 'ClientDisconnected');
+    assert.equal(calls.n, 0, 'no evaluation may run for a gone client');
+  });
+
+  test('abort AFTER evaluation started does not sever it (signal is checked at dequeue only)', async () => {
+    const gate = deferred();
+    const calls = { n: 0 };
+    const coord = await bootCore(baseConfig, blockedEvaluator(gate, calls));
+    const ctl = new AbortController();
+    const p = coord.submit(submitBody(makePatchHex(GENESIS_ROOT, 50, 1), MINER_A), { signal: ctl.signal });
+    await flushTasks();
+    assert.equal(calls.n, 1);
+    ctl.abort(); // too late — work is in flight and completes normally
+    gate.resolve();
+    const r = await p;
+    assert.notEqual(r.code, 'ClientDisconnected');
+  });
+});

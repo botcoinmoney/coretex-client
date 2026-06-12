@@ -29,7 +29,7 @@ export interface RetrievalDataSourceOptions {
   /** Per-miner dynamic context (`query.miner` is the miner address). */
   readonly getStatus: (query: Record<string, string | readonly string[] | undefined>) => Promise<unknown> | unknown;
   /** POST /coretex/submit handler. */
-  readonly submit: (body: unknown) => Promise<unknown> | unknown;
+  readonly submit: (body: unknown, opts?: { readonly signal?: AbortSignal }) => Promise<unknown> | unknown;
   /** Optional packed-substrate-by-root reader. */
   readonly getSubstrate?: (stateRoot: string) => Promise<unknown> | unknown;
   /** Receipt lookup by patchHash (returns `{status, body}` envelope or null). */
@@ -46,8 +46,8 @@ export function createRetrievalDataSource(opts: RetrievalDataSourceOptions): Cor
   }
 
   const ds: CoreTexCoordinatorDataSource = {
-    async submit(body) {
-      return sanitizeSubmitResponse(await opts.submit(body));
+    async submit(body, submitOpts) {
+      return sanitizeSubmitResponse(await opts.submit(body, submitOpts));
     },
     async getStatus(query) {
       return sanitizeStatusResponse(await opts.getStatus(query), manifest.bundleHash);

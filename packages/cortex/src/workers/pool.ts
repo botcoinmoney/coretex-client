@@ -12,7 +12,7 @@
  *   - Message protocol: EvalWorkerRequest / EvalWorkerMessage.
  */
 
-import { Worker } from 'node:worker_threads';
+import { Worker, type ResourceLimits } from 'node:worker_threads';
 import * as os from 'node:os';
 import { fileURLToPath } from 'node:url';
 
@@ -67,6 +67,12 @@ export interface WorkerPoolOptions {
    * set a finite value and return backpressure (HTTP 503) when saturated.
    */
   readonly maxQueueSize?: number;
+  /**
+   * node worker_threads resourceLimits applied to every spawned worker. The
+   * default caps each worker's old-gen heap at 1024 MB so a pool sized from
+   * cpu count cannot collectively blow past the container memory budget.
+   */
+  readonly resourceLimits?: ResourceLimits;
 }
 
 export class WorkerPool {
@@ -87,6 +93,7 @@ export class WorkerPool {
       throw new RangeError('WorkerPool: maxQueueSize must be a non-negative integer');
     }
     this.maxQueueSize = maxQueueSize;
+    this.resourceLimits = options.resourceLimits ?? { maxOldGenerationSizeMb: 1024 };
     for (let i = 0; i < size; i++) {
       this._spawnWorker(workerScriptPath);
     }
@@ -94,9 +101,10 @@ export class WorkerPool {
   }
 
   private readonly _workerScriptPath: string;
+  private readonly resourceLimits: ResourceLimits;
 
   private _spawnWorker(scriptPath: string): Worker {
-    const worker = new Worker(scriptPath);
+    const worker = new Worker(scriptPath, { resourceLimits: this.resourceLimits });
     this.pending.set(worker, new Map());
     worker.on('message', (msg: EvalWorkerMessage) => this._onMessage(worker, msg));
     worker.on('error', (err: Error) => this._onWorkerError(worker, err));

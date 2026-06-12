@@ -49,6 +49,9 @@ export interface CoreTexHttpRequest {
   readonly remoteAddress?: string;
   /** Parsed query string (e.g. ?miner=0x…). Production routers pass req.query through. */
   readonly query?: Record<string, string | readonly string[] | undefined>;
+  /** Aborts when the client disconnects. Threaded to the submit handler so a
+   *  queued-but-not-started evaluation for a gone client is skipped. */
+  readonly signal?: AbortSignal;
 }
 
 export interface CoreTexHttpResponse {
@@ -107,7 +110,7 @@ export interface CoreTexCoordinatorDataSource {
    *  telemetry (no deterministicDeltaPpm / requiredDeltaPpm or equivalent
    *  gradients) — the router passes responses through verbatim and MUST NOT
    *  decorate them. */
-  readonly submit?: (body: unknown) => Promise<unknown> | unknown;
+  readonly submit?: (body: unknown, opts?: { readonly signal?: AbortSignal }) => Promise<unknown> | unknown;
   /** Look up a previously signed receipt by patchHash. Lookup must work for BOTH
    *  the miner-submitted (original) hash AND the coordinator-rewritten signed hash.
    *  Returns `200 + envelope` for pending/confirmed (envelope tagged with state),
@@ -175,7 +178,8 @@ export async function handleCoreTexCoordinatorRoute(
     const denied = await guardRoute(req, source, 'submit');
     if (denied) return denied;
     if (!source.submit) return notConfigured('submit');
-    return handled(200, await source.submit(req.body ?? null));
+    const result = await source.submit(req.body ?? null, req.signal ? { signal: req.signal } : undefined);
+    return handled(submitHttpStatusFor(result), result);
   }
 
   const receipt = matchBytes32(path, /^\/coretex\/receipt\/(0x[0-9a-fA-F]{64})$/);
@@ -193,6 +197,32 @@ export async function handleCoreTexCoordinatorRoute(
   }
 
   return { handled: false, status: 404, body: null };
+}
+
+/** Submit envelopes carry their semantics in `code`; the HTTP status mirrors
+ *  the TRANSPORT class so monitoring, the edge, and error handling see
+ *  outages (503) and malformed requests (400) without parsing bodies. The
+ *  envelope body is passed through verbatim either way. Semantic rejections
+ *  of well-formed submissions (duplicates, caps, thresholds, stale-root
+ *  races) stay 200 — they are normal mining outcomes, not transport errors. */
+const SUBMIT_UNAVAILABLE_CODES: ReadonlySet<string> = new Set([
+  'EvalFailure', 'SignerFailure', 'CoordSignerUnavailable', 'CoordUnhealthy',
+  'CoordEpochMismatch', 'CoordAwaitingFinality', 'awaiting_baseline_recompute',
+  'epoch_cutover_in_progress', 'epoch_cutover_unavailable', 'QueueFull',
+]);
+const SUBMIT_BAD_REQUEST_CODES: ReadonlySet<string> = new Set([
+  'BODY', 'DECODE',
+  // structural patch failures (E01 = stale-root race, a normal outcome — excluded)
+  'E02', 'E03', 'E04', 'E05',
+]);
+
+export function submitHttpStatusFor(result: unknown): number {
+  if (!result || typeof result !== 'object') return 200;
+  const r = result as { status?: unknown; code?: unknown };
+  if (r.status !== 'rejected' || typeof r.code !== 'string') return 200;
+  if (SUBMIT_UNAVAILABLE_CODES.has(r.code)) return 503;
+  if (SUBMIT_BAD_REQUEST_CODES.has(r.code)) return 400;
+  return 200;
 }
 
 function handled(status: number, body: unknown): CoreTexHttpResponse {

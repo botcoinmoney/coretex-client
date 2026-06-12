@@ -107,3 +107,25 @@ describe('WorkerPool — plumbing', () => {
     );
   });
 });
+
+// ── resourceLimits ───────────────────────────────────────────────────────────
+describe('WorkerPool — resourceLimits', () => {
+  const workerPath = fileURLToPath(new URL('../../dist/workers/worker.js', import.meta.url));
+
+  test('spawns workers with explicit resourceLimits (and a default heap cap) without breaking plumbing', async () => {
+    let pool;
+    try {
+      pool = new WorkerPool(workerPath, 1, { resourceLimits: { maxOldGenerationSizeMb: 256 } });
+      assert.equal(pool.size, 1);
+    } catch (err) {
+      if (String(err).includes('Cannot find') || String(err).includes('MODULE_NOT_FOUND')) return; // skip without dist
+      throw err;
+    } finally {
+      await pool?.close?.();
+    }
+    // Default path: no option → workers still spawn (default cap applied internally).
+    const pool2 = new WorkerPool(workerPath, 1);
+    assert.equal(pool2.size, 1);
+    await pool2.close?.();
+  });
+});

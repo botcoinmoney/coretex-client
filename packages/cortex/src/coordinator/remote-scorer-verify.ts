@@ -213,6 +213,12 @@ export function verifyScorerResult(args: {
     if (!hexEq(p.confirm?.seedCommit, expectedConfirmSeedCommit)) {
       return { ok: false, code: "SCORER_SEED_COMMIT_MISMATCH", reason: "proof confirm seedCommit != coordinator-derived confirm seed commit" };
     }
+    // The result's TOP-LEVEL scores must equal the dual-pack proof's scores:
+    // threshold check (4) reads the top-level numbers, while replay/audit bind
+    // to the proof — a scorer could otherwise inflate one without the other.
+    if (p.gate?.scorePpm !== result.gateScorePpm || p.confirm?.scorePpm !== result.confirmScorePpm) {
+      return { ok: false, code: "SCORER_SCORE_PROOF_MISMATCH", reason: "result gate/confirm scores != dual-pack proof pack scores" };
+    }
   }
 
   // (7) threshold/policy echo (§2 no-env-drift): the scorer must report the
@@ -327,7 +333,11 @@ export function verifyScorerResult(args: {
 function validateResultSchema(result: ScorerJobResult): string | null {
   if (typeof result.accepted !== "boolean") return "accepted must be boolean";
   if (typeof result.deltaPpm !== "number" || !Number.isFinite(result.deltaPpm)) return "deltaPpm invalid";
-  if (typeof result.gateScorePpm !== "number" || typeof result.confirmScorePpm !== "number") return "gate/confirm score invalid";
+  if (!Number.isSafeInteger(result.gateScorePpm) || !Number.isSafeInteger(result.confirmScorePpm)) {
+    // typeof-number alone is NaN/Infinity-bypassable: NaN makes the threshold
+    // comparison in check (4) silently pass (Math.min(...) < t is false).
+    return "gate/confirm score invalid (must be finite safe integers)";
+  }
   if (!Number.isSafeInteger(result.thresholdPpmUsed) || result.thresholdPpmUsed < 0) return "thresholdPpmUsed invalid";
   if (!isBytes32(result.policyHash)) return "policyHash must be bytes32";
   if (typeof result.pairTraceHash !== "string" || typeof result.scoreArrayHash !== "string") return "trace hashes missing";

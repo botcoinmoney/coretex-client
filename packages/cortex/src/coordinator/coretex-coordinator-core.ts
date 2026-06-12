@@ -308,6 +308,17 @@ class AsyncMutex {
 
 // ── configuration ──────────────────────────────────────────────────────────
 export interface CoreTexCoordinatorConfig {
+  /** Max submits queued-or-running at once (FIFO). One job can hold the queue
+   *  for minutes (future-blockhash wait + scoring), so an unbounded queue
+   *  turns a trickle of submissions into hours of head-of-line latency for
+   *  everyone behind it. Overflow rejects fast with code QueueFull. Default 16. */
+  readonly maxQueuedSubmits?: number;
+  /** Max submits one miner may hold queued-or-running at once. Same-miner
+   *  pipelining is a designed feature (receipt chaining on un-landed
+   *  receipts), so this is a CAP, not in-flight=1 — it only stops one miner
+   *  monopolizing the global queue. Overflow rejects with MinerQueueFull.
+   *  Default 4. */
+  readonly maxQueuedSubmitsPerMiner?: number;
   readonly epoch: bigint;
   readonly expectedChainId: bigint;
   readonly miningContractAddress?: string;
@@ -611,7 +622,10 @@ export class CoreTexCoordinatorCore {
       this.gcPending(Math.floor(Date.now() / 1000));
     } catch (e) {
       this.signingEnabled = false;
-      this.unhealthyReason = `watcher-fault: ${(e as Error).message}`;
+      // Public surfaces (health/status `reason`) must not carry raw provider
+      // errors — ethers messages can embed the credentialed RPC request URL.
+      console.error('[coretex-core] watcher fault:', e);
+      this.unhealthyReason = 'watcher-fault: chain read failed (see coordinator logs)';
       this.metrics.watcherFaultCount += 1;
     }
   }
@@ -940,8 +954,42 @@ export class CoreTexCoordinatorCore {
    *  evaluated/signed at a time, in arrival order. The long evaluator call
    *  deliberately runs outside `coreMutex`, so watcher ticks and cutover
    *  freezes cannot be held hostage by GPU latency. */
-  async submit(body: unknown): Promise<unknown> {
-    return this.submitQueue.enqueue(() => this.processSubmit(body));
+  private submitQueueDepth = 0;
+  private readonly pendingSubmitsByMiner = new Map<string, number>();
+
+  async submit(body: unknown, opts?: { readonly signal?: AbortSignal }): Promise<unknown> {
+    // Intake guards (audit: an unbounded single FIFO with no per-miner
+    // in-flight cap let a trickle of long evaluations starve every later
+    // submit, and severed clients still burned full evaluations).
+    const maxQueued = this.config.maxQueuedSubmits ?? 16;
+    if (this.submitQueueDepth >= maxQueued) {
+      return this.rejectSubmission('QueueFull', `submit queue is full (${maxQueued} queued/running); retry shortly`, { retryAfterSeconds: 30 });
+    }
+    const minerRaw = (body as { minerAddress?: unknown } | null)?.minerAddress;
+    const miner = typeof minerRaw === 'string' ? minerRaw.toLowerCase() : null;
+    const perMinerCap = this.config.maxQueuedSubmitsPerMiner ?? 4;
+    if (miner && (this.pendingSubmitsByMiner.get(miner) ?? 0) >= perMinerCap) {
+      return this.rejectSubmission('MinerQueueFull', `this miner already has ${perMinerCap} submits queued/running; await results before resubmitting`);
+    }
+    this.submitQueueDepth += 1;
+    if (miner) this.pendingSubmitsByMiner.set(miner, (this.pendingSubmitsByMiner.get(miner) ?? 0) + 1);
+    try {
+      return await this.submitQueue.enqueue(async () => {
+        // Client gone before evaluation started: skip the work entirely —
+        // no seed draw, no admission charge, no scorer dispatch happened yet.
+        if (opts?.signal?.aborted) {
+          return this.rejectSubmission('ClientDisconnected', 'client disconnected before evaluation started; nothing was drawn — resubmit when ready');
+        }
+        return this.processSubmit(body);
+      });
+    } finally {
+      this.submitQueueDepth -= 1;
+      if (miner) {
+        const left = (this.pendingSubmitsByMiner.get(miner) ?? 1) - 1;
+        if (left <= 0) this.pendingSubmitsByMiner.delete(miner);
+        else this.pendingSubmitsByMiner.set(miner, left);
+      }
+    }
   }
 
   private async processSubmit(body: unknown): Promise<unknown> {
@@ -985,7 +1033,8 @@ export class CoreTexCoordinatorCore {
       epochCurrent = await this.checkEpochStillCurrent();
     } catch (e) {
       this.signingEnabled = false;
-      this.unhealthyReason = `CoordUnhealthy: epoch check failed: ${(e as Error)?.message ?? String(e)}`;
+      console.error('[coretex-core] epoch check failed:', e);
+      this.unhealthyReason = 'CoordUnhealthy: epoch check failed (chain unreachable; see coordinator logs)';
       return reject('CoordUnhealthy', this.unhealthyReason);
     }
     if (!epochCurrent) {
@@ -1111,7 +1160,8 @@ export class CoreTexCoordinatorCore {
       epochAtSigning = await this.chain.getV4CurrentEpoch();
     } catch (e) {
       this.signingEnabled = false;
-      this.unhealthyReason = `CoordUnhealthy: epoch check failed: ${(e as Error)?.message ?? String(e)}`;
+      console.error('[coretex-core] epoch check failed at signing:', e);
+      this.unhealthyReason = 'CoordUnhealthy: epoch check failed (chain unreachable; see coordinator logs)';
       return this.rejectSubmission('CoordUnhealthy', this.unhealthyReason);
     }
     if (epochAtSigning !== this.config.epoch) {

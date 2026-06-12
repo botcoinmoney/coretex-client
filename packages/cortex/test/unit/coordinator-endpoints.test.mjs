@@ -130,3 +130,66 @@ describe('CoreTex v0 canonical endpoint surface', () => {
     assert.equal(r.handled, false);
   });
 });
+
+// ── Submit HTTP status semantics + disconnect-signal threading ──────────────
+import { submitHttpStatusFor } from '../../dist/index.js';
+
+describe('submit HTTP status semantics', () => {
+  test('infra-unavailable rejection codes map to 503', () => {
+    for (const code of [
+      'EvalFailure', 'SignerFailure', 'CoordSignerUnavailable', 'CoordUnhealthy',
+      'CoordEpochMismatch', 'CoordAwaitingFinality', 'awaiting_baseline_recompute',
+      'epoch_cutover_in_progress', 'epoch_cutover_unavailable', 'QueueFull',
+    ]) {
+      assert.equal(submitHttpStatusFor({ status: 'rejected', code }), 503, code);
+    }
+  });
+
+  test('malformed-request codes map to 400; stale-root race (E01) stays 200', () => {
+    for (const code of ['BODY', 'DECODE', 'E02', 'E03', 'E04', 'E05']) {
+      assert.equal(submitHttpStatusFor({ status: 'rejected', code }), 400, code);
+    }
+    assert.equal(submitHttpStatusFor({ status: 'rejected', code: 'E01' }), 200);
+  });
+
+  test('semantic rejections and accepted envelopes stay 200 (bodies pass through verbatim)', () => {
+    for (const code of ['duplicate_submission', 'DuplicateCoreTexPatch', 'CoreTexScreenerCapExceeded', 'MinerReceiptChainBusy', 'MinerQueueFull', 'ClientDisconnected', 'W03_DETERMINISTIC_DELTA_TOO_LOW']) {
+      assert.equal(submitHttpStatusFor({ status: 'rejected', code }), 200, code);
+    }
+    assert.equal(submitHttpStatusFor({ status: 'accepted', outcome: 'screener_pass' }), 200);
+    assert.equal(submitHttpStatusFor(null), 200);
+    assert.equal(submitHttpStatusFor('weird'), 200);
+  });
+
+  test('the route applies the mapping and passes the envelope body through verbatim', async () => {
+    const envelope = { status: 'rejected', code: 'EvalFailure', reason: 'evaluator failed' };
+    const r = await handleCoreTexCoordinatorRoute(
+      { method: 'POST', path: '/coretex/submit', body: { x: 1 } },
+      { submit: () => envelope },
+    );
+    assert.equal(r.status, 503);
+    assert.deepEqual(r.body, envelope);
+    const bad = await handleCoreTexCoordinatorRoute(
+      { method: 'POST', path: '/coretex/submit', body: {} },
+      { submit: () => ({ status: 'rejected', code: 'BODY', reason: 'malformed body' }) },
+    );
+    assert.equal(bad.status, 400);
+  });
+
+  test('the client-disconnect signal is threaded to the submit handler', async () => {
+    const ctl = new AbortController();
+    let seen;
+    await handleCoreTexCoordinatorRoute(
+      { method: 'POST', path: '/coretex/submit', body: {}, signal: ctl.signal },
+      { submit: (_body, opts) => { seen = opts?.signal; return { status: 'rejected', code: 'BODY' }; } },
+    );
+    assert.equal(seen, ctl.signal);
+    // No signal on the request → no opts fabricated.
+    let seenOpts = 'unset';
+    await handleCoreTexCoordinatorRoute(
+      { method: 'POST', path: '/coretex/submit', body: {} },
+      { submit: (_body, opts) => { seenOpts = opts; return { status: 'rejected', code: 'BODY' }; } },
+    );
+    assert.equal(seenOpts, undefined);
+  });
+});
