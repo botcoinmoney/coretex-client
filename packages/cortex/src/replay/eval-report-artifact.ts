@@ -154,13 +154,16 @@ export async function verifyPostRevealEvalReportArtifact(
 }
 
 function validateArtifactShape(artifact: CoreTexPostRevealEvalReportArtifact): string | null {
+  if (!artifact || typeof artifact !== 'object') return 'artifact must be an object';
   if (artifact.version !== 'coretex-post-reveal-eval-report-v1') return 'version mismatch';
   if (!isBytes32(artifact.evalReportHash)) return 'evalReportHash must be bytes32';
   if (!isBytes32(artifact.artifactHash)) return 'artifactHash must be bytes32';
   if (!Number.isSafeInteger(artifact.epochId) || artifact.epochId < 0) return 'epochId invalid';
   if (!isAddress(artifact.minerAddress)) return 'minerAddress invalid';
   if (artifact.outcome !== 'SCREENER_PASS' && artifact.outcome !== 'STATE_ADVANCE') return 'outcome invalid';
-  if (!/^0x[0-9a-fA-F]*$/.test(artifact.compactPatchBytesHex) || (artifact.compactPatchBytesHex.length - 2) % 2 !== 0) {
+  if (typeof artifact.compactPatchBytesHex !== 'string' ||
+      !/^0x[0-9a-fA-F]*$/.test(artifact.compactPatchBytesHex) ||
+      (artifact.compactPatchBytesHex.length - 2) % 2 !== 0) {
     return 'compactPatchBytesHex invalid';
   }
   if (!Number.isSafeInteger(artifact.thresholdPpm) || artifact.thresholdPpm < 0) return 'thresholdPpm invalid';
@@ -179,6 +182,17 @@ function validateArtifactShape(artifact: CoreTexPostRevealEvalReportArtifact): s
   }
   if (!Number.isSafeInteger(artifact.context.replayTolerancePpm) || artifact.context.replayTolerancePpm < 0) {
     return 'context.replayTolerancePpm invalid';
+  }
+  const receipt = artifact.receipt;
+  if (!receipt || typeof receipt !== 'object') return 'receipt missing';
+  if (!Number.isSafeInteger(receipt.epochId) || receipt.epochId < 0) return 'receipt.epochId invalid';
+  if (!isBytes32(receipt.parentRoot)) return 'receipt.parentRoot must be bytes32';
+  if (!isAddress(receipt.minerAddress)) return 'receipt.minerAddress invalid';
+  for (const key of ['gateScorePpm', 'confirmScorePpm', 'receivedAtBlock', 'targetBlock'] as const) {
+    if (!Number.isSafeInteger(receipt[key]) || receipt[key] < 0) return `receipt.${key} invalid`;
+  }
+  for (const key of ['blockhash', 'patchHash', 'gateSeed', 'confirmSeed'] as const) {
+    if (!isBytes32(receipt[key])) return `receipt.${key} must be bytes32`;
   }
   if (artifact.receipt.epochId !== artifact.epochId) return 'receipt epoch mismatch';
   if (artifact.receipt.parentRoot.toLowerCase() !== artifact.context.parentStateRoot.toLowerCase()) return 'receipt parent mismatch';
@@ -212,16 +226,16 @@ function validateSeedDerivationBinding(artifact: CoreTexPostRevealEvalReportArti
 }
 
 
-function hexEq(a: string, b: string): boolean {
-  return a.toLowerCase() === b.toLowerCase();
+function hexEq(a: unknown, b: unknown): boolean {
+  return typeof a === 'string' && typeof b === 'string' && a.toLowerCase() === b.toLowerCase();
 }
 
-function isBytes32(value: string): boolean {
-  return /^0x[0-9a-fA-F]{64}$/.test(value);
+function isBytes32(value: unknown): value is string {
+  return typeof value === 'string' && /^0x[0-9a-fA-F]{64}$/.test(value);
 }
 
-function isAddress(value: string): boolean {
-  return /^0x[0-9a-fA-F]{40}$/.test(value);
+function isAddress(value: unknown): value is string {
+  return typeof value === 'string' && /^0x[0-9a-fA-F]{40}$/.test(value);
 }
 
 function hexToBytes(hex: string): Uint8Array {

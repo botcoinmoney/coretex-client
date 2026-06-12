@@ -37,13 +37,13 @@
  *      signing disabled + `acceptingSubmissions = false`.
  *   9. Submit/tick concurrency (audit §9 W02 race): ALL submit processing is
  *      serialized through ONE FIFO queue (`CoreTexSubmitQueue`; in-process
- *      default, durable-adapter wrappable) and shares an async mutex with
- *      `tick()`, so a watcher tick can never interleave between a submit's
- *      parent-root capture and its signature. Immediately before signing, the
- *      live root / epoch / freeze flag are re-checked; a stale live root is
- *      REJECTED (`W02_STALE_PARENT_AT_SIGNING`) — never re-evaluated, because
- *      the patch wire bytes pin the evaluated parent root and cannot apply to
- *      any other root. Per-miner solveIndex/prevReceiptHash are reserved while
+ *      default, durable-adapter wrappable). The short preflight/signing phases
+ *      share an async mutex with `tick()`, while the long scorer call runs
+ *      outside that mutex. Immediately before signing, the live root / epoch /
+ *      freeze generation are re-checked; a stale live root is REJECTED
+ *      (`W02_STALE_PARENT_AT_SIGNING`) — never re-evaluated, because the patch
+ *      wire bytes pin the evaluated parent root and cannot apply to any other
+ *      root. Per-miner solveIndex/prevReceiptHash are reserved while
  *      a signed receipt is un-landed: a follow-up same-miner submit either
  *      builds on the reservation (when the signer returns the V4 on-chain
  *      `receiptHash`) or is rejected `MinerReceiptChainBusy` — never
@@ -161,13 +161,9 @@ export interface RealEvaluator {
     parentStateRoot: string;
     miner: string;
     parentState?: CortexState;
-    /** OPTIONAL per-job screener-threshold (ppm) override. The keyless scorer
-     *  server passes the LIVE threshold carried in the job so the evaluator's
-     *  advisory accept/reject + committed artifact threshold reflect what the
-     *  coordinator sent (no CORETEX_SCREENER_THRESHOLD_PPM env drift). The local
-     *  CPU evaluator path omits it. The coordinator core never sets it — it
-     *  re-derives the final decision from the returned scores vs the live
-     *  threshold regardless. */
+    /** OPTIONAL per-job screener-threshold (ppm) override. The coordinator core
+     *  passes the live threshold for the current parent root so both local CPU
+     *  and remote scorer artifacts bind the same threshold exposed in status. */
     screenerThresholdPpm?: number;
     /** OPTIONAL §8 coordinator-pinned future-blockhash seed context (keyless
      *  remote path). The keyless scorer server passes the seed the coordinator
@@ -454,6 +450,7 @@ export class CoreTexCoordinatorCore {
   private readonly submitQueue: CoreTexSubmitQueue;
   private frozen = false;
   private frozenReason: string | null = null;
+  private freezeGeneration = 0;
   /** Per-miner un-landed receipt-chain reservation: the NEXT (solveIndex,
    *  prevReceiptHash) a follow-up receipt must use. `lastReceiptHash === null`
    *  when the signer could not provide the on-chain receiptHash (chaining
@@ -564,8 +561,9 @@ export class CoreTexCoordinatorCore {
   }
 
   // ── watcher tick (called periodically) ────────────────────────────────────
-  /** Mutually exclusive with submit processing (§9): a tick can never
-   *  interleave between a submit's parent-root capture and its signature. */
+  /** Mutually exclusive with submit preflight/signing (§9). Long scorer work
+   *  runs outside the mutex; submit rejects if a tick advances the root before
+   *  signing. */
   async tick(): Promise<void> {
     return this.coreMutex.runExclusive(() => this.tickInner());
   }
@@ -786,7 +784,7 @@ export class CoreTexCoordinatorCore {
         p.state = 'expired';
         this.metrics.receiptExpiryCount += 1;
         // Release dedup under ORIGINAL patchHash (audit-3 R2 #3)
-        const dedupKey = `${p.parentRoot.toLowerCase()}|${p.originalPatchHash.toLowerCase()}|2`;
+        const dedupKey = `${p.parentRoot.toLowerCase()}|${p.originalPatchHash.toLowerCase()}`;
         this.submitDedup.delete(dedupKey);
         this.markExpiredReceiptHash(p.signedPatchHash, nowSec);
         this.markExpiredReceiptHash(p.originalPatchHash, nowSec);
@@ -934,39 +932,79 @@ export class CoreTexCoordinatorCore {
   }
 
   /** ALL submit processing enters ONE FIFO queue (§9): exactly one submit is
-   *  evaluated/signed at a time, in arrival order, mutually exclusive with
-   *  `tick()`. */
+   *  evaluated/signed at a time, in arrival order. The long evaluator call
+   *  deliberately runs outside `coreMutex`, so watcher ticks and cutover
+   *  freezes cannot be held hostage by GPU latency. */
   async submit(body: unknown): Promise<unknown> {
-    return this.submitQueue.enqueue(() => this.coreMutex.runExclusive(() => this.processSubmit(body)));
+    return this.submitQueue.enqueue(() => this.processSubmit(body));
   }
 
   private async processSubmit(body: unknown): Promise<unknown> {
+    const prepared = await this.coreMutex.runExclusive(() => this.prepareSubmitEvaluation(body));
+    if (!prepared.ok) return prepared.response;
+
+    let evalResult: EvalResult;
+    try {
+      evalResult = await this.evaluator.scorePatch({
+        patchBytesHex: prepared.canonicalHex,
+        parentStateRoot: prepared.parsed.parentStateRoot,
+        miner: prepared.parsed.miner,
+        parentState: prepared.parentStateSnapshot,
+        screenerThresholdPpm: prepared.screenerThresholdPpm,
+      });
+    } catch (e) {
+      this.metrics.evalFailureCount += 1;
+      // Operational visibility (audit: silent swallow made live EvalFailure
+      // undiagnosable). The public envelope stays opaque; the host log gets
+      // the real error. No score telemetry can leak here — the evaluator
+      // threw before producing a result.
+      console.error('[coretex-core] evaluator failure:', (e as Error)?.stack ?? e);
+      return this.rejectSubmission('EvalFailure', 'evaluator failed');
+    }
+
+    return this.coreMutex.runExclusive(() => this.finishSubmitAfterEvaluation(prepared, evalResult));
+  }
+
+  private async prepareSubmitEvaluation(body: unknown): Promise<PreparedSubmit | { ok: false; response: unknown }> {
+    const reject = (code: string, reason: string, extra: Record<string, unknown> = {}) => ({
+      ok: false as const,
+      response: this.rejectSubmission(code, reason, extra),
+    });
     const now = Math.floor(Date.now() / 1000);
     this.gcPending(now);
     if (this.frozen) {
-      return this.rejectSubmission('epoch_cutover_in_progress', this.frozenReason ?? 'epoch cutover in progress; submissions are frozen');
+      return reject('epoch_cutover_in_progress', this.frozenReason ?? 'epoch cutover in progress; submissions are frozen');
     }
-    if (!(await this.checkEpochStillCurrent())) {
-      return this.rejectSubmission('CoordEpochMismatch', this.unhealthyReason ?? 'epoch mismatch');
+    let epochCurrent: boolean;
+    try {
+      epochCurrent = await this.checkEpochStillCurrent();
+    } catch (e) {
+      this.signingEnabled = false;
+      this.unhealthyReason = `CoordUnhealthy: epoch check failed: ${(e as Error)?.message ?? String(e)}`;
+      return reject('CoordUnhealthy', this.unhealthyReason);
+    }
+    if (!epochCurrent) {
+      return reject('CoordEpochMismatch', this.unhealthyReason ?? 'epoch mismatch');
     }
     if (!this.signingEnabled) {
       const code = this.isAwaitingFinality() ? 'CoordAwaitingFinality' : 'CoordUnhealthy';
-      return this.rejectSubmission(code, this.unhealthyReason ?? 'signing disabled');
+      return reject(code, this.unhealthyReason ?? 'signing disabled');
     }
     if (!this.signer) {
-      return this.rejectSubmission('CoordSignerUnavailable', 'CoreTex receipt signer is not configured');
+      return reject('CoordSignerUnavailable', 'CoreTex receipt signer is not configured');
     }
     // §7: no baseline for the current context (post-rotation live root) ->
     // refuse until the recompute plumbing provides one.
     const baselinePpm = this.effectiveBaselinePpm();
     if (baselinePpm === null) {
-      return this.rejectSubmission('awaiting_baseline_recompute',
+      return reject('awaiting_baseline_recompute',
         `no production-scorer baseline for live root ${this.liveRoot}; submissions are refused until a recomputed baseline is provided`);
     }
+    const screenerThresholdPpm = this.effectiveScreenerThresholdPpm(baselinePpm);
     const parsed = parseSubmitBody(body, this.config.maxPatchBytes ?? 256);
-    if (!parsed.ok) return this.rejectSubmission(String(parsed.body.code ?? 'BODY'), String(parsed.body.reason ?? 'malformed body'), parsed.body);
+    if (!parsed.ok) return reject(String(parsed.body.code ?? 'BODY'), String(parsed.body.reason ?? 'malformed body'), parsed.body);
     if (parsed.parentStateRoot !== this.liveRoot.toLowerCase()) {
-      return this.rejectSubmission('E01', 'parentStateRoot != confirmed live root', { currentStateRoot: this.liveRoot });
+      return reject('E01', 'parentStateRoot != confirmed live root', { currentStateRoot: this.liveRoot });
     }
     // §9: captured for the pre-sign stale-root re-check.
     const rootAtEvaluation = this.liveRoot.toLowerCase();
@@ -975,11 +1013,11 @@ export class CoreTexCoordinatorCore {
     try {
       decoded = decodePatch(parsed.patchBytes);
     } catch (e) {
-      return this.rejectSubmission('DECODE', `decode failed: ${(e as Error).message}`);
+      return reject('DECODE', `decode failed: ${(e as Error).message}`);
     }
     const wireParent = bytesToHex(decoded.parentStateRoot).toLowerCase();
     if (wireParent !== parsed.parentStateRoot) {
-      return this.rejectSubmission('E01', 'wire parentStateRoot != request parentStateRoot', { currentStateRoot: this.liveRoot });
+      return reject('E01', 'wire parentStateRoot != request parentStateRoot', { currentStateRoot: this.liveRoot });
     }
     // B2: STRUCTURAL validation BEFORE the evaluator. applyPatch enforces
     // type/range/reserved-bit/no-op + the r5 header freeze; running it here
@@ -987,7 +1025,7 @@ export class CoreTexCoordinatorCore {
     // future-blockhash seed draw, a per-miner admission, or scorer work.
     const preApplied = applyPatch(this.liveState, decoded, true);
     if (!preApplied.ok) {
-      return this.rejectSubmission(preApplied.code, `apply: ${preApplied.code}`);
+      return reject(preApplied.code, `apply: ${preApplied.code}`);
     }
     // B1: canonicalize scoreDelta OUT of the hash/dedup/seed/artifact domain.
     // scoreDelta is miner-controlled and does not change the state transition;
@@ -999,23 +1037,27 @@ export class CoreTexCoordinatorCore {
     const canonicalBytes = encodePatch({ ...decoded, scoreDelta: 0n });
     const canonicalHex = bytesToHex(canonicalBytes).toLowerCase();
     const originalPatchHash = computePatchHash(canonicalBytes).toLowerCase();
-    let evalResult: EvalResult;
-    try {
-      evalResult = await this.evaluator.scorePatch({
-        patchBytesHex: canonicalHex,
-        parentStateRoot: parsed.parentStateRoot,
-        miner: parsed.miner,
-        parentState: this.liveState,
-      });
-    } catch (e) {
-      this.metrics.evalFailureCount += 1;
-      // Operational visibility (audit: silent swallow made live EvalFailure
-      // undiagnosable). The public envelope stays opaque; the host log gets
-      // the real error. No score telemetry can leak here — the evaluator
-      // threw before producing a result.
-      console.error('[coretex-core] evaluator failure:', (e as Error)?.stack ?? e);
-      return this.rejectSubmission('EvalFailure', 'evaluator failed');
+    const dedupKey = `${parsed.parentStateRoot}|${originalPatchHash}`;
+    if (this.submitDedup.has(dedupKey)) {
+      return reject('DuplicateCoreTexPatch', '(parent, patchHash) already signed');
     }
+    return {
+      ok: true,
+      now,
+      parsed,
+      decoded,
+      canonicalHex,
+      originalPatchHash,
+      dedupKey,
+      screenerThresholdPpm,
+      rootAtEvaluation,
+      parentStateSnapshot: { words: [...this.liveState.words] },
+      freezeGeneration: this.freezeGeneration,
+    };
+  }
+
+  private async finishSubmitAfterEvaluation(prepared: PreparedSubmit, evalResult: EvalResult): Promise<unknown> {
+    const { now, parsed, decoded, canonicalHex, originalPatchHash, rootAtEvaluation } = prepared;
     if (evalResult.outcome === 'reject') {
       // §8 envelope strip: never forward score telemetry on rejects.
       return this.rejectSubmission(evalResult.code, evalResult.reason);
@@ -1029,6 +1071,7 @@ export class CoreTexCoordinatorCore {
       corpusRoot: this.config.expectedEpochPins.corpusRoot,
       coreVersionHash: this.config.expectedEpochPins.coreVersionHash,
       hiddenSeedCommit: this.config.expectedEpochPins.hiddenSeedCommit,
+      minDualPackScorePpm: prepared.screenerThresholdPpm,
       ...(this.config.targetBlockOffset !== undefined ? { targetBlockOffset: this.config.targetBlockOffset } : {}),
     });
     if (proofInvalid) {
@@ -1038,9 +1081,37 @@ export class CoreTexCoordinatorCore {
     const outcome = evalResult.outcome === 'state_advance'
       ? OUTCOME_CORETEX_STATE_ADVANCE
       : OUTCOME_CORETEX_SCREENER_PASS;
-    const dedupKey = `${parsed.parentStateRoot}|${originalPatchHash}|${outcome}`;
+    const dedupKey = prepared.dedupKey;
     if (this.submitDedup.has(dedupKey)) {
-      return this.rejectSubmission('DuplicateCoreTexPatch', '(parent, patchHash, outcome) already signed');
+      return this.rejectSubmission('DuplicateCoreTexPatch', '(parent, patchHash) already signed');
+    }
+
+    // The scorer ran outside coreMutex. Re-check the mutable live context
+    // before reading counters, building a receipt, or calling the signer.
+    if (this.frozen || this.freezeGeneration !== prepared.freezeGeneration) {
+      return this.rejectSubmission('epoch_cutover_in_progress', this.frozenReason ?? 'epoch cutover crossed this submission; re-submit after cutover');
+    }
+    if (this.liveRoot.toLowerCase() !== rootAtEvaluation) {
+      return this.rejectSubmission('W02_STALE_PARENT_AT_SIGNING',
+        'confirmed live root advanced between evaluation and signing; re-submit against the new root',
+        { currentStateRoot: this.liveRoot });
+    }
+    const baselinePpm = this.effectiveBaselinePpm();
+    if (baselinePpm === null) {
+      return this.rejectSubmission('awaiting_baseline_recompute',
+        `no production-scorer baseline for live root ${this.liveRoot}; submissions are refused until a recomputed baseline is provided`);
+    }
+    let epochAtSigning: bigint;
+    try {
+      epochAtSigning = await this.chain.getV4CurrentEpoch();
+    } catch (e) {
+      this.signingEnabled = false;
+      this.unhealthyReason = `CoordUnhealthy: epoch check failed: ${(e as Error)?.message ?? String(e)}`;
+      return this.rejectSubmission('CoordUnhealthy', this.unhealthyReason);
+    }
+    if (epochAtSigning !== this.config.epoch) {
+      return this.rejectSubmission('CoordEpochMismatch',
+        `V4.currentEpoch=${epochAtSigning} rolled over during evaluation; configured=${this.config.epoch}`);
     }
 
     const counters = await this.chain.getMinerCoreTexCounters(this.config.epoch, parsed.miner);
@@ -1063,11 +1134,15 @@ export class CoreTexCoordinatorCore {
           'a previously signed receipt for this miner has not landed on-chain; broadcast it (or wait for its expiry) before submitting again');
       }
     }
+    const reservedInFlightReceipts = reservation
+      ? Math.max(0, Number(reservation.nextIndex - counters.nextIndex))
+      : 0;
     const cap = this.config.perMinerScreenerCap ?? 50;
-    if (outcome === OUTCOME_CORETEX_SCREENER_PASS && counters.screenersThisEpoch >= cap) {
+    const effectiveScreenerCount = counters.screenersThisEpoch + reservedInFlightReceipts;
+    if (outcome === OUTCOME_CORETEX_SCREENER_PASS && effectiveScreenerCount >= cap) {
       return this.rejectSubmission('CoreTexScreenerCapExceeded', 'per-miner screener cap exceeded', {
         perMinerScreenerCap: cap,
-        current: counters.screenersThisEpoch,
+        current: effectiveScreenerCount,
       });
     }
 
@@ -1083,17 +1158,34 @@ export class CoreTexCoordinatorCore {
     let scoreAfterPpm = 0;
     // §7: both gates derive from the LIVE baseline-tracked threshold (the
     // attested baselineRecompute='activeRootChanged' policy), mirroring
-    // evaluateCoreTexWorkQualification: state advance requires
-    // max(minImprovementPpm, liveScreenerThreshold).
+    // State advance must clear the replay-tolerant production threshold and
+    // the live screener threshold. This mirrors the production evaluator's
+    // computeAcceptanceThresholdPpm path at the signer boundary.
     const liveScreenerThresholdPpm = this.effectiveScreenerThresholdPpm(baselinePpm);
+    if (evalResult.deterministicDeltaPpm < liveScreenerThresholdPpm) {
+      return this.rejectSubmission('W03_DETERMINISTIC_DELTA_TOO_LOW', 'below live screener threshold');
+    }
     if (evalResult.outcome === 'state_advance') {
       const scoreDelta = evalResult.scoreAfterPpm - evalResult.scoreBeforePpm;
       const minStateAdvanceDelta = Math.max(
-        this.config.minImprovementPpm ?? Number(DEFAULT_CORETEX_WORK_POLICY.stateAdvance.minDeterministicDeltaPpm),
+        this.effectiveStateAdvanceThresholdPpm(),
         liveScreenerThresholdPpm,
       );
       if (scoreDelta < minStateAdvanceDelta) {
         return this.rejectSubmission('W03_DETERMINISTIC_DELTA_TOO_LOW', 'below state-advance minimum');
+      }
+      const proofInvalidForStateAdvance = validateDualPackProof(evalResult, {
+        epoch: Number(this.config.epoch),
+        patchHash: originalPatchHash,
+        parentStateRoot: parsed.parentStateRoot,
+        corpusRoot: this.config.expectedEpochPins.corpusRoot,
+        coreVersionHash: this.config.expectedEpochPins.coreVersionHash,
+        hiddenSeedCommit: this.config.expectedEpochPins.hiddenSeedCommit,
+        minDualPackScorePpm: minStateAdvanceDelta,
+        ...(this.config.targetBlockOffset !== undefined ? { targetBlockOffset: this.config.targetBlockOffset } : {}),
+      });
+      if (proofInvalidForStateAdvance) {
+        return this.rejectSubmission('DUAL_PACK_PROOF_INVALID', proofInvalidForStateAdvance);
       }
       const rewrittenPatchBytes = normalizeHexBytes(evalResult.rewrittenPatchBytesHex);
       if (!rewrittenPatchBytes || rewrittenPatchBytes.bytes.length > (this.config.maxPatchBytes ?? 256)) {
@@ -1110,7 +1202,7 @@ export class CoreTexCoordinatorCore {
       }
       compactPatchBytes = bytesToHex(encodePatch({ ...decoded, scoreDelta: BigInt(scoreDelta) })).toLowerCase();
       const finalDecoded = decodePatch(hexToBytes(compactPatchBytes));
-      const finalApplied = applyPatch(this.liveState, finalDecoded, true);
+      const finalApplied = applyPatch(prepared.parentStateSnapshot, finalDecoded, true);
       if (!finalApplied.ok) {
         return this.rejectSubmission(finalApplied.code, `rewritten apply: ${finalApplied.code}`);
       }
@@ -1160,28 +1252,17 @@ export class CoreTexCoordinatorCore {
     if (!receipt.evalReportHash.match(/^0x[0-9a-f]{64}$/) || !receipt.artifactHash.match(/^0x[0-9a-f]{64}$/)) {
       return this.rejectSubmission('EVAL_HASH_INVALID', 'evaluator returned malformed evalReportHash/artifactHash');
     }
-    // §9 pre-sign re-checks: the shared mutex keeps tick out, but re-verify
-    // immediately before signing anyway (freeze can flip mid-flight; epoch is
-    // chain truth). A stale live root is REJECTED, never re-evaluated: the
-    // patch wire bytes pin the evaluated parent root, so the evaluation cannot
-    // be transplanted onto the advanced root.
-    if (this.frozen) {
-      return this.rejectSubmission('epoch_cutover_in_progress', this.frozenReason ?? 'epoch cutover in progress; submissions are frozen');
-    }
-    if (this.liveRoot.toLowerCase() !== rootAtEvaluation) {
-      return this.rejectSubmission('W02_STALE_PARENT_AT_SIGNING',
-        'confirmed live root advanced between evaluation and signing; re-submit against the new root',
-        { currentStateRoot: this.liveRoot });
-    }
-    const epochAtSigning = await this.chain.getV4CurrentEpoch();
-    if (epochAtSigning !== this.config.epoch) {
-      return this.rejectSubmission('CoordEpochMismatch',
-        `V4.currentEpoch=${epochAtSigning} rolled over during evaluation; configured=${this.config.epoch}`);
+    const signer = this.signer;
+    if (!signer) {
+      return this.rejectSubmission('CoordSignerUnavailable', 'CoreTex receipt signer is not configured');
     }
     let signed;
     try {
-      signed = await this.signer.signCoreTexReceipt({ miner: parsed.miner, receipt });
-    } catch {
+      signed = await signer.signCoreTexReceipt({ miner: parsed.miner, receipt });
+    } catch (e) {
+      // Host log so a live signer outage is diagnosable; the miner still only
+      // sees the generic rejection envelope (no internal detail leaks).
+      console.error('[coretex-coordinator] signer.signCoreTexReceipt failed:', (e as Error)?.stack ?? e);
       this.metrics.signerFailureCount += 1;
       return this.rejectSubmission('SignerFailure', 'signer failed');
     }
@@ -1206,8 +1287,8 @@ export class CoreTexCoordinatorCore {
       evalReportHash: receipt.evalReportHash,
       workUnitsBps: Number(workUnitsBps),
       newStateRoot,
-      perMinerScreenerCount: outcome === OUTCOME_CORETEX_SCREENER_PASS ? counters.screenersThisEpoch + 1 : counters.screenersThisEpoch,
-      perMinerScreenerRemaining: Math.max(0, cap - (outcome === OUTCOME_CORETEX_SCREENER_PASS ? counters.screenersThisEpoch + 1 : counters.screenersThisEpoch)),
+      perMinerScreenerCount: outcome === OUTCOME_CORETEX_SCREENER_PASS ? effectiveScreenerCount + 1 : effectiveScreenerCount,
+      perMinerScreenerRemaining: Math.max(0, cap - (outcome === OUTCOME_CORETEX_SCREENER_PASS ? effectiveScreenerCount + 1 : effectiveScreenerCount)),
       receipt: publicReceipt,
       transaction: { to: this.miningContractAddress().toLowerCase(), chainId: Number(this.config.expectedChainId), value: '0', data: signed.transactionData.toLowerCase() },
       issuedAt,
@@ -1254,12 +1335,13 @@ export class CoreTexCoordinatorCore {
 
   // ── cutover freeze + baseline plumbing (§9/§7 orchestrator surface) ────────
   /** Freeze the core for an epoch cutover: `/coretex/submit` rejects with
-   *  `epoch_cutover_in_progress` and `tick()` becomes a no-op. Resolves once
-   *  any in-flight submit/tick work has drained (do NOT await this from inside
-   *  an evaluator/signer callback — the flag itself flips synchronously). */
+   *  `epoch_cutover_in_progress` and `tick()` becomes a no-op. Any submit whose
+   *  scorer call was already in flight is rejected before signing, even if the
+   *  core is later unfrozen. */
   async freeze(reason = 'epoch cutover in progress'): Promise<void> {
     this.frozen = true;
     this.frozenReason = reason;
+    this.freezeGeneration += 1;
     await this.coreMutex.runExclusive(() => undefined);
   }
 
@@ -1325,6 +1407,12 @@ export class CoreTexCoordinatorCore {
       policy: this.config.workPolicy ?? DEFAULT_CORETEX_WORK_POLICY,
     }));
     return Math.max(this.config.screenerThresholdPpm ?? 0, computed);
+  }
+
+  private effectiveStateAdvanceThresholdPpm(): number {
+    const minImprovementPpm =
+      this.config.minImprovementPpm ?? Number(DEFAULT_CORETEX_WORK_POLICY.stateAdvance.minDeterministicDeltaPpm);
+    return minImprovementPpm + (this.config.replayTolerancePpm ?? 0) + (this.currentBaselineVariancePpm ?? 0);
   }
 
   private isAcceptingSubmissions(): boolean {
@@ -1503,7 +1591,7 @@ export class CoreTexCoordinatorCore {
   registerPending(p: PendingReceipt, envelope: ReceiptEnvelope): void {
     this.pendingByPatchHash.set(p.signedPatchHash.toLowerCase(), p);
     this.cacheReceipt(envelope, p.originalPatchHash);
-    const dedupKey = `${p.parentRoot.toLowerCase()}|${p.originalPatchHash.toLowerCase()}|2`;
+    const dedupKey = `${p.parentRoot.toLowerCase()}|${p.originalPatchHash.toLowerCase()}`;
     this.submitDedup.set(dedupKey, p.expiresAt);
   }
 
@@ -1559,6 +1647,21 @@ function firstQueryValue(value: string | readonly string[] | undefined): string 
 type ParsedSubmitBody =
   | { ok: true; patchBytesHex: string; patchBytes: Uint8Array; parentStateRoot: string; miner: string }
   | { ok: false; body: Record<string, unknown> };
+
+type ParsedSubmitOk = Extract<ParsedSubmitBody, { ok: true }>;
+type PreparedSubmit = {
+  readonly ok: true;
+  readonly now: number;
+  readonly parsed: ParsedSubmitOk;
+  readonly decoded: ReturnType<typeof decodePatch>;
+  readonly canonicalHex: string;
+  readonly originalPatchHash: string;
+  readonly dedupKey: string;
+  readonly screenerThresholdPpm: number;
+  readonly rootAtEvaluation: string;
+  readonly parentStateSnapshot: CortexState;
+  readonly freezeGeneration: number;
+};
 
 function parseSubmitBody(body: unknown, maxPatchBytes: number): ParsedSubmitBody {
   if (!body || typeof body !== 'object') {
@@ -1626,6 +1729,9 @@ function validateDualPackProof(
     readonly corpusRoot: string;
     readonly coreVersionHash: string;
     readonly hiddenSeedCommit: string;
+    readonly minDualPackScorePpm?: number;
+    readonly gateSeedCommit?: string;
+    readonly confirmSeedCommit?: string;
   },
 ): string | null {
   const proof = result.evaluationProof;
@@ -1657,9 +1763,20 @@ function validateDualPackProof(
     if (!Number.isSafeInteger(pack.scorePpm) || pack.scorePpm < 0 || pack.scorePpm > 1_000_000) {
       return `dual-pack proof ${label} score invalid`;
     }
+    if (expected.minDualPackScorePpm !== undefined && pack.scorePpm < expected.minDualPackScorePpm) {
+      return `dual-pack proof ${label} score below live threshold`;
+    }
   }
   if (proof.gate.seedCommit.toLowerCase() === proof.confirm.seedCommit.toLowerCase()) {
     return 'dual-pack proof gate/confirm seeds are not domain-separated';
+  }
+  if (expected.gateSeedCommit !== undefined &&
+      (!isBytes32(expected.gateSeedCommit) || proof.gate.seedCommit.toLowerCase() !== expected.gateSeedCommit.toLowerCase())) {
+    return 'dual-pack proof gate seedCommit mismatch';
+  }
+  if (expected.confirmSeedCommit !== undefined &&
+      (!isBytes32(expected.confirmSeedCommit) || proof.confirm.seedCommit.toLowerCase() !== expected.confirmSeedCommit.toLowerCase())) {
+    return 'dual-pack proof confirm seedCommit mismatch';
   }
   return null;
 }

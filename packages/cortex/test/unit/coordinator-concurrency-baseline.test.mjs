@@ -312,20 +312,27 @@ describe('CoreTexCoordinatorCore §9 — FIFO signing queue', () => {
     assert.equal(after.receipt.prevReceiptHash, landedHash);
   });
 
-  test('a tick racing a submit cannot interleave between parent-root capture and signature', async () => {
+  test('tick can advance during remote eval; submit rejects stale root before signing', async () => {
     const chainGen = new EventChain();
     const rootsDuringEval = [];
+    let signerCalls = 0;
     let coord;
     const evaluator = {
       scorePatch: async (input) => {
         rootsDuringEval.push(coord.getState().liveRoot.toLowerCase());
-        await delay(50); // window where the OLD race let tick() advance the root
+        await delay(50);
         rootsDuringEval.push(coord.getState().liveRoot.toLowerCase());
         return screenerResult(input.patchBytesHex, input.parentStateRoot);
       },
     };
+    const countingSigner = {
+      signCoreTexReceipt: ({ receipt }) => {
+        signerCalls += 1;
+        return { signature: '0x' + '5a'.repeat(65), transactionData: '0x' + receipt.patchHash.slice(2, 10) };
+      },
+    };
     const chain = new MockChain({ head: 200, regEpoch: { liveStateRoot: GENESIS_ROOT, transitionCount: 0 } });
-    coord = new CoreTexCoordinatorCore(baseConfig, chain, loadGenesis, evaluator, plainSigner);
+    coord = new CoreTexCoordinatorCore(baseConfig, chain, loadGenesis, evaluator, countingSigner);
     await coord.boot();
 
     // A confirmed state advance is ready for the next tick.
@@ -337,17 +344,14 @@ describe('CoreTexCoordinatorCore §9 — FIFO signing queue', () => {
 
     const submitP = coord.submit(submitBody(makePatchHex(GENESIS_ROOT, 40, 1)));
     await flushTasks(); // let the submit enter the mutex and start evaluating
-    const tickP = coord.tick(); // would interleave mid-evaluation without the mutex
+    const tickP = coord.tick();
     const [out] = await Promise.all([submitP, tickP]);
 
-    assert.equal(out.status, 'accepted');
-    assert.equal(out.receipt.parentStateRoot, GENESIS_ROOT.toLowerCase());
-    assert.deepEqual(
-      rootsDuringEval,
-      [GENESIS_ROOT.toLowerCase(), GENESIS_ROOT.toLowerCase()],
-      'live root must be stable across the whole evaluation window',
-    );
-    // The tick ran AFTER the submit finished and applied the event.
+    assert.equal(out.status, 'rejected');
+    assert.equal(out.code, 'W02_STALE_PARENT_AT_SIGNING');
+    assert.equal(signerCalls, 0);
+    assert.equal(rootsDuringEval[0], GENESIS_ROOT.toLowerCase());
+    assert.equal(rootsDuringEval[1], ev0.newRoot.toLowerCase());
     assert.equal(coord.getState().liveRoot.toLowerCase(), ev0.newRoot.toLowerCase());
   });
 

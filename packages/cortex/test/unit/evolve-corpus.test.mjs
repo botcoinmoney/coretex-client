@@ -289,6 +289,7 @@ describe('Fix B — production delta/root path (mock embeddings): logical delta 
     assert.equal(parsedLiveQuery.logicalFamily, liveQuery.logicalFamily);
     assert.equal(parsedLiveQuery.band, liveQuery.band);
     assert.equal(verifyCorpusDeltaSignature(parsed, publicKeyPem), true);
+    assert.equal(verifyCorpusDeltaSignature({ ...parsed, signature: null }, publicKeyPem), false);
     const evolved = applyCorpusDelta(previousCorpus, parsed, { rootCache: previousCorpus.corpusRootCache, attachRootCache: true });
     assert.equal(evolved.corpusRoot, signed.nextRoot);
   });

@@ -226,11 +226,18 @@ export function verifyCorpusDeltaSignature(
   publicKeyPem: string,
   algorithm: 'RSA-SHA256' | 'sha256' = 'RSA-SHA256',
 ): boolean {
-  if (!delta.signature) return false;
-  const verify = createVerify(algorithm);
-  const { signature: _sig, signerKeyId: _sk, ...rest } = delta;
-  verify.update(deltaCanonicalBytes(rest));
-  return verify.verify(publicKeyPem, Buffer.from(delta.signature.slice(2), 'hex'));
+  if (!delta || typeof delta !== 'object') return false;
+  if (typeof delta.signature !== 'string' || !/^0x[0-9a-fA-F]+$/.test(delta.signature) || delta.signature.length % 2 !== 0) {
+    return false;
+  }
+  try {
+    const verify = createVerify(algorithm);
+    const { signature: _sig, signerKeyId: _sk, ...rest } = delta;
+    verify.update(deltaCanonicalBytes(rest));
+    return verify.verify(publicKeyPem, Buffer.from(delta.signature.slice(2), 'hex'));
+  } catch {
+    return false;
+  }
 }
 
 export function corpusDeltaSha256(delta: CorpusDelta): string {
@@ -247,6 +254,10 @@ export function serializeCorpusDelta(delta: CorpusDelta): CorpusDeltaFileShape {
 }
 
 export function parseCorpusDelta(raw: CorpusDeltaFileShape): CorpusDelta {
+  if (!raw || typeof raw !== 'object') throw new Error('parseCorpusDelta: delta must be an object');
+  if (!Array.isArray(raw.addedRecords)) throw new Error('parseCorpusDelta: addedRecords must be an array');
+  if (!Array.isArray(raw.addedIds)) throw new Error('parseCorpusDelta: addedIds must be an array');
+  if (!Array.isArray(raw.removedIds)) throw new Error('parseCorpusDelta: removedIds must be an array');
   return {
     ...raw,
     addedRecords: raw.addedRecords.map(eventFromDisk),
@@ -270,6 +281,14 @@ function eventToDisk(e: ProductionCorpusEvent): ProductionCorpusEventOnDisk {
 }
 
 function eventFromDisk(e: ProductionCorpusEventOnDisk): ProductionCorpusEvent {
+  if (!e || typeof e !== 'object') throw new Error('parseCorpusDelta: addedRecord must be an object');
+  if (!e.embeddings || typeof e.embeddings !== 'object') throw new Error(`parseCorpusDelta: record ${(e as { id?: unknown }).id ?? '<unknown>'} embeddings missing`);
+  if (!e.embeddings.perTruth || typeof e.embeddings.perTruth !== 'object' || Array.isArray(e.embeddings.perTruth)) {
+    throw new Error(`parseCorpusDelta: record ${e.id} embeddings.perTruth must be an object`);
+  }
+  if (!e.embeddings.perNegative || typeof e.embeddings.perNegative !== 'object' || Array.isArray(e.embeddings.perNegative)) {
+    throw new Error(`parseCorpusDelta: record ${e.id} embeddings.perNegative must be an object`);
+  }
   return {
     ...e,
     embeddings: {
@@ -285,8 +304,9 @@ function eventFromDisk(e: ProductionCorpusEventOnDisk): ProductionCorpusEvent {
 
 
 function hexToUint8(hex: string): Uint8Array {
+  if (typeof hex !== 'string') throw new Error('hexToUint8: malformed hex');
   const clean = hex.startsWith('0x') ? hex.slice(2) : hex;
-  if (clean.length % 2 !== 0) throw new Error('hexToUint8: odd length');
+  if (!/^[0-9a-fA-F]*$/.test(clean) || clean.length % 2 !== 0) throw new Error('hexToUint8: malformed hex');
   const out = new Uint8Array(clean.length / 2);
   for (let i = 0; i < out.length; i++) out[i] = parseInt(clean.slice(i * 2, i * 2 + 2), 16);
   return out;

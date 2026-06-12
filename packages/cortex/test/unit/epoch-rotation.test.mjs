@@ -154,6 +154,10 @@ describe('epoch rotation manifest', () => {
       { ...signed, minImprovementPpm: 1 },
       publicKey.export({ type: 'pkcs1', format: 'pem' }),
     ), false);
+    assert.equal(verifyEpochRotationManifestSignature(
+      { ...signed, signer: { ...signed.signer, signature: null } },
+      publicKey.export({ type: 'pkcs1', format: 'pem' }),
+    ), false);
   });
 });
 

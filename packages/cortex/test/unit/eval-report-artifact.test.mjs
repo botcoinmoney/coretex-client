@@ -146,6 +146,14 @@ describe('post-reveal eval report artifact', () => {
     if (!result.ok) assert.equal(result.code, 'EVAL_ARTIFACT_MALFORMED');
   });
 
+  test('malformed receipt shape fails closed instead of throwing TypeError', async () => {
+    const receipt = await buildReceipt();
+    const artifact = buildPostRevealEvalReportArtifact(artifactFields(receipt, { receipt: null }));
+    const result = await verifyPostRevealEvalReportArtifact(artifact, verifyDeps({ ...artifact, receipt }));
+    assert.equal(result.ok, false);
+    if (!result.ok) assert.equal(result.code, 'EVAL_ARTIFACT_MALFORMED');
+  });
+
   test('tampered score field WITHOUT rehash fails the hash binding', async () => {
     const artifact = await buildArtifact();
     const tampered = { ...artifact, receipt: { ...artifact.receipt, gateScorePpm: 999_999 } };

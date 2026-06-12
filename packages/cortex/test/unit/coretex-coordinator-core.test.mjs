@@ -672,6 +672,36 @@ describe('CoreTexCoordinatorCore — production submit path', () => {
     assert.equal(confirmed.body.confirmedOnChain, true);
   });
 
+  test('state advance signer boundary enforces replay-tolerant threshold on dual-pack proof', async () => {
+    const ev = buildEvent({ blockNumber: 500, blockHash: '0x' + '55'.repeat(32) });
+    const rewritten = rewritePatchScoreDelta(ev.compactPatchBytes, 2800);
+    const evalAdvance = {
+      scorePatch: () => ({
+        outcome: 'state_advance',
+        deterministicDeltaPpm: 2800,
+        evalReportHash: '0x' + 'e2'.repeat(32),
+        artifactHash: '0x' + 'a2'.repeat(32),
+        scoreBeforePpm: 100,
+        scoreAfterPpm: 2900,
+        rewrittenPatchBytesHex: rewritten,
+        evaluationProof: dualProofFor(ev.compactPatchBytes, GENESIS_ROOT, {
+          gate: { domain: 'gate', seedCommit: '0x' + '91'.repeat(32), accepted: true, scorePpm: 2600 },
+          confirm: { domain: 'confirm', seedCommit: '0x' + '92'.repeat(32), accepted: true, scorePpm: 2600 },
+        }),
+      }),
+    };
+    const coord = new CoreTexCoordinatorCore(baseConfig, new MockChain({ head: 1000 }), loadGenesis, evalAdvance, signer);
+    await coord.boot();
+    const out = await coord.submit({
+      patchBytesHex: ev.compactPatchBytes,
+      parentStateRoot: GENESIS_ROOT,
+      minerAddress: '0x' + 'aa'.repeat(20),
+    });
+    assert.equal(out.status, 'rejected');
+    assert.equal(out.code, 'DUAL_PACK_PROOF_INVALID');
+    assert.match(out.reason, /score below live threshold/);
+  });
+
   test('state advance submit rejects evaluator rewrite that changes patch semantics', async () => {
     const ev = buildEvent({ blockNumber: 500, blockHash: '0x' + '55'.repeat(32) });
     const decoded = decodePatch(hexToBytes(ev.compactPatchBytes));

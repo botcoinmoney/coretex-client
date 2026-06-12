@@ -70,7 +70,7 @@ import {
   type CoreTexPostRevealEvalReportArtifact,
 } from './replay/eval-report-artifact.js';
 import { DEFAULT_PROFILE, scoringOptionsFromProfile, type CoreTexBundleManifest } from './bundle/index.js';
-import { computeCorpusRoot, loadProductionCorpus, type ProductionCorpus } from './eval/retrieval-corpus.js';
+import { buildCorpusRootLeafCache, computeCorpusRoot, loadProductionCorpus, type ProductionCorpus } from './eval/retrieval-corpus.js';
 import { deriveQueryPack } from './eval/hidden-query-pack.js';
 import { computeAcceptanceThresholdPpm, evaluateRetrievalBenchmarkPatch } from './eval/retrieval-benchmark.js';
 import { biEncoderFromEnv } from './eval/bi-encoder.js';
@@ -1124,8 +1124,9 @@ export interface AutoResolveWalkStart {
  * when its chain-epoch is known AND <= the bound; otherwise it is skipped (a
  * post-rotation loaded corpus AHEAD of the target never becomes the start).
  *
- * Returns null only when not even the base is available — the caller then
- * SAFE-FAILS ('epoch-context-unresolved') rather than rescoring.
+ * Returns null when no ancestor is available, or when the nearest known corpus
+ * is already at the target epoch bound but still does not match the requested
+ * root. In both cases the caller SAFE-FAILS rather than fetching future deltas.
  */
 export function chooseAutoResolveWalkStart(
   candidates: readonly KnownMaterializedCorpus[],
@@ -1140,12 +1141,23 @@ export function chooseAutoResolveWalkStart(
     if (!best || c.epoch > best.epoch) best = c;
   }
   if (!best) return null;
+  if (best.epoch >= targetEpochBound) return null;
   return {
     start: best.corpus,
     fromEpoch: best.epoch + 1,
     maxDeltas: Math.max(1, targetEpochBound - best.epoch),
     origin: best.origin,
   };
+}
+
+function withVerifiedCorpusRootCache(corpus: ProductionCorpus): ProductionCorpus {
+  const existing = corpus.corpusRootCache;
+  if (existing && existing.root.toLowerCase() === corpus.corpusRoot.toLowerCase()) return corpus;
+  const rootCache = buildCorpusRootLeafCache(corpus.events);
+  if (rootCache.root.toLowerCase() !== corpus.corpusRoot.toLowerCase()) {
+    throw new Error(`corpusRootCache merkleizes to ${rootCache.root} != corpus.corpusRoot ${corpus.corpusRoot}`);
+  }
+  return { ...corpus, corpusRootCache: rootCache };
 }
 
 /**
@@ -1921,7 +1933,10 @@ async function runSync({ stateDir, statePath, pinPath, savedState, setup, stagin
       fetchDelta: fetchCorpusDeltaForEpoch,
       // SAME signed-delta gate as the continuity path: verify under the TOFU-pinned key.
       verifyDeltaSignature: (d) => verifyCorpusDeltaSignature(d, publicKey),
-      applyDelta: (corpus, d) => applyCorpusDelta(corpus, d, { verifyRoot: true }),
+      applyDelta: (corpus, d) => {
+        const cached = withVerifiedCorpusRootCache(corpus);
+        return applyCorpusDelta(cached, d, { rootCache: cached.corpusRootCache!, attachRootCache: true, verifyRoot: true });
+      },
       computeRoot: (corpus) => computeCorpusRoot(corpus.events),
       // Cache each intermediate materialized root (bounded LRU) so a later entry's
       // walk hits the cache for a recurring root instead of re-deriving it, and
@@ -2210,6 +2225,8 @@ async function runSync({ stateDir, statePath, pinPath, savedState, setup, stagin
     artifacts,
     replay,
     evalReplay,
+    scoreReplayComplete: !evalReplay.skipped,
+    scoreReplayAttestation: !evalReplay.skipped && evalReplay.pending.length === 0,
     evalArtifacts,
     statePath,
   }, null, 2) + '\n');

@@ -10,6 +10,7 @@
  */
 import type { ScorerJobRequest, ScorerJobResult } from '../scorer-server-cli.js';
 import type { EvalResult } from './coretex-coordinator-core.js';
+import { bytesToHex, keccak256 } from '../index.js';
 import {
   hashPostRevealEvalReportArtifact,
   type CoreTexPostRevealEvalReportArtifact,
@@ -101,6 +102,19 @@ function isBytes32(v: unknown): v is string {
   return typeof v === "string" && /^0x[0-9a-fA-F]{64}$/.test(v);
 }
 
+function hexToBytes(hex: string): Uint8Array {
+  const clean = hex.startsWith("0x") || hex.startsWith("0X") ? hex.slice(2) : hex;
+  if (!/^[0-9a-fA-F]*$/.test(clean) || clean.length % 2 !== 0) throw new Error("hexToBytes: malformed hex");
+  const out = new Uint8Array(clean.length / 2);
+  for (let i = 0; i < out.length; i++) out[i] = parseInt(clean.slice(i * 2, i * 2 + 2), 16);
+  return out;
+}
+
+function seedCommit(seed: string | undefined): string | null {
+  if (!isBytes32(seed)) return null;
+  return bytesToHex(keccak256(hexToBytes(seed))).toLowerCase();
+}
+
 /**
  * The six checks. Returns the reconstructed EvalResult on success (the
  * coordinator core then re-validates the dual-pack proof, applies the
@@ -184,6 +198,17 @@ export function verifyScorerResult(args: {
     if (!hexEq(p.parentStateRoot, active.parentStateRoot)) {
       return { ok: false, code: "SCORER_PIN_MISMATCH", reason: `proof parentStateRoot != active ${active.parentStateRoot}` };
     }
+    const expectedGateSeedCommit = seedCommit(job.publicEvalContext?.gateSeed);
+    const expectedConfirmSeedCommit = seedCommit(job.publicEvalContext?.confirmSeed);
+    if (!expectedGateSeedCommit || !expectedConfirmSeedCommit) {
+      return { ok: false, code: "SCORER_SEED_COMMIT_MISMATCH", reason: "job publicEvalContext missing valid gateSeed/confirmSeed" };
+    }
+    if (!hexEq(p.gate?.seedCommit, expectedGateSeedCommit)) {
+      return { ok: false, code: "SCORER_SEED_COMMIT_MISMATCH", reason: "proof gate seedCommit != coordinator-derived gate seed commit" };
+    }
+    if (!hexEq(p.confirm?.seedCommit, expectedConfirmSeedCommit)) {
+      return { ok: false, code: "SCORER_SEED_COMMIT_MISMATCH", reason: "proof confirm seedCommit != coordinator-derived confirm seed commit" };
+    }
   }
 
   // (7) threshold/policy echo (§2 no-env-drift): the scorer must report the
@@ -231,7 +256,12 @@ export function verifyScorerResult(args: {
   if (!result.artifact || typeof result.artifact !== "object") {
     return { ok: false, code: "SCORER_ARTIFACT_MISSING", reason: "accepted result must carry the canonical eval-report artifact" };
   }
-  const recomputed = hashPostRevealEvalReportArtifact(result.artifact);
+  let recomputed: string;
+  try {
+    recomputed = hashPostRevealEvalReportArtifact(result.artifact);
+  } catch (err) {
+    return { ok: false, code: "SCORER_ARTIFACT_MALFORMED", reason: err instanceof Error ? err.message : String(err) };
+  }
   if (!hexEq(recomputed, result.artifactHash) || !hexEq(recomputed, result.evalReportHash)) {
     return {
       ok: false,
@@ -305,4 +335,3 @@ function validateResultSchema(result: ScorerJobResult): string | null {
   }
   return null;
 }
-

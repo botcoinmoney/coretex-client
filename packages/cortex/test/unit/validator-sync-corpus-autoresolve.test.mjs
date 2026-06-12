@@ -315,6 +315,12 @@ describe('chooseAutoResolveWalkStart — start the forward walk from a guarantee
     const start = chooseAutoResolveWalkStart([{ corpus: corpora[3], epoch: 3, origin: 'loaded' }], 1);
     assert.equal(start, null);
   });
+
+  test('returns null at the exact epoch bound instead of fetching a future delta', () => {
+    const { corpora } = buildChain(privateKey);
+    const start = chooseAutoResolveWalkStart([{ corpus: corpora[2], epoch: 2, origin: 'cached' }], 2);
+    assert.equal(start, null);
+  });
 });
 
 describe('historical replay when the loaded corpus is AHEAD of the target (the gap fix)', () => {

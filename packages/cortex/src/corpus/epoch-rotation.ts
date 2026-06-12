@@ -111,11 +111,21 @@ export function verifyEpochRotationManifestSignature(
   manifest: EpochRotationManifest,
   publicKeyPem: string,
 ): boolean {
-  if (!manifest.signer) return false;
-  const verifier = createVerify(manifest.signer.algorithm === 'RSA-SHA256' ? 'RSA-SHA256' : 'SHA256');
-  verifier.update(canonicalJson(withoutSigner(manifest)));
-  verifier.end();
-  return verifier.verify(publicKeyPem, Buffer.from(manifest.signer.signature.replace(/^0x/i, ''), 'hex'));
+  if (!manifest || typeof manifest !== 'object') return false;
+  const signer = (manifest as { signer?: Partial<EpochRotationManifestSigner> }).signer;
+  if (!signer || typeof signer !== 'object') return false;
+  if (signer.algorithm !== 'RSA-SHA256' && signer.algorithm !== 'ECDSA-SHA256') return false;
+  if (typeof signer.signature !== 'string' || !/^0x[0-9a-fA-F]+$/.test(signer.signature) || signer.signature.length % 2 !== 0) {
+    return false;
+  }
+  try {
+    const verifier = createVerify(signer.algorithm === 'RSA-SHA256' ? 'RSA-SHA256' : 'SHA256');
+    verifier.update(canonicalJson(withoutSigner(manifest)));
+    verifier.end();
+    return verifier.verify(publicKeyPem, Buffer.from(signer.signature.replace(/^0x/i, ''), 'hex'));
+  } catch {
+    return false;
+  }
 }
 
 // ── Frontier-state pruning (hidden-row retirement support) ────────────────────
@@ -195,4 +205,3 @@ function withoutSigner(manifest: EpochRotationManifest): Omit<EpochRotationManif
   const { signer: _signer, ...unsigned } = manifest;
   return unsigned;
 }
-

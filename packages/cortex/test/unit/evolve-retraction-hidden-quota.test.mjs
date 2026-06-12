@@ -82,6 +82,29 @@ describe('evolve retraction/tombstone emission', () => {
     }
   });
 
+  test('hidden queries with positive qrels to retracted docs are retired', () => {
+    const logical = {
+      ...baseLogical,
+      queries: [
+        {
+          id: 'q_retracted_truth',
+          liveUpdateEpoch: 0,
+          qrels: [{ docId: 'd0', relevance: 1.0 }],
+        },
+      ],
+    };
+    const d = evolveCorpusDelta({
+      baseLogical: logical,
+      epoch: 4,
+      seed: 's',
+      churnFraction: 0,
+      retractionFraction: 1.0,
+      evalHiddenPolicy: { splitOf: () => 'eval_hidden', minFreshPerEpoch: 0 },
+    });
+    assert.ok(d.retractedDocIds.includes('d0'));
+    assert.ok(d.retiredQueryIds.includes('q_retracted_truth'));
+  });
+
   test('tombstones are never retracted in a later epoch', () => {
     const e1 = evolveCorpusDelta({ baseLogical, epoch: 1, seed: 's', churnFraction: 0.2, retractionFraction: 1.0 });
     assert.equal(e1.retractedDocIds.length, baseLogical.docs.length, 'fraction 1.0 retracts every eligible fact');
