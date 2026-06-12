@@ -507,7 +507,7 @@ describe('CoreTexCoordinatorCore — pending receipt lifecycle', () => {
       }),
     };
     const chain = new MockChain({ head: 1000 });
-    const coord = new CoreTexCoordinatorCore({ ...baseConfig, receiptTtlSec: 1 }, chain, loadGenesis, evalOk, signer);
+    const coord = new CoreTexCoordinatorCore({ ...baseConfig, receiptTtlSec: 5 }, chain, loadGenesis, evalOk, signer);
     await coord.boot();
     const body = {
       patchBytesHex: ev.compactPatchBytes,
@@ -524,12 +524,11 @@ describe('CoreTexCoordinatorCore — pending receipt lifecycle', () => {
     // Math.floor(Date.now()/1000), so a single fixed sleep races the second-boundary
     // under concurrent-runner load. Instead tick in a bounded poll loop until the
     // receipt cache + dedup actually expire — this exercises the real TTL path
-    // (no injected clock) without any wall-clock margin flake. The cap is far above
-    // the 1s TTL so a slow host cannot false-fail; expiry normally lands on the
-    // first or second tick.
-    const deadline = Date.now() + 15_000;
+    // (no injected clock) without racing the immediate duplicate check above.
+    // The cap is far above the 5s TTL so a slow host cannot false-fail.
+    const deadline = Date.now() + 20_000;
     while (coord.getReceiptByHash(first.patchHash).status !== 404) {
-      assert.ok(Date.now() < deadline, 'screener receipt did not expire within 15s of its 1s TTL');
+      assert.ok(Date.now() < deadline, 'screener receipt did not expire within 20s of its 5s TTL');
       await new Promise((resolve) => setTimeout(resolve, 250));
       await coord.tick();
     }
