@@ -382,6 +382,8 @@ export interface ProductionCoreTexEvaluatorOptions {
    *  meaningful) when `epochSecret` is not provisioned. */
   readonly hiddenSeedCommit?: string;
   readonly corpusPath: string;
+  /** Optional materialized root-leaf cache for fast fail-closed corpus root verification. */
+  readonly corpusRootLeafCachePath?: string | false;
   readonly bundleManifestPath: string;
   readonly parentStateLoader: (parentStateRoot: string) => Promise<CortexState> | CortexState;
   /** REQUIRED persistent grinding-dedup + per-miner-admission store. No
@@ -707,6 +709,7 @@ export async function createProductionCoreTexEvaluator(
   const corpus = loadProductionCorpus(options.corpusPath, {
     verifyCorpusRoot: true,
     verifySplits: true,
+    ...(options.corpusRootLeafCachePath !== undefined ? { corpusRootLeafCachePath: options.corpusRootLeafCachePath } : {}),
   });
   const layout = corpus.biEncoderRetrievalKeyLayout;
   const biEncoder = biEncoderFromEnv(layout, {

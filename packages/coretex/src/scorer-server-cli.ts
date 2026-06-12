@@ -54,7 +54,7 @@ import {
   type CrossEncoderReranker,
   type RerankerCacheStats,
 } from './eval/reranker.js';
-import { loadProductionCorpus } from './eval/retrieval-corpus.js';
+import { readProductionCorpusMetadata } from './eval/retrieval-corpus.js';
 import type { CoreTexBundleManifest } from './bundle/index.js';
 import type { ProductionEvalResult } from './coordinator/production-evaluator.js';
 import { unpack, merkleizeState, bytesToHex, hexToBytes, keccak256, PACKED_SIZE } from './index.js';
@@ -520,6 +520,7 @@ async function bootScorer(env: NodeJS.ProcessEnv): Promise<BootedScorer> {
   }
   const bundleManifestPath = requiredEnv(env, 'CORETEX_BUNDLE_MANIFEST_PATH');
   const corpusPath = requiredEnv(env, 'CORETEX_CORPUS_PATH');
+  const corpusRootLeafCachePath = env['CORETEX_CORPUS_ROOT_LEAF_CACHE_PATH']?.trim() || `${corpusPath}.root-leaves.ndjson`;
   const epochId = Number(requiredEnv(env, 'CORETEX_EPOCH_ID'));
   // SECRETLESS host: the pre-reveal epoch secret must never be provisioned on
   // the scorer box (a compromised GPU host must not leak the grinding secret).
@@ -539,7 +540,7 @@ async function bootScorer(env: NodeJS.ProcessEnv): Promise<BootedScorer> {
   const innerBatch = Number(env['RERANKER_INNER_BATCH'] ?? '8') || 8;
 
   const bundle = JSON.parse(readFileSync(bundleManifestPath, 'utf8')) as CoreTexBundleManifest;
-  const corpus = loadProductionCorpus(corpusPath, { verifyCorpusRoot: true, verifySplits: true });
+  const corpusMeta = readProductionCorpusMetadata(corpusPath);
 
   // The traced reranker is captured so /score-job can reset+snapshot per job;
   // the inner streaming reranker is captured for cache telemetry (getRerankerCacheStats
@@ -574,6 +575,7 @@ async function bootScorer(env: NodeJS.ProcessEnv): Promise<BootedScorer> {
     hiddenSeedCommit,
     corpusPath,
     bundleManifestPath,
+    corpusRootLeafCachePath,
     // Keyless: the scorer holds no chain state. Every /score-job ships the
     // merkle-verified parent substrate (packedParentStateHex), which the job
     // handler unpacks, re-merkleizes against parentStateRoot, and passes to the
@@ -595,7 +597,7 @@ async function bootScorer(env: NodeJS.ProcessEnv): Promise<BootedScorer> {
     revision: att.rerankerRevision,
     promptTemplateHash: att.promptTemplateHash.toLowerCase(),
     bundleHash: bundle.bundleHash.toLowerCase(),
-    corpusRoot: corpus.corpusRoot.toLowerCase(),
+    corpusRoot: corpusMeta.corpusRoot.toLowerCase(),
     coreVersionHash: bundle.bundleHash.toLowerCase(),
     hiddenSeedCommit,
   };

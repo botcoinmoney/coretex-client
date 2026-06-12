@@ -1,8 +1,9 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { dirname, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 
 import {
   applyCorpusDelta,
@@ -12,6 +13,8 @@ import {
   computeCorpusEventLeafHash,
   computeCorpusRoot,
   expectedSplitForRecord,
+  loadProductionCorpus,
+  serializeProductionCorpus,
   updateCorpusRootLeafCache,
 } from '../../dist/index.js';
 import { loadMaterializedCorpusSlice } from '../../../../scripts/lib/load-materialized-corpus.mjs';
@@ -57,6 +60,22 @@ function corpus(events) {
   };
 }
 
+function u8Hex(u8) {
+  return Buffer.from(u8.buffer ?? u8, u8.byteOffset ?? 0, u8.byteLength ?? u8.length).toString('hex');
+}
+
+function writeCorpusFixture(dir, events, { root = computeCorpusRoot(events), cacheEvents = events } = {}) {
+  const corpusPath = join(dir, 'corpus.json');
+  const rootCachePath = `${corpusPath}.root-leaves.ndjson`;
+  const onDisk = serializeProductionCorpus(corpus(events));
+  onDisk.corpusRoot = root;
+  writeFileSync(corpusPath, JSON.stringify(onDisk, null, 2));
+
+  const cache = buildCorpusRootLeafCache(cacheEvents);
+  writeFileSync(rootCachePath, cache.leaves.map((leaf) => JSON.stringify({ id: leaf.id, hash: u8Hex(leaf.hash) })).join('\n') + '\n');
+  return { corpusPath, rootCachePath, cache };
+}
+
 describe('corpus root leaf cache', () => {
   test('small corpus incremental update equals full computeCorpusRoot', () => {
     const baseEvents = Array.from({ length: 32 }, (_, i) => memEvent(i));
@@ -70,6 +89,59 @@ describe('corpus root leaf cache', () => {
     const updated = updateCorpusRootLeafCache(base.corpusRootCache, { additions, removals });
     assert.equal(updated.root, computeCorpusRoot(nextEvents));
     assert.equal(updated.eventCount, nextEvents.length);
+  });
+
+  test('loadProductionCorpus verifies materialized root-leaf cache without recomputing event leaves', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'coretex-root-cache-'));
+    try {
+      const original = [memEvent(1), memEvent(2), memEvent(3)];
+      const trusted = buildCorpusRootLeafCache(original);
+      const mutated = original.map((e, i) => i === 0 ? { ...e, queryText: `${e.queryText} tampered` } : e);
+      assert.notEqual(computeCorpusRoot(mutated), trusted.root);
+
+      const { corpusPath, rootCachePath } = writeCorpusFixture(dir, mutated, {
+        root: trusted.root,
+        cacheEvents: original,
+      });
+      const loaded = loadProductionCorpus(corpusPath, {
+        verifyCorpusRoot: true,
+        verifySplits: true,
+        corpusRootLeafCachePath: rootCachePath,
+      });
+      assert.equal(loaded.corpusRoot, trusted.root);
+      assert.equal(loaded.corpusRootCache.root, trusted.root);
+
+      assert.throws(
+        () => loadProductionCorpus(corpusPath, { verifyCorpusRoot: true, verifySplits: true, corpusRootLeafCachePath: false }),
+        /production corpus root mismatch/,
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('loadProductionCorpus refuses a root-leaf cache with a different event id set', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'coretex-root-cache-ids-'));
+    try {
+      const events = [memEvent(10), memEvent(11)];
+      const wrongCacheEvents = [memEvent(10), memEvent(12)];
+      const wrongCache = buildCorpusRootLeafCache(wrongCacheEvents);
+      const { corpusPath, rootCachePath } = writeCorpusFixture(dir, events, {
+        root: wrongCache.root,
+        cacheEvents: wrongCacheEvents,
+      });
+
+      assert.throws(
+        () => loadProductionCorpus(corpusPath, {
+          verifyCorpusRoot: true,
+          verifySplits: true,
+          corpusRootLeafCachePath: rootCachePath,
+        }),
+        /production corpus root cache id mismatch/,
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   test('buildCorpusDelta/applyCorpusDelta use cache without changing root semantics', () => {

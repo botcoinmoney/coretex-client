@@ -746,12 +746,108 @@ export interface LoadProductionCorpusOptions {
    * `verifyCorpusRoot` — the generator already enforced this. Default `true`.
    */
   readonly verifySplits?: boolean;
+  /**
+   * Optional materialized root-leaf cache. When `verifyCorpusRoot` is true and
+   * this file is present, the loader verifies the cache's Merkle root and event
+   * id set instead of recomputing every event leaf from canonical JSON. This is
+   * the production cold-boot path for large, already-materialized corpora.
+   *
+   * Defaults to `${path}.root-leaves.ndjson` when that file exists. Set `false`
+   * to force full root recomputation.
+   */
+  readonly corpusRootLeafCachePath?: string | false;
+}
+
+export type ProductionCorpusMetadata = Omit<CorpusFileShape, 'events'>;
+
+export function readProductionCorpusMetadata(path: string): ProductionCorpusMetadata {
+  if (!existsSync(path)) throw new Error(`production corpus file not found: ${path}`);
+  const ndjsonPath = `${path}.events.ndjson`;
+  if (existsSync(ndjsonPath)) {
+    const meta = readCorpusJsonHeader(path) as ProductionCorpusMetadata;
+    if (meta.schemaVersion !== 'coretex.production-corpus.v1') {
+      throw new Error(`production corpus has unsupported schemaVersion: ${meta.schemaVersion}`);
+    }
+    return meta;
+  }
+  const raw = JSON.parse(readFileSync(path, 'utf8')) as CorpusFileShape;
+  if (raw.schemaVersion !== 'coretex.production-corpus.v1') {
+    throw new Error(`production corpus has unsupported schemaVersion: ${raw.schemaVersion}`);
+  }
+  const { events: _events, ...meta } = raw;
+  return meta;
+}
+
+function parseRootLeafCacheLine(line: string, path: string, lineNo: number): CorpusRootLeaf {
+  const leaf = JSON.parse(line) as { readonly id?: unknown; readonly hash?: unknown };
+  if (typeof leaf.id !== 'string' || leaf.id.length === 0) {
+    throw new Error(`corpus root leaf cache ${path}:${lineNo} missing string id`);
+  }
+  if (typeof leaf.hash !== 'string' || !/^(0x)?[0-9a-fA-F]{64}$/.test(leaf.hash)) {
+    throw new Error(`corpus root leaf cache ${path}:${lineNo} has invalid bytes32 hash`);
+  }
+  return { id: leaf.id, hash: hexToUint8(leaf.hash) };
+}
+
+export function loadCorpusRootLeafCache(path: string): CorpusRootLeafCache {
+  if (!existsSync(path)) throw new Error(`corpus root leaf cache file not found: ${path}`);
+  const fd = openSync(path, 'r');
+  const leaves: CorpusRootLeaf[] = [];
+  try {
+    const buf = Buffer.alloc(16 * 1024 * 1024);
+    let pending = '';
+    let lineNo = 0;
+    while (true) {
+      const bytesRead = readSync(fd, buf, 0, buf.length, null);
+      if (bytesRead <= 0) break;
+      pending += buf.toString('utf8', 0, bytesRead);
+      let nl: number;
+      while ((nl = pending.indexOf('\n')) >= 0) {
+        const line = pending.slice(0, nl);
+        pending = pending.slice(nl + 1);
+        lineNo += 1;
+        if (!line) continue;
+        leaves.push(parseRootLeafCacheLine(line, path, lineNo));
+      }
+    }
+    if (pending.length > 0) {
+      lineNo += 1;
+      leaves.push(parseRootLeafCacheLine(pending, path, lineNo));
+    }
+  } finally {
+    closeSync(fd);
+  }
+  return buildCorpusRootLeafCacheFromLeaves(leaves);
+}
+
+function assertRootLeafCacheMatchesCorpus(
+  cache: CorpusRootLeafCache,
+  events: readonly ProductionCorpusEvent[],
+  expectedRoot: string,
+  path: string,
+): void {
+  if (cache.root.toLowerCase() !== expectedRoot.toLowerCase()) {
+    throw new Error(`production corpus root cache mismatch: expected ${expectedRoot} got ${cache.root} (${path})`);
+  }
+  if (cache.eventCount !== events.length) {
+    throw new Error(`production corpus root cache eventCount mismatch: expected ${events.length} got ${cache.eventCount} (${path})`);
+  }
+  const eventIds = events.map((e) => e.id).sort(corpusEventIdCompare);
+  for (let i = 0; i < eventIds.length; i++) {
+    const cached = cache.leaves[i]?.id;
+    if (cached !== eventIds[i]) {
+      throw new Error(`production corpus root cache id mismatch at ${i}: expected ${eventIds[i]} got ${cached ?? '<missing>'} (${path})`);
+    }
+  }
 }
 
 export function loadProductionCorpus(path: string, options: LoadProductionCorpusOptions = {}): ProductionCorpus {
   if (!existsSync(path)) throw new Error(`production corpus file not found: ${path}`);
   const verifyCorpusRoot = options.verifyCorpusRoot ?? true;
   const verifySplits = options.verifySplits ?? true;
+  const rootLeafCachePath = options.corpusRootLeafCachePath === false
+    ? undefined
+    : options.corpusRootLeafCachePath ?? `${path}.root-leaves.ndjson`;
 
   // Launch-scale corpora exceed V8's 512 MB single-string cap, so
   // JSON.parse(readFileSync(...)) is unusable on the full file. Two paths:
@@ -792,7 +888,11 @@ export function loadProductionCorpus(path: string, options: LoadProductionCorpus
       },
     }));
   }
-  if (verifyCorpusRoot) {
+  let corpusRootCache: CorpusRootLeafCache | undefined;
+  if (verifyCorpusRoot && rootLeafCachePath && existsSync(rootLeafCachePath)) {
+    corpusRootCache = loadCorpusRootLeafCache(rootLeafCachePath);
+    assertRootLeafCacheMatchesCorpus(corpusRootCache, events, raw.corpusRoot, rootLeafCachePath);
+  } else if (verifyCorpusRoot) {
     const computed = computeCorpusRoot(events);
     if (computed.toLowerCase() !== raw.corpusRoot.toLowerCase()) {
       throw new Error(`production corpus root mismatch: expected ${raw.corpusRoot} got ${computed}`);
@@ -818,6 +918,7 @@ export function loadProductionCorpus(path: string, options: LoadProductionCorpus
   return {
     events,
     byId: new Map(events.map((e) => [e.id, e])),
+    ...(corpusRootCache ? { corpusRootCache } : {}),
     ...(raw.entities !== undefined ? { entities: raw.entities } : {}),
     corpusRoot: raw.corpusRoot.toLowerCase(),
     corpusEpoch: raw.corpusEpoch,

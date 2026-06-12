@@ -37,6 +37,8 @@ export {
   DEFAULT_SPLIT_RATIOS,
   splitForRecord,
   computeCorpusRoot,
+  loadCorpusRootLeafCache,
   loadProductionCorpus,
+  readProductionCorpusMetadata,
   serializeProductionCorpus,
 } from './retrieval-corpus.js';
