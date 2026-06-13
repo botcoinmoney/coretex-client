@@ -13,8 +13,8 @@ import {
   withRecomputedBundleHash,
 } from '../../dist/index.js';
 
-const repoRoot = fileURLToPath(new URL('../../../..', import.meta.url));
-const cliPath = join(repoRoot, 'packages/coretex/dist/replay-cli.js');
+const repoRoot = fileURLToPath(new URL('../..', import.meta.url));
+const cliPath = join(repoRoot, 'dist/replay-cli.js');
 
 function withPackedState(fn) {
   const dir = mkdtempSync(join(tmpdir(), 'coretex-replay-cli-'));
@@ -42,7 +42,7 @@ describe('coretex-replay canonical watch gates', () => {
   }));
 
   test('watch requires expected bundle hash or core version hash', () => withPackedState((statePath) => {
-    const manifestPath = join(repoRoot, 'packages/coretex/test/fixtures/nonexistent-manifest.json');
+    const manifestPath = join(repoRoot, 'test/fixtures/nonexistent-manifest.json');
     const proc = runWatch(['--parent-state', statePath, '--bundle-manifest', manifestPath]);
     assert.notEqual(proc.status, 0);
     assert.match(proc.stderr, /requires --expected-bundle-hash or --core-version-hash/);

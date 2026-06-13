@@ -24,7 +24,7 @@ import { computePatchHash } from '../../dist/eval/seed-derivation.js';
 import { RANGES, PATCH_TYPE } from '../../dist/state/types.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
-const fx = JSON.parse(readFileSync(resolve(here, '../../../../release/calibration/fixtures/state-root-vectors.json'), 'utf8'));
+const fx = JSON.parse(readFileSync(resolve(here, '../../release/calibration/fixtures/state-root-vectors.json'), 'utf8'));
 const [genesis, temporalVec, mixedVec] = fx.vectors;
 
 const BUNDLE = '0x474cd8851eebd097a7f1480818c1ccdb0dd473c5da08cd6909b071ac8c101715';

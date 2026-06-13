@@ -1,0 +1,71 @@
+{
+  "schema": "coretex-state-root-vectors-v1",
+  "generatedBy": "scripts/state-root-vectors.mjs",
+  "note": "Deterministic CortexState transition vectors for on-chain/standalone replay parity. Roots are keccak256 binary-Merkle over 1024 big-endian uint256 leaves; patchHash is domain-separated (coretex-patch-hash-v1).",
+  "vectors": [
+    {
+      "name": "genesis",
+      "description": "all-zero 1024-word CortexState",
+      "stateRoot": "0xe026cc5a4aed3c22a58cbd3d2ac754c9352c5436f638042dca99034e83636516"
+    },
+    {
+      "name": "temporal-update",
+      "description": "one current/stale temporal pair: 2 MemoryIndex slots + 1 TemporalRecord",
+      "parentStateRoot": "0xe026cc5a4aed3c22a58cbd3d2ac754c9352c5436f638042dca99034e83636516",
+      "patch": {
+        "patchType": 255,
+        "wordCount": 3,
+        "scoreDelta": "0",
+        "indices": [
+          32,
+          33,
+          800
+        ],
+        "newWords": [
+          "0xa9cb376fb7de48b63ac796da187bfc3610000000000000010003000000000000",
+          "0xc84789019a981da0361cd5d258ba33810000000000000010001000000000000",
+          "0x10000000001ffffffffff0100000000000000000000000000000000000000"
+        ]
+      },
+      "patchBytesHex": "0xff030000000000000000e026cc5a4aed3c22a58cbd3d2ac754c9352c5436f638042dca99034e8363651620a9cb376fb7de48b63ac796da187bfc3610000000000000010003000000000000210c84789019a981da0361cd5d258ba33810000000000000010001000000000000a00600010000000001ffffffffff0100000000000000000000000000000000000000",
+      "patchHash": "0xfa215eed35f69cc938c53e70fdd0a56d517964024f044404661f58e584598cfe",
+      "childStateRoot": "0x04d107ad97465d9fbdb448d4ff2d21131bf2ee38ce72de641b7c17dedec72146",
+      "incrementalMerkleMatchesFullRebuild": true
+    },
+    {
+      "name": "mixed-relation-conflict",
+      "description": "relation category-lens + conflict_lifecycle atom + abstention atom (chained onto temporal)",
+      "parentStateRoot": "0x04d107ad97465d9fbdb448d4ff2d21131bf2ee38ce72de641b7c17dedec72146",
+      "patch": {
+        "patchType": 255,
+        "wordCount": 3,
+        "scoreDelta": "0",
+        "indices": [
+          799,
+          512,
+          640
+        ],
+        "newWords": [
+          "0x8000000180000000000000000000000000000000000000000000000000000000",
+          "0x20425000100c800000000000000000000000000000000000000000000000000",
+          "0x30751ffff000001000000000000000000000000000000000000000000000000"
+        ]
+      },
+      "patchBytesHex": "0xff03000000000000000004d107ad97465d9fbdb448d4ff2d21131bf2ee38ce72de641b7c17dedec721469f0680000001800000000000000000000000000000000000000000000000000000008004020425000100c8000000000000000000000000000000000000000000000000008005030751ffff000001000000000000000000000000000000000000000000000000",
+      "patchHash": "0x82a2e24dc19e166c4a12f2c86b73cb3bde3f54b6cc9f4479a9a392aec45b1573",
+      "childStateRoot": "0xbbbf82a2b4923be4ecdeeec101cf64fdc4067c93c4e88a8bfa0963983642364d",
+      "incrementalMerkleMatchesFullRebuild": true
+    }
+  ],
+  "layoutAgreement": {
+    "temporalRecordDecoded": true,
+    "relationLensDecoded": true,
+    "conflictAtomDecoded": true,
+    "abstentionAtomDecoded": true,
+    "r5ReservedRegionZero": true,
+    "reservedWordWriteRejected": true,
+    "r5ReservedNonZeroFlagged": true,
+    "invalidPolicyAtomFailsClosed": true,
+    "regionDisallowedActionFailsClosed": true
+  }
+}

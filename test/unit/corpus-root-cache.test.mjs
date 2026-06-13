@@ -17,10 +17,9 @@ import {
   serializeProductionCorpus,
   updateCorpusRootLeafCache,
 } from '../../dist/index.js';
-import { loadMaterializedCorpusSlice } from '../../../../scripts/lib/load-materialized-corpus.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
-const repoRoot = resolve(here, '../../../..');
+const repoRoot = resolve(here, '../..');
 
 const BI = { modelId: 'BAAI/bge-m3', revision: 'a'.repeat(40) };
 const LAYOUT = { dim: 8, quantization: 'int8', headerBytes: 9 };
@@ -179,13 +178,14 @@ describe('corpus root leaf cache', () => {
     assert.ok(elapsedMs < 250, `tail-sort cached root update should avoid full Merkle rebuild; got ${elapsedMs}ms`);
   });
 
-  test('v15 materialized slice cache update equals full recompute and stays sub-second scale', (t) => {
+  test('v15 materialized slice cache update equals full recompute and stays sub-second scale', async (t) => {
     const manifest = resolve(repoRoot, 'release/calibration/2026-05-21-memory-corpus-v2/materialized/ed096863/manifest.json');
     if (!existsSync(manifest)) {
       t.skip('v15 materialized cache is not present in this checkout');
       return;
     }
 
+    const { loadMaterializedCorpusSlice } = await import('../../../../scripts/lib/load-materialized-corpus.mjs');
     const loaded = loadMaterializedCorpusSlice(
       'release/bundle/bundle-manifest-v2-dgen1-policy-r5-300k-calibration.json',
       2048,

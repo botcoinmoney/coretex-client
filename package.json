@@ -1,0 +1,73 @@
+{
+  "name": "@botcoin/coretex-client",
+  "version": "0.1.0",
+  "private": false,
+  "description": "Standalone Botcoin CoreTex client, validator sync, replay, and setup tooling.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "dist/validator.js",
+  "types": "dist/validator.d.ts",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/botcoinmoney/coretex-client.git"
+  },
+  "bugs": {
+    "url": "https://github.com/botcoinmoney/coretex-client/issues"
+  },
+  "homepage": "https://github.com/botcoinmoney/coretex-client#readme",
+  "exports": {
+    ".": {
+      "types": "./dist/validator.d.ts",
+      "default": "./dist/validator.js"
+    },
+    "./validator": {
+      "types": "./dist/validator.d.ts",
+      "default": "./dist/validator.js"
+    },
+    "./full": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "bin": {
+    "coretex-client": "dist/cli.js",
+    "coretex-client-replay": "dist/replay-cli.js",
+    "coretex-client-setup": "dist/validator-setup-cli.js",
+    "coretex-client-sync": "dist/validator-sync-cli.js",
+    "coretex-replay": "dist/replay-cli.js",
+    "coretex-validator-sync": "dist/validator-sync-cli.js",
+    "coretex-validator-setup": "dist/validator-setup-cli.js"
+  },
+  "scripts": {
+    "clean": "rm -rf dist tsconfig.tsbuildinfo",
+    "prebuild": "npm run clean",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run test:unit",
+    "test:unit": "node --test --test-concurrency=2 --test-reporter=spec ./test/unit/base-blockhash.test.mjs ./test/unit/bundle-base-rpc-config.test.mjs ./test/unit/bundle-client-version-policy.test.mjs ./test/unit/bundle-h1-h2-fields.test.mjs ./test/unit/bundle.test.mjs ./test/unit/canonical-json.test.mjs ./test/unit/codec.test.mjs ./test/unit/coretex-registry-replay.test.mjs ./test/unit/corpus-root-cache.test.mjs ./test/unit/corpus-serializer-roundtrip.test.mjs ./test/unit/epoch-rotation.test.mjs ./test/unit/eval-report-artifact.test.mjs ./test/unit/merkle.test.mjs ./test/unit/patch.test.mjs ./test/unit/qwen-prompt-template-golden.test.mjs ./test/unit/reducer.test.mjs ./test/unit/replay-cli.test.mjs ./test/unit/replay-v4.test.mjs ./test/unit/reranker-input-cap.test.mjs ./test/unit/reranker-length-bucketing-order.test.mjs ./test/unit/reranker-script-resolution.test.mjs ./test/unit/retrieval-decoder.test.mjs ./test/unit/rpc-fetch-target.test.mjs ./test/unit/seed-derivation-golden.test.mjs ./test/unit/seed-derivation.test.mjs ./test/unit/slot-policy.test.mjs ./test/unit/state-root-vectors.test.mjs ./test/unit/validate.test.mjs ./test/unit/validator-package-fresh-install.test.mjs ./test/unit/validator-reranker-fail-closed.test.mjs ./test/unit/validator-runtime.test.mjs ./test/unit/validator-setup-cli.test.mjs ./test/unit/validator-sync-atomicity.test.mjs ./test/unit/validator-sync-backlog-drain.test.mjs ./test/unit/validator-sync-corpus-autoresolve.test.mjs ./test/unit/validator-sync-defaults.test.mjs ./test/unit/validator-sync-hardening.test.mjs ./test/unit/workers.test.mjs",
+    "pack:check": "npm pack --dry-run",
+    "prepack": "npm run build"
+  },
+  "files": [
+    "dist",
+    "scripts",
+    "src",
+    "specs",
+    "docs",
+    "README.md",
+    "!scripts/**/__pycache__",
+    "!scripts/**/__pycache__/**",
+    "!scripts/**/*.pyc",
+    "!scripts/**/*.pyo"
+  ],
+  "engines": {
+    "node": ">=20.10"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.17",
+    "typescript": "^5.6.3"
+  },
+  "optionalDependencies": {
+    "@huggingface/transformers": "^4.1.0"
+  }
+}

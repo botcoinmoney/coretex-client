@@ -17,7 +17,7 @@ import { decodePatch, applyPatch } from '../../dist/state/patch.js';
 import { computePatchHash } from '../../dist/eval/seed-derivation.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
-const FIXTURE = resolve(here, '../../../../release/calibration/fixtures/state-root-vectors.json');
+const FIXTURE = resolve(here, '../../release/calibration/fixtures/state-root-vectors.json');
 
 function hexToBytes(hex) {
   const s = hex.startsWith('0x') ? hex.slice(2) : hex;

@@ -10,53 +10,21 @@ on:
 env:
   NODE_VERSION: "22"
 
-# The former e2e-phase-* matrix, contracts-fork, and context-freshness jobs were
-# removed 2026-06-12: they invoked scripts/run-e2e.mjs (which walked a deleted
-# test/e2e/ tree and always exited 0), a fork test contract that does not exist
-# (CortexForkTest), and a context.md convention this repo never adopted — all
-# permanently green while testing nothing. The real coverage they carried
-# (coretex-py pytest, from the old e2e-phase-1b job) lives in python-tests below.
-
 jobs:
   lint-type-unit:
-    name: Lint + Type + Unit
+    name: Type + Build + Unit
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
       - run: npm ci
-      - run: npm run lint --if-present
-      - run: npm run typecheck --if-present
-      - run: npm run build --if-present
-      - run: npm run test:unit --if-present
-
-  python-tests:
-    name: Python cross-impl parity (coretex-py)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
       - uses: actions/setup-python@v5
         with:
           python-version: "3.10"
-      - name: Install Python coretex-py deps
-        run: pip install pycryptodome pytest
-      - name: Python unit tests
-        run: python3 -m pytest packages/coretex-py/coretex_py/tests/ -v
-
-  contracts:
-    name: Contracts (forge)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-      - uses: foundry-rs/foundry-toolchain@v1
-      - run: forge build --root contracts --sizes
-      - run: forge test --root contracts -vv
+      - run: npm run typecheck
+      - run: npm run build
+      - run: npm run test:unit
+      - run: npm run pack:check

@@ -1,0 +1,113 @@
+{
+  "schemaVersion": "coretex.seed-derivation-golden.v1",
+  "note": "Hand-picked fixtures locking the wire format. Drift in keccak primitive, byte ordering, or domain prefix breaks these assertions. minerAddress is intentionally NOT a seed input — see seed-derivation.ts header.",
+  "domainPrefixes": {
+    "gate": "coretex-eval-v1-gate",
+    "confirm": "coretex-eval-v1-confirm",
+    "patchHash": "coretex-patch-hash-v1",
+    "dedupDigest": "coretex-dedup-key-v1"
+  },
+  "seedCases": [
+    {
+      "tag": "all-zeros-except-blockhash",
+      "input": {
+        "tag": "all-zeros-except-blockhash",
+        "epochSecret": "0x0000000000000000000000000000000000000000000000000000000000000000",
+        "blockhash": "0x0101010101010101010101010101010101010101010101010101010101010101",
+        "epochId": 0,
+        "patchHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+        "parentRoot": "0x0000000000000000000000000000000000000000000000000000000000000000",
+        "corpusRoot": "0x0000000000000000000000000000000000000000000000000000000000000000",
+        "bundleHash": "0x0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "gateSeed": "0x84255643886d29c7b293b4e8edb219d61a974129e3b2ea6dd1bd725fc6be52f5",
+      "confirmSeed": "0x21fb79203e1c14b34b25d5bb991baf956d124adf7c57fa56e6494f9928f1ff6a"
+    },
+    {
+      "tag": "all-ones",
+      "input": {
+        "tag": "all-ones",
+        "epochSecret": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "blockhash": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "epochId": "18446744073709551615",
+        "patchHash": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "parentRoot": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "corpusRoot": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "bundleHash": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      },
+      "gateSeed": "0x7a3510d495855b11fe5fd6a1ef4e0c79c2b583694fa497ca5293a538ee007bb5",
+      "confirmSeed": "0xe8c5b7c35a16b04b5fb99b633431e1a174a053a103b99af670665e0dea6fd671"
+    },
+    {
+      "tag": "launch-genesis",
+      "input": {
+        "tag": "launch-genesis",
+        "epochSecret": "0x1111111111111111111111111111111111111111111111111111111111111111",
+        "blockhash": "0x2222222222222222222222222222222222222222222222222222222222222222",
+        "epochId": 1,
+        "patchHash": "0x3333333333333333333333333333333333333333333333333333333333333333",
+        "parentRoot": "0x4444444444444444444444444444444444444444444444444444444444444444",
+        "corpusRoot": "0x6666666666666666666666666666666666666666666666666666666666666666",
+        "bundleHash": "0x7777777777777777777777777777777777777777777777777777777777777777"
+      },
+      "gateSeed": "0x6c0efb867df8c2f7efe2826cfb8e3b2733cf0bea763145b8c9675abe2aa2109d",
+      "confirmSeed": "0xd7c7a8e1bc32c866457175316e90cda982c80e0faf0a8a55169da026285d6034"
+    },
+    {
+      "tag": "epoch-42-base-blockhash",
+      "input": {
+        "tag": "epoch-42-base-blockhash",
+        "epochSecret": "0xdeadbeef00000000000000000000000000000000000000000000000000000000",
+        "blockhash": "0xcafebabe00000000000000000000000000000000000000000000000000000000",
+        "epochId": 42,
+        "patchHash": "0xabababababababababababababababababababababababababababababababab",
+        "parentRoot": "0xcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+        "corpusRoot": "0x1212121212121212121212121212121212121212121212121212121212121212",
+        "bundleHash": "0x3434343434343434343434343434343434343434343434343434343434343434"
+      },
+      "gateSeed": "0x471f40ba9d5ec19a557aadf6cb9b68868e19c3c94eb1e02aac8c390e60464a7f",
+      "confirmSeed": "0x4feb5b3efa34da724f5365683786bf9756da6080ed70862a39c984e07bf4e63d"
+    },
+    {
+      "tag": "high-epoch-id-2pow40",
+      "input": {
+        "tag": "high-epoch-id-2pow40",
+        "epochSecret": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "blockhash": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "epochId": "1099511627776",
+        "patchHash": "0xa1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "parentRoot": "0xb2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+        "corpusRoot": "0xd4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+        "bundleHash": "0xe5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5"
+      },
+      "gateSeed": "0x3a39e2eea79ea6bba256aec9abdcf2cb1623b0d9d445057c0dfda9c34c129f85",
+      "confirmSeed": "0x903579983e28c5f25836ab92db882f256eb6f9f5d490cb949ffdc3f79d053331"
+    }
+  ],
+  "patchHashCases": [
+    {
+      "tag": "empty-bytes",
+      "bytes": "",
+      "patchHash": "0x177c06669d9e2d50dd2e519d223e010bf30396f99846e93d15d248d0c4671f92",
+      "dedupDigest": "0xc3005a70916e766ce8bfc00528ad743419ab194d3259fd9098e74ca5cb0edf1f"
+    },
+    {
+      "tag": "single-byte",
+      "bytes": "01",
+      "patchHash": "0x686eeb356157b324148222befcb8071c6d0efdfd0518c1fc73759d42230e5245",
+      "dedupDigest": "0x08ec1eb53bed27b46fe72c38d8dabe820a0359f8f38ec63f38fb2a440dfd964f"
+    },
+    {
+      "tag": "32-bytes-zero",
+      "bytes": "0000000000000000000000000000000000000000000000000000000000000000",
+      "patchHash": "0x0b93f724f1480454a51ecf7733bdb07ef83a718f06ce98aa232053e34e060a6d",
+      "dedupDigest": "0xc05dbc4d5a9da0bb0deb3a4a58e3f71f8e0503694337d59d23e5af2f904cf4f4"
+    },
+    {
+      "tag": "128-bytes-pattern",
+      "bytes": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "patchHash": "0x0bd694ff328e0f44d3d555120e941bc2e1d6efdb7de317ccc52a7722bebd9028",
+      "dedupDigest": "0x5a7a4e6fbbf821909ffbef7618ccb1aa0a6b15a23eb256d6b71b31502d297af9"
+    }
+  ]
+}

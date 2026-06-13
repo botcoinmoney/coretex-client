@@ -13,7 +13,7 @@ import {
   withRecomputedBundleHash,
 } from '../../dist/index.js';
 
-const repoRoot = fileURLToPath(new URL('../../../..', import.meta.url));
+const repoRoot = fileURLToPath(new URL('../..', import.meta.url));
 
 function makeManifestWithClientPolicy(policy) {
   const manifest = buildBundleManifest({

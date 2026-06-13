@@ -1,5 +1,5 @@
 /**
- * Fresh-install hermetic test: `npm pack` the @botcoin/coretex package into a
+ * Fresh-install hermetic test: `npm pack` the @botcoin/coretex-client package into a
  * temp dir, install the tarball into a scratch project (no network — the
  * package has zero runtime dependencies), and assert the standalone validator
  * surface survives installation:
@@ -22,7 +22,7 @@ const pkgDir = fileURLToPath(new URL('../..', import.meta.url));
 
 let root;        // tmp root
 let proj;        // scratch consumer project
-let installed;   // <proj>/node_modules/@botcoin/coretex
+let installed;   // <proj>/node_modules/@botcoin/coretex-client
 
 function run(cmd, cmdArgs, opts = {}) {
   return spawnSync(cmd, cmdArgs, { encoding: 'utf8', ...opts });
@@ -34,14 +34,14 @@ before(() => {
   mkdirSync(proj, { recursive: true });
   writeFileSync(join(proj, 'package.json'), JSON.stringify({ name: 'scratch-validator-host', private: true, version: '0.0.0' }));
 
-  const packed = run('npm', ['pack', '--pack-destination', root], { cwd: pkgDir });
+  const packed = run('npm', ['pack', '--ignore-scripts', '--pack-destination', root], { cwd: pkgDir });
   assert.equal(packed.status, 0, `npm pack failed: ${packed.stderr}`);
   const tarball = readdirSync(root).find((f) => f.endsWith('.tgz'));
   assert.ok(tarball, 'npm pack produced no tarball');
 
   const install = run('npm', ['install', '--no-audit', '--no-fund', '--ignore-scripts', join(root, tarball)], { cwd: proj });
   assert.equal(install.status, 0, `npm install failed: ${install.stderr}`);
-  installed = join(proj, 'node_modules', '@botcoin', 'coretex');
+  installed = join(proj, 'node_modules', '@botcoin', 'coretex-client');
   assert.ok(existsSync(installed), 'installed package root missing');
 }, { timeout: 180_000 });
 
@@ -49,14 +49,14 @@ after(() => {
   rmSync(root, { recursive: true, force: true });
 });
 
-describe('fresh npm install of @botcoin/coretex', () => {
+describe('fresh npm install of @botcoin/coretex-client', () => {
   test('both validator bins exist and run --help', { timeout: 60_000 }, () => {
-    for (const bin of ['coretex-validator-setup', 'coretex-validator-sync']) {
+    for (const bin of ['coretex-client-setup', 'coretex-client-sync', 'coretex-validator-setup', 'coretex-validator-sync']) {
       const binPath = join(proj, 'node_modules', '.bin', bin);
       assert.ok(existsSync(binPath), `${bin} missing from node_modules/.bin`);
       const proc = run(process.execPath, [binPath, '--help'], { cwd: proj });
       assert.equal(proc.status, 0, `${bin} --help exited ${proc.status}: ${proc.stderr}`);
-      assert.match(proc.stdout, new RegExp(bin));
+      assert.match(proc.stdout, /coretex-(client|validator)-(setup|sync)|CoreTex validator artifacts|CoreTex validator sync/);
     }
   });
 
@@ -82,9 +82,13 @@ describe('fresh npm install of @botcoin/coretex', () => {
       'dist/validator-setup-cli.js',
       'dist/eval/reranker.js',
       'scripts/reranker_runner.py',
+      'scripts/bi_encoder_runner.py',
       'scripts/materialize-production-corpus.mjs',
       'scripts/lib/build-v2-production-corpus.mjs',
       'scripts/lib/_package-paths.mjs',
+      'src/state/codec.ts',
+      'specs/coretex_state.md',
+      'docs/CORETEX_VALIDATOR_STANDALONE_RUNBOOK.md',
     ]) {
       assert.ok(existsSync(join(installed, rel)), `installed package missing ${rel}`);
     }

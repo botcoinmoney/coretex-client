@@ -1,8 +1,8 @@
-# @botcoin/coretex
+# @botcoin/coretex-client
 
-CoreTex memory-codec validator client, decoder, evaluator, and CLIs. This
-package is installable standalone: one setup command derives everything a
-validator needs, and one sync command audits the chain end-to-end —
+CoreTex memory-codec client, validator sync, decoder, replay, and setup CLIs.
+This package is installable standalone: one setup command derives everything a
+client/validator needs, and one sync command audits the chain end-to-end —
 epoch/context derived from chain, artifacts downloaded + hash-verified,
 registry logs replayed, roots verified, and accepted receipts re-scored
 post-reveal with the pinned production scorer.
@@ -10,11 +10,11 @@ post-reveal with the pinned production scorer.
 ## Install
 
 ```bash
-npm install @botcoin/coretex
+npm install @botcoin/coretex-client
 ```
 
 Host requirements for score replay: Node ≥ 20.10 and `python3`. By default,
-`coretex-validator-setup` bootstraps a pinned CPU-only scorer venv under the
+`coretex-client-setup` bootstraps a pinned CPU-only scorer venv under the
 validator state dir, installs the bundle-compatible `torch` + `transformers`
 runtime, verifies it with the in-package runner, and records that interpreter
 for future syncs. Operators may provide their own interpreter with
@@ -38,7 +38,7 @@ export CORETEX_ARTIFACT_BASE_URL=https://…/coretex/launch/v16
 #    bundle manifest path + previous corpus root + registry deploy block in
 #    the validator state file. It also bootstraps/verifies the pinned CPU scorer
 #    venv unless explicitly disabled. Progress and ETA print to stderr.
-npx coretex-validator-setup --registry-deploy-block <deployBlock>
+npx coretex-client-setup --registry-deploy-block <deployBlock>
 
 # 2. Sync — epoch from V4 currentEpoch(), signed rotation/delta verification
 #    under a TOFU-pinned key, registry log replay from the launch/blank
@@ -48,15 +48,17 @@ npx coretex-validator-setup --registry-deploy-block <deployBlock>
 #    post-reveal eval artifact. Sync uses the setup-recorded scorer venv,
 #    selects a conservative CPU thread default, and prints progress/ETA to
 #    stderr while keeping stdout machine-readable.
-npx coretex-validator-sync
+npx coretex-client-sync
 
 # 3. Spot-audit one accepted receipt by its on-chain evalReportHash.
-npx coretex-validator-sync verify-patch --hash 0x<evalReportHash> \
+npx coretex-client-sync verify-patch --hash 0x<evalReportHash> \
   --epoch-secret 0x<revealedSecret> --parent-state <parent-state.bin>
 ```
 
-`coretex-validator-sync --help` / `coretex-validator-setup --help` list every
-override flag (epoch, from-block, parent state, corpus, artifact URLs, …).
+`coretex-client-sync --help` / `coretex-client-setup --help` list every
+override flag (epoch, from-block, parent state, corpus, artifact URLs, ...).
+The legacy `coretex-validator-sync` and `coretex-validator-setup` aliases are
+kept for compatibility.
 
 ## Score honesty is fail-closed
 
@@ -79,9 +81,9 @@ because a skipped run attests nothing about scores.
 ## Library entry points
 
 ```js
-import { … } from '@botcoin/coretex';            // validator surface (default)
-import { … } from '@botcoin/coretex/coordinator'; // coordinator surface
-import { … } from '@botcoin/coretex/full';        // everything
+import { ... } from '@botcoin/coretex-client';           // validator surface
+import { ... } from '@botcoin/coretex-client/validator'; // explicit validator surface
+import { ... } from '@botcoin/coretex-client/full';      // full client internals
 ```
 
 ## More

@@ -12,7 +12,7 @@ import {
   BGE_M3_DEFAULT_LAYOUT,
 } from '../../dist/index.js';
 
-const repoRoot = fileURLToPath(new URL('../../../..', import.meta.url));
+const repoRoot = fileURLToPath(new URL('../..', import.meta.url));
 
 const VALID_REV_A = '0123456789abcdef0123456789abcdef01234567';
 const VALID_REV_B = '89abcdef0123456789abcdef0123456789abcdef';
