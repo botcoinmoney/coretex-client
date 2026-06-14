@@ -1,11 +1,26 @@
 # @botcoin/coretex-client
 
-CoreTex memory-codec client sync, decoder, replay, and setup CLIs.
-This package is installable standalone: one setup command derives everything a
-client needs, and one sync command audits the chain end-to-end —
+CoreTex is a protocol for proposing, scoring, crediting, publishing, and
+replaying changes to a deterministic memory retrieval substrate. This package
+is the standalone validator client for that protocol: one setup command derives
+everything a client needs, and one sync command audits the chain end-to-end —
 epoch/context derived from chain, artifacts downloaded + hash-verified,
 registry logs replayed, roots verified, and accepted receipts re-scored
 post-reveal with the pinned production scorer.
+
+## External context
+
+- Full CoreTex docs: https://docs.agentmoney.net/coretex/
+  Covers the protocol model, substrate layout, corpus generation, retrieval
+  evaluation, mining flow, coordinator API, security model, and replay rules.
+- BotcoinMiningV4 on Base:
+  https://basescan.org/address/0xBc71E2428cc0955b3dF9f38F5cF5DE22a1fC1D9b#code
+  The verified receipt, credit, funding, epoch, and claim contract used by the
+  client for epoch context and post-reveal eval replay.
+- CoreTexRegistry on Base:
+  https://basescan.org/address/0x79A9e5a1Ab4D7834CB4f4fB952f1F583032021Bb#code
+  The verified registry contract that publishes live roots, epoch context pins,
+  transition events, and the replay surface this client validates.
 
 ## Install
 
@@ -27,8 +42,8 @@ repo and installed layouts (`CORETEX_RERANKER_SCRIPT` overrides explicitly).
 
 ```bash
 export BASE_RPC_URL=https://mainnet.base.org
-export CORETEX_REGISTRY_ADDRESS=0x…          # CoreTexRegistry
-export BOTCOIN_MINING_CONTRACT_ADDRESS=0x…   # BotcoinMiningV4
+export CORETEX_REGISTRY_ADDRESS=0x79A9e5a1Ab4D7834CB4f4fB952f1F583032021Bb
+export BOTCOIN_MINING_CONTRACT_ADDRESS=0xBc71E2428cc0955b3dF9f38F5cF5DE22a1fC1D9b
 export CORETEX_ARTIFACT_BASE_URL=https://…/coretex/launch/v16
 
 # 1. Setup — fetches the launch manifest from
