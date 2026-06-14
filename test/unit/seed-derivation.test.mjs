@@ -1,8 +1,6 @@
 /**
  * Per-patch eval-seed derivation — pure hashing, no I/O.
  *
- * Spec source: docs/CORETEX_V4_ONCHAIN_RANDOMNESS_PLAN.md §Seed Formula.
- *
  * Two domain-separated seeds are derived per patch: gate + confirm.
  * A patch must clear threshold on both to be accepted. The tests
  * below lock in:

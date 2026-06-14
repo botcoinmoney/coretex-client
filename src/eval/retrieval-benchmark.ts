@@ -594,8 +594,7 @@ export function parseQueryConflictIntent(queryText: string, entityNames: Readonl
  * "… what is the <aspect> detail?". Returns the intent-aspect token (lowercased) or null. Honest: query text
  * ONLY — no qrels, no family labels. NOTE: the aspect admission/boost HOOK is NOT yet wired into scoring
  * (aspect_constraint is not a launch surface); this selector + the `policyAspectIntentAdmission` profile flag
- * are no-op-safe scaffolding so the r5.1 hook can drop in after the A100 boost-only arm confirms lift. See
- * CHURN_AND_SELECTOR_HARDENING_HANDOFF.md.
+ * are no-op-safe scaffolding so a future boost-only arm can confirm lift before activation.
  */
 export function parseQueryAspectIntent(queryText: string): string | null {
   const m = (queryText ?? '').toLowerCase().match(/what (?:is|are) the ([a-z0-9 _-]+?) (?:detail|note|setting|value|config|spec)\b/);

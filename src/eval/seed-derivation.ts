@@ -3,8 +3,7 @@
  *
  * Each patch derives TWO domain-separated seeds — `gate` and `confirm` —
  * from the same blockhash. A patch must clear threshold on both packs
- * to be accepted (see "Dual-Pack Confirmation" in the controlling plan
- * docs/CORETEX_V4_ONCHAIN_RANDOMNESS_PLAN.md).
+ * to be accepted.
  *
  * Anti-pre-testing property: blockhash(receivedAtBlock + targetBlockOffset)
  * does not exist when the patch arrives at the coordinator. The

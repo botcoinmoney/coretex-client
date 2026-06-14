@@ -20,11 +20,10 @@
  * Pure function. The host owns the cache + admission counters and is
  * responsible for inserting into them after this returns `admit: true`.
  *
- * This file is the survivor of the sealed-eval rip (see
- * docs/CORETEX_V4_ONCHAIN_RANDOMNESS_PLAN.md). The earlier sealed-eval
- * design needed this helper for post-commit admission; the per-patch
- * design uses it at live-eval entry. Same three rules, same precedence,
- * adapted field names: `commitmentHash` → `patchHash`,
+ * The earlier sealed-eval design needed this helper for post-commit
+ * admission; the per-patch design uses it at live-eval entry. Same
+ * three rules, same precedence, adapted field names:
+ * `commitmentHash` → `patchHash`,
  * `admittedDuplicateKeysThisEpoch` → `dedupedKeysThisEpoch`,
  * `postCommitAdmissionPassed` → `structurallyValid`.
  */

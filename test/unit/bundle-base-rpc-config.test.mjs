@@ -2,8 +2,7 @@
  * Bundle profile must pin baseRpcConfig (chain id, block time,
  * targetBlockOffset, replayBlockhashLookbackBlocks).
  *
- * Per docs/CORETEX_V4_ONCHAIN_RANDOMNESS_PLAN.md — replay watchers
- * need the chain config + lookback depth alongside the bundle so they
+ * Replay watchers need the chain config + lookback depth alongside the bundle so they
  * can verify per-patch eval seeds were derived against the correct
  * future blockhash.
  */

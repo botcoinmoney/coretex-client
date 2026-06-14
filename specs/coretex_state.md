@@ -296,10 +296,7 @@ mechanism is intentionally minimal:
 The protocol explicitly does NOT reward "more substrate used", does NOT
 gate the ladder on a vote, and does NOT preemptively allocate 2048.
 Dead-slot count is published as a diagnostic; everything else flows
-from miner competition under retrieval-native scoring. See
-`docs/CORETEX_V4_ONCHAIN_RANDOMNESS_PLAN.md` §"Auditor Follow-Ups" for
-the dead-slot-metric implementation, which lands as part of task #38
-alongside the epoch rotation manifest changes.
+from miner competition under retrieval-native scoring.
 
 **Trigger criteria (pinned pre-launch, ladder execution deferred until met):**
 

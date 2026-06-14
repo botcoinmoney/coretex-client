@@ -401,8 +401,7 @@ export interface EvaluatorProfile {
    */
   readonly baselineEvalSeedHex?: string;
   /**
-   * Per-patch on-chain randomness binding
-   * (docs/CORETEX_V4_ONCHAIN_RANDOMNESS_PLAN.md).
+   * Per-patch on-chain randomness binding.
    *
    * `chainId` + `blockTimeSeconds` pin the chain a verifier queries
    * for blockhashes; `targetBlockOffset` is the number of blocks past
@@ -416,8 +415,7 @@ export interface EvaluatorProfile {
    */
   readonly baseRpcConfig: BaseRpcConfigPin;
   /**
-   * Staged-active-root corpus policy (per
-   * `docs/CORETEX_V4_ONCHAIN_RANDOMNESS_PLAN.md` §"Staged Active Root").
+   * Staged-active-root corpus policy.
    *
    * The full launch corpus is generated up-front as a deterministic
    * RESERVE (seeds [0..seedsPerDomain) per domain). At launch the
@@ -768,8 +766,7 @@ const DEFAULT_EVALUATOR_FILES = [
   'src/eval/bi-encoder.ts',
   'src/eval/reranker.ts',
   // Per-patch on-chain randomness stack — pinned so the bundleHash
-  // catches any drift in the acceptance/replay logic. See
-  // docs/CORETEX_V4_ONCHAIN_RANDOMNESS_PLAN.md.
+  // catches any drift in the acceptance/replay logic.
   'src/eval/seed-derivation.ts',
   'src/eval/live-eval-admission.ts',
   'src/coordinator/base-blockhash.ts',

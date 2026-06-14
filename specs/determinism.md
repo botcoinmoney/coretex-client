@@ -11,13 +11,8 @@ scoring path.
 
 A replay watcher with the bundle, the corpus + delta history, the
 revealed `epochSecret`, and Base RPC access reproduces every signed
-`scoreAfterPpm` within `replayTolerancePpm`. Empirical proof that the
-bi-encoder stage's cross-CPU behavior satisfies this contract — across
-the most-divergent OpenBLAS kernel dispatch axis available (AVX-512 vs
-AVX-2 only) — is recorded in
-`docs/CORETEX_CROSS_SYSTEM_REPRODUCIBILITY_PROOF.md`. The canonical input
-chain for per-patch eval seeds (see
-`docs/CORETEX_V4_ONCHAIN_RANDOMNESS_PLAN.md`):
+`scoreAfterPpm` within `replayTolerancePpm`. The canonical input chain
+for per-patch eval seeds:
 
 ```
 evalSeed_{gate|confirm} = keccak256(

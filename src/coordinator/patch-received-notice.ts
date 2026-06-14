@@ -2,9 +2,8 @@
  * PatchReceivedNotice — coordinator's public commitment to "I received
  * this patch at this Base block".
  *
- * Per `docs/CORETEX_PRODUCTION_RUNBOOK.md §8.3` and `docs/CORETEX_V4_ONCHAIN_RANDOMNESS_PLAN.md
- * §Receipt Honesty`. `receivedAtBlock` is the only seed input the
- * coordinator picks unilaterally. A dishonest coordinator could delay
+ * `receivedAtBlock` is the only seed input the coordinator picks
+ * unilaterally. A dishonest coordinator could delay
  * processing to wait for a favorable future blockhash. Mitigation: the
  * coordinator publishes a signed PatchReceivedNotice to a public
  * append-only log within the same Base block as `receivedAtBlock`.

@@ -20,8 +20,8 @@
  * manifest. Any independent verifier reproduces it from the bundle +
  * corpus root + eval seed + pinned models.
  *
- * Spec: docs/HANDOFFS/NEW_CORPUS_HANDOFF.md and release/calibration/CURRENT.md
- * define the current baseline-reset / rate-matching lane.
+ * The active evaluator profile and launch bundle define the current
+ * baseline-reset / rate-matching lane.
  */
 
 import type { CortexState } from '../state/types.js';

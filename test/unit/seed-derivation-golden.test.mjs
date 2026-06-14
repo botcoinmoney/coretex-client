@@ -41,7 +41,7 @@ describe('seed-derivation golden vectors', () => {
     assert.equal(golden.domainPrefixes.gate,      'coretex-eval-v1-gate');
     assert.equal(golden.domainPrefixes.confirm,   'coretex-eval-v1-confirm');
     assert.equal(golden.domainPrefixes.patchHash, 'coretex-patch-hash-v1');
-    assert.equal(golden.domainPrefixes.dedupKey,  'coretex-dedup-key-v1');
+    assert.equal(golden.domainPrefixes.dedupDigest, 'coretex-dedup-key-v1');
   });
 
   test('every seedCase reproduces gateSeed + confirmSeed byte-for-byte', () => {
@@ -57,13 +57,13 @@ describe('seed-derivation golden vectors', () => {
     }
   });
 
-  test('every patchHashCase reproduces patchHash + dedupKey byte-for-byte', () => {
+  test('every patchHashCase reproduces patchHash + dedup digest byte-for-byte', () => {
     const parentRoot = '0x' + '77'.repeat(32);
     for (const c of golden.patchHashCases) {
       const u8 = new Uint8Array(c.bytes.length / 2);
       for (let i = 0; i < u8.length; i++) u8[i] = parseInt(c.bytes.slice(i * 2, i * 2 + 2), 16);
       assert.equal(computePatchHash(u8), c.patchHash, `[${c.tag}] patchHash mismatch`);
-      assert.equal(computeDedupKey(parentRoot, u8), c.dedupKey, `[${c.tag}] dedupKey mismatch`);
+      assert.equal(computeDedupKey(parentRoot, u8), c.dedupDigest, `[${c.tag}] dedup digest mismatch`);
     }
   });
 
