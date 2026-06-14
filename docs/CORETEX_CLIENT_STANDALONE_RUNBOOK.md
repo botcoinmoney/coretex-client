@@ -15,9 +15,13 @@ accepted state advance.
   verifies it with the packaged reranker runner, and records it for sync. Use
   `CORETEX_RERANKER_PYTHON` for an operator-managed interpreter or
   `--no-venv-bootstrap` / `CORETEX_CLIENT_SKIP_VENV=1` to opt out.
-- Disk: the launch corpus + embeddings are ~700 MB; the materialized corpus
-  cache adds a similar order of magnitude. The scorer venv/model cache can add
-  several more GB depending on the host cache layout.
+- Disk: setup prefers the published materialized triplet when the launch
+  manifest exposes one, so the normal footprint is the bundle/profile plus
+  `corpus.json`, `corpus.json.events.ndjson`, and
+  `corpus.json.root-leaves.ndjson`. If a manifest has no published triplet,
+  setup falls back to the source corpus + embeddings path (~700 MB before the
+  materialized cache). The scorer venv/model cache can add several more GB
+  depending on the host cache layout.
 - Env (the complete one-command set):
 
 ```bash
@@ -59,15 +63,23 @@ What it does, in order:
    `--verify-chain-config` (opt-in; requires `BASE_RPC_URL` + addresses from
    env or manifest), setup also probes the RPC: chainId match, deployed code
    at both addresses, and `registry.botcoinMiningV4()` == the V4 address.
-3. Downloads corpus, embeddings, bundle manifest, and evaluator profile into
-   the state dir with SHA-256 + byte-size verification. Already-verified
+3. Downloads the bundle manifest and evaluator profile into the state dir with
+   SHA-256 + byte-size verification. When the launch manifest publishes a
+   complete `materialized` block, setup also downloads the prebuilt triplet
+   (`manifest.json`, `corpus.json`, `corpus.json.events.ndjson`,
+   `corpus.json.root-leaves.ndjson`) and skips the source corpus/embeddings
+   materialization path. When no triplet is published, setup falls back to
+   downloading corpus + embeddings and materializing locally. Already-verified
    files are never re-downloaded; `--verify-only` / `--no-download` make
    verification-only runs explicit.
 4. Cross-checks `bundle.bundleHash` and `bundle.corpus.root` against the
    launch manifest.
-5. Materializes the production corpus via the in-package canonical
-   materializer (`scripts/materialize-production-corpus.mjs` inside the
-   package) and verifies the materialized `corpusRoot` against the manifest.
+5. Verifies the materialized corpus manifest against the launch manifest:
+   `bundleHash`, `corpusRoot`, source input SHA-256 pins, bundle/profile
+   SHA-256 pins, event count, and root-leaf cache root/count must all match.
+   On the fallback path, this verification runs after the in-package canonical
+   materializer (`scripts/materialize-production-corpus.mjs`) produces the
+   same materialized layout.
 6. Bootstraps or verifies the CPU scorer venv and records the resolved
    interpreter path.
 7. Writes the client state file so sync needs no manual flags.
@@ -81,7 +93,7 @@ stderr when running in a TTY. Use `--no-progress` for quiet automation.
 .coretex-client/
   client-sync-state.json    # setup + sync state (see below)
   epoch-signing-key.pin.json   # TOFU pin, written after the first verified sync
-  artifacts/                   # verified launch payloads (corpus, embeddings, bundle, profile)
+  artifacts/                   # verified launch payloads (bundle/profile; source corpus+embeddings only on fallback)
   materialized/<bundleTag>/    # materialized production corpus cache
   scorer-venv/                 # managed CPU scorer runtime unless bootstrap is disabled
   substrate-state.bin          # replayed substrate snapshot (written by sync)

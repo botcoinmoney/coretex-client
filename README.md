@@ -33,11 +33,14 @@ export CORETEX_ARTIFACT_BASE_URL=https://…/coretex/launch/v16
 
 # 1. Setup — fetches the launch manifest from
 #    $CORETEX_ARTIFACT_BASE_URL/coretex-launch-v16-artifacts.json, downloads
-#    corpus/embeddings/bundle/profile with SHA-256 + size verification into
-#    .coretex-client/, materializes the production corpus, and records the
-#    bundle manifest path + previous corpus root + registry deploy block in
-#    the client state file. It also bootstraps/verifies the pinned CPU scorer
-#    venv unless explicitly disabled. Progress and ETA print to stderr.
+#    bundle/profile plus the published materialized corpus triplet when present
+#    (corpus.json, .events.ndjson, .root-leaves.ndjson), all with SHA-256 +
+#    size verification into .coretex-client/. If no triplet is published, it
+#    falls back to downloading source corpus/embeddings and materializing
+#    locally. It also records the bundle manifest path + previous corpus root +
+#    registry deploy block in the client state file, and bootstraps/verifies the
+#    pinned CPU scorer venv unless explicitly disabled. Progress and ETA print
+#    to stderr.
 npx coretex-client-setup --registry-deploy-block <deployBlock>
 
 # 2. Sync — epoch from V4 currentEpoch(), signed rotation/delta verification
