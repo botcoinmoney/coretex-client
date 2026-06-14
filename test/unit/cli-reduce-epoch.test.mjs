@@ -1,5 +1,5 @@
 /**
- * Regression: `botcoin-coretex reduce-epoch` must apply ALL same-parent
+ * Regression: `coretex-client reduce-epoch` must apply ALL same-parent
  * accepted patches via the canonical reducer. The old inline loop
  * re-validated each patch's wire parent against the already-advanced state,
  * so every patch after the first failed E01 and the command silently

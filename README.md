@@ -1,8 +1,8 @@
 # @botcoin/coretex-client
 
-CoreTex memory-codec client, validator sync, decoder, replay, and setup CLIs.
+CoreTex memory-codec client sync, decoder, replay, and setup CLIs.
 This package is installable standalone: one setup command derives everything a
-client/validator needs, and one sync command audits the chain end-to-end —
+client needs, and one sync command audits the chain end-to-end —
 epoch/context derived from chain, artifacts downloaded + hash-verified,
 registry logs replayed, roots verified, and accepted receipts re-scored
 post-reveal with the pinned production scorer.
@@ -15,7 +15,7 @@ npm install @botcoin/coretex-client
 
 Host requirements for score replay: Node ≥ 20.10 and `python3`. By default,
 `coretex-client-setup` bootstraps a pinned CPU-only scorer venv under the
-validator state dir, installs the bundle-compatible `torch` + `transformers`
+client state dir, installs the bundle-compatible `torch` + `transformers`
 runtime, verifies it with the in-package runner, and records that interpreter
 for future syncs. Operators may provide their own interpreter with
 `CORETEX_RERANKER_PYTHON` or opt out with `--no-venv-bootstrap`, but the default
@@ -34,9 +34,9 @@ export CORETEX_ARTIFACT_BASE_URL=https://…/coretex/launch/v16
 # 1. Setup — fetches the launch manifest from
 #    $CORETEX_ARTIFACT_BASE_URL/coretex-launch-v16-artifacts.json, downloads
 #    corpus/embeddings/bundle/profile with SHA-256 + size verification into
-#    .coretex-validator/, materializes the production corpus, and records the
+#    .coretex-client/, materializes the production corpus, and records the
 #    bundle manifest path + previous corpus root + registry deploy block in
-#    the validator state file. It also bootstraps/verifies the pinned CPU scorer
+#    the client state file. It also bootstraps/verifies the pinned CPU scorer
 #    venv unless explicitly disabled. Progress and ETA print to stderr.
 npx coretex-client-setup --registry-deploy-block <deployBlock>
 
@@ -57,12 +57,10 @@ npx coretex-client-sync verify-patch --hash 0x<evalReportHash> \
 
 `coretex-client-sync --help` / `coretex-client-setup --help` list every
 override flag (epoch, from-block, parent state, corpus, artifact URLs, ...).
-The legacy `coretex-validator-sync` and `coretex-validator-setup` aliases are
-kept for compatibility.
 
 ## Score honesty is fail-closed
 
-The validator rescore path refuses anything but the bundle-pinned qwen3
+The client rescore path refuses anything but the bundle-pinned qwen3
 production reranker (model id + revision from the bundle manifest), regardless
 of environment. A misconfigured env (`CORETEX_RERANKER=deterministic`, a
 conflicting `CORETEX_RERANKER_MODEL_ID`/`CORETEX_RERANKER_REVISION`, …) is a
@@ -81,13 +79,13 @@ because a skipped run attests nothing about scores.
 ## Library entry points
 
 ```js
-import { ... } from '@botcoin/coretex-client';           // validator surface
-import { ... } from '@botcoin/coretex-client/validator'; // explicit validator surface
+import { ... } from '@botcoin/coretex-client';           // client surface
+import { ... } from '@botcoin/coretex-client/client';    // explicit client surface
 import { ... } from '@botcoin/coretex-client/full';      // full client internals
 ```
 
 ## More
 
-See `docs/CORETEX_VALIDATOR_STANDALONE_RUNBOOK.md` in the repository for the
-full standalone validator runbook (state-dir layout, incremental replay
+See `docs/CORETEX_CLIENT_STANDALONE_RUNBOOK.md` in the repository for the
+full standalone client runbook (state-dir layout, incremental replay
 snapshots, epoch-secret reveal flow, troubleshooting).

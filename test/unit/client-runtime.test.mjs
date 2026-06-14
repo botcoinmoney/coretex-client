@@ -1,5 +1,5 @@
 /**
- * validator-runtime — RUNTIME / UX hygiene unit tests (BUILD 1/2/3).
+ * client-runtime — RUNTIME / UX hygiene unit tests (BUILD 1/2/3).
  *
  * These exercise the LOGIC only, with an injected fake spawner / fake clock /
  * fake stderr sink. NOTHING here runs a real multi-GB torch install, spawns
@@ -37,7 +37,7 @@ import {
   formatEta,
   ProgressReporter,
   renderSummaryBlock,
-} from '../../dist/validator-runtime.js';
+} from '../../dist/client-runtime.js';
 
 const RERANKER_SCRIPT = '/fake/pkg/scripts/reranker_runner.py';
 
@@ -384,13 +384,13 @@ describe('BUILD 3 — ProgressReporter goes to stderr-sink only, never stdout', 
 describe('BUILD 3 — renderSummaryBlock', () => {
   test('PASS/FAIL banner + indented lines to the injected sink', () => {
     const out = [];
-    renderSummaryBlock('coretex-validator-setup', true, ['corpusRoot=0xabc', 'state file: /x/state.json'], (c) => out.push(c));
+    renderSummaryBlock('coretex-client-setup', true, ['corpusRoot=0xabc', 'state file: /x/state.json'], (c) => out.push(c));
     const joined = out.join('');
-    assert.match(joined, /coretex-validator-setup: PASS/);
+    assert.match(joined, /coretex-client-setup: PASS/);
     assert.match(joined, /corpusRoot=0xabc/);
 
     const fail = [];
-    renderSummaryBlock('coretex-validator-sync', false, ['something broke'], (c) => fail.push(c));
-    assert.match(fail.join(''), /coretex-validator-sync: FAIL/);
+    renderSummaryBlock('coretex-client-sync', false, ['something broke'], (c) => fail.push(c));
+    assert.match(fail.join(''), /coretex-client-sync: FAIL/);
   });
 });

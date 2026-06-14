@@ -1,27 +1,26 @@
 #!/usr/bin/env node
 /**
- * coretex-validator-setup — one-command validator artifact hydration.
+ * coretex-client-setup — one-command client artifact hydration.
  *
  * Standalone (installed-package) mode, the default:
  *   1. Fetches the launch artifact manifest from
  *      `<CORETEX_ARTIFACT_BASE_URL>/coretex-launch-v16-artifacts.json`
  *      (override: --manifest <path-or-url>).
  *   2. Downloads the corpus + embeddings + bundle manifest + evaluator profile
- *      into the validator state dir (default `.coretex-validator`, env
- *      CORETEX_VALIDATOR_STATE_DIR) with SHA-256 + byte-size verification.
+ *      into the client state dir (default `.coretex-client`, env
+ *      CORETEX_CLIENT_STATE_DIR) with SHA-256 + byte-size verification.
  *   3. Materializes the production corpus via the in-package canonical
  *      materializer (packages/coretex/scripts/materialize-production-corpus.mjs)
  *      and cross-checks the materialized corpusRoot against the manifest.
  *   4. Writes the bundle manifest path, materialized corpus path, previous
- *      corpus root, and registry deploy block into the validator state file so
- *      `coretex-validator-sync` needs no manual flags.
+ *      corpus root, and registry deploy block into the client state file so
+ *      `coretex-client-sync` needs no manual flags.
  *
- * Repo-hydration mode (--repo-root <dir>, used by the
- * scripts/setup-validator-artifacts.mjs shim): payloads land at their
+ * Repo-hydration mode (--repo-root <dir>): payloads land at their
  * committed repo-relative paths, bundle/profile are verified in place,
  * verifyBundleManifest() additionally checks the pinned source tree, and the
  * materialized root comes from the manifest. `--verify-only` / `--no-download`
- * behave exactly as the historical scripts/setup-validator-artifacts.mjs.
+ * behave exactly as the historical repo-hydration setup flow.
  */
 import { createHash } from 'node:crypto';
 import {
@@ -55,17 +54,17 @@ import {
   renderSummaryBlock,
   realSyncSpawner,
   type VenvBootstrapResult,
-} from './validator-runtime.js';
+} from './client-runtime.js';
 
 export const LAUNCH_ARTIFACT_MANIFEST_FILENAME = 'coretex-launch-v16-artifacts.json';
 export const LAUNCH_ARTIFACT_MANIFEST_SCHEMA = 'coretex.launch-artifacts.v1';
-export const VALIDATOR_STATE_FILENAME = 'validator-sync-state.json';
+export const CLIENT_STATE_FILENAME = 'client-sync-state.json';
 const REPO_DEFAULT_MANIFEST = 'release/calibration/2026-06-04-memory-atom-v16/coretex-launch-v16-artifacts.json';
 
-const USAGE = `coretex-validator-setup — hydrate + verify CoreTex validator artifacts
+const USAGE = `coretex-client-setup — hydrate + verify CoreTex client artifacts
 
 Usage:
-  coretex-validator-setup [--artifact-base-url <url>] [--manifest <path-or-url>]
+  coretex-client-setup [--artifact-base-url <url>] [--manifest <path-or-url>]
                           [--state-dir <dir>] [--registry-deploy-block <n>]
                           [--verify-only] [--no-download] [--repo-root <dir>]
                           [--no-venv-bootstrap] [--no-progress]
@@ -73,10 +72,10 @@ Usage:
 
 Env:
   CORETEX_ARTIFACT_BASE_URL      artifact base URL (manifest + payloads)
-  CORETEX_VALIDATOR_STATE_DIR    state dir (default .coretex-validator)
+  CORETEX_CLIENT_STATE_DIR       state dir (default .coretex-client)
   CORETEX_REGISTRY_DEPLOY_BLOCK  registry deploy block recorded for sync replay
   CORETEX_RERANKER_PYTHON        operator scorer interpreter (skips venv bootstrap when valid)
-  CORETEX_VALIDATOR_SKIP_VENV=1  skip the Python venv bootstrap (same as --no-venv-bootstrap)
+  CORETEX_CLIENT_SKIP_VENV=1  skip the Python venv bootstrap (same as --no-venv-bootstrap)
 
 Setup is artifact hydration and works fully offline — it never requires an RPC.
 Chain-config env vars (BASE_RPC_URL, CORETEX_REGISTRY_ADDRESS,
@@ -93,7 +92,7 @@ already imports the pinned torch+transformers) and records its interpreter so
 sync's score replay runs without manual Python setup. Progress + ETA print to
 stderr (TTY-aware; suppress with --no-progress or CI=1) — stdout stays clean.
 
-After setup completes, \`coretex-validator-sync\` needs only BASE_RPC_URL,
+After setup completes, \`coretex-client-sync\` needs only BASE_RPC_URL,
 CORETEX_REGISTRY_ADDRESS, BOTCOIN_MINING_CONTRACT_ADDRESS, and
 CORETEX_ARTIFACT_BASE_URL.`;
 
@@ -124,7 +123,7 @@ export interface LaunchArtifactPayload {
 }
 
 /** Final chain config published with the launch artifacts so operators never
- *  hand-copy addresses: setup records it into the validator state file and
+ *  hand-copy addresses: setup records it into the client state file and
  *  cross-checks any operator-provided env against it. Optional — absent until
  *  the final deployment is cut. */
 export interface LaunchManifestChainConfig {
@@ -238,9 +237,9 @@ export function payloadDownloadUrl(artifactBaseUrl: string, payload: { path: str
   return `${artifactBaseUrl.replace(/\/+$/, '')}/${suffix}`;
 }
 
-/** Merge-write the validator state file: setup NEVER clobbers sync-owned
+/** Merge-write the client state file: setup NEVER clobbers sync-owned
  *  fields (replay snapshot/cursor) and sync preserves setup-owned fields. */
-export function mergeValidatorStateFile(
+export function mergeClientStateFile(
   statePath: string,
   patch: Record<string, unknown>,
 ): Record<string, unknown> {
@@ -253,13 +252,13 @@ export function mergeValidatorStateFile(
       // the eval backlog/cursor): merging over a corrupt file would silently
       // discard it. Hard-fail; recovery is an explicit operator action.
       throw new Error(
-        `corrupt validator state file at ${statePath}: ${err instanceof Error ? err.message : String(err)}. ` +
+        `corrupt client state file at ${statePath}: ${err instanceof Error ? err.message : String(err)}. ` +
         'Restore it from backup, or delete it explicitly to re-run setup fresh.',
       );
     }
   }
   const merged = {
-    schema: 'coretex.validator-sync-state.v1',
+    schema: 'coretex.client-sync-state.v1',
     ...previous,
     ...patch,
     updatedAt: new Date().toISOString(),
@@ -394,7 +393,7 @@ function materializedPaths(materializedRoot: string, bundleHash: string): {
 function verifyMaterialized(materializedRoot: string, manifest: LaunchArtifactManifest, corpusSha: string, embSha: string): string {
   const paths = materializedPaths(materializedRoot, manifest.bundleHash);
   if (!existsSync(paths.manifest)) {
-    die(`materialized cache missing: ${paths.manifest}. Run coretex-validator-setup without --verify-only.`);
+    die(`materialized cache missing: ${paths.manifest}. Run coretex-client-setup without --verify-only.`);
   }
   if (!existsSync(paths.corpusJson) || !existsSync(paths.ndjson)) {
     die(`materialized corpus files missing under ${paths.dir}`);
@@ -469,11 +468,11 @@ async function main(): Promise<void> {
   const verifyOnly = has('verify-only');
   const noDownload = has('no-download');
   const noProgress = has('no-progress');
-  const skipVenv = has('no-venv-bootstrap') || process.env['CORETEX_VALIDATOR_SKIP_VENV'] === '1';
+  const skipVenv = has('no-venv-bootstrap') || process.env['CORETEX_CLIENT_SKIP_VENV'] === '1';
   const repoRoot = opt('repo-root');
   const artifactBase = opt('artifact-base-url', process.env['CORETEX_ARTIFACT_BASE_URL']);
-  const stateDir = resolve(opt('state-dir', process.env['CORETEX_VALIDATOR_STATE_DIR'] ?? (repoRoot ? join(repoRoot, '.coretex-validator') : '.coretex-validator'))!);
-  const statePath = join(stateDir, VALIDATOR_STATE_FILENAME);
+  const stateDir = resolve(opt('state-dir', process.env['CORETEX_CLIENT_STATE_DIR'] ?? (repoRoot ? join(repoRoot, '.coretex-client') : '.coretex-client'))!);
+  const statePath = join(stateDir, CLIENT_STATE_FILENAME);
   const deployBlockRaw = opt('registry-deploy-block', process.env['CORETEX_REGISTRY_DEPLOY_BLOCK']);
   if (deployBlockRaw !== undefined && (!Number.isSafeInteger(Number(deployBlockRaw)) || Number(deployBlockRaw) < 0)) {
     die('--registry-deploy-block must be a non-negative integer');
@@ -653,7 +652,7 @@ async function main(): Promise<void> {
       if (err instanceof VenvBootstrapError) {
         // A failed bootstrap is a hard, actionable failure — never leave a
         // half-built venv claimed as ready.
-        renderSummaryBlock('coretex-validator-setup', false, [
+        renderSummaryBlock('coretex-client-setup', false, [
           'Python scorer venv bootstrap FAILED — score replay is not yet self-contained.',
           ...err.message.split('\n'),
         ]);
@@ -663,14 +662,14 @@ async function main(): Promise<void> {
     }
   }
 
-  // ── validator state file: sync needs no manual flags after this ──
+  // ── client state file: sync needs no manual flags after this ──
   const recordScorerPython = venv && venv.status !== 'skipped-opt-out';
   // Explicit operator deploy block wins; otherwise fall back to the manifest's
   // published chain config so sync replay needs no hand-copied value.
   const registryDeployBlock = deployBlockRaw !== undefined
     ? Number(deployBlockRaw)
     : manifest.chain?.registryDeployBlock;
-  const state = mergeValidatorStateFile(statePath, {
+  const state = mergeClientStateFile(statePath, {
     bundleHash: manifest.bundleHash,
     corpusRoot: manifest.corpusRoot,
     ...(registryDeployBlock !== undefined ? { registryDeployBlock } : {}),
@@ -699,7 +698,7 @@ async function main(): Promise<void> {
   log(`READY corpusRoot=${manifest.corpusRoot} bundleHash=${manifest.bundleHash}`);
   void state;
 
-  renderSummaryBlock('coretex-validator-setup', true, [
+  renderSummaryBlock('coretex-client-setup', true, [
     `launch artifact: ${manifest.name}`,
     `corpusRoot=${manifest.corpusRoot}`,
     `bundleHash=${manifest.bundleHash}`,
@@ -708,7 +707,7 @@ async function main(): Promise<void> {
       ? `scorer python: ${recordScorerPython ? venv.scorerPython : '(operator-managed)'} [${venv.status}]`
       : 'scorer python: (verify-only — venv bootstrap skipped)',
     `state file: ${statePath}`,
-    'Next: coretex-validator-sync (needs only BASE_RPC_URL, CORETEX_REGISTRY_ADDRESS, BOTCOIN_MINING_CONTRACT_ADDRESS, CORETEX_ARTIFACT_BASE_URL)',
+    'Next: coretex-client-sync (needs only BASE_RPC_URL, CORETEX_REGISTRY_ADDRESS, BOTCOIN_MINING_CONTRACT_ADDRESS, CORETEX_ARTIFACT_BASE_URL)',
   ]);
 }
 

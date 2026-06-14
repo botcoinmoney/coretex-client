@@ -1,7 +1,7 @@
 /**
  * One-command sync defaults: from-block resolution, parent-substrate
  * bootstrap (launch/blank substrate vs previous-sync snapshot), blank
- * substrate synthesis, and validator state-file round-trips.
+ * substrate synthesis, and client state-file round-trips.
  */
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
@@ -14,12 +14,12 @@ import {
   blankSubstrateStateRoot,
   defaultEpochSigningPublicKeyUri,
   EPOCH_SIGNING_PUBLIC_KEY_ARTIFACT_PATH,
-  readValidatorStateFile,
+  readClientStateFile,
   resolveReplayFromBlock,
   resolveReplayParentBootstrap,
-  validatorRerankerPinsFromManifest,
-} from '../../dist/validator-sync-cli.js';
-import { mergeValidatorStateFile } from '../../dist/validator-setup-cli.js';
+  clientRerankerPinsFromManifest,
+} from '../../dist/client-sync-cli.js';
+import { mergeClientStateFile } from '../../dist/client-setup-cli.js';
 import { bytesToHex, merkleizeState, pack, unpack, PACKED_SIZE } from '../../dist/index.js';
 
 const BLANK_ROOT = blankSubstrateStateRoot();
@@ -60,7 +60,7 @@ describe('resolveReplayFromBlock precedence', () => {
   });
 
   test('no from-block source is a hard error pointing at setup (replay is mandatory)', () => {
-    assert.throws(() => resolveReplayFromBlock({}), /coretex-validator-setup/);
+    assert.throws(() => resolveReplayFromBlock({}), /coretex-client-setup/);
   });
 });
 
@@ -129,7 +129,7 @@ describe('resolveReplayParentBootstrap', () => {
   });
 });
 
-describe('validator state file round-trip (setup ↔ sync)', () => {
+describe('client state file round-trip (setup ↔ sync)', () => {
   function withTmpDir(fn) {
     const dir = mkdtempSync(join(tmpdir(), 'coretex-state-file-'));
     try {
@@ -139,21 +139,21 @@ describe('validator state file round-trip (setup ↔ sync)', () => {
     }
   }
 
-  test('mergeValidatorStateFile preserves setup-owned fields across sync updates', () => withTmpDir((dir) => {
-    const statePath = join(dir, 'validator-sync-state.json');
-    mergeValidatorStateFile(statePath, {
+  test('mergeClientStateFile preserves setup-owned fields across sync updates', () => withTmpDir((dir) => {
+    const statePath = join(dir, 'client-sync-state.json');
+    mergeClientStateFile(statePath, {
       corpusRoot: OTHER_ROOT,
       registryDeployBlock: 123,
       setup: { bundleManifestPath: '/x/bundle.json', corpusPath: '/x/corpus.json', artifactBaseUrl: 'https://example.test/v16' },
     });
     // A later sync writes its own fields — setup fields must survive.
-    mergeValidatorStateFile(statePath, {
+    mergeClientStateFile(statePath, {
       epoch: 7,
       corpusRoot: `0x${'cd'.repeat(32)}`,
       replay: { stateRoot: `0x${'ef'.repeat(32)}`, cursorBlock: 999, epochTransitions: { 7: 2 } },
     });
-    const state = readValidatorStateFile(statePath);
-    assert.equal(state.schema, 'coretex.validator-sync-state.v1');
+    const state = readClientStateFile(statePath);
+    assert.equal(state.schema, 'coretex.client-sync-state.v1');
     assert.equal(state.epoch, 7);
     assert.equal(state.corpusRoot, `0x${'cd'.repeat(32)}`);
     assert.equal(state.registryDeployBlock, 123);
@@ -163,25 +163,25 @@ describe('validator state file round-trip (setup ↔ sync)', () => {
     assert.equal(JSON.parse(readFileSync(statePath, 'utf8')).replay.epochTransitions[7], 2);
   }));
 
-  test('readValidatorStateFile: null for missing, HARD ERROR for corrupt (never silent re-init)', () => withTmpDir((dir) => {
-    assert.equal(readValidatorStateFile(join(dir, 'missing.json')), null);
+  test('readClientStateFile: null for missing, HARD ERROR for corrupt (never silent re-init)', () => withTmpDir((dir) => {
+    assert.equal(readClientStateFile(join(dir, 'missing.json')), null);
     const corrupt = join(dir, 'corrupt.json');
     writeFileSync(corrupt, '{not json');
-    assert.throws(() => readValidatorStateFile(corrupt), /corrupt validator state file/);
+    assert.throws(() => readClientStateFile(corrupt), /corrupt client state file/);
   }));
 
-  test('mergeValidatorStateFile hard-fails on a corrupt existing state file', () => withTmpDir((dir) => {
+  test('mergeClientStateFile hard-fails on a corrupt existing state file', () => withTmpDir((dir) => {
     const statePath = join(dir, 'state.json');
     writeFileSync(statePath, '{not json');
-    assert.throws(() => mergeValidatorStateFile(statePath, { setup: {} }), /corrupt validator state file/);
+    assert.throws(() => mergeClientStateFile(statePath, { setup: {} }), /corrupt client state file/);
     // The corrupt file must be left untouched for operator recovery.
     assert.equal(readFileSync(statePath, 'utf8'), '{not json');
   }));
 
-  test('mergeValidatorStateFile writes atomically (no .tmp leftovers, valid JSON)', () => withTmpDir((dir) => {
+  test('mergeClientStateFile writes atomically (no .tmp leftovers, valid JSON)', () => withTmpDir((dir) => {
     const statePath = join(dir, 'state.json');
-    mergeValidatorStateFile(statePath, { setup: { artifactBaseUrl: 'https://example.test/v16' } });
-    const state = readValidatorStateFile(statePath);
+    mergeClientStateFile(statePath, { setup: { artifactBaseUrl: 'https://example.test/v16' } });
+    const state = readClientStateFile(statePath);
     assert.equal(state.setup.artifactBaseUrl, 'https://example.test/v16');
     assert.deepEqual(readdirSync(dir).filter((f) => f.includes('.tmp-')), []);
   }));
@@ -198,16 +198,16 @@ describe('epoch signing public key default', () => {
   });
 });
 
-describe('validatorRerankerPinsFromManifest', () => {
+describe('clientRerankerPinsFromManifest', () => {
   test('reads the model.reranker pins hard from the bundle manifest', () => {
     assert.deepEqual(
-      validatorRerankerPinsFromManifest({ model: { reranker: { modelId: 'Qwen/Qwen3-Reranker-0.6B', revision: 'r1' } } }),
+      clientRerankerPinsFromManifest({ model: { reranker: { modelId: 'Qwen/Qwen3-Reranker-0.6B', revision: 'r1' } } }),
       { modelId: 'Qwen/Qwen3-Reranker-0.6B', revision: 'r1' },
     );
   });
 
   test('missing pins are a hard error (fail-closed)', () => {
-    assert.throws(() => validatorRerankerPinsFromManifest({}), /no model\.reranker\.modelId\/revision pins/);
-    assert.throws(() => validatorRerankerPinsFromManifest({ model: { reranker: { modelId: 'x' } } }), /pins/);
+    assert.throws(() => clientRerankerPinsFromManifest({}), /no model\.reranker\.modelId\/revision pins/);
+    assert.throws(() => clientRerankerPinsFromManifest({ model: { reranker: { modelId: 'x' } } }), /pins/);
   });
 });

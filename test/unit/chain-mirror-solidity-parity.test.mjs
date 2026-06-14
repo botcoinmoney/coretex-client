@@ -4,7 +4,7 @@
  * Two hand-maintained mirrors of on-chain truth had no automated guard:
  *
  *   1. CORETEX_EVENT_TOPICS (replay/coretex-registry.ts) — topic hashes the
- *      validator uses to decode CoreTexRegistry logs. Recomputed here from the
+ *      client uses to decode CoreTexRegistry logs. Recomputed here from the
  *      event declarations parsed out of contracts/src/CoreTexRegistry.sol.
  *
  *   2. The CoreTexReceipt EIP-712 type string vs the CoreTexReceipt struct in

@@ -181,7 +181,7 @@ export const SCORE_DELTA_WIRE_BYTES = 8;
  * before signing, so the on-chain bytes never matched the artifact's hash).
  * Hashing the scoreDelta-zeroed bytes makes one semantic patch one hash:
  * dedup/seed/artifact are reroll-proof, and the rewritten on-chain advance
- * binds to the same artifact (the validator compares this hash, not the literal
+ * binds to the same artifact (the client compares this hash, not the literal
  * on-chain patchHash). The contract still enforces the real scoreDelta in the
  * wire bytes via its independent `scoreDelta == scoreAfter-scoreBefore` check.
  */

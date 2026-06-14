@@ -463,7 +463,7 @@ describe('createCoreTexEvaluatorCore — canonical artifact + attestation (§2/�
     assert.equal(artifact.seedDerivation.targetBlockOffset, 30);
     assert.equal(artifact.thresholdPpm, 1_000);
 
-    // A validator replays the published artifact end-to-end.
+    // A client replays the published artifact end-to-end.
     const verified = await verifyPostRevealEvalReportArtifact(JSON.parse(JSON.stringify(artifact)), {
       rpcClient: { async getBlockHash() { return BLOCKHASH; } },
       scorer: async () => ({ scorePpm: 50_000, accepted: true }),

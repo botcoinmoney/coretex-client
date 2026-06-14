@@ -361,7 +361,7 @@ export type ProductionCoreTexEvaluator = RealEvaluator & {
     /** §8 keyless-scorer path — coordinator-derived gate/confirm seeds. The
      *  scorer host never holds the pre-reveal epoch secret; the coordinator
      *  derives both seeds and ships them with the job alongside the pinned
-     *  seedContext. Requires seedContext. The validator's post-reveal
+     *  seedContext. Requires seedContext. The client's post-reveal
      *  re-derivation from the revealed secret is the integrity backstop. */
     injectedSeeds?: { readonly gateSeed: string; readonly confirmSeed: string };
   }): Promise<ProductionEvalResult>;

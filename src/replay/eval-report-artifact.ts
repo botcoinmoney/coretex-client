@@ -5,12 +5,12 @@
  * builder computes ONE hash and sets BOTH `artifactHash` and
  * `evalReportHash` to it, and the accepted receipt carries that same
  * bytes32 on-chain. There is no second "local" artifact schema — the
- * production evaluator builds this exact shape and validators re-fetch it
+ * production evaluator builds this exact shape and clients re-fetch it
  * from `<CORETEX_ARTIFACT_BASE_URL>/eval-reports/<artifactHash>.json`
  * (see `evalReportArtifactRelativePath`).
  *
  * The artifact surfaces the FULL seed-derivation inputs as mandatory
- * fields (`seedDerivation`) so a validator can re-derive the gate/confirm
+ * fields (`seedDerivation`) so a client can re-derive the gate/confirm
  * hidden packs independently after the epochSecret reveal, plus the
  * dual-pack acceptance threshold so the min(gate, confirm) >= threshold
  * semantics are verifiable, not asserted.
@@ -66,7 +66,7 @@ export type PostRevealEvalArtifactVerificationResult =
 
 export const EVAL_REPORT_ARTIFACT_DIR = 'eval-reports';
 
-/** Canonical published path under CORETEX_ARTIFACT_BASE_URL. The validator's
+/** Canonical published path under CORETEX_ARTIFACT_BASE_URL. The client's
  *  verify-patch fetches exactly this layout; the publish side must import
  *  this helper rather than re-encode the convention. */
 export function evalReportArtifactRelativePath(artifactHash: string): string {
@@ -201,7 +201,7 @@ function validateArtifactShape(artifact: CoreTexPostRevealEvalReportArtifact): s
 }
 
 /** The mandatory seedDerivation block must agree with the receipt + context
- *  it claims to describe — a validator re-derives packs from THESE fields,
+ *  it claims to describe — a client re-derives packs from THESE fields,
  *  so any drift between them and the replay-verified receipt is a forgery. */
 function validateSeedDerivationBinding(artifact: CoreTexPostRevealEvalReportArtifact): string | null {
   const seed = artifact.seedDerivation;

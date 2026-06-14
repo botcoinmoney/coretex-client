@@ -684,42 +684,42 @@ export async function rerankerFromEnv(): Promise<CrossEncoderReranker> {
   }
 }
 
-// ─── Fail-closed validator scorer (score-honesty replay) ─────────────────────
+// ─── Fail-closed client scorer (score-honesty replay) ────────────────────────
 
-/** Bundle-manifest reranker pins the validator scorer is locked to. */
-export interface ValidatorRerankerPins {
+/** Bundle-manifest reranker pins the client scorer is locked to. */
+export interface ClientRerankerPins {
   readonly modelId: string;
   readonly revision: string;
 }
 
-/** Env vars a validator host must (not) set for score replay. Named in every
+/** Env vars a client host must (not) set for score replay. Named in every
  *  fail-closed error so a misconfigured host knows exactly what to fix. */
-export const VALIDATOR_RERANKER_REQUIRED_ENV =
+export const CLIENT_RERANKER_REQUIRED_ENV =
   'CORETEX_RERANKER=qwen3 (or unset — qwen3 is forced), model id + revision come from the bundle manifest '
   + '(CORETEX_RERANKER_MODEL_ID / CORETEX_RERANKER_REVISION must be unset or equal to the bundle pins); '
   + 'optional: CORETEX_RERANKER_MODE=streaming|spawn, CORETEX_RERANKER_PYTHON, CORTEX_LOCAL_MODEL_CACHE, '
   + 'CORTEX_LOCAL_MODEL_LOCAL_ONLY=1, CORETEX_RERANKER_BATCH_SIZE, RERANKER_NUM_THREADS';
 
 /**
- * Validate the environment for fail-closed validator score replay WITHOUT
+ * Validate the environment for fail-closed client score replay WITHOUT
  * constructing the (expensive) reranker. Throws a hard error naming the
  * required vars when the env would resolve anything other than the pinned
  * qwen3 production scorer. The deterministic stub and minilm are NEVER valid
- * for validator rescoring — `--skip-score-replay` is the only way to skip,
+ * for client rescoring — `--skip-score-replay` is the only way to skip,
  * and a skipped run cannot attest scores.
  */
-export function assertValidatorRerankerEnv(
-  pins: ValidatorRerankerPins,
+export function assertClientRerankerEnv(
+  pins: ClientRerankerPins,
   env: NodeJS.ProcessEnv = process.env,
 ): void {
   if (!pins.modelId || !pins.revision) {
-    throw new Error('validator score replay is fail-closed: bundle manifest model.reranker.modelId/revision pins are required');
+    throw new Error('client score replay is fail-closed: bundle manifest model.reranker.modelId/revision pins are required');
   }
   const selector = env['CORETEX_RERANKER'];
   if (selector !== undefined && selector.toLowerCase() !== 'qwen3') {
     throw new Error(
-      `validator score replay is fail-closed: CORETEX_RERANKER=${selector} cannot reproduce the pinned production scorer `
-      + `(${pins.modelId}@${pins.revision}). Required env: ${VALIDATOR_RERANKER_REQUIRED_ENV}. `
+      `client score replay is fail-closed: CORETEX_RERANKER=${selector} cannot reproduce the pinned production scorer `
+      + `(${pins.modelId}@${pins.revision}). Required env: ${CLIENT_RERANKER_REQUIRED_ENV}. `
       + 'The only way to skip score replay is --skip-score-replay (loud, non-attesting).',
     );
   }
@@ -730,34 +730,34 @@ export function assertValidatorRerankerEnv(
     const value = env[envVar];
     if (value !== undefined && value !== pinned) {
       throw new Error(
-        `validator score replay is fail-closed: ${envVar}=${value} != bundle manifest pin ${pinned} — `
-        + `unset ${envVar} (the bundle pin is authoritative). Required env: ${VALIDATOR_RERANKER_REQUIRED_ENV}`,
+        `client score replay is fail-closed: ${envVar}=${value} != bundle manifest pin ${pinned} — `
+        + `unset ${envVar} (the bundle pin is authoritative). Required env: ${CLIENT_RERANKER_REQUIRED_ENV}`,
       );
     }
   }
   const mode = env['CORETEX_RERANKER_MODE'];
   if (mode !== undefined && mode !== 'streaming' && mode !== 'spawn') {
     throw new Error(
-      `validator score replay is fail-closed: CORETEX_RERANKER_MODE=${mode} is not a valid qwen3 mode `
-      + `(streaming|spawn). Required env: ${VALIDATOR_RERANKER_REQUIRED_ENV}`,
+      `client score replay is fail-closed: CORETEX_RERANKER_MODE=${mode} is not a valid qwen3 mode `
+      + `(streaming|spawn). Required env: ${CLIENT_RERANKER_REQUIRED_ENV}`,
     );
   }
 }
 
 /**
- * Build the FAIL-CLOSED validator scorer: ALWAYS the pinned qwen3 production
+ * Build the FAIL-CLOSED client scorer: ALWAYS the pinned qwen3 production
  * reranker (model id + revision from the bundle manifest), regardless of env.
  * `rerankerFromEnv` is deliberately not used here — its deterministic-stub
- * fallback must be unreachable from any validator rescore path.
+ * fallback must be unreachable from any client rescore path.
  *
  * Default mode is streaming (the only launch-scale path); CORETEX_RERANKER_MODE=spawn
  * selects the per-batch spawn variant for tiny/debug workloads.
  */
-export async function createValidatorReranker(
-  pins: ValidatorRerankerPins,
+export async function createClientReranker(
+  pins: ClientRerankerPins,
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<CrossEncoderReranker & { close?: () => Promise<void> }> {
-  assertValidatorRerankerEnv(pins, env);
+  assertClientRerankerEnv(pins, env);
   const cacheDir = env['CORTEX_LOCAL_MODEL_CACHE'];
   const localOnly = env['CORTEX_LOCAL_MODEL_LOCAL_ONLY'] === '1';
   const streaming = (env['CORETEX_RERANKER_MODE'] ?? 'streaming') === 'streaming';
@@ -780,7 +780,7 @@ export async function createValidatorReranker(
   if (reranker.model !== expected) {
     const closable = reranker as { close?: () => Promise<void> };
     if (typeof closable.close === 'function') await closable.close();
-    throw new Error(`validator score replay is fail-closed: resolved reranker ${reranker.model} != required ${expected}`);
+    throw new Error(`client score replay is fail-closed: resolved reranker ${reranker.model} != required ${expected}`);
   }
   return reranker;
 }

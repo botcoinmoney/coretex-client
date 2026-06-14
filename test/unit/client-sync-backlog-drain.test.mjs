@@ -1,5 +1,5 @@
 /**
- * Validator eval-verification backlog auto-drain after a pre-reveal sync.
+ * Client eval-verification backlog auto-drain after a pre-reveal sync.
  *
  * These exercise the EXPORTED pure primitives the auto-drain flow is built from,
  * deterministically (no live RPC, no real scorer, no torch):
@@ -35,7 +35,7 @@ import {
   upsertEvalBacklog,
   removeFromEvalBacklog,
   TrustedStateStaging,
-} from '../../dist/validator-sync-cli.js';
+} from '../../dist/client-sync-cli.js';
 import { pack, unpack, merkleizeState, bytesToHex, PACKED_SIZE, computePatchHash, semanticPatchHash, encodePatch, PATCH_TYPE } from '../../dist/index.js';
 
 function withTmpDir(fn) {
@@ -215,7 +215,7 @@ describe('Fix #2 — parent-substrate snapshot store', () => {
     mkdirSync(join(dir, EVAL_PARENT_SNAPSHOT_DIR), { recursive: true });
     const orphan = { ...evalBacklogEntryFromAdvance(makeAdvance(b32('11')), 1, 'awaiting_epoch_secret_reveal') };
     const orphanRef = evalParentSnapshotRef(orphan);
-    const statePath = join(dir, 'validator-sync-state.json');
+    const statePath = join(dir, 'client-sync-state.json');
     const staging = new TrustedStateStaging();
     staging.stage(evalParentSnapshotPath(dir, orphanRef), pack(stateWithSeed(4)));
     staging.commit();
@@ -241,7 +241,7 @@ describe('Fix #2 — parent-substrate snapshot store', () => {
     mkdirSync(join(dir, EVAL_PARENT_SNAPSHOT_DIR), { recursive: true });
     const orphan = { ...evalBacklogEntryFromAdvance(makeAdvance(b32('11')), 1, 'awaiting_epoch_secret_reveal') };
     const orphanRef = evalParentSnapshotRef(orphan);
-    const statePath = join(dir, 'validator-sync-state.json');
+    const statePath = join(dir, 'client-sync-state.json');
     const staging = new TrustedStateStaging();
     staging.stage(evalParentSnapshotPath(dir, orphanRef), pack(stateWithSeed(5)));
     staging.commit();

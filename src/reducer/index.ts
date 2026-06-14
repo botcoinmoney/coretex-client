@@ -1,5 +1,5 @@
 /**
- * @botcoin/coretex — reducer module
+ * @botcoin/coretex-client — reducer module
  * Phase 6 deliverable: deterministic greedy-by-marginal-gain epoch reducer,
  * eligibility tracking, multiplier-cap computation, and funding-tx builder.
  */

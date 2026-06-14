@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * botcoin-coretex — Phase 3 CLI dispatcher.
+ * coretex-client — Phase 3 CLI dispatcher.
  *
  * Subcommands:
  *   decode        Parse a packed CortexState into typed slots (JSON output).
@@ -79,17 +79,17 @@ function toJsonOutput(obj: unknown): string {
 
 const [, , cmd, ...args] = process.argv;
 
-if (!cmd) {
+if (!cmd || cmd === '--help' || cmd === '-h' || cmd === 'help') {
   process.stderr.write(
-    'usage: botcoin-coretex {decode|apply-patch|eval|reduce-epoch|verify-epoch|snapshot|upgrade|bundle-manifest}\n',
+    'usage: coretex-client {decode|apply-patch|eval|reduce-epoch|verify-epoch|snapshot|upgrade|bundle-manifest}\n',
   );
-  process.exit(1);
+  process.exit(cmd ? 0 : 1);
 }
 
 switch (cmd) {
   // ── decode ────────────────────────────────────────────────────────────────
   case 'decode': {
-    // Usage: botcoin-coretex decode [state.bin] [--policy-atoms-mode|--r5]
+    // Usage: coretex-client decode [state.bin] [--policy-atoms-mode|--r5]
     // Reads 32768-byte packed state; outputs JSON typed-slot decode.
     const policyAtomsMode = args.includes('--policy-atoms-mode') || args.includes('--r5');
     const statePath = args.find((arg) => !arg.startsWith('--'));
@@ -134,11 +134,11 @@ switch (cmd) {
 
   // ── apply-patch ───────────────────────────────────────────────────────────
   case 'apply-patch': {
-    // Usage: botcoin-coretex apply-patch <state.bin> <patch.bin>
+    // Usage: coretex-client apply-patch <state.bin> <patch.bin>
     const stateFile = args[0];
     const patchFile = args[1];
     if (!stateFile || !patchFile) {
-      die('apply-patch: usage: botcoin-coretex apply-patch <state.bin> <patch.bin>');
+      die('apply-patch: usage: coretex-client apply-patch <state.bin> <patch.bin>');
     }
     const stateBytes = fs.readFileSync(stateFile);
     const patchBytes = fs.readFileSync(patchFile);
@@ -160,11 +160,11 @@ switch (cmd) {
 
   // ── eval ──────────────────────────────────────────────────────────────────
   case 'eval': {
-    // Usage: botcoin-coretex eval <state.bin> <patch.bin> [--corpus-root 0x...] [--corpus-file file.json]
+    // Usage: coretex-client eval <state.bin> <patch.bin> [--corpus-root 0x...] [--corpus-file file.json]
     const stateFile = args[0];
     const patchFile = args[1];
     if (!stateFile || !patchFile) {
-      die('eval: usage: botcoin-coretex eval <state.bin> <patch.bin>');
+      die('eval: usage: coretex-client eval <state.bin> <patch.bin>');
     }
     const stateBytes = fs.readFileSync(stateFile);
     const patchBytes = fs.readFileSync(patchFile);
@@ -184,12 +184,12 @@ switch (cmd) {
 
   // ── reduce-epoch ──────────────────────────────────────────────────────────
   case 'reduce-epoch': {
-    // Usage: botcoin-coretex reduce-epoch <state.bin> <patches.json>
+    // Usage: coretex-client reduce-epoch <state.bin> <patches.json>
     // patches.json: array of { compactPatchBytesHex, patchHash, parentStateRoot, scoreDelta? }
     const stateFile = args[0];
     const patchesFile = args[1];
     if (!stateFile || !patchesFile) {
-      die('reduce-epoch: usage: botcoin-coretex reduce-epoch <state.bin> <patches.json>');
+      die('reduce-epoch: usage: coretex-client reduce-epoch <state.bin> <patches.json>');
     }
     const stateBytes = fs.readFileSync(stateFile);
     const patchesJson = JSON.parse(fs.readFileSync(patchesFile, 'utf8'), bigIntReviver) as unknown[];
@@ -236,11 +236,11 @@ switch (cmd) {
 
   // ── verify-epoch ──────────────────────────────────────────────────────────
   case 'verify-epoch': {
-    // Usage: botcoin-coretex verify-epoch <events.json> [--genesis-state <state.bin>]
+    // Usage: coretex-client verify-epoch <events.json> [--genesis-state <state.bin>]
     // events.json: { epoch, finalizedEvent, patchEvents, snapshotEvent? }
     const eventsFile = args[0];
     if (!eventsFile) {
-      die('verify-epoch: usage: botcoin-coretex verify-epoch <events.json> [--genesis-state state.bin]');
+      die('verify-epoch: usage: coretex-client verify-epoch <events.json> [--genesis-state state.bin]');
     }
     const eventsData = JSON.parse(fs.readFileSync(eventsFile, 'utf8'), bigIntReviver) as {
       epoch: bigint;
@@ -287,11 +287,11 @@ switch (cmd) {
 
   // ── snapshot ──────────────────────────────────────────────────────────────
   case 'snapshot': {
-    // Usage: botcoin-coretex snapshot <state.bin>
+    // Usage: coretex-client snapshot <state.bin>
     // Outputs: { stateRoot, fullStateBytesHex }
     const stateFile = args[0];
     if (!stateFile) {
-      die('snapshot: usage: botcoin-coretex snapshot <state.bin>');
+      die('snapshot: usage: coretex-client snapshot <state.bin>');
     }
     const stateBytes = fs.readFileSync(stateFile);
     const state = unpack(new Uint8Array(stateBytes));
@@ -303,8 +303,8 @@ switch (cmd) {
 
   // ── upgrade ───────────────────────────────────────────────────────────────
   case 'upgrade': {
-    // Usage: botcoin-coretex upgrade <state.bin> <translation.bin>
-    // Or:    botcoin-coretex upgrade --reset <state.bin> <genesis.bin> --epoch N --old-cvh 0x.. --new-cvh 0x..
+    // Usage: coretex-client upgrade <state.bin> <translation.bin>
+    // Or:    coretex-client upgrade --reset <state.bin> <genesis.bin> --epoch N --old-cvh 0x.. --new-cvh 0x..
     if (args[0] === '--reset') {
       const stateFile = args[1];
       const genesisFile = args[2];
@@ -326,7 +326,7 @@ switch (cmd) {
       const stateFile = args[0];
       const translationFile = args[1];
       if (!stateFile || !translationFile) {
-        die('upgrade: usage: botcoin-coretex upgrade <state.bin> <translation.bin>');
+        die('upgrade: usage: coretex-client upgrade <state.bin> <translation.bin>');
       }
       const state = unpack(new Uint8Array(fs.readFileSync(stateFile)));
       const translationBytes = new Uint8Array(fs.readFileSync(translationFile));
@@ -369,11 +369,11 @@ switch (cmd) {
       if (errors.length) process.exit(1);
       break;
     }
-    die('bundle-manifest: usage: botcoin-coretex bundle-manifest {build|verify} ...');
+    die('bundle-manifest: usage: coretex-client bundle-manifest {build|verify} ...');
   }
 
   default:
-    die(`botcoin-coretex: unknown command "${cmd}"\nusage: botcoin-coretex {decode|apply-patch|eval|reduce-epoch|verify-epoch|snapshot|upgrade|bundle-manifest}`, 1);
+    die(`coretex-client: unknown command "${cmd}"\nusage: coretex-client {decode|apply-patch|eval|reduce-epoch|verify-epoch|snapshot|upgrade|bundle-manifest}`, 1);
 }
 
 function flagValue(args: readonly string[], name: string): string | undefined {

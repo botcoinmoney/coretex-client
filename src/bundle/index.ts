@@ -342,7 +342,7 @@ export interface EvaluatorProfile {
    * §5 Run 1 selection-policy attestation. When `firstStageTopK` is pinned via
    * the per-stratum recall@K rule WITHOUT meeting the target on all strata,
    * this field records the operator-override decision in the signed bundle so
-   * replay validators see that the override is explicit (not a silent threshold
+   * replay clients see that the override is explicit (not a silent threshold
    * violation). Hashed into `bundleHash` — any change requires a new bundle.
    */
   readonly firstStageTopKSelection?: FirstStageTopKSelection;
@@ -451,7 +451,7 @@ export interface EvaluatorProfile {
    */
   readonly controllerParams?: ControllerParamsPin;
   /** LAUNCH-REQUIRED active-frontier / churn controller pin (EpochFrontier). When present, the
-   *  validator rotates the active eval_hidden frontier deterministically and recomputes the
+   *  client rotates the active eval_hidden frontier deterministically and recomputes the
    *  baseline on activeRootChanged. Hashed into bundleHash so churn behavior is attested. */
   readonly epochFrontier?: EpochFrontierPin;
 }
@@ -1162,9 +1162,9 @@ export function buildBundleManifest(opts: BuildBundleManifestOptions): CoreTexBu
     },
     replay: {
       commands: [
-        'coretex-replay tx --tx <hash> --rpc <url> --parent-state <state.bin> --bundle-manifest <manifest.json> --core-version-hash <bundleHash>',
-        'coretex-replay current --events <events.json> --parent-state <state.bin> --bundle-manifest <manifest.json> --core-version-hash <bundleHash>',
-        'coretex-replay watch --rpc <url> --v4 <address> --cortex-state <address> --from-block <n> --parent-state <state.bin> --bundle-manifest <manifest.json> --core-version-hash <bundleHash>',
+        'coretex-client-replay tx --tx <hash> --rpc <url> --parent-state <state.bin> --bundle-manifest <manifest.json> --core-version-hash <bundleHash>',
+        'coretex-client-replay current --events <events.json> --parent-state <state.bin> --bundle-manifest <manifest.json> --core-version-hash <bundleHash>',
+        'coretex-client-replay watch --rpc <url> --v4 <address> --cortex-state <address> --from-block <n> --parent-state <state.bin> --bundle-manifest <manifest.json> --core-version-hash <bundleHash>',
       ],
       coordinatorCacheOptional: true as const,
       snapshots: (opts.snapshotFiles ?? []).map((path) => hashFile(opts.repoRoot, path, 'substrate-snapshot')),
@@ -1740,7 +1740,7 @@ export function assertBundleBindingAtStartup(opts: {
     opts.clientVersion,
   );
   // Do not hard-fail solely because version was not supplied by the host:
-  // that would brick validators during rollout. We fail closed only when
+  // that would brick clients during rollout. We fail closed only when
   // the supplied version is explicitly invalid or below the minimum.
   const shouldRefuseForClientVersion = clientCheck.code === 'client-version-outdated'
     || clientCheck.code === 'client-version-invalid';

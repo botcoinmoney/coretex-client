@@ -545,7 +545,7 @@ export function computeCorpusRoot(events: readonly ProductionCorpusEvent[]): str
  * hash (corpusRoot leaf ordering, hidden-pack derivation ordering). NEVER use
  * `localeCompare` here: ICU collation is locale/version-dependent (e.g.
  * 'a_x' vs 'a0x' order flips between locale and codepoint order), which would
- * make pinned roots differ across validator environments.
+ * make pinned roots differ across client environments.
  */
 export const codePointCompare = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 

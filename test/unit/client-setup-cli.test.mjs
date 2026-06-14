@@ -1,8 +1,8 @@
 /**
- * coretex-validator-setup — tiny-fixture end-to-end over a local file:// base
+ * coretex-client-setup — tiny-fixture end-to-end over a local file:// base
  * (NEVER the real 700MB launch payloads): manifest fetch, SHA-256 + byte-size
  * verified downloads into the state dir, in-package corpus materialization,
- * and the validator state file that makes sync one-command.
+ * and the client state file that makes sync one-command.
  */
 import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -20,9 +20,9 @@ import {
   isEvmAddress,
   isUsableContractAddress,
   LAUNCH_ARTIFACT_MANIFEST_FILENAME,
-} from '../../dist/validator-setup-cli.js';
+} from '../../dist/client-setup-cli.js';
 
-const cliPath = fileURLToPath(new URL('../../dist/validator-setup-cli.js', import.meta.url));
+const cliPath = fileURLToPath(new URL('../../dist/client-setup-cli.js', import.meta.url));
 const BUNDLE_HASH = `0x${'12'.repeat(32)}`;
 
 let root;          // tmp root
@@ -184,11 +184,11 @@ describe('launch manifest helpers', () => {
   });
 });
 
-describe('coretex-validator-setup — tiny fixture over file:// (spawned)', () => {
+describe('coretex-client-setup — tiny fixture over file:// (spawned)', () => {
   test('fresh setup downloads, verifies, materializes, and writes the one-command state file', { timeout: 120_000 }, () => {
     const stateDir = join(root, 'state');
     // --no-venv-bootstrap: a real multi-GB torch install is NOT a unit test
-    // (the bootstrap LOGIC is covered in validator-runtime.test.mjs with a fake
+    // (the bootstrap LOGIC is covered in client-runtime.test.mjs with a fake
     // spawner). This case proves artifact hydration + the state file.
     const proc = runSetup([
       '--artifact-base-url', originUrl,
@@ -211,7 +211,7 @@ describe('coretex-validator-setup — tiny fixture over file:// (spawned)', () =
     assert.ok(existsSync(join(stateDir, 'materialized', tag, 'corpus.json.events.ndjson')));
 
     // State file: sync needs no manual flags after this.
-    const state = JSON.parse(readFileSync(join(stateDir, 'validator-sync-state.json'), 'utf8'));
+    const state = JSON.parse(readFileSync(join(stateDir, 'client-sync-state.json'), 'utf8'));
     assert.equal(state.corpusRoot.toLowerCase(), corpusRoot.toLowerCase());
     assert.equal(state.bundleHash, BUNDLE_HASH);
     assert.equal(state.registryDeployBlock, 4242);
@@ -243,7 +243,7 @@ describe('coretex-validator-setup — tiny fixture over file:// (spawned)', () =
   test('--help exits 0 with usage', () => {
     const proc = runSetup(['--help']);
     assert.equal(proc.status, 0);
-    assert.match(proc.stdout, /coretex-validator-setup/);
+    assert.match(proc.stdout, /coretex-client-setup/);
     assert.match(proc.stdout, /--artifact-base-url/);
   });
 
@@ -291,11 +291,11 @@ describe('coretex-validator-setup — tiny fixture over file:// (spawned)', () =
     assert.equal(proc.status, 0, `stdout: ${proc.stdout}\nstderr: ${proc.stderr}`);
     // No scorer venv was built, and no scorerPython recorded under opt-out.
     assert.ok(!existsSync(join(stateDir, 'scorer-venv')), 'opt-out must not create scorer-venv');
-    const state = JSON.parse(readFileSync(join(stateDir, 'validator-sync-state.json'), 'utf8'));
+    const state = JSON.parse(readFileSync(join(stateDir, 'client-sync-state.json'), 'utf8'));
     assert.equal(state.setup.scorerPython, undefined, 'opt-out records no scorerPython');
     // The PASS summary block is stderr-only — stdout carries [setup] log lines + READY.
-    assert.match(proc.stderr, /coretex-validator-setup: PASS/);
-    assert.doesNotMatch(proc.stdout, /coretex-validator-setup: PASS/);
+    assert.match(proc.stderr, /coretex-client-setup: PASS/);
+    assert.doesNotMatch(proc.stdout, /coretex-client-setup: PASS/);
     assert.match(proc.stdout, /READY corpusRoot=0x/);
   });
 });

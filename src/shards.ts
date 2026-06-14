@@ -20,7 +20,7 @@
  * This module is the single source of truth for shard derivation across:
  *   - coordinator route shim challenge endpoint
  *   - benchmark/shards.ts (re-exported)
- *   - botcoin-coretex CLI verify-epoch path
+ *   - coretex-client CLI verify-epoch path
  *   - any external auditor
  *
  * Changing the packing order, hash, or rulesVersion changes consensus.

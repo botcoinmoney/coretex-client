@@ -1,5 +1,5 @@
 /**
- * Validator sync-client hardening (Findings 4–8 + runtime-pin assertion).
+ * Client sync-client hardening (Findings 4–8 + runtime-pin assertion).
  *
  * These exercise the EXPORTED pure primitives the hardened sync flow is built
  * from — deterministically, with no live RPC, no real scorer, and no torch
@@ -26,14 +26,14 @@ import {
   removeFromEvalBacklog,
   scorerRuntimeBundlePinsFromManifest,
   TrustedStateStaging,
-  serializeMergedValidatorState,
+  serializeMergedClientState,
   serializeTofuKeyPin,
   readChainContext,
-} from '../../dist/validator-sync-cli.js';
+} from '../../dist/client-sync-cli.js';
 import {
   scorerRuntimeMatchesBundle,
   scorerVersionMatchesRange,
-} from '../../dist/validator-runtime.js';
+} from '../../dist/client-runtime.js';
 import { computePatchHash, semanticPatchHash, encodePatch, PATCH_TYPE } from '../../dist/index.js';
 
 function withTmpDir(fn) {
@@ -233,10 +233,10 @@ describe('Finding 5 — eval-verification backlog', () => {
   });
 
   test('pending entries round-trip through the persisted state file', () => withTmpDir((dir) => {
-    const statePath = join(dir, 'validator-sync-state.json');
+    const statePath = join(dir, 'client-sync-state.json');
     const entry = evalBacklogEntryFromAdvance(makeAdvance(), 100, 'awaiting_epoch_secret_reveal');
     // sync 1 leaves an advance pending (secret unrevealed) → persisted to backlog.
-    writeFileSync(statePath, serializeMergedValidatorState(statePath, {
+    writeFileSync(statePath, serializeMergedClientState(statePath, {
       evalBacklog: [entry],
       evalVerifiedThroughBlock: -1,
     }));
@@ -246,7 +246,7 @@ describe('Finding 5 — eval-verification backlog', () => {
     assert.equal(reloaded.evalVerifiedThroughBlock, -1);
     // sync 2 after reveal drains it (passing replay) and advances the cursor.
     const drained = removeFromEvalBacklog(reloaded.evalBacklog, entry);
-    writeFileSync(statePath, serializeMergedValidatorState(statePath, {
+    writeFileSync(statePath, serializeMergedClientState(statePath, {
       evalBacklog: drained,
       evalVerifiedThroughBlock: 100,
     }));
@@ -320,11 +320,11 @@ describe('Finding 6 — readChainContext reads everything at ONE confirmed tag',
 describe('Finding 7 — TrustedStateStaging atomic commit/dispose', () => {
   test('a failed mandatory check (dispose without commit) leaves prior files byte-unchanged', () => withTmpDir((dir) => {
     const pinPath = join(dir, 'epoch-signing-key.pin.json');
-    const statePath = join(dir, 'validator-sync-state.json');
+    const statePath = join(dir, 'client-sync-state.json');
     const snapPath = join(dir, 'substrate-state.bin');
     // Prior trusted state on disk.
     const priorPin = serializeTofuKeyPin('-----BEGIN PUBLIC KEY-----\nPRIOR\n-----END PUBLIC KEY-----\n').body;
-    const priorState = '{"schema":"coretex.validator-sync-state.v1","prior":true}\n';
+    const priorState = '{"schema":"coretex.client-sync-state.v1","prior":true}\n';
     const priorSnap = Buffer.from([9, 9, 9]);
     writeFileSync(pinPath, priorPin);
     writeFileSync(statePath, priorState);
@@ -333,7 +333,7 @@ describe('Finding 7 — TrustedStateStaging atomic commit/dispose', () => {
     const staging = new TrustedStateStaging();
     staging.stage(pinPath, serializeTofuKeyPin('-----BEGIN PUBLIC KEY-----\nNEW\n-----END PUBLIC KEY-----\n').body);
     staging.stage(snapPath, Buffer.from([1, 2, 3]));
-    staging.stage(statePath, '{"schema":"coretex.validator-sync-state.v1","new":true}\n');
+    staging.stage(statePath, '{"schema":"coretex.client-sync-state.v1","new":true}\n');
     // Simulate a mandatory check throwing BEFORE commit: dispose only.
     staging.dispose();
 

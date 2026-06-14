@@ -346,7 +346,7 @@ export interface CoreTexCoordinatorConfig {
   readonly exampleValidPatch?: unknown;
   readonly activeSubstrateSurfaces?: readonly string[];
   /** OPTIONAL public URL where the epoch signing public key (PEM) is published.
-   *  When set it is emitted on `/coretex/status` so the validator-sync client can
+   *  When set it is emitted on `/coretex/status` so `coretex-client-sync` can
    *  auto-discover the key (fallback for `--public-key`). Omitted when unset. */
   readonly epochSigningPublicKeyUrl?: string;
   /** OPTIONAL operator-facing id of the epoch signing key (e.g. AWS KMS key id). */
@@ -894,7 +894,7 @@ export class CoreTexCoordinatorCore {
       activeFrontierRoot: this.config.expectedEpochPins.activeFrontierRoot,
       baselineManifestHash: this.config.expectedEpochPins.baselineManifestHash,
       // OPTIONAL epoch signing key metadata: emitted only when the operator
-      // publishes the key, so validator-sync can auto-discover `--public-key`.
+      // publishes the key, so client-sync can auto-discover `--public-key`.
       ...(this.config.epochSigningPublicKeyUrl ? { epochSigningPublicKeyUrl: this.config.epochSigningPublicKeyUrl } : {}),
       ...(this.config.epochSigningPublicKeyId ? { epochSigningPublicKeyId: this.config.epochSigningPublicKeyId } : {}),
       ...(this.config.epochSigningPublicKeyFingerprint ? { epochSigningPublicKeyFingerprint: this.config.epochSigningPublicKeyFingerprint } : {}),

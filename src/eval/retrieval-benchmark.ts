@@ -64,7 +64,7 @@ export const DEFAULT_COMPOSITE_WEIGHTS: CompositeWeights = {
 
 /**
  * §6.6 pipeline-version pin enforcement. The bundle profile pins
- * `pipelineVersion` so a replay validator routes to the matching code
+ * `pipelineVersion` so a replay client routes to the matching code
  * path. When a binary scores against a bundle that pins a different
  * version (future migration, downgrade attempt), throw fail-closed so
  * scoring doesn't silently produce wrong numbers. No env-var bypass:
@@ -386,7 +386,7 @@ export interface ScoringOptions {
   /**
    * §6.6 pipeline-version pin. When set, the scorer asserts the bundle's
    * pinned pipeline matches what this code implements (currently
-   * `'coretex-retrieval-v2-lens'`). Replay validators consume the pin to
+   * `'coretex-retrieval-v2-lens'`). Replay clients consume the pin to
    * route to the matching code path; a bundle that pins a future version
    * cannot be replayed by an older binary without an explicit override.
    */
@@ -1832,7 +1832,7 @@ export async function scoreSubstrateAgainstQuery(
   // §6.5+ Anchor-mandatory sub-cap. With many possible anchors and events
   // possibly carrying multiple truth docs, an unbounded mandatory pool could
   // exceed `rerankerInputTopK` and cause unbounded reranker work per query —
-  // a worst-case DoS for the open-source replay validator. We cap mandatory
+  // a worst-case DoS for the open-source replay client. We cap mandatory
   // inclusions at the cap itself, taking docs in (slot, docId) lexicographic
   // order so the truncation is byte-deterministic across replay hosts.
   const anchorMandatoryAll = candidates

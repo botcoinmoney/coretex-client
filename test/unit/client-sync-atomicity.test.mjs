@@ -1,13 +1,13 @@
 /**
  * Finding 7 (integration): a sync that fails a MANDATORY check must leave the
- * prior trusted state — the TOFU key pin, the validator state file, and the
+ * prior trusted state — the TOFU key pin, the client state file, and the
  * substrate snapshot — BYTE-UNCHANGED. This spawns the compiled CLI against a
  * fake JSON-RPC endpoint that fails the bundle version self-check (a mandatory
  * gate), and asserts none of the three trusted files were mutated.
  *
  * The TrustedStateStaging mechanism itself (stage → dispose-without-commit
  * leaves prior files byte-identical; commit applies all together) is covered
- * directly in validator-sync-hardening.test.mjs; this proves the CLI wires
+ * directly in client-sync-hardening.test.mjs; this proves the CLI wires
  * EVERY trusted write through it and commits only after the gates pass.
  */
 import { test, describe } from 'node:test';
@@ -22,7 +22,7 @@ import { fileURLToPath } from 'node:url';
 import { keccak256 } from '../../dist/state/keccak256.js';
 import { bytesToHex } from '../../dist/state/merkle.js';
 
-const cliPath = fileURLToPath(new URL('../../dist/validator-sync-cli.js', import.meta.url));
+const cliPath = fileURLToPath(new URL('../../dist/client-sync-cli.js', import.meta.url));
 
 const REGISTRY = `0x${'11'.repeat(20)}`;
 const MINING = `0x${'22'.repeat(20)}`;
@@ -122,10 +122,10 @@ describe('Finding 7 — a mandatory-check failure leaves trusted state byte-unch
 
       // Prior trusted state on disk (a previously-verified sync).
       const pinPath = join(stateDir, 'epoch-signing-key.pin.json');
-      const statePath = join(stateDir, 'validator-sync-state.json');
+      const statePath = join(stateDir, 'client-sync-state.json');
       const snapPath = join(stateDir, 'substrate-state.bin');
       const priorPin = '{"schema":"coretex.epoch-signing-key-pin.v1","fingerprint":"0xprior"}\n';
-      const priorState = '{"schema":"coretex.validator-sync-state.v1","epoch":6,"prior":true}\n';
+      const priorState = '{"schema":"coretex.client-sync-state.v1","epoch":6,"prior":true}\n';
       const priorSnap = Buffer.from([1, 2, 3, 4]);
       writeFileSync(pinPath, priorPin);
       writeFileSync(statePath, priorState);
@@ -154,7 +154,7 @@ describe('Finding 7 — a mandatory-check failure leaves trusted state byte-unch
 
         // The mandatory version self-check fails → non-zero exit, named error.
         assert.notEqual(proc.status, 0);
-        assert.match(proc.stderr, /validator client outdated/);
+        assert.match(proc.stderr, /coretex client outdated/);
 
         // The three trusted-state files are BYTE-unchanged.
         assert.equal(readFileSync(pinPath, 'utf8'), priorPin);

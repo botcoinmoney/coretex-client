@@ -1,10 +1,10 @@
 /**
- * FAIL-CLOSED validator scorer (§2 score-honesty):
- *   - the deterministic stub / minilm are unreachable from the validator
+ * FAIL-CLOSED client scorer (§2 score-honesty):
+ *   - the deterministic stub / minilm are unreachable from the client
  *     rescore path regardless of env;
  *   - model id + revision are locked to the bundle manifest pins;
  *   - a misconfigured env is a hard error NAMING the required vars;
- *   - the spawned validator-sync CLI applies the same gate to sync and
+ *   - the spawned client-sync CLI applies the same gate to sync and
  *     verify-patch, and --skip-score-replay is the only skip (exit code 3,
  *     distinct from success).
  */
@@ -17,24 +17,24 @@ import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 import {
-  assertValidatorRerankerEnv,
-  createValidatorReranker,
+  assertClientRerankerEnv,
+  createClientReranker,
   buildPostRevealEvalReportArtifact,
 } from '../../dist/index.js';
-import { SKIP_SCORE_REPLAY_EXIT_CODE } from '../../dist/validator-sync-cli.js';
+import { SKIP_SCORE_REPLAY_EXIT_CODE } from '../../dist/client-sync-cli.js';
 
 const PINS = { modelId: 'Qwen/Qwen3-Reranker-0.6B', revision: 'pinned-test-revision' };
 
-describe('assertValidatorRerankerEnv — fail-closed env gate', () => {
+describe('assertClientRerankerEnv — fail-closed env gate', () => {
   test('clean env passes (qwen3 is forced even when CORETEX_RERANKER is unset)', () => {
-    assert.doesNotThrow(() => assertValidatorRerankerEnv(PINS, {}));
-    assert.doesNotThrow(() => assertValidatorRerankerEnv(PINS, { CORETEX_RERANKER: 'qwen3' }));
+    assert.doesNotThrow(() => assertClientRerankerEnv(PINS, {}));
+    assert.doesNotThrow(() => assertClientRerankerEnv(PINS, { CORETEX_RERANKER: 'qwen3' }));
   });
 
   test('the deterministic stub is refused with an error naming the required vars', () => {
     for (const selector of ['deterministic', 'minilm', 'DETERMINISTIC', 'something-else']) {
       assert.throws(
-        () => assertValidatorRerankerEnv(PINS, { CORETEX_RERANKER: selector }),
+        () => assertClientRerankerEnv(PINS, { CORETEX_RERANKER: selector }),
         (err) => {
           assert.match(err.message, /fail-closed/);
           assert.match(err.message, /CORETEX_RERANKER=qwen3/);
@@ -49,38 +49,38 @@ describe('assertValidatorRerankerEnv — fail-closed env gate', () => {
 
   test('env model/revision overrides conflicting with the bundle pins are hard errors', () => {
     assert.throws(
-      () => assertValidatorRerankerEnv(PINS, { CORETEX_RERANKER_MODEL_ID: 'evil/other-model' }),
+      () => assertClientRerankerEnv(PINS, { CORETEX_RERANKER_MODEL_ID: 'evil/other-model' }),
       /CORETEX_RERANKER_MODEL_ID=evil\/other-model != bundle manifest pin/,
     );
     assert.throws(
-      () => assertValidatorRerankerEnv(PINS, { CORETEX_RERANKER_REVISION: 'wrong-rev' }),
+      () => assertClientRerankerEnv(PINS, { CORETEX_RERANKER_REVISION: 'wrong-rev' }),
       /CORETEX_RERANKER_REVISION=wrong-rev != bundle manifest pin/,
     );
     // Redundant-but-equal env is allowed (it cannot diverge from the pin).
-    assert.doesNotThrow(() => assertValidatorRerankerEnv(PINS, {
+    assert.doesNotThrow(() => assertClientRerankerEnv(PINS, {
       CORETEX_RERANKER_MODEL_ID: PINS.modelId,
       CORETEX_RERANKER_REVISION: PINS.revision,
     }));
   });
 
   test('missing bundle pins are a hard error', () => {
-    assert.throws(() => assertValidatorRerankerEnv({ modelId: '', revision: '' }, {}), /pins are required/);
+    assert.throws(() => assertClientRerankerEnv({ modelId: '', revision: '' }, {}), /pins are required/);
   });
 
   test('invalid CORETEX_RERANKER_MODE is a hard error', () => {
-    assert.throws(() => assertValidatorRerankerEnv(PINS, { CORETEX_RERANKER_MODE: 'magic' }), /CORETEX_RERANKER_MODE=magic/);
+    assert.throws(() => assertClientRerankerEnv(PINS, { CORETEX_RERANKER_MODE: 'magic' }), /CORETEX_RERANKER_MODE=magic/);
   });
 });
 
-describe('createValidatorReranker — pinned qwen3 regardless of env', () => {
+describe('createClientReranker — pinned qwen3 regardless of env', () => {
   test('resolves the bundle-pinned model id + revision (spawn mode, no python launched until score())', async () => {
-    const reranker = await createValidatorReranker(PINS, { CORETEX_RERANKER_MODE: 'spawn' });
+    const reranker = await createClientReranker(PINS, { CORETEX_RERANKER_MODE: 'spawn' });
     assert.equal(reranker.model, `${PINS.modelId}@${PINS.revision}`);
   });
 
   test('refuses a stub selector before constructing anything', async () => {
     await assert.rejects(
-      () => createValidatorReranker(PINS, { CORETEX_RERANKER: 'deterministic' }),
+      () => createClientReranker(PINS, { CORETEX_RERANKER: 'deterministic' }),
       /fail-closed/,
     );
   });
@@ -88,7 +88,7 @@ describe('createValidatorReranker — pinned qwen3 regardless of env', () => {
 
 // ── spawned CLI: the same gate guards sync and verify-patch ──────────────────
 
-const cliPath = fileURLToPath(new URL('../../dist/validator-sync-cli.js', import.meta.url));
+const cliPath = fileURLToPath(new URL('../../dist/client-sync-cli.js', import.meta.url));
 
 function withTmpDir(fn) {
   const dir = mkdtempSync(join(tmpdir(), 'coretex-fail-closed-'));
@@ -120,7 +120,7 @@ function writeBundle(dir, bundleHash) {
   return path;
 }
 
-describe('validator-sync CLI — fail-closed scorer gate (spawned)', () => {
+describe('client-sync CLI — fail-closed scorer gate (spawned)', () => {
   const BUNDLE_HASH = `0x${'44'.repeat(32)}`;
   const syncArgs = (bundlePath, extra = []) => [
     '--epoch', '1',

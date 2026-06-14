@@ -140,7 +140,7 @@ export interface PerPatchEvaluatorDeps {
    *  deriveGate/ConfirmEvalSeed and ships them with the job, so the scorer
    *  host never receives the pre-reveal secret. Requires `seedContext` (the
    *  pinned blockhash the seeds were derived under) — the artifact's
-   *  seedDerivation section still records the full witness, and the validator's
+   *  seedDerivation section still records the full witness, and the client's
    *  post-reveal re-derivation from the revealed secret is the integrity
    *  backstop against a mis-derived injection. */
   readonly injectedSeeds?: { readonly gateSeed: string; readonly confirmSeed: string };
@@ -351,7 +351,7 @@ export async function runPerPatchEvaluation(
   if (deps.injectedSeeds) {
     // Keyless-scorer path: the coordinator derived both seeds (it holds the
     // secret) and pinned them with the seed context. Validate shape only —
-    // correctness is enforced by the validator's post-reveal re-derivation.
+    // correctness is enforced by the client's post-reveal re-derivation.
     if (!deps.seedContext) {
       throw new Error('runPerPatchEvaluation: injectedSeeds require a pinned seedContext (no scorer-side blockhash draw with injected seeds)');
     }

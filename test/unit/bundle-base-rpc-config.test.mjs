@@ -52,7 +52,7 @@ describe('DEFAULT_PROFILE.baseRpcConfig', () => {
 
 describe('validateProfile — baseRpcConfig', () => {
   // We exercise validateProfile indirectly through verifyBundleManifest
-  // since the validator isn't a public export. Each test mutates the
+  // since the client isn't a public export. Each test mutates the
   // default profile, builds a manifest, and checks the error list.
 
   test('a bundle with the default config validates clean (no rpc-related errors)', () => {
