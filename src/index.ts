@@ -27,6 +27,7 @@ export * from './replay/v4.js';
 export * from './replay/coretex-registry.js';
 export * from './replay/per-patch.js';
 export * from './replay/eval-report-artifact.js';
+export * from './replay/launch-recovery-pin.js';
 export * from './coordinator/endpoints.js';
 export * from './coordinator/retrieval-data-source.js';
 export {

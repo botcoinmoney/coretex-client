@@ -69,6 +69,12 @@ import {
   verifyPostRevealEvalReportArtifact,
   type CoreTexPostRevealEvalReportArtifact,
 } from './replay/eval-report-artifact.js';
+import {
+  resolveLaunchRecoveryPin,
+  launchRecoveryParentState,
+  launchRecoveryDisabledFromEnv,
+  type LaunchRecoveryPin,
+} from './replay/launch-recovery-pin.js';
 import { DEFAULT_PROFILE, scoringOptionsFromProfile, type CoreTexBundleManifest } from './bundle/index.js';
 import { buildCorpusRootLeafCache, computeCorpusRoot, loadProductionCorpus, type ProductionCorpus } from './eval/retrieval-corpus.js';
 import { deriveQueryPack } from './eval/hidden-query-pack.js';
@@ -118,6 +124,14 @@ Common flags (all optional overrides of setup/state-file/chain defaults):
   --previous-corpus-root 0x…   override the state-file previous corpus root
   --from-block <n>             override the replay window start
   --parent-state <state.bin>   override the replay parent substrate
+  --full-history               opt out of any shipped launch-recovery pin for
+                               this (chainId, epoch); replay from genesis /
+                               registry deploy block. Also via env
+                               CORETEX_REPLAY_FULL_HISTORY=1. Operator-bootstrap
+                               receipts WILL fail eval-replay on the full-history
+                               path (they carry no post-reveal eval artifact) —
+                               this flag is for explicit audit of the operator
+                               incident, not for default validator sync.
   --corpus <corpus.json>       override the setup-recorded materialized corpus
   --corpus-for-root 0x…=path   MANUAL shortcut: per-epoch corpus for a cross-
                                rotation backlog entry (corpusRoot pinned at accept
@@ -528,14 +542,21 @@ export function blankSubstrateStateRoot(): string {
   return bytesToHex(merkleizeState(blankSubstrateState()));
 }
 
-export type ReplayFromBlockSource = 'flag' | 'env' | 'snapshot-cursor' | 'state-deploy-block' | 'env-deploy-block';
+export type ReplayFromBlockSource = 'flag' | 'env' | 'snapshot-cursor' | 'launch-recovery' | 'state-deploy-block' | 'env-deploy-block';
 
 /**
  * Replay window start, in precedence order: --from-block flag →
- * CORETEX_REPLAY_FROM_BLOCK → snapshot cursor + 1 (incremental sync) →
- * state-file registry deploy block (written by setup) →
- * CORETEX_REGISTRY_DEPLOY_BLOCK. Registry replay is mandatory, so having no
- * source is a hard error pointing at setup.
+ * CORETEX_REPLAY_FROM_BLOCK → snapshot cursor + 1 (incremental sync, only
+ * when the snapshot is AT or AFTER any applicable launch-recovery pin) →
+ * launch-recovery pin (shipped in this client release for the active
+ * chainId + epochId, unless `launchRecoveryDisabled` is set) → state-file
+ * registry deploy block (written by setup) → CORETEX_REGISTRY_DEPLOY_BLOCK.
+ *
+ * Registry replay is mandatory, so having no source is a hard error pointing
+ * at setup. An in-state snapshot that predates a launch-recovery pin is
+ * discarded so the client moves to the pinned post-recovery root instead of
+ * replaying through operator bootstrap receipts that carry no
+ * score-attested eval artifact.
  */
 export function resolveReplayFromBlock(inputs: {
   readonly flag?: string | undefined;
@@ -543,10 +564,26 @@ export function resolveReplayFromBlock(inputs: {
   readonly envRegistryDeployBlock?: string | undefined;
   readonly snapshotCursorBlock?: number | undefined;
   readonly stateRegistryDeployBlock?: number | undefined;
-}): { fromBlock: bigint; source: ReplayFromBlockSource } {
+  readonly launchRecoveryPin?: LaunchRecoveryPin | undefined;
+  readonly launchRecoveryDisabled?: boolean | undefined;
+}): { fromBlock: bigint; source: ReplayFromBlockSource; recoveryAttainedAtBlock?: number; preRecoverySnapshotDiscarded?: boolean } {
   if (inputs.flag !== undefined) return { fromBlock: BigInt(inputs.flag), source: 'flag' };
   if (inputs.envReplayFromBlock !== undefined) return { fromBlock: BigInt(inputs.envReplayFromBlock), source: 'env' };
-  if (inputs.snapshotCursorBlock !== undefined) return { fromBlock: BigInt(inputs.snapshotCursorBlock) + 1n, source: 'snapshot-cursor' };
+  const pin = inputs.launchRecoveryDisabled ? undefined : inputs.launchRecoveryPin;
+  const snapshotPostRecovery = pin
+    ? (inputs.snapshotCursorBlock !== undefined && inputs.snapshotCursorBlock >= pin.attainedAtBlock)
+    : (inputs.snapshotCursorBlock !== undefined);
+  if (snapshotPostRecovery) {
+    return { fromBlock: BigInt(inputs.snapshotCursorBlock!) + 1n, source: 'snapshot-cursor' };
+  }
+  if (pin) {
+    return {
+      fromBlock: BigInt(pin.fromBlock),
+      source: 'launch-recovery',
+      recoveryAttainedAtBlock: pin.attainedAtBlock,
+      preRecoverySnapshotDiscarded: inputs.snapshotCursorBlock !== undefined,
+    };
+  }
   if (inputs.stateRegistryDeployBlock !== undefined) return { fromBlock: BigInt(inputs.stateRegistryDeployBlock), source: 'state-deploy-block' };
   if (inputs.envRegistryDeployBlock !== undefined) return { fromBlock: BigInt(inputs.envRegistryDeployBlock), source: 'env-deploy-block' };
   throw new Error(
@@ -554,13 +591,17 @@ export function resolveReplayFromBlock(inputs: {
   );
 }
 
-export type ReplayParentSource = 'explicit-file' | 'snapshot' | 'blank-substrate';
+export type ReplayParentSource = 'explicit-file' | 'snapshot' | 'launch-recovery' | 'blank-substrate';
 
 /**
  * Parent-substrate bootstrap for the default registry replay:
  *   1. --parent-state / CORETEX_PARENT_STATE_PATH (explicit override)
  *   2. the snapshot persisted by the previous sync (incremental)
- *   3. the launch/blank substrate — valid when the chain parent root equals
+ *   3. a launch-recovery pin shipped in this client release (used in lockstep
+ *      with `fromBlockSource === 'launch-recovery'` — the pin ships the packed
+ *      post-recovery substrate, so per-advance continuity proves the chain
+ *      forward from that root)
+ *   4. the launch/blank substrate — valid when the chain parent root equals
  *      the launch/blank root, or when replaying the FULL history from the
  *      registry deploy block (per-advance parent continuity then proves the
  *      chain from genesis).
@@ -576,13 +617,14 @@ export function resolveReplayParentBootstrap(inputs: {
 }): { source: ReplayParentSource } {
   if (inputs.explicitParentStatePath) return { source: 'explicit-file' };
   if (inputs.snapshotAvailable) return { source: 'snapshot' };
+  if (inputs.fromBlockSource === 'launch-recovery') return { source: 'launch-recovery' };
   const deployBootstrap = inputs.fromBlockSource === 'state-deploy-block' || inputs.fromBlockSource === 'env-deploy-block';
   if (inputs.chainParentStateRoot.toLowerCase() === inputs.blankRoot.toLowerCase() || deployBootstrap) {
     return { source: 'blank-substrate' };
   }
   throw new Error(
     `cannot bootstrap replay parent substrate: chain epochParentStateRoot ${inputs.chainParentStateRoot} != launch/blank substrate root ${inputs.blankRoot}, `
-    + 'no previous-sync snapshot exists, and the from-block is not the registry deploy block — '
+    + 'no previous-sync snapshot exists, no launch-recovery pin applies, and the from-block is not the registry deploy block — '
     + 'replay the full history from the deploy block (coretex-client-setup --registry-deploy-block / CORETEX_REGISTRY_DEPLOY_BLOCK) or pass --parent-state',
   );
 }
@@ -1588,13 +1630,56 @@ async function runSync({ stateDir, statePath, pinPath, savedState, setup, stagin
   const snapshotAvailable = existsSync(snapshotBinPath)
     && isBytes32(savedState?.replay?.stateRoot)
     && Number.isSafeInteger(savedState?.replay?.cursorBlock);
+  // Launch-recovery pin resolution: shipped-in-release recovery base for
+  // (chainId, epochId). Opt-out: --full-history / CORETEX_REPLAY_FULL_HISTORY=1.
+  let chainIdNum: number | undefined;
+  try {
+    const cidHex = await rpcCall<string>(rpcUrl, 'eth_chainId', []);
+    chainIdNum = Number(BigInt(cidHex));
+  } catch {
+    chainIdNum = undefined;
+  }
+  const launchRecoveryDisabled = launchRecoveryDisabledFromEnv({
+    fullHistoryFlag: has('full-history'),
+    envFullHistory: process.env['CORETEX_REPLAY_FULL_HISTORY'],
+  });
+  const launchRecoveryPin = chainIdNum !== undefined
+    ? resolveLaunchRecoveryPin(chainIdNum, epoch)
+    : undefined;
   const fromBlockResolved = resolveReplayFromBlock({
     flag: opt('from-block'),
     envReplayFromBlock: process.env['CORETEX_REPLAY_FROM_BLOCK'],
     envRegistryDeployBlock: process.env['CORETEX_REGISTRY_DEPLOY_BLOCK'],
     snapshotCursorBlock: snapshotAvailable ? savedState!.replay!.cursorBlock : undefined,
     stateRegistryDeployBlock: savedState?.registryDeployBlock,
+    launchRecoveryPin,
+    launchRecoveryDisabled,
   });
+  if (fromBlockResolved.preRecoverySnapshotDiscarded && launchRecoveryPin) {
+    warn(
+      `pre-recovery snapshot at ${snapshotBinPath} (cursor=${savedState!.replay!.cursorBlock}) is BEFORE the launch-recovery pin attainedAtBlock=${launchRecoveryPin.attainedAtBlock}; ` +
+      `discarding it and starting from the pinned post-recovery root ${launchRecoveryPin.parentStateRoot}. ` +
+      'Use --full-history to opt out of the pin and replay the operator-bootstrap window from the snapshot instead.',
+    );
+  }
+  if (fromBlockResolved.source === 'launch-recovery' && launchRecoveryPin) {
+    // Recovery guard: re-read chain.liveStateRoot(epoch) at attainedAtBlock and
+    // fail closed if it does not match the pin. This prevents shipping (or
+    // injecting) a forged recovery base — the pin is only trusted if it agrees
+    // with the actual on-chain history at the block it claims.
+    const guardTag = blockHex(BigInt(launchRecoveryPin.attainedAtBlock));
+    const guardLiveRoot = decodeBytes32(
+      await ethCall(rpcUrl, registry, 'liveStateRoot(uint64)', [epoch], guardTag),
+      'guard.liveStateRoot',
+    );
+    if (guardLiveRoot.toLowerCase() !== launchRecoveryPin.parentStateRoot.toLowerCase()) {
+      die(
+        `launch-recovery pin guard FAILED: chain.liveStateRoot(epoch=${epoch}) at block ${launchRecoveryPin.attainedAtBlock} ` +
+        `is ${guardLiveRoot}, but pin asserts ${launchRecoveryPin.parentStateRoot}. ` +
+        'Refusing to sync against a forked state. If this is intentional, opt out with --full-history.',
+      );
+    }
+  }
   const blankRoot = blankSubstrateStateRoot();
   const explicitParentPath = opt('parent-state', process.env['CORETEX_PARENT_STATE_PATH']);
   const bootstrap = resolveReplayParentBootstrap({
@@ -1613,6 +1698,9 @@ async function runSync({ stateDir, statePath, pinPath, savedState, setup, stagin
     if (snapshotRoot.toLowerCase() !== savedState!.replay!.stateRoot!.toLowerCase()) {
       die(`replay snapshot ${snapshotBinPath} merkles to ${snapshotRoot} != recorded ${savedState!.replay!.stateRoot} — the state dir is corrupt; delete it and re-sync from the deploy block`);
     }
+  } else if (bootstrap.source === 'launch-recovery') {
+    if (!launchRecoveryPin) die('internal: launch-recovery parent without a resolved pin');
+    parent = launchRecoveryParentState(launchRecoveryPin);
   } else {
     parent = blankSubstrateState();
   }
@@ -1687,9 +1775,16 @@ async function runSync({ stateDir, statePath, pinPath, savedState, setup, stagin
 
   // Per-epoch transition accounting: cumulative across incremental syncs for
   // managed bootstraps; window-total for explicit --parent-state overrides
-  // (the operator asserts the parent is the epoch parent in that case).
+  // (the operator asserts the parent is the epoch parent in that case);
+  // pre-seeded by the pin's attainedAtTransitionIndex+1 for launch-recovery
+  // (the pin asserts those transitions are already represented in the post-
+  // recovery parent substrate, so the replay window only needs to account for
+  // advances strictly AFTER the recovery point).
   const epochTransitions: Record<string, number> = { ...(savedState?.replay?.epochTransitions ?? {}) };
   if (bootstrap.source !== 'snapshot') for (const k of Object.keys(epochTransitions)) delete epochTransitions[k];
+  if (bootstrap.source === 'launch-recovery' && launchRecoveryPin) {
+    epochTransitions[String(launchRecoveryPin.epochId)] = launchRecoveryPin.attainedAtTransitionIndex + 1;
+  }
   for (const adv of advances) {
     const k = adv.epoch.toString();
     epochTransitions[k] = (epochTransitions[k] ?? 0) + 1;
@@ -1735,6 +1830,21 @@ async function runSync({ stateDir, statePath, pinPath, savedState, setup, stagin
     windowAdvances: advances.length,
     ...(crossEpochWindow ? { pinScope: 'cross-epoch window — per-advance context pins omitted (root continuity + final liveStateRoot still verified)' } : {}),
     snapshotPath: snapshotBinPath,
+    ...(launchRecoveryPin && !launchRecoveryDisabled ? {
+      launchRecovery: {
+        chainId: launchRecoveryPin.chainId,
+        epochId: launchRecoveryPin.epochId,
+        parentStateRoot: launchRecoveryPin.parentStateRoot,
+        attainedAtBlock: launchRecoveryPin.attainedAtBlock,
+        attainedAtTx: launchRecoveryPin.attainedAtTx,
+        attainedAtTransitionIndex: launchRecoveryPin.attainedAtTransitionIndex,
+        appliedAsParent: bootstrap.source === 'launch-recovery',
+        appliedAsFromBlock: fromBlockResolved.source === 'launch-recovery',
+        preRecoverySnapshotDiscarded: fromBlockResolved.preRecoverySnapshotDiscarded ?? false,
+        note: launchRecoveryPin.note,
+      },
+    } : {}),
+    ...(launchRecoveryDisabled ? { launchRecoveryOptOut: '--full-history / CORETEX_REPLAY_FULL_HISTORY: shipped pin (if any) is not applied for this run' } : {}),
   };
 
   // ── post-reveal eval artifact verification (AUTOMATIC, fail-closed scorer) ──
