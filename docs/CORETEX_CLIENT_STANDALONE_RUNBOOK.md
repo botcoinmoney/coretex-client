@@ -1,6 +1,6 @@
 # CoreTex Standalone Client Runbook
 
-How to run a CoreTex client from a bare host with the `@botcoin/coretex-client` npm
+How to run a CoreTex client from a bare host with the `@botcoinmoney/coretex-client` npm
 package, RPC access to Base, and the launch artifact base URL. The client
 independently re-derives every on-chain claim: epoch context, corpus
 continuity, registry state roots, and (post-reveal) the scores behind every
@@ -36,7 +36,7 @@ export CORETEX_REGISTRY_DEPLOY_BLOCK=<registry deploy block>
 Contract addresses: `docs/contract-addresses-mainnet.md`.
 
 ```bash
-npm install @botcoin/coretex-client
+npm install @botcoinmoney/coretex-client
 ```
 
 ## 1. Setup (`coretex-client-setup`)

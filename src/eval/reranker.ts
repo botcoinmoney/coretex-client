@@ -39,15 +39,15 @@ export interface CrossEncoderReranker {
 // `new URL('../../../../scripts/...', import.meta.url)` default would escape
 // an installed node_modules package, so the default path is resolved by
 // walking up from this module to the nearest package.json whose name is
-// `@botcoin/coretex-client` — which works in BOTH layouts (repo checkout dist/ and
+// `@botcoinmoney/coretex-client` — which works in BOTH layouts (repo checkout dist/ and
 // node_modules install). CORETEX_RERANKER_SCRIPT stays the explicit override.
 
-export const CORETEX_PACKAGE_NAME = '@botcoin/coretex-client';
+export const CORETEX_PACKAGE_NAME = '@botcoinmoney/coretex-client';
 
 /**
- * Resolve the @botcoin/coretex-client package root by walking up from `fromUrl`
+ * Resolve the @botcoinmoney/coretex-client package root by walking up from `fromUrl`
  * (default: this compiled module) to the nearest package.json named
- * `@botcoin/coretex-client`. Hard error when no such ancestor exists — silently
+ * `@botcoinmoney/coretex-client`. Hard error when no such ancestor exists — silently
  * spawning a wrong runner script would desync scores.
  */
 export function resolveCortexPackageRoot(fromUrl: string = import.meta.url): string {

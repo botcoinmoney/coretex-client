@@ -1,16 +1,16 @@
 /**
  * Path resolution for the runtime scripts SHIPPED INSIDE the
- * @botcoin/coretex-client package. It must work in BOTH layouts:
+ * @botcoinmoney/coretex-client package. It must work in BOTH layouts:
  *
  *   1. repo checkout:        <repo>/scripts/lib/_package-paths.mjs
- *   2. node_modules install: <proj>/node_modules/@botcoin/coretex-client/scripts/lib/_package-paths.mjs
+ *   2. node_modules install: <proj>/node_modules/@botcoinmoney/coretex-client/scripts/lib/_package-paths.mjs
  *
  * `packageRoot` / `distIndex` / `distValidator` always resolve relative to the
  * package itself. `baseDir` is the base for resolving RELATIVE artifact paths
  * passed on the command line:
  *   1. `CORETEX_REPO_ROOT` env var, when set.
  *   2. The canonical repo root, when this package sits inside the repo checkout
- *      (detected via the package root package.json name `@botcoin/coretex-client`).
+ *      (detected via the package root package.json name `@botcoinmoney/coretex-client`).
  *   3. process.cwd() (installed-package standalone use; callers such as
  *      coretex-validator-setup pass absolute paths anyway).
  */
@@ -32,7 +32,7 @@ function detectRepoRoot() {
     const pkgPath = resolve(candidate, 'package.json');
     if (existsSync(pkgPath)) {
       const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'));
-      if (pkg.name === '@botcoin/coretex-client') return candidate;
+      if (pkg.name === '@botcoinmoney/coretex-client') return candidate;
     }
   } catch {
     /* unreadable candidate package.json — fall through to cwd */

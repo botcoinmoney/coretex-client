@@ -28,7 +28,7 @@ function withTmpDir(fn) {
   }
 }
 
-/** Build a simulated @botcoin/coretex-client package at `pkgRoot` and return the URL
+/** Build a simulated @botcoinmoney/coretex-client package at `pkgRoot` and return the URL
  *  of a fake compiled module at dist/eval/reranker.js inside it. */
 function buildSimulatedPackage(pkgRoot) {
   mkdirSync(join(pkgRoot, 'dist', 'eval'), { recursive: true });
@@ -48,11 +48,11 @@ describe('reranker script path resolution (package-root walk-up)', () => {
     assert.equal(resolveRerankerScriptPath({}, fromUrl), join(pkgRoot, 'scripts', 'reranker_runner.py'));
   }));
 
-  test('node_modules install layout: <proj>/node_modules/@botcoin/coretex-client/dist/eval → the installed package', () => withTmpDir((dir) => {
+  test('node_modules install layout: <proj>/node_modules/@botcoinmoney/coretex-client/dist/eval → the installed package', () => withTmpDir((dir) => {
     const proj = join(dir, 'proj');
     mkdirSync(proj, { recursive: true });
     writeFileSync(join(proj, 'package.json'), JSON.stringify({ name: 'some-consumer-project' }));
-    const pkgRoot = join(proj, 'node_modules', '@botcoin', 'coretex-client');
+    const pkgRoot = join(proj, 'node_modules', '@botcoinmoney', 'coretex-client');
     const fromUrl = buildSimulatedPackage(pkgRoot);
     assert.equal(resolveCortexPackageRoot(fromUrl), pkgRoot);
     const resolved = resolveRerankerScriptPath({}, fromUrl);
@@ -68,7 +68,7 @@ describe('reranker script path resolution (package-root walk-up)', () => {
     );
   }));
 
-  test('no @botcoin/coretex-client ancestor is a hard error (never silently spawn a wrong runner)', () => withTmpDir((dir) => {
+  test('no @botcoinmoney/coretex-client ancestor is a hard error (never silently spawn a wrong runner)', () => withTmpDir((dir) => {
     const stray = join(dir, 'stray', 'dist', 'eval');
     mkdirSync(stray, { recursive: true });
     writeFileSync(join(stray, 'reranker.js'), '// stray module\n');

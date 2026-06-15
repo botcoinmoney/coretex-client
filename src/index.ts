@@ -1,4 +1,4 @@
-// @botcoin/coretex-client/full — full internal entrypoint.
+// @botcoinmoney/coretex-client/full — full internal entrypoint.
 // Phase 1: state codec, merkleization, patch wire format.
 // Phase 3: decoder, eval harness, worker pool, upgrade, verify-epoch.
 // Phase 6: reducer, eligibility, multiplier-cap, funding-tx.

@@ -1,5 +1,5 @@
 /**
- * Fresh-install hermetic test: `npm pack` the @botcoin/coretex-client package into a
+ * Fresh-install hermetic test: `npm pack` the @botcoinmoney/coretex-client package into a
  * temp dir, install the tarball into a scratch project (no network — the
  * package has zero runtime dependencies), and assert the standalone client
  * surface survives installation:
@@ -22,7 +22,7 @@ const pkgDir = fileURLToPath(new URL('../..', import.meta.url));
 
 let root;        // tmp root
 let proj;        // scratch consumer project
-let installed;   // <proj>/node_modules/@botcoin/coretex-client
+let installed;   // <proj>/node_modules/@botcoinmoney/coretex-client
 
 function run(cmd, cmdArgs, opts = {}) {
   return spawnSync(cmd, cmdArgs, { encoding: 'utf8', ...opts });
@@ -41,7 +41,7 @@ before(() => {
 
   const install = run('npm', ['install', '--no-audit', '--no-fund', '--ignore-scripts', join(root, tarball)], { cwd: proj });
   assert.equal(install.status, 0, `npm install failed: ${install.stderr}`);
-  installed = join(proj, 'node_modules', '@botcoin', 'coretex-client');
+  installed = join(proj, 'node_modules', '@botcoinmoney', 'coretex-client');
   assert.ok(existsSync(installed), 'installed package root missing');
 }, { timeout: 180_000 });
 
@@ -49,7 +49,7 @@ after(() => {
   rmSync(root, { recursive: true, force: true });
 });
 
-describe('fresh npm install of @botcoin/coretex-client', () => {
+describe('fresh npm install of @botcoinmoney/coretex-client', () => {
   test('client bins exist and run --help', { timeout: 60_000 }, () => {
     for (const bin of ['coretex-client', 'coretex-client-replay', 'coretex-client-setup', 'coretex-client-sync']) {
       const binPath = join(proj, 'node_modules', '.bin', bin);

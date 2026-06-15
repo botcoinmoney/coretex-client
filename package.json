@@ -1,5 +1,5 @@
 {
-  "name": "@botcoin/coretex-client",
+  "name": "@botcoinmoney/coretex-client",
   "version": "0.2.0",
   "private": false,
   "description": "Standalone Botcoin CoreTex client sync, replay, and setup tooling.",

@@ -1,4 +1,4 @@
-# @botcoin/coretex-client
+# @botcoinmoney/coretex-client
 
 CoreTex is a protocol for proposing, scoring, crediting, publishing, and
 replaying changes to a deterministic memory retrieval substrate. This package
@@ -25,7 +25,7 @@ post-reveal with the pinned production scorer.
 ## Install
 
 ```bash
-npm install @botcoin/coretex-client
+npm install @botcoinmoney/coretex-client
 ```
 
 Host requirements for score replay: Node ≥ 20.10 and `python3`. By default,
@@ -97,9 +97,9 @@ because a skipped run attests nothing about scores.
 ## Library entry points
 
 ```js
-import { ... } from '@botcoin/coretex-client';           // client surface
-import { ... } from '@botcoin/coretex-client/client';    // explicit client surface
-import { ... } from '@botcoin/coretex-client/full';      // full client internals
+import { ... } from '@botcoinmoney/coretex-client';           // client surface
+import { ... } from '@botcoinmoney/coretex-client/client';    // explicit client surface
+import { ... } from '@botcoinmoney/coretex-client/full';      // full client internals
 ```
 
 ## More

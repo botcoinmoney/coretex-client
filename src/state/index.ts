@@ -1,5 +1,5 @@
 /**
- * @botcoin/coretex-client — state module
+ * @botcoinmoney/coretex-client — state module
  * Phase 1 deliverable: encode/decode, merkleization, patch wire format, apply.
  */
 
