@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-import { spawnSync } from 'node:child_process';
 import { realpathSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
@@ -168,6 +167,7 @@ const invokedAsScript = (() => {
 })();
 
 if (invokedAsScript) {
+  const { spawnSync } = await import('node:child_process');
   const proc = spawnSync(process.execPath, [new URL('../dist/client-sync-cli.js', import.meta.url), ...process.argv.slice(2)], {
     stdio: 'inherit',
   });

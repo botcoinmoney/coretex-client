@@ -182,6 +182,10 @@ export interface RealEvaluator {
      *  under the pinned blockhash; the secretless scorer injects them verbatim.
      *  Requires seedContext. The local CPU evaluator path omits it. */
     injectedSeeds?: { readonly gateSeed: string; readonly confirmSeed: string };
+    /** OPTIONAL coordinator-authoritative offset for the supplied seedContext.
+     *  Remote/keyless evaluators use it to stamp artifacts/proofs with the same
+     *  targetBlockOffset the coordinator used when drawing targetBlock. */
+    targetBlockOffset?: number;
   }): Promise<EvalResult> | EvalResult;
 }
 
@@ -632,6 +636,15 @@ export class CoreTexCoordinatorCore {
 
   // ── chain-event verification + apply ─────────────────────────────────────
   private applyChainEvent(ev: CoreTexStateAdvancedEvent): void {
+    if (ev.epoch < this.config.epoch) {
+      // Finalized PRIOR-epoch advance — already folded into this epoch's on-chain
+      // start root (liveRoot was seeded to it at load). Skip; re-applying would fail
+      // the parent/transitionIndex checks. Lets the watcher replay from a start block
+      // that predates the live epoch (e.g. a stale CORETEX_REPLAY_FROM_BLOCK after an
+      // epoch advance) WITHOUT dead-locking; transitionIndex is per-epoch (resets to 0)
+      // so contiguity is preserved.
+      return;
+    }
     if (ev.epoch !== this.config.epoch) {
       throw new Error(`watcher: event epoch ${ev.epoch} ≠ configured ${this.config.epoch}`);
     }

@@ -30,6 +30,7 @@ import { hexToBytes, bytesToHex } from '../state/merkle.js';
 import { keccak256 } from '../state/keccak256.js';
 import {
   DEFAULT_PROFILE,
+  DEFAULT_BASE_RPC_CONFIG,
   buildCoordinatorBootAttestation,
   scoringOptionsFromProfile,
   type AttestedCoordinatorBootAttestation,
@@ -365,6 +366,11 @@ export type ProductionCoreTexEvaluator = RealEvaluator & {
      *  seedContext. Requires seedContext. The validator's post-reveal
      *  re-derivation from the revealed secret is the integrity backstop. */
     injectedSeeds?: { readonly gateSeed: string; readonly confirmSeed: string };
+    /** Coordinator-authoritative target block offset for an injected seedContext.
+     *  The keyless scorer receives this per job and stamps artifacts/proofs with
+     *  the same value the coordinator used to draw targetBlock. Local CPU scoring
+     *  omits it and uses the construction-time bundle/default offset. */
+    targetBlockOffset?: number;
   }): Promise<ProductionEvalResult>;
   /** Hash-bound boot attestation (§2): resolved model id + revision +
    *  reranker mode + instruction + prompt-template hash + Memory-IR mode. */
@@ -569,6 +575,10 @@ export function createCoreTexEvaluatorCore(deps: ProductionCoreTexEvaluatorCoreD
       const onSeedDerived = coordinatorPinnedSeed || priorAttempt
         ? undefined
         : (seedContext: PerPatchSeedContext) => deps.dedupStore.recordSeedDrawnAndAdmission(dedupKey, seedContext, miner);
+      const effectiveTargetBlockOffset = input.targetBlockOffset ?? deps.targetBlockOffset;
+      if (!Number.isSafeInteger(effectiveTargetBlockOffset) || effectiveTargetBlockOffset <= 0) {
+        throw new Error(`targetBlockOffset must be a positive integer (got ${String(effectiveTargetBlockOffset)})`);
+      }
 
       const dual = await runPerPatchEvaluation({
         normalizedPatchBytes: patchBytes,
@@ -579,7 +589,7 @@ export function createCoreTexEvaluatorCore(deps: ProductionCoreTexEvaluatorCoreD
       }, {
         rpcClient: deps.rpcClient,
         scorer,
-        targetBlockOffset: deps.targetBlockOffset,
+        targetBlockOffset: effectiveTargetBlockOffset,
         thresholdPpm: effectiveThresholdPpm,
         perMinerCap: deps.perMinerCap,
         ...(deps.epochSecret ? { epochSecret: deps.epochSecret } : {}),
@@ -594,13 +604,20 @@ export function createCoreTexEvaluatorCore(deps: ProductionCoreTexEvaluatorCoreD
         ...(onSeedDerived ? { onSeedDerived } : {}),
       });
 
+      const drewPacks = dual.receivedAtBlock > 0;
+      if (drewPacks) {
+        const actualTargetBlockOffset = dual.targetBlock - dual.receivedAtBlock;
+        if (!Number.isSafeInteger(actualTargetBlockOffset) || actualTargetBlockOffset <= 0 || actualTargetBlockOffset !== effectiveTargetBlockOffset) {
+          throw new Error(`targetBlockOffset mismatch: targetBlock ${dual.targetBlock} != receivedAtBlock ${dual.receivedAtBlock} + offset ${effectiveTargetBlockOffset}`);
+        }
+      }
+
       // The patch consumed a pack draw iff seeds were derived. The admission was
       // ALREADY charged ATOMICALLY with the seed pin inside onSeedDerived (which
       // runPerPatchEvaluation invokes only AFTER the admission gate passes and
       // the seed is derived) — so there is no separate post-result charge to
       // make here (exactly-once, crash-safe). We only record the dedup outcome,
       // which is what short-circuits a completed resubmission.
-      const drewPacks = dual.receivedAtBlock > 0;
       const record = (outcome: CoreTexEvalDedupRecord['outcome'], code?: string) => {
         if (coordinatorPinnedSeed) return Promise.resolve();
         const attemptState = outcome === 'reject' ? 'rejected' as const : 'accepted' as const;
@@ -634,7 +651,7 @@ export function createCoreTexEvaluatorCore(deps: ProductionCoreTexEvaluatorCoreD
           epochId: deps.epochId,
           receivedAtBlock: dual.receivedAtBlock,
           targetBlock: dual.targetBlock,
-          targetBlockOffset: deps.targetBlockOffset,
+          targetBlockOffset: effectiveTargetBlockOffset,
           blockhash: dual.blockhash.toLowerCase(),
           patchHash,
           parentStateRoot,
@@ -655,7 +672,7 @@ export function createCoreTexEvaluatorCore(deps: ProductionCoreTexEvaluatorCoreD
         corpusRoot: deps.corpusRoot,
         coreVersionHash: deps.bundleHash,
         hiddenSeedCommit,
-        targetBlockOffset: deps.targetBlockOffset,
+        targetBlockOffset: effectiveTargetBlockOffset,
       });
 
       if (stateAdvance) {
@@ -759,7 +776,7 @@ export async function createProductionCoreTexEvaluator(
     stateThresholdPpm,
     screenerThresholdPpm,
     replayTolerancePpm: profile.replayTolerancePpm,
-    targetBlockOffset: options.targetBlockOffset ?? 30,
+    targetBlockOffset: options.targetBlockOffset ?? profile.baseRpcConfig?.targetBlockOffset ?? DEFAULT_BASE_RPC_CONFIG.targetBlockOffset,
     perMinerCap: options.perMinerCap,
     rpcClient: options.rpcClient ?? new EnvBaseRpcClient(),
     dedupStore: options.dedupStore,

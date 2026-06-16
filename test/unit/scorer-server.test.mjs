@@ -74,7 +74,8 @@ const HEALTH = {
 // scorer is keyless AND secretless — every job must ship the full pin.
 const PINNED_SEED_CONTEXT = {
   receivedAtBlock: 1_000,
-  targetBlock: 1_030,
+  targetBlock: 1_015,
+  targetBlockOffset: 15,
   blockhash: B32('5e'),
   gateSeed: B32('6a'),
   confirmSeed: B32('6b'),
@@ -435,6 +436,18 @@ describe('scorer-server — mandatory pinned seed + secretless host', () => {
     assert.equal(res.status, 422);
   });
 
+  test('missing or inconsistent targetBlockOffset is refused 422', async () => {
+    for (const ctx of [
+      (() => { const c = { ...PINNED_SEED_CONTEXT }; delete c.targetBlockOffset; return c; })(),
+      { ...PINNED_SEED_CONTEXT, targetBlockOffset: 30 },
+    ]) {
+      const res = await handleScoreJob(baseJob({ publicEvalContext: ctx }), handlerDeps());
+      assert.equal(res.status, 422);
+      assert.equal(res.body.error, 'SCORER_SEED_CONTEXT_INVALID');
+      assert.match(res.body.reason, /targetBlockOffset|targetBlock/);
+    }
+  });
+
   test('missing gateSeed/confirmSeed is refused 422 (coordinator must derive the seeds)', async () => {
     for (const missing of ['gateSeed', 'confirmSeed']) {
       const ctx = { ...PINNED_SEED_CONTEXT };
@@ -469,6 +482,7 @@ describe('scorer-server — mandatory pinned seed + secretless host', () => {
       gateSeed: PINNED_SEED_CONTEXT.gateSeed.toLowerCase(),
       confirmSeed: PINNED_SEED_CONTEXT.confirmSeed.toLowerCase(),
     });
+    assert.equal(counter.lastInput.targetBlockOffset, 15);
   });
 
   test('hiddenSeedCommit mismatch vs the loaded commit is a 409 pin mismatch', async () => {

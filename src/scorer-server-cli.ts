@@ -284,6 +284,14 @@ export function resolveJobSeedContext(
   if (!Number.isSafeInteger(targetBlock) || (targetBlock as number) <= 0) {
     return { error: `publicEvalContext.targetBlock must be a positive integer (got ${String(targetBlock)})` };
   }
+  const targetBlockOffset = ctx.targetBlockOffset;
+  if (!Number.isSafeInteger(targetBlockOffset) || (targetBlockOffset as number) <= 0) {
+    return { error: `publicEvalContext.targetBlockOffset must be a positive integer (got ${String(targetBlockOffset)})` };
+  }
+  const expectedTargetBlock = (receivedAtBlock as number) + (targetBlockOffset as number);
+  if ((targetBlock as number) !== expectedTargetBlock) {
+    return { error: `publicEvalContext.targetBlock ${String(targetBlock)} != receivedAtBlock ${String(receivedAtBlock)} + targetBlockOffset ${String(targetBlockOffset)}` };
+  }
   if (typeof blockhash !== 'string' || !/^0x[0-9a-fA-F]{64}$/.test(blockhash)) {
     return { error: 'publicEvalContext.blockhash must be bytes32' };
   }
@@ -400,6 +408,7 @@ export async function handleScoreJob(
       // seeds — the scorer never re-rolls a blockhash nor touches a secret.
       seedContext: pinnedSeed.seedContext,
       injectedSeeds: pinnedSeed.injectedSeeds,
+      targetBlockOffset: job.publicEvalContext!.targetBlockOffset!,
     });
   } catch (e) {
     return { status: 500, body: { error: 'eval-failure', reason: (e as Error)?.message ?? 'scorePatch threw' } };

@@ -37,9 +37,9 @@ describe('DEFAULT_BASE_RPC_CONFIG', () => {
   test('is exported and has Base mainnet values', () => {
     assert.equal(DEFAULT_BASE_RPC_CONFIG.chainId, 8453);
     assert.equal(DEFAULT_BASE_RPC_CONFIG.blockTimeSeconds, 2);
-    assert.equal(DEFAULT_BASE_RPC_CONFIG.targetBlockOffset, 30, 'default offset ≈ 60 s on Base — aligned with per-miner rate limit');
+    assert.equal(DEFAULT_BASE_RPC_CONFIG.targetBlockOffset, 15, 'default offset ≈ 30 s on Base — aligned with the live coordinator/scorer seed pin');
     // Must cover one full epoch (24 h = 43_200 blocks @ 2 s) + the offset.
-    const minLookback = 43_200 + 30;
+    const minLookback = 43_200 + 15;
     assert.ok(DEFAULT_BASE_RPC_CONFIG.replayBlockhashLookbackBlocks >= minLookback, 'lookback must cover one epoch + offset');
   });
 });

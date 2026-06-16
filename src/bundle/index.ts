@@ -486,7 +486,7 @@ export interface BaseRpcConfigPin {
 export const DEFAULT_BASE_RPC_CONFIG: BaseRpcConfigPin = {
   chainId: 8453,                          // Base mainnet
   blockTimeSeconds: 2,
-  targetBlockOffset: 30,                  // ≈ 60 s on Base
+  targetBlockOffset: 15,                  // ≈ 30 s on Base
   replayBlockhashLookbackBlocks: 50_000,  // ≈ 28 h coverage
 };
 

@@ -113,8 +113,8 @@ export interface PerPatchEvaluatorDeps {
   readonly dedupCache: ReadonlyMap<string, PerPatchReceipt>;
   /** Per-miner admission counter. Same contract as dedupCache. */
   readonly minerAdmissions: ReadonlyMap<string, number>;
-  /** Max wait for the future blockhash. Defaults to 120 s (2× the
-   *  60 s budget at targetBlockOffset=30) — generous enough that
+  /** Max wait for the future blockhash. Defaults to 120 s (4× the
+   *  30 s budget at targetBlockOffset=15) — generous enough that
    *  Base must be genuinely stalled for this to fire. */
   readonly waitTimeoutMs?: number;
   /** §8 anti-grinding — OPTIONAL pinned seed context. When supplied, the
