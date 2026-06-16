@@ -8,7 +8,7 @@
  * Two paths:
  *   A. state_translation_patch: a special patch set with patchType = 0xF0 (UPGRADE)
  *      that re-encodes the state under the new Core version semantics.
- *      Published by the Core maintainer; applied by `coretex-client upgrade`.
+ *      Published by the Core maintainer; applied by `botcoin-coretex upgrade`.
  *
  *   B. explicit reset: the current epoch is finalized with a RESET event;
  *      the state is set to the new Core's genesis state.

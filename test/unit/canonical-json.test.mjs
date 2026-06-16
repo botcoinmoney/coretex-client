@@ -23,7 +23,7 @@ import { canonicalJson, bytesToBareHex } from '../../dist/canonical/json.js';
 import { computeBundleHashFromManifest } from '../../dist/bundle/index.js';
 import { coreTexWorkPolicyHash, DEFAULT_CORETEX_WORK_POLICY } from '../../dist/rewards/work-units.js';
 
-const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '../../../..');
+const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '../..');
 
 describe('canonicalJson — byte-level pins per value class', () => {
   test('scalars', () => {

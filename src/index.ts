@@ -1,4 +1,4 @@
-// @botcoinmoney/coretex-client/full — full internal entrypoint.
+// @botcoinmoney/coretex-client — entrypoint.
 // Phase 1: state codec, merkleization, patch wire format.
 // Phase 3: decoder, eval harness, worker pool, upgrade, verify-epoch.
 // Phase 6: reducer, eligibility, multiplier-cap, funding-tx.
@@ -11,7 +11,7 @@ export { CORTEX_CLIENT_VERSION } from './version.js';
 // THE canonical-JSON serializer for hash/signature surfaces (one copy, no drift).
 // Explicit re-export so it shadows the frozen phase-3 EvalReport serializer of
 // the same name star-exported from eval/index.js — `canonicalJson` then resolves
-// to the same function on every package entrypoint (matches client.ts).
+// to the same function on every package entrypoint (matches validator.ts).
 export { canonicalJson, bytesToBareHex, type CanonicalJsonOptions } from './canonical/json.js';
 export * from './state/index.js';
 export * from './eval/index.js';

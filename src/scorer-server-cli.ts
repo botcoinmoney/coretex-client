@@ -20,7 +20,8 @@
  *   CORETEX_RERANKER_MODE=streaming CORETEX_RERANKER_ALLOW_CUDA=1
  *   RERANKER_INNER_BATCH (default 8)
  * plus CORETEX_BUNDLE_MANIFEST_PATH, CORETEX_CORPUS_PATH, CORETEX_EPOCH_ID,
- * CORETEX_EPOCH_SECRET, CORETEX_PER_MINER_SCREENER_CAP, BASE_RPC_URL.
+ * CORETEX_HIDDEN_SEED_COMMIT, CORETEX_PER_MINER_SCREENER_CAP, and
+ * CORETEX_SCORER_AUTH_TOKEN for any non-loopback bind.
  *
  * POST /score-job — see ScorerJobRequest / ScorerJobResult below.
  * GET  /healthz   — liveness + the loaded pins + scorerHealth.
@@ -147,6 +148,7 @@ export interface ScorerJobResult {
   readonly jobId: string;
   readonly accepted: boolean;
   readonly rejectionReason?: string;
+  readonly innerRejectionReason?: string;
   readonly scoreBeforePpm: number | null;
   readonly scoreAfterPpm: number | null;
   readonly deltaPpm: number;
@@ -282,6 +284,14 @@ export function resolveJobSeedContext(
   if (!Number.isSafeInteger(targetBlock) || (targetBlock as number) <= 0) {
     return { error: `publicEvalContext.targetBlock must be a positive integer (got ${String(targetBlock)})` };
   }
+  const targetBlockOffset = ctx.targetBlockOffset;
+  if (!Number.isSafeInteger(targetBlockOffset) || (targetBlockOffset as number) <= 0) {
+    return { error: `publicEvalContext.targetBlockOffset must be a positive integer (got ${String(targetBlockOffset)})` };
+  }
+  const expectedTargetBlock = (receivedAtBlock as number) + (targetBlockOffset as number);
+  if ((targetBlock as number) !== expectedTargetBlock) {
+    return { error: `publicEvalContext.targetBlock ${String(targetBlock)} != receivedAtBlock ${String(receivedAtBlock)} + targetBlockOffset ${String(targetBlockOffset)}` };
+  }
   if (typeof blockhash !== 'string' || !/^0x[0-9a-fA-F]{64}$/.test(blockhash)) {
     return { error: 'publicEvalContext.blockhash must be bytes32' };
   }
@@ -398,6 +408,7 @@ export async function handleScoreJob(
       // seeds — the scorer never re-rolls a blockhash nor touches a secret.
       seedContext: pinnedSeed.seedContext,
       injectedSeeds: pinnedSeed.injectedSeeds,
+      targetBlockOffset: job.publicEvalContext!.targetBlockOffset!,
     });
   } catch (e) {
     return { status: 500, body: { error: 'eval-failure', reason: (e as Error)?.message ?? 'scorePatch threw' } };
@@ -427,6 +438,7 @@ export async function handleScoreJob(
         ...base,
         accepted: false,
         rejectionReason: result.code,
+        ...(result.innerRejectionReason ? { innerRejectionReason: result.innerRejectionReason } : {}),
         scoreBeforePpm: null,
         scoreAfterPpm: null,
         deltaPpm: 0,

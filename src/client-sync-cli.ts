@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * coretex-client-sync — one-command client sync + audit CLI.
+ * coretex-client-sync — one-command validator sync + audit CLI.
  *
  * sync (default): with only BASE_RPC_URL + CORETEX_REGISTRY_ADDRESS +
  * BOTCOIN_MINING_CONTRACT_ADDRESS + CORETEX_ARTIFACT_BASE_URL set and
@@ -11,13 +11,13 @@
  *      (`awaiting_epoch_secret_reveal` before reveal).
  *   2. Self version-check: the local bundle manifest's bundleHash MUST equal
  *      the on-chain coreVersionHash (escape: --allow-version-mismatch,
- *      read-only). Bundle manifest path comes from the client state file
+ *      read-only). Bundle manifest path comes from the validator state file
  *      written by setup (--bundle-manifest / CORETEX_BUNDLE_MANIFEST override).
  *   3. Fetches the signed EpochRotationManifest + signed CorpusDelta and
  *      verifies signatures (MANDATORY — a missing public key is a hard error)
  *      under a TOFU-pinned epoch signing key.
  *   4. Corpus-delta continuity: delta.previousRoot must equal the LOCAL
- *      previous corpus root (client state file / --previous-corpus-root /
+ *      previous corpus root (validator state file / --previous-corpus-root /
  *      bundle corpus.root).
  *   5. Replays the registry logs BY DEFAULT (paginated + confirmation-depth
  *      capped) against the on-chain liveStateRoot. The parent substrate is
@@ -29,7 +29,7 @@
  *      fetches the post-reveal eval artifacts for every accepted advance in
  *      the synced window and verifies each through
  *      `verifyPostRevealEvalReportArtifact` — INCLUDING score re-scoring with
- *      the FAIL-CLOSED client scorer (pinned qwen3 from the bundle
+ *      the FAIL-CLOSED validator scorer (pinned qwen3 from the bundle
  *      manifest; the deterministic stub is unreachable). `--skip-score-replay`
  *      is the only way to skip (loud warning, exit code 3 — distinct from
  *      success).
@@ -81,12 +81,12 @@ import { deriveQueryPack } from './eval/hidden-query-pack.js';
 import { computeAcceptanceThresholdPpm, evaluateRetrievalBenchmarkPatch } from './eval/retrieval-benchmark.js';
 import { biEncoderFromEnv } from './eval/bi-encoder.js';
 import {
-  assertClientRerankerEnv,
-  createClientReranker,
+  assertValidatorRerankerEnv,
+  createValidatorReranker,
   qwenRerankerPromptTemplateHash,
   resolveQwenRerankerInstruction,
   resolveRerankerScriptPath,
-  type ClientRerankerPins,
+  type ValidatorRerankerPins,
 } from './eval/reranker.js';
 import { biEncoderModelIdHash } from './substrate/retrieval-decoder.js';
 import { createBaseRpcClient } from './coordinator/base-blockhash.js';
@@ -136,13 +136,13 @@ Common flags (all optional overrides of setup/state-file/chain defaults):
   --corpus-for-root 0x…=path   MANUAL shortcut: per-epoch corpus for a cross-
                                rotation backlog entry (corpusRoot pinned at accept
                                differs from the loaded one); repeatable. Not
-                               required — without it the client AUTO-RESOLVES
+                               required — without it the validator AUTO-RESOLVES
                                the historical corpus by walking the published,
                                signed corpus-delta chain (merkle-verified before
                                use). If neither the override nor auto-resolution
                                can produce the pinned corpus, the entry stays
                                pending 'epoch-context-unresolved' (never rescored).
-  --state-dir <dir>            client state dir (default .coretex-client)
+  --state-dir <dir>            validator state dir (default .coretex-client)
   --skip-score-replay          SKIP post-reveal score re-scoring (loud). Exit
                                ${SKIP_SCORE_REPLAY_EXIT_CODE} means the sync otherwise SUCCEEDED but score
                                replay was intentionally skipped; config/chain
@@ -253,7 +253,7 @@ function joinUrl(base: string | undefined, child: string): string | undefined {
 }
 
 /** Canonical artifact-base location of the epoch signing public key. The
- *  cutover/publish flow must upload the PEM here; clients default to it so
+ *  cutover/publish flow must upload the PEM here; validators default to it so
  *  the documented four-env-var sync works without a coordinator status URL. */
 export const EPOCH_SIGNING_PUBLIC_KEY_ARTIFACT_PATH = 'epoch-rotations/epoch-signing-public.pem';
 
@@ -279,14 +279,14 @@ export function sha256Fingerprint(text: string): string {
 }
 
 /**
- * Corpus-delta continuity: the signed delta must chain off the client's OWN
+ * Corpus-delta continuity: the signed delta must chain off the validator's OWN
  * previous corpus root (ported from scripts/coretex-client-sync.mjs). Without
- * this, a coordinator could serve a delta chaining off a root the client
- * never held and the client would silently adopt a forked corpus.
+ * this, a coordinator could serve a delta chaining off a root the validator
+ * never held and the validator would silently adopt a forked corpus.
  */
 export function checkCorpusDeltaContinuity(deltaPreviousRoot: string, localPreviousRoot: string | undefined): void {
   if (!isBytes32(localPreviousRoot)) {
-    throw new Error('corpus-delta continuity: local previous corpus root unavailable — pass --previous-corpus-root, point --state-dir at the client sync state, or use a bundle manifest with corpus.root');
+    throw new Error('corpus-delta continuity: local previous corpus root unavailable — pass --previous-corpus-root, point --state-dir at the validator sync state, or use a bundle manifest with corpus.root');
   }
   if (deltaPreviousRoot.toLowerCase() !== localPreviousRoot.toLowerCase()) {
     throw new Error(`corpus-delta continuity: delta.previousRoot ${deltaPreviousRoot} != local previous corpus root ${localPreviousRoot}`);
@@ -370,15 +370,15 @@ export class TrustedStateStaging {
 }
 
 /** Merge a state-file patch over the on-disk state and return the serialized
- *  body (same merge semantics as mergeClientStateFile, but WITHOUT writing —
+ *  body (same merge semantics as mergeValidatorStateFile, but WITHOUT writing —
  *  the body is staged and committed atomically by TrustedStateStaging). */
-export function serializeMergedClientState(
+export function serializeMergedValidatorState(
   statePath: string,
   patch: Record<string, unknown>,
 ): string {
   let previous: Record<string, unknown> = {};
   if (existsSync(statePath)) {
-    // Same hard-fail contract as readClientStateFile: never merge over a
+    // Same hard-fail contract as readValidatorStateFile: never merge over a
     // corrupt trusted-state file (that would overwrite the eval backlog/cursor).
     previous = JSON.parse(readFileSync(statePath, 'utf8')) as Record<string, unknown>;
   }
@@ -393,17 +393,17 @@ export function serializeMergedClientState(
 
 /**
  * Self version-check: the local bundle manifest must be the one pinned on chain.
- * On mismatch this throws a 'coretex client outdated' error naming the required
+ * On mismatch this throws a 'validator client outdated' error naming the required
  * bundle hash, unless allowMismatch (read-only inspection) — then it loud-warns.
  */
-export function checkClientBundleVersion(
+export function checkValidatorBundleVersion(
   localBundleHash: string,
   chainCoreVersionHash: string,
   allowMismatch: boolean,
   warnFn: (message: string) => void = (m) => process.stderr.write(`${m}\n`),
 ): { match: boolean } {
   if (localBundleHash.toLowerCase() === chainCoreVersionHash.toLowerCase()) return { match: true };
-  const message = `coretex client outdated: local bundle ${localBundleHash} != on-chain coreVersionHash ${chainCoreVersionHash}. Required bundle hash: ${chainCoreVersionHash}`;
+  const message = `validator client outdated: local bundle ${localBundleHash} != on-chain coreVersionHash ${chainCoreVersionHash}. Required bundle hash: ${chainCoreVersionHash}`;
   if (!allowMismatch) throw new Error(message);
   warnFn(`WARNING: ${message} — continuing READ-ONLY because --allow-version-mismatch was passed; do NOT attest from this run`);
   return { match: false };
@@ -433,7 +433,7 @@ export function policyAtomsModeFromManifest(manifest: { evaluator?: { profile?: 
 
 /**
  * One accepted on-chain advance that still owes a post-reveal score replay.
- * Persisted in the state file so a client that restarts BETWEEN the epoch
+ * Persisted in the state file so a validator that restarts BETWEEN the epoch
  * secret reveal and the next sync can never permanently skip the required
  * score verification (Finding 5). An entry is only removed once its score
  * replay PASSES — never dropped silently.
@@ -471,7 +471,7 @@ export interface EvalBacklogEntry {
   readonly parentSnapshotRef?: string;
 }
 
-export interface ClientSyncStateFile {
+export interface ValidatorSyncStateFile {
   readonly schema?: string;
   readonly epoch?: number;
   readonly bundleHash?: string;
@@ -516,16 +516,16 @@ export interface ClientSyncStateFile {
   readonly evalVerifiedThroughBlock?: number;
 }
 
-export function readClientStateFile(statePath: string): ClientSyncStateFile | null {
+export function readValidatorStateFile(statePath: string): ValidatorSyncStateFile | null {
   if (!existsSync(statePath)) return null;
   try {
-    return JSON.parse(readFileSync(statePath, 'utf8')) as ClientSyncStateFile;
+    return JSON.parse(readFileSync(statePath, 'utf8')) as ValidatorSyncStateFile;
   } catch (err) {
     // Trusted state: it carries the eval backlog (score-honesty guarantee) and
     // the replay cursor. Silently re-initializing would drop both — hard-fail
     // and make recovery an explicit operator action.
     throw new Error(
-      `corrupt client state file at ${statePath}: ${err instanceof Error ? err.message : String(err)}. ` +
+      `corrupt validator state file at ${statePath}: ${err instanceof Error ? err.message : String(err)}. ` +
       'Refusing to re-initialize automatically (the file carries the eval backlog and replay cursor). ' +
       'Restore it from backup, or delete it explicitly to start fresh (full-history replay requires CORETEX_REGISTRY_DEPLOY_BLOCK).',
     );
@@ -548,14 +548,14 @@ export type ReplayFromBlockSource = 'flag' | 'env' | 'snapshot-cursor' | 'launch
  * Replay window start, in precedence order: --from-block flag →
  * CORETEX_REPLAY_FROM_BLOCK → snapshot cursor + 1 (incremental sync, only
  * when the snapshot is AT or AFTER any applicable launch-recovery pin) →
- * launch-recovery pin (shipped in this client release for the active
+ * launch-recovery pin (shipped in this package release for the active
  * chainId + epochId, unless `launchRecoveryDisabled` is set) → state-file
  * registry deploy block (written by setup) → CORETEX_REGISTRY_DEPLOY_BLOCK.
  *
  * Registry replay is mandatory, so having no source is a hard error pointing
  * at setup. An in-state snapshot that predates a launch-recovery pin is
- * discarded so the client moves to the pinned post-recovery root instead of
- * replaying through operator bootstrap receipts that carry no
+ * discarded so the validator moves to the pinned post-recovery root instead
+ * of replaying through operator bootstrap receipts that carry no
  * score-attested eval artifact.
  */
 export function resolveReplayFromBlock(inputs: {
@@ -597,10 +597,10 @@ export type ReplayParentSource = 'explicit-file' | 'snapshot' | 'launch-recovery
  * Parent-substrate bootstrap for the default registry replay:
  *   1. --parent-state / CORETEX_PARENT_STATE_PATH (explicit override)
  *   2. the snapshot persisted by the previous sync (incremental)
- *   3. a launch-recovery pin shipped in this client release (used in lockstep
- *      with `fromBlockSource === 'launch-recovery'` — the pin ships the packed
- *      post-recovery substrate, so per-advance continuity proves the chain
- *      forward from that root)
+ *   3. a launch-recovery pin shipped in this package release (used in
+ *      lockstep with `fromBlockSource === 'launch-recovery'` — the pin ships
+ *      the packed post-recovery substrate, so per-advance continuity proves
+ *      the chain forward from that root)
  *   4. the launch/blank substrate — valid when the chain parent root equals
  *      the launch/blank root, or when replaying the FULL history from the
  *      registry deploy block (per-advance parent continuity then proves the
@@ -629,11 +629,11 @@ export function resolveReplayParentBootstrap(inputs: {
   );
 }
 
-/** Pins for the fail-closed client scorer, read HARD from the bundle manifest. */
-export function clientRerankerPinsFromManifest(manifest: CoreTexBundleManifest): ClientRerankerPins {
+/** Pins for the fail-closed validator scorer, read HARD from the bundle manifest. */
+export function validatorRerankerPinsFromManifest(manifest: CoreTexBundleManifest): ValidatorRerankerPins {
   const reranker = manifest.model?.reranker;
   if (!reranker?.modelId || !reranker?.revision) {
-    throw new Error('bundle manifest has no model.reranker.modelId/revision pins — the fail-closed client scorer cannot be constructed');
+    throw new Error('bundle manifest has no model.reranker.modelId/revision pins — the fail-closed validator scorer cannot be constructed');
   }
   return { modelId: reranker.modelId, revision: reranker.revision };
 }
@@ -644,10 +644,10 @@ export function clientRerankerPinsFromManifest(manifest: CoreTexBundleManifest):
  * model.reranker; the torch/transformers ranges + cpu-only flag come from the
  * profile runtimePin; an optional promptTemplateHash binds the resolved
  * template exactly when the bundle records one. A missing runtimePin is a hard
- * error — the client will not score against an unpinned runtime.
+ * error — the validator will not score against an unpinned runtime.
  */
 export function scorerRuntimeBundlePinsFromManifest(manifest: CoreTexBundleManifest): ScorerRuntimeBundlePins {
-  const { modelId, revision } = clientRerankerPinsFromManifest(manifest);
+  const { modelId, revision } = validatorRerankerPinsFromManifest(manifest);
   const runtimePin = manifest.evaluator?.profile?.runtimePin;
   const torchRange = runtimePin?.versions?.['torch'];
   const transformersRange = runtimePin?.versions?.['transformers'];
@@ -767,7 +767,7 @@ export type ScorerContextSelection =
  * Finding 8 (SAFE version): select the scorer/corpus context for ONE advance.
  * A rescore must ONLY happen with the corpus/bundle that matches the advance's
  * on-chain pins. When the advance's pinned corpusRoot + coreVersionHash match
- * the loaded context → rescore. When they differ (a late client replaying an
+ * the loaded context → rescore. When they differ (a late validator replaying an
  * older epoch whose pinned corpus/bundle differs), we do NOT silently rescore
  * with the wrong context — the advance is left pending with a clear
  * `epoch-context-unavailable` reason rather than producing a bogus score.
@@ -864,7 +864,7 @@ export function removeFromEvalBacklog(
 // ── per-advance parent-substrate snapshot store (Fix #2) ──────────────────────
 
 /**
- * Snapshot store layout (under the client state dir):
+ * Snapshot store layout (under the validator state dir):
  *
  *   <state-dir>/eval-parent-snapshots/<epochId>-<artifactHash>.bin
  *
@@ -1127,7 +1127,7 @@ export async function autoResolveCorpusByRoot(
   return { ok: false, reason: `target corpusRoot ${targetRoot} not reached after applying ${appliedEpochs.length} published delta(s) from epoch ${fromEpoch} (bound ${maxDeltas}) — leaving pending rather than rescoring with the wrong corpus` };
 }
 
-/** A materialized corpus the client already holds, tagged with the CHAIN
+/** A materialized corpus the validator already holds, tagged with the CHAIN
  *  EPOCH it sits at: the base/launch corpus is at chain-epoch 0; the corpus
  *  produced by applying the published `corpus-delta-epoch-N` is at chain-epoch
  *  N. This epoch is what makes ancestry decidable on the linear delta chain. */
@@ -1315,7 +1315,7 @@ function resolvePreviousCorpusRoot(statePath: string, bundleManifest: CoreTexBun
   }
   if (existsSync(statePath)) {
     const state = JSON.parse(readFileSync(statePath, 'utf8')) as { corpusRoot?: string };
-    if (isBytes32(state.corpusRoot)) return { root: state.corpusRoot, source: 'client-state' };
+    if (isBytes32(state.corpusRoot)) return { root: state.corpusRoot, source: 'validator-state' };
   }
   if (isBytes32(bundleManifest.corpus?.root)) return { root: bundleManifest.corpus.root, source: 'bundle-manifest' };
   return { source: 'unavailable' };
@@ -1330,7 +1330,7 @@ function rangeLogOptions(): CoreTexRangeLogOptions {
   return out;
 }
 
-interface ClientScorerContext {
+interface ValidatorScorerContext {
   readonly corpus: ProductionCorpus;
   readonly profile: typeof DEFAULT_PROFILE;
   readonly scoringOpts: ReturnType<typeof scoringOptionsFromProfile>;
@@ -1348,7 +1348,7 @@ interface ClientScorerContext {
  * always wins; we log what was selected and why. Returns the thread decision
  * for the summary block.
  */
-function applyScorerRuntimeDefaults(setup: ClientSyncStateFile['setup'] | undefined): {
+function applyScorerRuntimeDefaults(setup: ValidatorSyncStateFile['setup'] | undefined): {
   scorerPython?: string;
   scorerPythonSource: 'operator' | 'setup-venv' | 'default';
   thread: ThreadDefaultResult;
@@ -1371,23 +1371,26 @@ function applyScorerRuntimeDefaults(setup: ClientSyncStateFile['setup'] | undefi
 
 /** Build the FAIL-CLOSED scorer context shared by sync auto-verify and
  *  verify-patch: pinned corpus + pinned qwen3 reranker from the bundle. */
-async function buildClientScorerContext(
+async function buildValidatorScorerContext(
   bundle: CoreTexBundleManifest,
   corpusPath: string,
-): Promise<ClientScorerContext> {
+): Promise<ValidatorScorerContext> {
   const profile = bundle.evaluator?.profile ?? DEFAULT_PROFILE;
   const corpus = loadProductionCorpus(corpusPath, { verifyCorpusRoot: true, verifySplits: true });
   const layout = corpus.biEncoderRetrievalKeyLayout;
   const biEncoder = biEncoderFromEnv(layout, { modelId: corpus.biEncoderModelId, revision: corpus.biEncoderRevision });
-  const reranker = await createClientReranker(clientRerankerPinsFromManifest(bundle));
+  const reranker = await createValidatorReranker(validatorRerankerPinsFromManifest(bundle));
   const scoringOpts = scoringOptionsFromProfile(profile, {
     biEncoder,
     reranker,
     biEncoderHash: biEncoderModelIdHash(corpus.biEncoderModelId, corpus.biEncoderRevision, 'dense'),
     retrievalKeyLayout: layout,
   });
-  const thresholdPpm = Math.min(computeAcceptanceThresholdPpm(profile), 355);
-  return { corpus, profile, scoringOpts, thresholdPpm, reranker: reranker as ClientScorerContext['reranker'] };
+  // Score replay must use the full bundle-pinned acceptance threshold rather
+  // than a launch-era screener cap, or a client can silently "verify" a patch
+  // that no longer clears the canonical production gate.
+  const thresholdPpm = computeAcceptanceThresholdPpm(profile);
+  return { corpus, profile, scoringOpts, thresholdPpm, reranker: reranker as ValidatorScorerContext['reranker'] };
 }
 
 /**
@@ -1412,13 +1415,13 @@ function assertScorerRuntimePin(bundle: CoreTexBundleManifest): void {
   const verdict = scorerRuntimeMatchesBundle(health, pins, resolved);
   if (!verdict.ok) {
     die(`scorer runtime-pin assertion FAILED before score replay: ${verdict.reason}. `
-      + `The fail-closed client scorer must reproduce the bundle reranker pins `
+      + `The fail-closed validator scorer must reproduce the bundle reranker pins `
       + `(${pins.modelId}@${pins.revision}, torch ${pins.torchRange}, transformers ${pins.transformersRange}, fp32/tf32=false). `
       + 'Re-run coretex-client-setup to rebuild the pinned scorer venv, or fix CORETEX_RERANKER_PYTHON.');
   }
 }
 
-function scorerForParent(ctx: ClientScorerContext, parentState: CortexState, epochId: number) {
+function scorerForParent(ctx: ValidatorScorerContext, parentState: CortexState, epochId: number) {
   return async ({ normalizedPatchBytes, evalSeed }: { normalizedPatchBytes: Uint8Array; evalSeed: string }) => {
     const queryPack = deriveQueryPack(epochId, evalSeed, ctx.corpus, ctx.profile.hiddenPack);
     const scored = await evaluateRetrievalBenchmarkPatch(parentState, decodePatch(normalizedPatchBytes), ctx.corpus, queryPack, ctx.scoringOpts, {
@@ -1439,11 +1442,11 @@ async function closeReranker(reranker: { close?: () => Promise<void> } | undefin
 
 async function syncMain() {
   const noProgressFlag = has('no-progress');
-  // ── client state dir / state file FIRST: setup-written defaults feed everything below ──
-  const stateDir = opt('state-dir', process.env['CORETEX_CLIENT_STATE_DIR'] ?? '.coretex-client')!;
+  // ── validator state dir / state file FIRST: setup-written defaults feed everything below ──
+  const stateDir = opt('state-dir', process.env['CORETEX_VALIDATOR_STATE_DIR'] ?? '.coretex-client')!;
   const statePath = opt('state', join(stateDir, 'client-sync-state.json'))!;
   const pinPath = opt('key-pin-file', process.env['CORETEX_KEY_PIN_PATH'] ?? join(stateDir, 'epoch-signing-key.pin.json'))!;
-  const savedState = readClientStateFile(statePath);
+  const savedState = readValidatorStateFile(statePath);
   const setup = savedState?.setup;
 
   // Finding 7: every trusted-state mutation (TOFU pin, substrate snapshot, state
@@ -1462,8 +1465,8 @@ interface RunSyncCtx {
   readonly stateDir: string;
   readonly statePath: string;
   readonly pinPath: string;
-  readonly savedState: ClientSyncStateFile | null;
-  readonly setup: ClientSyncStateFile['setup'] | undefined;
+  readonly savedState: ValidatorSyncStateFile | null;
+  readonly setup: ValidatorSyncStateFile['setup'] | undefined;
   readonly staging: TrustedStateStaging;
 }
 
@@ -1496,7 +1499,7 @@ async function runSync({ stateDir, statePath, pinPath, savedState, setup, stagin
   // ── local preconditions BEFORE heavy RPC: bundle manifest, artifact URIs, signing key ──
   const bundleManifestPath = opt('bundle-manifest', process.env['CORETEX_BUNDLE_MANIFEST'] ?? setup?.bundleManifestPath);
   if (!bundleManifestPath) {
-    die('--bundle-manifest or CORETEX_BUNDLE_MANIFEST is required (or run coretex-client-setup — its state file records the path): the client version-checks its local bundle against the on-chain coreVersionHash and derives replay mode flags from it (no silent defaults)');
+    die('--bundle-manifest or CORETEX_BUNDLE_MANIFEST is required (or run coretex-client-setup — its state file records the path): the validator client version-checks its local bundle against the on-chain coreVersionHash and derives replay mode flags from it (no silent defaults)');
   }
   const bundleManifest = JSON.parse(readFileSync(bundleManifestPath, 'utf8')) as CoreTexBundleManifest;
   if (!isBytes32(bundleManifest.bundleHash)) die(`bundle manifest ${bundleManifestPath} has no bundleHash`);
@@ -1508,7 +1511,7 @@ async function runSync({ stateDir, statePath, pinPath, savedState, setup, stagin
   const skipScoreReplay = has('skip-score-replay');
   if (!skipScoreReplay) {
     try {
-      assertClientRerankerEnv(clientRerankerPinsFromManifest(bundleManifest));
+      assertValidatorRerankerEnv(validatorRerankerPinsFromManifest(bundleManifest));
     } catch (err) {
       die(err instanceof Error ? err.message : String(err));
     }
@@ -1528,7 +1531,7 @@ async function runSync({ stateDir, statePath, pinPath, savedState, setup, stagin
     stringField(status, 'baselineManifestUrl'),
   );
   if (!rotationUri || !deltaUri) {
-    die('rotation manifest and corpus delta are required (corpus-delta continuity is part of client sync); pass --from-coordinator, --artifact-base-url, or --rotation-manifest/--corpus-delta');
+    die('rotation manifest and corpus delta are required (corpus-delta continuity is part of validator sync); pass --from-coordinator, --artifact-base-url, or --rotation-manifest/--corpus-delta');
   }
 
   // ── MANDATORY signature verification under the TOFU-pinned key ──
@@ -1557,7 +1560,7 @@ async function runSync({ stateDir, statePath, pinPath, savedState, setup, stagin
 
   const chain = await readChainContext(rpcChainCaller(rpcUrl), registry, mining, epoch, confirmedTag);
   // ── self version-check against the on-chain coreVersionHash ──
-  const version = checkClientBundleVersion(bundleManifest.bundleHash, chain.coreVersionHash, has('allow-version-mismatch'));
+  const version = checkValidatorBundleVersion(bundleManifest.bundleHash, chain.coreVersionHash, has('allow-version-mismatch'));
   const readOnlyVersionMismatch = !version.match;
 
   const publicKey = await readTextUri(publicKeyUri);
@@ -1707,7 +1710,7 @@ async function runSync({ stateDir, statePath, pinPath, savedState, setup, stagin
 
   const fromBlock = fromBlockResolved.fromBlock;
   // Registry log replay: surface the confirmed block window being paginated so
-  // a client sees the replay is moving (stderr only — stdout JSON unaffected).
+  // a validator sees the replay is moving (stderr only — stdout JSON unaffected).
   const replayProgress = makeProgress({
     label: 'registry log replay',
     unit: 'blocks',
@@ -1954,7 +1957,7 @@ async function runSync({ stateDir, statePath, pinPath, savedState, setup, stagin
     // RUNTIME-PIN ASSERTION: hard-fail BEFORE any score replay if the scorer
     // runtime fingerprint does not reproduce the bundle reranker pins.
     assertScorerRuntimePin(bundleManifest);
-    const ctx = await buildClientScorerContext(bundleManifest, corpusPath);
+    const ctx = await buildValidatorScorerContext(bundleManifest, corpusPath);
     const loadedPins: LoadedScorerContextPins = { corpusRoot: ctx.corpus.corpusRoot, coreVersionHash: chain.coreVersionHash };
     const rpcClient = createBaseRpcClient(rpcUrl);
 
@@ -1964,7 +1967,7 @@ async function runSync({ stateDir, statePath, pinPath, savedState, setup, stagin
     // Two resolution sources, both refused unless the materialized corpus
     // merkleizes to the entry's pin and the entry's bundle matches the loaded one:
     //   1) OPERATOR SHORTCUT — `corpusForRoot` maps an entry's corpusRoot → a
-    //      corpus FILE the client already has (`--corpus-for-root 0x…=path`,
+    //      corpus FILE the validator already has (`--corpus-for-root 0x…=path`,
     //      or the loaded corpus when its root already matches).
     //   2) AUTO-RESOLVE — walk the PUBLISHED, SIGNED corpus-delta chain forward
     //      from a guaranteed ANCESTOR of the target (the retained launch base, or
@@ -1987,7 +1990,7 @@ async function runSync({ stateDir, statePath, pinPath, savedState, setup, stagin
     // Roots the PURE decision treats as resolvable: operator-supplied files plus
     // (lazily) any root the delta-chain auto-resolver succeeds in materializing.
     const resolvableCorpusRoots = new Set(corpusForRoot.keys());
-    const contextCache = new Map<string, ClientScorerContext>();
+    const contextCache = new Map<string, ValidatorScorerContext>();
     contextCache.set(`${loadedRootLc}:${loadedBundleLc}`, ctx);
 
     // The launch/genesis BASE corpus is the universal earliest ANCESTOR of every
@@ -2069,7 +2072,7 @@ async function runSync({ stateDir, statePath, pinPath, savedState, setup, stagin
       const cachedCorpus = materializedByRoot.get(targetLc);
       if (cachedCorpus) return { ok: true, corpus: cachedCorpus };
       if (entry.coreVersionHash.toLowerCase() !== loadedBundleLc) {
-        return { ok: false, reason: `entry coreVersionHash ${entry.coreVersionHash} != loaded bundle ${chain.coreVersionHash}; the client only holds the loaded bundle's pinned scorer, so the historical bundle is not resolvable here` };
+        return { ok: false, reason: `entry coreVersionHash ${entry.coreVersionHash} != loaded bundle ${chain.coreVersionHash}; the validator only holds the loaded bundle's pinned scorer, so the historical bundle is not resolvable here` };
       }
       // Choose the walk START to be a guaranteed ANCESTOR of the target — NEVER
       // the loaded corpus when it is AHEAD of the target. The corpus the advance
@@ -2118,7 +2121,7 @@ async function runSync({ stateDir, statePath, pinPath, savedState, setup, stagin
     // corpus root is re-asserted against the entry's pin: a corpus that does NOT
     // match is refused (we never rescore against the wrong corpus). The reranker
     // (bundle-pinned, runtime-asserted above) is shared across per-epoch corpora.
-    const buildContextForCorpus = (entry: EvalBacklogEntry, epochCorpus: ProductionCorpus): ClientScorerContext => {
+    const buildContextForCorpus = (entry: EvalBacklogEntry, epochCorpus: ProductionCorpus): ValidatorScorerContext => {
       const cacheKey = `${entry.corpusRoot.toLowerCase()}:${entry.coreVersionHash.toLowerCase()}`;
       const cached = contextCache.get(cacheKey);
       if (cached) return cached;
@@ -2133,12 +2136,12 @@ async function runSync({ stateDir, statePath, pinPath, savedState, setup, stagin
         biEncoderHash: biEncoderModelIdHash(epochCorpus.biEncoderModelId, epochCorpus.biEncoderRevision, 'dense'),
         retrievalKeyLayout: layout,
       });
-      const built: ClientScorerContext = { corpus: epochCorpus, profile: ctx.profile, scoringOpts, thresholdPpm: ctx.thresholdPpm, reranker: ctx.reranker };
+      const built: ValidatorScorerContext = { corpus: epochCorpus, profile: ctx.profile, scoringOpts, thresholdPpm: ctx.thresholdPpm, reranker: ctx.reranker };
       contextCache.set(cacheKey, built);
       return built;
     };
     // Resolve a context for an entry the OPERATOR supplied a corpus file for.
-    const operatorContextForEntry = (entry: EvalBacklogEntry): ClientScorerContext => {
+    const operatorContextForEntry = (entry: EvalBacklogEntry): ValidatorScorerContext => {
       const cacheKey = `${entry.corpusRoot.toLowerCase()}:${entry.coreVersionHash.toLowerCase()}`;
       const cached = contextCache.get(cacheKey);
       if (cached) return cached;
@@ -2172,7 +2175,7 @@ async function runSync({ stateDir, statePath, pinPath, savedState, setup, stagin
         // walking the published, signed corpus-delta chain (merkle-verified before
         // use). Only if that ALSO fails do we leave the entry pending — NEVER
         // rescoring with the wrong corpus.
-        let entryCtx: ClientScorerContext;
+        let entryCtx: ValidatorScorerContext;
         const decision = resolveScorerContextDecision(entry, loadedPins, resolvableCorpusRoots);
         if (decision.action === 'matches-loaded') {
           entryCtx = ctx;
@@ -2287,7 +2290,7 @@ async function runSync({ stateDir, statePath, pinPath, savedState, setup, stagin
   // above have passed. In --allow-version-mismatch mode this remains read-only:
   // no trusted-state writes are staged and no snapshot GC runs.
   if (!readOnlyVersionMismatch) {
-    staging.stage(statePath, serializeMergedClientState(statePath, {
+    staging.stage(statePath, serializeMergedValidatorState(statePath, {
       epoch,
       bundleHash: bundleManifest.bundleHash,
       corpusRoot: delta.nextRoot,
@@ -2361,9 +2364,9 @@ async function runSync({ stateDir, statePath, pinPath, savedState, setup, stagin
 async function verifyPatchMain() {
   const hash = opt('hash');
   if (!isBytes32(hash)) die('verify-patch requires --hash 0x<bytes32 artifactHash>');
-  const stateDir = opt('state-dir', process.env['CORETEX_CLIENT_STATE_DIR'] ?? '.coretex-client')!;
+  const stateDir = opt('state-dir', process.env['CORETEX_VALIDATOR_STATE_DIR'] ?? '.coretex-client')!;
   const statePath = opt('state', join(stateDir, 'client-sync-state.json'))!;
-  const setup = readClientStateFile(statePath)?.setup;
+  const setup = readValidatorStateFile(statePath)?.setup;
   const artifactBase = opt('artifact-base-url', process.env['CORETEX_ARTIFACT_BASE_URL'] ?? setup?.artifactBaseUrl);
   const artifactUri = opt('artifact-url', joinUrl(artifactBase, `eval-reports/${hash.toLowerCase()}.json`));
   if (!artifactUri) die('verify-patch requires CORETEX_ARTIFACT_BASE_URL / --artifact-base-url (or an explicit --artifact-url)');
@@ -2376,7 +2379,7 @@ async function verifyPatchMain() {
   if (!bundleManifestPath) die('--bundle-manifest, CORETEX_BUNDLE_MANIFEST, or a coretex-client-setup state file is required');
   const bundle = JSON.parse(readFileSync(bundleManifestPath, 'utf8')) as CoreTexBundleManifest;
   if (!isBytes32(bundle.bundleHash)) die(`bundle manifest ${bundleManifestPath} has no bundleHash`);
-  checkClientBundleVersion(bundle.bundleHash, artifact.context.coreVersionHash, has('allow-version-mismatch'));
+  checkValidatorBundleVersion(bundle.bundleHash, artifact.context.coreVersionHash, has('allow-version-mismatch'));
 
   // ── FAIL-CLOSED scorer gate (same gate as sync): the deterministic stub is
   //    unreachable; --skip-score-replay is the ONLY skip and cannot attest.
@@ -2399,7 +2402,7 @@ async function verifyPatchMain() {
     process.exit(SKIP_SCORE_REPLAY_EXIT_CODE);
   }
   try {
-    assertClientRerankerEnv(clientRerankerPinsFromManifest(bundle));
+    assertValidatorRerankerEnv(validatorRerankerPinsFromManifest(bundle));
   } catch (err) {
     die(err instanceof Error ? err.message : String(err));
   }
@@ -2425,7 +2428,7 @@ async function verifyPatchMain() {
   // RUNTIME-PIN ASSERTION (same gate as sync): hard-fail before any score replay
   // if the scorer runtime fingerprint does not reproduce the bundle reranker pins.
   assertScorerRuntimePin(bundle);
-  const ctx = await buildClientScorerContext(bundle, corpusPath);
+  const ctx = await buildValidatorScorerContext(bundle, corpusPath);
   if (ctx.corpus.corpusRoot.toLowerCase() !== artifact.context.corpusRoot.toLowerCase()) {
     await closeReranker(ctx.reranker);
     die(`local corpus root ${ctx.corpus.corpusRoot} != artifact context corpusRoot ${artifact.context.corpusRoot}`);

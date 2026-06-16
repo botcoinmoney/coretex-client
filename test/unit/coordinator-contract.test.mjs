@@ -2,7 +2,7 @@
  * v0 launch coordinator data-source contract test.
  *
  * Every public CoreTex route delegates to a CoreTexCoordinatorDataSource
- * (`packages/coretex/src/coordinator/endpoints.ts`). This test pins the CONTRACT
+ * (`src/coordinator/endpoints.ts`). This test pins the CONTRACT
  * a production data source must satisfy:
  *
  *  - the canonical 5 endpoints (health, status, substrate/:root, submit,
@@ -226,15 +226,12 @@ describe('v0 coordinator data-source contract', () => {
     assert.deepEqual(hits, [], 'stress-harness caps/classifiers must not become production rejection logic');
   });
 
-  test('client sync CLI does not import coordinator-only control-plane modules', () => {
-    const body = readFileSync(new URL('../../src/client-sync-cli.ts', import.meta.url), 'utf8');
+  test('validator sync CLI does not import coordinator-only control-plane modules', () => {
+    const body = readFileSync(new URL('../../scripts/coretex-client-sync.mjs', import.meta.url), 'utf8');
     const imports = body.split('\n').filter((line) => /^\s*import\s/.test(line)).join('\n');
     for (const forbidden of [
       'coretex-coordinator',
-      '/coordinator/coretex-coordinator-core',
-      '/coordinator/endpoints',
-      '/coordinator/production-evaluator',
-      '/coordinator/per-patch-evaluator',
+      '/coordinator/',
       '@aws-sdk',
       'child_process',
       'coretex-pin-epoch-context',
@@ -243,7 +240,7 @@ describe('v0 coordinator data-source contract', () => {
       assert.equal(
         imports.includes(forbidden),
         false,
-        `client sync import boundary must not include ${forbidden}`,
+        `validator sync import boundary must not include ${forbidden}`,
       );
     }
   });

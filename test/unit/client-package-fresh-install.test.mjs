@@ -1,9 +1,9 @@
 /**
  * Fresh-install hermetic test: `npm pack` the @botcoinmoney/coretex-client package into a
  * temp dir, install the tarball into a scratch project (no network — the
- * package has zero runtime dependencies), and assert the standalone client
+ * package has zero runtime dependencies), and assert the standalone validator
  * surface survives installation:
- *   - client bins exist and run --help,
+ *   - both validator bins exist and run --help,
  *   - the reranker script-path resolver finds scripts/reranker_runner.py
  *     INSIDE the installed package,
  *   - the package.json `files` list ships everything the resolver and the
@@ -32,9 +32,9 @@ before(() => {
   root = mkdtempSync(join(tmpdir(), 'coretex-fresh-install-'));
   proj = join(root, 'scratch-project');
   mkdirSync(proj, { recursive: true });
-  writeFileSync(join(proj, 'package.json'), JSON.stringify({ name: 'scratch-coretex-client-host', private: true, version: '0.0.0' }));
+  writeFileSync(join(proj, 'package.json'), JSON.stringify({ name: 'scratch-validator-host', private: true, version: '0.0.0' }));
 
-  const packed = run('npm', ['pack', '--ignore-scripts', '--pack-destination', root], { cwd: pkgDir });
+  const packed = run('npm', ['pack', '--pack-destination', root], { cwd: pkgDir });
   assert.equal(packed.status, 0, `npm pack failed: ${packed.stderr}`);
   const tarball = readdirSync(root).find((f) => f.endsWith('.tgz'));
   assert.ok(tarball, 'npm pack produced no tarball');
@@ -50,14 +50,13 @@ after(() => {
 });
 
 describe('fresh npm install of @botcoinmoney/coretex-client', () => {
-  test('client bins exist and run --help', { timeout: 60_000 }, () => {
-    for (const bin of ['coretex-client', 'coretex-client-replay', 'coretex-client-setup', 'coretex-client-sync']) {
+  test('both validator bins exist and run --help', { timeout: 60_000 }, () => {
+    for (const bin of ['coretex-client-setup', 'coretex-client-sync']) {
       const binPath = join(proj, 'node_modules', '.bin', bin);
       assert.ok(existsSync(binPath), `${bin} missing from node_modules/.bin`);
       const proc = run(process.execPath, [binPath, '--help'], { cwd: proj });
-      const combined = `${proc.stdout}\n${proc.stderr}`;
-      assert.equal(proc.status, 0, `${bin} --help exited ${proc.status}: ${combined}`);
-      assert.match(combined, /coretex-client|CoreTex client|usage:/);
+      assert.equal(proc.status, 0, `${bin} --help exited ${proc.status}: ${proc.stderr}`);
+      assert.match(proc.stdout, new RegExp(bin));
     }
   });
 
@@ -83,13 +82,9 @@ describe('fresh npm install of @botcoinmoney/coretex-client', () => {
       'dist/client-setup-cli.js',
       'dist/eval/reranker.js',
       'scripts/reranker_runner.py',
-      'scripts/bi_encoder_runner.py',
       'scripts/materialize-production-corpus.mjs',
       'scripts/lib/build-v2-production-corpus.mjs',
       'scripts/lib/_package-paths.mjs',
-      'src/state/codec.ts',
-      'specs/coretex_state.md',
-      'docs/CORETEX_CLIENT_STANDALONE_RUNBOOK.md',
     ]) {
       assert.ok(existsSync(join(installed, rel)), `installed package missing ${rel}`);
     }

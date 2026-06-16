@@ -56,7 +56,7 @@ describe('major-delta grace', () => {
       qualityAttempts: 200,
       majorDeltaActive: true,
     });
-    assert.equal(out.next, 2_500n, 'clamps to MIN_IMPROVEMENT_PPM floor');
+    assert.equal(out.next, 500n, 'clamps to MIN_IMPROVEMENT_PPM floor');
     assert.equal(out.reason, 'major_delta_grace');
   });
 

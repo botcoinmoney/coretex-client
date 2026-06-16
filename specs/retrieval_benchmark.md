@@ -10,7 +10,8 @@ derived from the corpus and a revealed seed (see `hidden_query_pack.md`).
 They are reproducible deterministically from the pinned bundle (see
 `determinism.md`).
 
-**Dual-pack acceptance**: production scores every live patch on TWO domain-separated packs derived
+**Dual-pack acceptance** (per `docs/CORETEX_V4_ONCHAIN_RANDOMNESS_PLAN.md`):
+production scores every live patch on TWO domain-separated packs derived
 from the same on-chain blockhash — a `gate` pack and a `confirm` pack.
 A patch is accepted only if BOTH packs clear
 `patchAcceptanceFloors.minImprovementPpm + replayTolerancePpm +
@@ -19,8 +20,9 @@ draw, so a pack-lucky borderline result on one pack is filtered by the
 other (false-acceptance probability `p` drops to `p²`).
 
 The reward law is composite: retrieval-dominant (≥70% of weight), with
-sanity, temporal, multi-hop, and abstention components. This spec
-documents the metric primitives only.
+sanity, temporal, multi-hop, and abstention components. The reward law and
+its weights live in §"Reward Law" of `CORETEX_V4_FRONTIER_RETRIEVAL_HARDENING_PLAN.md`.
+This spec documents the metric primitives only.
 
 ## Notation
 

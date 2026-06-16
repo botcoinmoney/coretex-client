@@ -1,6 +1,6 @@
 /**
  * Deterministic self-check for the reranker score-array parity differ
- * (packages/coretex/scripts/reranker-parity-diff.mjs).
+ * (scripts/reranker-parity-diff.mjs).
  *
  * The differ is the CI-safe half of the scorer parity release gate: it takes
  * two {"scores":[...]} arrays (e.g. CPU fp32 vs 4090 fp32 from the full-pair

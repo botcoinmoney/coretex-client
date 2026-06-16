@@ -29,7 +29,7 @@ import {
   memRerankerManifest,
 } from '../../dist/index.js';
 
-const repoRoot = fileURLToPath(new URL('../../../..', import.meta.url));
+const repoRoot = fileURLToPath(new URL('../..', import.meta.url));
 
 // The pinned launch controller (2026-05-24 calibration).
 const LAUNCH_CONTROLLER = {

@@ -1,5 +1,5 @@
 /**
- * Client sync-client hardening (Findings 4–8 + runtime-pin assertion).
+ * Validator sync-client hardening (Findings 4–8 + runtime-pin assertion).
  *
  * These exercise the EXPORTED pure primitives the hardened sync flow is built
  * from — deterministically, with no live RPC, no real scorer, and no torch
@@ -26,7 +26,7 @@ import {
   removeFromEvalBacklog,
   scorerRuntimeBundlePinsFromManifest,
   TrustedStateStaging,
-  serializeMergedClientState,
+  serializeMergedValidatorState,
   serializeTofuKeyPin,
   readChainContext,
 } from '../../dist/client-sync-cli.js';
@@ -236,7 +236,7 @@ describe('Finding 5 — eval-verification backlog', () => {
     const statePath = join(dir, 'client-sync-state.json');
     const entry = evalBacklogEntryFromAdvance(makeAdvance(), 100, 'awaiting_epoch_secret_reveal');
     // sync 1 leaves an advance pending (secret unrevealed) → persisted to backlog.
-    writeFileSync(statePath, serializeMergedClientState(statePath, {
+    writeFileSync(statePath, serializeMergedValidatorState(statePath, {
       evalBacklog: [entry],
       evalVerifiedThroughBlock: -1,
     }));
@@ -246,7 +246,7 @@ describe('Finding 5 — eval-verification backlog', () => {
     assert.equal(reloaded.evalVerifiedThroughBlock, -1);
     // sync 2 after reveal drains it (passing replay) and advances the cursor.
     const drained = removeFromEvalBacklog(reloaded.evalBacklog, entry);
-    writeFileSync(statePath, serializeMergedClientState(statePath, {
+    writeFileSync(statePath, serializeMergedValidatorState(statePath, {
       evalBacklog: drained,
       evalVerifiedThroughBlock: 100,
     }));

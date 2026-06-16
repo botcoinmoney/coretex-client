@@ -47,8 +47,10 @@ const MINER_A = '0x' + 'aa'.repeat(20);
 const MINER_B = '0x' + 'bb'.repeat(20);
 
 // No static screenerThresholdPpm: the live threshold must derive from the
-// baseline plus state-advance threshold (288438 + 2700ppm -> 1350ppm under
-// the default policy).
+// real state-advance threshold. Under the cold-start repin this fixture's
+// 500ppm min-improvement + 200ppm replay tolerance yields a 700ppm state
+// threshold, but the canonical launch-era minimum screener floor still keeps
+// the live screener at 355ppm.
 const baseConfig = {
   epoch: EPOCH,
   expectedChainId: 8453n,
@@ -67,7 +69,7 @@ const baseConfig = {
   receiptTtlSec: 60,
   perMinerScreenerCap: 50,
   baselineParentScorePpm: 288438,
-  minImprovementPpm: 2500,
+  minImprovementPpm: 500,
   replayTolerancePpm: 200,
   targetBlockOffset: 30,
   patchWordBudget: 4,
@@ -490,14 +492,14 @@ describe('CoreTexCoordinatorCore §7 — baseline runtime semantics', () => {
     const coord = new CoreTexCoordinatorCore(baseConfig, chain, loadGenesis, evaluator, plainSigner);
     await coord.boot();
 
-    // Launch context: baseline 288438 with a 2700ppm state threshold -> live
-    // screener threshold 1350ppm.
+    // Launch context: baseline 288438 with a 700ppm state threshold -> live
+    // screener threshold 355ppm after the absolute screener floor is applied.
     const status0 = await coord.getStatus();
     assert.equal(status0.baselineState, 'ready');
     assert.equal(status0.baselineParentScorePpm, 288438);
-    assert.equal(status0.stateAdvanceThresholdPpm, 2700);
-    assert.equal(status0.screenerThresholdPpm, 1350);
-    assert.equal(status0.thresholds.screenerThresholdPpm, 1350);
+    assert.equal(status0.stateAdvanceThresholdPpm, 700);
+    assert.equal(status0.screenerThresholdPpm, 355);
+    assert.equal(status0.thresholds.screenerThresholdPpm, 355);
 
     // A 320ppm screener is below the launch threshold.
     const before = await coord.submit(submitBody(makePatchHex(GENESIS_ROOT, 40, 1)));
@@ -525,7 +527,7 @@ describe('CoreTexCoordinatorCore §7 — baseline runtime semantics', () => {
     const status1 = await coord.getStatus();
     assert.equal(status1.baselineState, 'ready');
     assert.equal(status1.baselineParentScorePpm, 400000);
-    assert.equal(status1.screenerThresholdPpm, 1350, 'state-threshold floor dominates normal launch baselines');
+    assert.equal(status1.screenerThresholdPpm, 350, 'post-launch baseline recompute falls back to the live state-floor-derived screener');
     assert.equal(status1.thresholds.baselineParentScorePpm, 400000);
 
     // A 1400ppm screener clears the live gate.
@@ -569,7 +571,7 @@ describe('CoreTexCoordinatorCore §7 — baseline runtime semantics', () => {
     const ready = await coord.getStatus();
     assert.equal(ready.baselineState, 'ready');
     assert.equal(ready.baselineParentScorePpm, 300000);
-    assert.equal(ready.screenerThresholdPpm, 1350);
+    assert.equal(ready.screenerThresholdPpm, 350);
     const accepted = await coord.submit(submitBody(makePatchHex(ev0.newRoot, 40, 1), MINER_A, ev0.newRoot));
     assert.equal(accepted.status, 'accepted', `expected accept, got ${JSON.stringify(accepted)}`);
 

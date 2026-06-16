@@ -26,7 +26,7 @@ import {
 import { wrapRerankerWithPairTrace } from '../../dist/coordinator/scorer-pair-trace.js';
 import { pack, merkleizeState, bytesToHex, RANGES, PACKED_SIZE } from '../../dist/index.js';
 import { DEFAULT_SCORER_BODY_LIMIT_BYTES } from '../../dist/scorer-server-cli.js';
-import { makeInstrumentedReranker } from '../../../../scripts/lib/instrumented-reranker.mjs';
+import { makeInstrumentedReranker } from '../../scripts/lib/instrumented-reranker.mjs';
 
 const B32 = (seed) => `0x${seed.repeat(Math.ceil(64 / seed.length)).slice(0, 64)}`;
 const MODEL_ID = 'Qwen/Qwen3-Reranker-0.6B';
@@ -74,7 +74,8 @@ const HEALTH = {
 // scorer is keyless AND secretless — every job must ship the full pin.
 const PINNED_SEED_CONTEXT = {
   receivedAtBlock: 1_000,
-  targetBlock: 1_030,
+  targetBlock: 1_015,
+  targetBlockOffset: 15,
   blockhash: B32('5e'),
   gateSeed: B32('6a'),
   confirmSeed: B32('6b'),
@@ -435,6 +436,18 @@ describe('scorer-server — mandatory pinned seed + secretless host', () => {
     assert.equal(res.status, 422);
   });
 
+  test('missing or inconsistent targetBlockOffset is refused 422', async () => {
+    for (const ctx of [
+      (() => { const c = { ...PINNED_SEED_CONTEXT }; delete c.targetBlockOffset; return c; })(),
+      { ...PINNED_SEED_CONTEXT, targetBlockOffset: 30 },
+    ]) {
+      const res = await handleScoreJob(baseJob({ publicEvalContext: ctx }), handlerDeps());
+      assert.equal(res.status, 422);
+      assert.equal(res.body.error, 'SCORER_SEED_CONTEXT_INVALID');
+      assert.match(res.body.reason, /targetBlockOffset|targetBlock/);
+    }
+  });
+
   test('missing gateSeed/confirmSeed is refused 422 (coordinator must derive the seeds)', async () => {
     for (const missing of ['gateSeed', 'confirmSeed']) {
       const ctx = { ...PINNED_SEED_CONTEXT };
@@ -469,6 +482,7 @@ describe('scorer-server — mandatory pinned seed + secretless host', () => {
       gateSeed: PINNED_SEED_CONTEXT.gateSeed.toLowerCase(),
       confirmSeed: PINNED_SEED_CONTEXT.confirmSeed.toLowerCase(),
     });
+    assert.equal(counter.lastInput.targetBlockOffset, 15);
   });
 
   test('hiddenSeedCommit mismatch vs the loaded commit is a 409 pin mismatch', async () => {
@@ -487,6 +501,77 @@ describe('scorer-server — mandatory pinned seed + secretless host', () => {
       { ...handlerDeps(), loadedPins: { ...LOADED_PINS, hiddenSeedCommit: B32('11') } },
     );
     assert.equal(res.status, 200);
+  });
+});
+
+describe('scorer-server — bounded job queue', () => {
+  const tick = () => new Promise((resolve) => setImmediate(resolve));
+
+  test('createScorerJobQueue drains a FIFO backlog under serial concurrency', async () => {
+    const releases = [];
+    const started = [];
+    const finished = [];
+    const queue = createScorerJobQueue({
+      concurrency: 1,
+      maxQueueDepth: 4,
+      run: (job) => new Promise((resolve) => {
+        started.push(job.id);
+        releases.push(() => {
+          finished.push(job.id);
+          resolve({ status: 200, body: { id: job.id } });
+        });
+      }),
+    });
+
+    const p1 = queue.enqueue({ id: 'a' });
+    const p2 = queue.enqueue({ id: 'b' });
+    const p3 = queue.enqueue({ id: 'c' });
+
+    assert.deepEqual(started, ['a']);
+    assert.deepEqual(queue.snapshot(), { active: 1, queued: 2, maxQueueDepth: 4, concurrency: 1 });
+
+    releases.shift()();
+    assert.deepEqual(await p1, { status: 200, body: { id: 'a' } });
+    await tick();
+    assert.deepEqual(started, ['a', 'b']);
+    assert.deepEqual(queue.snapshot(), { active: 1, queued: 1, maxQueueDepth: 4, concurrency: 1 });
+
+    releases.shift()();
+    assert.deepEqual(await p2, { status: 200, body: { id: 'b' } });
+    await tick();
+    assert.deepEqual(started, ['a', 'b', 'c']);
+
+    releases.shift()();
+    assert.deepEqual(await p3, { status: 200, body: { id: 'c' } });
+    await tick();
+    assert.deepEqual(finished, ['a', 'b', 'c']);
+    assert.deepEqual(queue.snapshot(), { active: 0, queued: 0, maxQueueDepth: 4, concurrency: 1 });
+  });
+
+  test('createScorerJobQueue returns 503 when the waiting backlog is saturated', async () => {
+    const releases = [];
+    const queue = createScorerJobQueue({
+      concurrency: 1,
+      maxQueueDepth: 1,
+      run: (job) => new Promise((resolve) => {
+        releases.push(() => resolve({ status: 200, body: { id: job.id } }));
+      }),
+    });
+
+    const active = queue.enqueue({ id: 'active' });
+    const queued = queue.enqueue({ id: 'queued' });
+    const saturated = await queue.enqueue({ id: 'overflow' });
+
+    assert.equal(saturated.status, 503);
+    assert.equal(saturated.body.error, 'scorer-queue-full');
+    assert.match(saturated.body.reason, /queue is full \(1 waiting, 1 active\)/);
+    assert.deepEqual(queue.snapshot(), { active: 1, queued: 1, maxQueueDepth: 1, concurrency: 1 });
+
+    releases.shift()();
+    assert.deepEqual(await active, { status: 200, body: { id: 'active' } });
+    await tick();
+    releases.shift()();
+    assert.deepEqual(await queued, { status: 200, body: { id: 'queued' } });
   });
 });
 

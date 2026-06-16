@@ -1,0 +1,8 @@
+{
+  "schema": "coretex-client.sync-provenance.v1",
+  "sourceRepo": "https://github.com/botcoinmoney/coretex.git",
+  "sourceCommit": "f13afd2e940e7853d6f007f0b7511f702cda503c",
+  "sourcePackagePath": "packages/coretex",
+  "syncedAt": "2026-06-16T02:09:53.562Z",
+  "notes": "Updated by tooling/sync-from-coretex.mjs when shared client logic is refreshed from the canonical CoreTex repo."
+}

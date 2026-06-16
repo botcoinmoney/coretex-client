@@ -169,7 +169,8 @@ different purposes and are NOT interchangeable:
 Both are deterministic functions of `wireBytes`, so a watcher with the
 patch bytes can reproduce either. The distinct domains exist so that
 a value computed for one purpose cannot be silently substituted for
-the other.
+the other (replay forgery defense — see
+`docs/CORETEX_V4_ONCHAIN_RANDOMNESS_PLAN.md` §"Domain Separation").
 
 In code, both currently appear under the name `patchHash`. Naming will
 be tightened in a future commit; the canonical definitions above are
@@ -182,4 +183,4 @@ the source of truth.
 - `coretex_state.md` — field definitions and rejection error codes
 - `merkleization_spec.md` — computing `parentStateRoot`
 - `packing_spec.md` — word serialization
-- `hidden_query_pack.md` — per-patch eval-seed derivation and dual-pack confirmation
+- `docs/CORETEX_V4_ONCHAIN_RANDOMNESS_PLAN.md` — per-patch eval-seed derivation, dual-pack confirmation

@@ -3,7 +3,8 @@
 Status: launch-blocking spec. Pinned by bundle hash.
 
 > **Per-patch on-chain randomness update** — production derives gate +
-> confirm packs PER PATCH from the per-patch eval seeds. Same sampling +
+> confirm packs PER PATCH from the per-patch eval seeds defined in
+> `docs/CORETEX_V4_ONCHAIN_RANDOMNESS_PLAN.md`. Same sampling +
 > stratification rules apply; the seed input is broader (includes
 > `blockhash(targetBlock)`, `patchHash`, `parentRoot`, `minerAddress`
 > in addition to `epochSecret` + `epochId`). The previous per-epoch seed
@@ -60,7 +61,8 @@ The sampling rule is the same for per-patch live eval and the per-epoch
 baseline pack — only the seed input differs:
 
 - **Per-patch live eval**: `seed = deriveGateEvalSeed(...)` or
-  `deriveConfirmEvalSeed(...)`. The seed input already
+  `deriveConfirmEvalSeed(...)` per
+  `docs/CORETEX_V4_ONCHAIN_RANDOMNESS_PLAN.md`. The seed input already
   includes `epochId`, so the `epoch` term in the sampling rule below
   is fixed across an epoch's live evals (the seed entropy carries the
   per-patch uniqueness).

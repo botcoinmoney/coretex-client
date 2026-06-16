@@ -17,7 +17,7 @@ const repoRoot = fileURLToPath(new URL('../..', import.meta.url));
 const cliPath = join(repoRoot, 'dist/replay-cli.js');
 
 function withPackedState(fn) {
-  const dir = mkdtempSync(join(tmpdir(), 'coretex-client-replay-cli-'));
+  const dir = mkdtempSync(join(tmpdir(), 'coretex-replay-cli-'));
   try {
     const statePath = join(dir, 'state.bin');
     writeFileSync(statePath, Buffer.alloc(32768));
@@ -34,7 +34,7 @@ function runWatch(args) {
   });
 }
 
-describe('coretex-client-replay canonical watch gates', () => {
+describe('coretex-replay canonical watch gates', () => {
   test('watch requires a bundle manifest by default', () => withPackedState((statePath) => {
     const proc = runWatch(['--parent-state', statePath]);
     assert.notEqual(proc.status, 0);
@@ -49,7 +49,7 @@ describe('coretex-client-replay canonical watch gates', () => {
   }));
 
   test('watch refuses outdated client when bundle policy is hard-fail', () => withPackedState((statePath) => {
-    const dir = mkdtempSync(join(tmpdir(), 'coretex-client-replay-manifest-'));
+    const dir = mkdtempSync(join(tmpdir(), 'coretex-replay-manifest-'));
     try {
       const manifestPath = join(dir, 'manifest.json');
       const manifest = buildBundleManifest({
@@ -100,7 +100,7 @@ describe('coretex-client-replay canonical watch gates', () => {
   }));
 
   test('outdated client soft-warns when hardFailOutdated=false', () => withPackedState((statePath) => {
-    const dir = mkdtempSync(join(tmpdir(), 'coretex-client-replay-manifest-softwarn-'));
+    const dir = mkdtempSync(join(tmpdir(), 'coretex-replay-manifest-softwarn-'));
     try {
       const manifestPath = join(dir, 'manifest.json');
       const manifest = buildBundleManifest({
@@ -151,7 +151,7 @@ describe('coretex-client-replay canonical watch gates', () => {
   }));
 
   test('recommended-version warning does not fire for newer client versions', () => withPackedState((statePath) => {
-    const dir = mkdtempSync(join(tmpdir(), 'coretex-client-replay-manifest-recommended-'));
+    const dir = mkdtempSync(join(tmpdir(), 'coretex-replay-manifest-recommended-'));
     try {
       const manifestPath = join(dir, 'manifest.json');
       const manifest = buildBundleManifest({
@@ -204,7 +204,7 @@ describe('coretex-client-replay canonical watch gates', () => {
   }));
 });
 
-describe('coretex-client-replay watch — mode-flag derivation (no silent default)', () => {
+describe('coretex-replay watch — mode-flag derivation (no silent default)', () => {
   test('without a bundle manifest, policyAtomsMode must be explicit', () => withPackedState((statePath) => {
     const proc = runWatch(['--parent-state', statePath, '--allow-unverified-bundle']);
     assert.notEqual(proc.status, 0);

@@ -16,7 +16,7 @@ Specifically: `keccak256(data: Uint8Array): Uint8Array` producing 32 bytes, matc
 - `ethereum-cryptography` npm package (`import { keccak256 } from 'ethereum-cryptography/keccak.js'`), which is a pure-JS implementation with no native deps.
 - Or a manual implementation using the `node:crypto` `createHash` with the `previous` keccak variant if available.
 
-For this Phase 1 implementation, we use the `ethereum-cryptography` package's keccak256. It is listed as a devDependency or direct dependency only in `@botcoin/coretex`.
+For this Phase 1 implementation, we use the `ethereum-cryptography` package's keccak256. It is listed as a devDependency or direct dependency only in `@botcoinmoney/coretex-client`.
 
 ---
 

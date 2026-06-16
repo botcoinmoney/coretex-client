@@ -31,7 +31,8 @@
  *   - A coordinator that omits a receipt entirely (replay watcher must
  *     iterate over the chain's accepted-patch logs, not just receipts)
  *   - Coordinator who delays processing to wait for a favorable
- *     blockhash (mitigated separately by the PatchReceivedNotice log)
+ *     blockhash (mitigated separately by the PatchReceivedNotice log
+ *     described in CORETEX_PRODUCTION_RUNBOOK §8.3)
  *
  * Pure orchestration. Same receipt + same deps → byte-identical
  * verification outcome. Production wires `evaluateRetrievalBenchmarkPatch`

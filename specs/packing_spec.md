@@ -94,7 +94,7 @@ All multi-byte fields inside a word are defined MSB-first (big-endian). When a b
 
 ## Round-trip test requirement
 
-The canonical pack/unpack checks now live in `packages/coretex/test/unit/codec.test.mjs`.
+The canonical pack/unpack checks now live in `test/unit/codec.test.mjs`.
 
 ---
 

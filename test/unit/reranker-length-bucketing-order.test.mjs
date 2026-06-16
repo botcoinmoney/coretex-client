@@ -1,6 +1,6 @@
 /**
  * Order-preservation guard for length bucketing in the canonical Qwen reranker
- * runner (packages/coretex/scripts/reranker_runner.py, _score_pairs).
+ * runner (scripts/reranker_runner.py, _score_pairs).
  *
  * Length bucketing sorts prompts by tokenized length, scores them in
  * near-uniform-length buckets (less wasted pad compute), then scatters the

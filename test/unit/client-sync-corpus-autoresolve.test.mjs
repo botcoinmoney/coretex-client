@@ -1,9 +1,9 @@
 /**
- * Client auto-resolution of a historical epoch's corpus from PUBLIC artifacts.
+ * Validator auto-resolution of a historical epoch's corpus from PUBLIC artifacts.
  *
  * A cross-rotation eval-backlog entry pins an epoch's corpusRoot that differs
  * from the loaded scorer context. Rather than requiring the operator to pass
- * --corpus-for-root, the client AUTO-RESOLVES that corpus by walking the
+ * --corpus-for-root, the validator AUTO-RESOLVES that corpus by walking the
  * published, SIGNED corpus-delta chain forward from a known-materialized base,
  * applying applyCorpusDelta in order until the materialized root EQUALS the pin,
  * then INDEPENDENTLY re-merkleizing the reconstructed corpus before use.

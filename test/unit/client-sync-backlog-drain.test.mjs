@@ -1,5 +1,5 @@
 /**
- * Client eval-verification backlog auto-drain after a pre-reveal sync.
+ * Validator eval-verification backlog auto-drain after a pre-reveal sync.
  *
  * These exercise the EXPORTED pure primitives the auto-drain flow is built from,
  * deterministically (no live RPC, no real scorer, no torch):

@@ -2,7 +2,8 @@
  * Bundle profile must pin baseRpcConfig (chain id, block time,
  * targetBlockOffset, replayBlockhashLookbackBlocks).
  *
- * Replay watchers need the chain config + lookback depth alongside the bundle so they
+ * Per docs/CORETEX_V4_ONCHAIN_RANDOMNESS_PLAN.md — replay watchers
+ * need the chain config + lookback depth alongside the bundle so they
  * can verify per-patch eval seeds were derived against the correct
  * future blockhash.
  */
@@ -36,9 +37,9 @@ describe('DEFAULT_BASE_RPC_CONFIG', () => {
   test('is exported and has Base mainnet values', () => {
     assert.equal(DEFAULT_BASE_RPC_CONFIG.chainId, 8453);
     assert.equal(DEFAULT_BASE_RPC_CONFIG.blockTimeSeconds, 2);
-    assert.equal(DEFAULT_BASE_RPC_CONFIG.targetBlockOffset, 30, 'default offset ≈ 60 s on Base — aligned with per-miner rate limit');
+    assert.equal(DEFAULT_BASE_RPC_CONFIG.targetBlockOffset, 15, 'default offset ≈ 30 s on Base — aligned with the live coordinator/scorer seed pin');
     // Must cover one full epoch (24 h = 43_200 blocks @ 2 s) + the offset.
-    const minLookback = 43_200 + 30;
+    const minLookback = 43_200 + 15;
     assert.ok(DEFAULT_BASE_RPC_CONFIG.replayBlockhashLookbackBlocks >= minLookback, 'lookback must cover one epoch + offset');
   });
 });
@@ -51,7 +52,7 @@ describe('DEFAULT_PROFILE.baseRpcConfig', () => {
 
 describe('validateProfile — baseRpcConfig', () => {
   // We exercise validateProfile indirectly through verifyBundleManifest
-  // since the client isn't a public export. Each test mutates the
+  // since the validator isn't a public export. Each test mutates the
   // default profile, builds a manifest, and checks the error list.
 
   test('a bundle with the default config validates clean (no rpc-related errors)', () => {

@@ -12,7 +12,7 @@
  * part of the fast unit suite. Requires python3 + torch + transformers + the
  * cached Qwen3-Reranker-0.6B weights. Skips with a loud message otherwise.
  *
- *   node packages/coretex/scripts/reranker-parity-bench.mjs [pairCount]
+ *   node scripts/reranker-parity-bench.mjs [pairCount]
  */
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';

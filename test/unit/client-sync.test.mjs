@@ -1,7 +1,163 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 
-// ── compiled client sync CLI (dist/client-sync-cli.js) ──
+import {
+  ZERO_BYTES32,
+  epochSecretCommit,
+  mergeChainPins,
+  readOnChainEpochPins,
+} from '../../scripts/coretex-client-sync.mjs';
+
+const REGISTRY = `0x${'11'.repeat(20)}`;
+const OTHER_REGISTRY = `0x${'12'.repeat(20)}`;
+const MINING = `0x${'22'.repeat(20)}`;
+const EPOCH = 9;
+const SECRET = `0x${'33'.repeat(32)}`;
+const COMMIT = epochSecretCommit(SECRET);
+const CORE_VERSION = `0x${'44'.repeat(32)}`;
+const CORPUS_ROOT = `0x${'55'.repeat(32)}`;
+const FRONTIER_ROOT = `0x${'66'.repeat(32)}`;
+const BASELINE_HASH = `0x${'77'.repeat(32)}`;
+const PARENT_ROOT = `0x${'88'.repeat(32)}`;
+const LIVE_ROOT = `0x${'99'.repeat(32)}`;
+
+function addressWord(address) {
+  return `0x${'00'.repeat(12)}${address.slice(2).toLowerCase()}`;
+}
+
+function chainMock({
+  registryFromMining = REGISTRY,
+  hiddenSeedCommit = COMMIT,
+  miningEpochCommit = COMMIT,
+  epochSecret = SECRET,
+} = {}) {
+  return async ({ to, signature }) => {
+    if (to.toLowerCase() === MINING) {
+      if (signature === 'coreTexRegistry()') return addressWord(registryFromMining);
+      if (signature === 'epochCommit(uint64)') return miningEpochCommit;
+      if (signature === 'epochSecret(uint64)') return epochSecret;
+    }
+    if (to.toLowerCase() === REGISTRY) {
+      if (signature === 'epochParentStateRoot(uint64)') return PARENT_ROOT;
+      if (signature === 'liveStateRoot(uint64)') return LIVE_ROOT;
+      if (signature === 'transitionCount(uint64)') return `0x${'00'.repeat(31)}02`;
+      if (signature === 'epochCoreVersionHash(uint64)') return CORE_VERSION;
+      if (signature === 'epochCorpusRoot(uint64)') return CORPUS_ROOT;
+      if (signature === 'epochActiveFrontierRoot(uint64)') return FRONTIER_ROOT;
+      if (signature === 'epochBaselineManifestHash(uint64)') return BASELINE_HASH;
+      if (signature === 'epochHiddenSeedCommit(uint64)') return hiddenSeedCommit;
+    }
+    throw new Error(`unexpected call ${to} ${signature}`);
+  };
+}
+
+describe('validator sync on-chain pins and reveal binding', () => {
+  test('matching mining reveal passes and exposes only reveal status metadata', async () => {
+    const pins = await readOnChainEpochPins({
+      rpcUrl: 'http://127.0.0.1:8545',
+      registry: REGISTRY,
+      miningContract: MINING,
+      epoch: EPOCH,
+      requireReveal: true,
+      ethCall: chainMock(),
+    });
+
+    assert.equal(pins.coreVersionHash, CORE_VERSION);
+    assert.equal(pins.parentStateRoot, PARENT_ROOT);
+    assert.equal(pins.liveStateRoot, LIVE_ROOT);
+    assert.equal(pins.transitionCount, 2);
+    assert.equal(pins.corpusRoot, CORPUS_ROOT);
+    assert.equal(pins.activeFrontierRoot, FRONTIER_ROOT);
+    assert.equal(pins.baselineManifestHash, BASELINE_HASH);
+    assert.equal(pins.hiddenSeedCommit, COMMIT);
+    assert.equal(pins.evalReplayStatus, 'epoch_secret_revealed');
+    assert.equal(pins.epochSecretRevealed, true);
+    assert.equal(pins.epochSecret, undefined);
+  });
+
+  test('zero mining secret blocks post-reveal eval replay', async () => {
+    await assert.rejects(
+      () => readOnChainEpochPins({
+        rpcUrl: 'http://127.0.0.1:8545',
+        registry: REGISTRY,
+        miningContract: MINING,
+        epoch: EPOCH,
+        requireReveal: true,
+        ethCall: chainMock({ epochSecret: ZERO_BYTES32 }),
+      }),
+      /awaiting_epoch_secret_reveal/,
+    );
+  });
+
+  test('zero mining secret during active epoch sync reports awaiting reveal', async () => {
+    const pins = await readOnChainEpochPins({
+      rpcUrl: 'http://127.0.0.1:8545',
+      registry: REGISTRY,
+      miningContract: MINING,
+      epoch: EPOCH,
+      requireReveal: false,
+      ethCall: chainMock({ epochSecret: ZERO_BYTES32 }),
+    });
+
+    assert.equal(pins.evalReplayStatus, 'awaiting_epoch_secret_reveal');
+    assert.equal(pins.epochSecretRevealed, false);
+  });
+
+  test('mismatched revealed secret fails hard', async () => {
+    await assert.rejects(
+      () => readOnChainEpochPins({
+        rpcUrl: 'http://127.0.0.1:8545',
+        registry: REGISTRY,
+        miningContract: MINING,
+        epoch: EPOCH,
+        requireReveal: true,
+        ethCall: chainMock({ epochSecret: `0x${'99'.repeat(32)}` }),
+      }),
+      /epochSecret commit/,
+    );
+  });
+
+  test('mismatched mining epochCommit fails hard before reveal replay', async () => {
+    await assert.rejects(
+      () => readOnChainEpochPins({
+        rpcUrl: 'http://127.0.0.1:8545',
+        registry: REGISTRY,
+        miningContract: MINING,
+        epoch: EPOCH,
+        requireReveal: true,
+        ethCall: chainMock({ miningEpochCommit: `0x${'88'.repeat(32)}` }),
+      }),
+      /epochCommit/,
+    );
+  });
+
+  test('mismatched registry returned by mining contract fails hard', async () => {
+    await assert.rejects(
+      () => readOnChainEpochPins({
+        rpcUrl: 'http://127.0.0.1:8545',
+        registry: REGISTRY,
+        miningContract: MINING,
+        epoch: EPOCH,
+        requireReveal: true,
+        ethCall: chainMock({ registryFromMining: OTHER_REGISTRY }),
+      }),
+      /coreTexRegistry/,
+    );
+  });
+
+  test('chain pins override compatible offline pins and reject mismatches', () => {
+    assert.deepEqual(
+      mergeChainPins({ corpusRoot: CORPUS_ROOT }, { corpusRoot: CORPUS_ROOT, activeFrontierRoot: FRONTIER_ROOT }),
+      { corpusRoot: CORPUS_ROOT, activeFrontierRoot: FRONTIER_ROOT },
+    );
+    assert.throws(
+      () => mergeChainPins({ corpusRoot: `0x${'aa'.repeat(32)}` }, { corpusRoot: CORPUS_ROOT }),
+      /registry pin mismatch corpusRoot/,
+    );
+  });
+});
+
+// ── compiled client-sync CLI (dist/client-sync-cli.js) ──
 
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -13,18 +169,13 @@ import {
   checkCorpusDeltaContinuity,
   checkTofuKeyPin,
   writeTofuKeyPin,
-  checkClientBundleVersion,
+  checkValidatorBundleVersion,
   deriveEpochSecretRevealStatus,
   policyAtomsModeFromManifest,
   sha256Fingerprint,
 } from '../../dist/client-sync-cli.js';
-import { keccak256 } from '../../dist/state/keccak256.js';
-import { bytesToHex } from '../../dist/state/merkle.js';
 
 const cliPath = fileURLToPath(new URL('../../dist/client-sync-cli.js', import.meta.url));
-const ZERO_BYTES32 = `0x${'00'.repeat(32)}`;
-const SECRET = `0x${'33'.repeat(32)}`;
-const COMMIT = bytesToHex(keccak256(Buffer.from(SECRET.slice(2), 'hex')));
 const ROOT_A = `0x${'aa'.repeat(32)}`;
 const ROOT_B = `0x${'bb'.repeat(32)}`;
 
@@ -47,7 +198,7 @@ function runCli(cliArgs, env = {}) {
   });
 }
 
-describe('client sync CLI — corpus-delta continuity', () => {
+describe('client-sync CLI — corpus-delta continuity', () => {
   test('continuity holds when delta.previousRoot equals the local previous corpus root', () => {
     assert.doesNotThrow(() => checkCorpusDeltaContinuity(ROOT_A, ROOT_A.toUpperCase().replace('0X', '0x')));
   });
@@ -67,7 +218,7 @@ describe('client sync CLI — corpus-delta continuity', () => {
   });
 });
 
-describe('client sync CLI — TOFU epoch signing key pinning', () => {
+describe('client-sync CLI — TOFU epoch signing key pinning', () => {
   const KEY_A = '-----BEGIN PUBLIC KEY-----\nAAAA\n-----END PUBLIC KEY-----\n';
   const KEY_B = '-----BEGIN PUBLIC KEY-----\nBBBB\n-----END PUBLIC KEY-----\n';
 
@@ -92,19 +243,19 @@ describe('client sync CLI — TOFU epoch signing key pinning', () => {
   }));
 });
 
-describe('client sync CLI — bundle version self-check', () => {
+describe('client-sync CLI — bundle version self-check', () => {
   const LOCAL = `0x${'44'.repeat(32)}`;
   const CHAIN = `0x${'45'.repeat(32)}`;
 
   test('matching bundleHash passes', () => {
-    assert.deepEqual(checkClientBundleVersion(LOCAL, LOCAL.toUpperCase().replace('0X', '0x'), false), { match: true });
+    assert.deepEqual(checkValidatorBundleVersion(LOCAL, LOCAL.toUpperCase().replace('0X', '0x'), false), { match: true });
   });
 
-  test('mismatch is a hard "coretex client outdated" error naming the required hash', () => {
+  test('mismatch is a hard "validator client outdated" error naming the required hash', () => {
     assert.throws(
-      () => checkClientBundleVersion(LOCAL, CHAIN, false),
+      () => checkValidatorBundleVersion(LOCAL, CHAIN, false),
       (err) => {
-        assert.match(err.message, /coretex client outdated/);
+        assert.match(err.message, /validator client outdated/);
         assert.match(err.message, new RegExp(`Required bundle hash: ${CHAIN}`));
         return true;
       },
@@ -113,15 +264,15 @@ describe('client sync CLI — bundle version self-check', () => {
 
   test('--allow-version-mismatch downgrades to a loud read-only warning', () => {
     const warnings = [];
-    const result = checkClientBundleVersion(LOCAL, CHAIN, true, (m) => warnings.push(m));
+    const result = checkValidatorBundleVersion(LOCAL, CHAIN, true, (m) => warnings.push(m));
     assert.deepEqual(result, { match: false });
     assert.equal(warnings.length, 1);
-    assert.match(warnings[0], /coretex client outdated/);
+    assert.match(warnings[0], /validator client outdated/);
     assert.match(warnings[0], /READ-ONLY/);
   });
 });
 
-describe('client sync CLI — epoch secret reveal status + mode flags', () => {
+describe('client-sync CLI — epoch secret reveal status + mode flags', () => {
   test('zero mining secret reports awaiting_epoch_secret_reveal', () => {
     assert.deepEqual(
       deriveEpochSecretRevealStatus(COMMIT, ZERO_BYTES32),
@@ -150,7 +301,7 @@ describe('client sync CLI — epoch secret reveal status + mode flags', () => {
   });
 });
 
-describe('client sync CLI — mandatory inputs (spawned)', () => {
+describe('client-sync CLI — mandatory inputs (spawned)', () => {
   const baseArgs = (manifestPath) => [
     '--epoch', '1',
     '--rpc-url', 'http://127.0.0.1:9',

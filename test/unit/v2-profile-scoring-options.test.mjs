@@ -49,7 +49,7 @@ describe('V2 profile → ScoringOptions', () => {
   });
 
   test('real v16 launch profile activates the full Memory-IR reranker path through profile mapping', () => {
-    const profilePath = new URL('../../../../release/calibration/2026-06-04-memory-atom-v16/evaluator-profile-v2-dgen1-policy-r5-atom-v16-300k-enabled.json', import.meta.url);
+    const profilePath = new URL('../../release/calibration/2026-06-04-memory-atom-v16/evaluator-profile-v2-dgen1-policy-r5-atom-v16-300k-enabled.json', import.meta.url);
     const launchProfile = JSON.parse(readFileSync(profilePath, 'utf8'));
     const opts = scoringOptionsFromProfile(launchProfile, runtime);
     assert.equal(opts.rerankerMemoryIRMode, 'full');

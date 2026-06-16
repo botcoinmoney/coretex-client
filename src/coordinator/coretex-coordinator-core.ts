@@ -1,9 +1,9 @@
 /**
- * v0 CoreTex production coordinator core — the hardened semantics that
- * `coretex_miner_testing/mainnet-coord-v16.mjs` prototyped, ported into a
- * production-shaped TypeScript module. NO sims, NO proxy scoring, NO local
- * shell-outs — those are the responsibility of the production server harness
- * that mounts this core via the dependency interfaces below.
+ * v0 CoreTex production coordinator core. This is the production-shaped
+ * TypeScript module for receipt issuance, root tracking, and submit
+ * admission. NO sims, NO proxy scoring, NO local shell-outs — those are the
+ * responsibility of the production server harness that mounts this core via
+ * the dependency interfaces below.
  *
  * Hardened invariants enforced here:
  *   1. Chain-confirmed-only root tracking: `liveState` / `liveRoot` /
@@ -182,6 +182,10 @@ export interface RealEvaluator {
      *  under the pinned blockhash; the secretless scorer injects them verbatim.
      *  Requires seedContext. The local CPU evaluator path omits it. */
     injectedSeeds?: { readonly gateSeed: string; readonly confirmSeed: string };
+    /** OPTIONAL coordinator-authoritative offset for the supplied seedContext.
+     *  Remote/keyless evaluators use it to stamp artifacts/proofs with the same
+     *  targetBlockOffset the coordinator used when drawing targetBlock. */
+    targetBlockOffset?: number;
   }): Promise<EvalResult> | EvalResult;
 }
 
@@ -189,7 +193,7 @@ export type EvalResult =
   // §8 envelope strip: reject results carry NO score telemetry. The core never
   // forwards deterministicDeltaPpm / requiredDeltaPpm (or any equivalent score
   // gradient) into a rejection envelope.
-  | { readonly outcome: 'reject'; readonly code: string; readonly reason: string }
+  | { readonly outcome: 'reject'; readonly code: string; readonly reason: string; readonly innerRejectionReason?: string }
   | { readonly outcome: 'screener_pass'; readonly deterministicDeltaPpm: number;
       readonly evalReportHash: string; readonly artifactHash: string;
       readonly evaluationProof?: CoreTexDualPackEvaluationProof }
@@ -346,7 +350,7 @@ export interface CoreTexCoordinatorConfig {
   readonly exampleValidPatch?: unknown;
   readonly activeSubstrateSurfaces?: readonly string[];
   /** OPTIONAL public URL where the epoch signing public key (PEM) is published.
-   *  When set it is emitted on `/coretex/status` so `coretex-client-sync` can
+   *  When set it is emitted on `/coretex/status` so the client-sync client can
    *  auto-discover the key (fallback for `--public-key`). Omitted when unset. */
   readonly epochSigningPublicKeyUrl?: string;
   /** OPTIONAL operator-facing id of the epoch signing key (e.g. AWS KMS key id). */
@@ -632,6 +636,15 @@ export class CoreTexCoordinatorCore {
 
   // ── chain-event verification + apply ─────────────────────────────────────
   private applyChainEvent(ev: CoreTexStateAdvancedEvent): void {
+    if (ev.epoch < this.config.epoch) {
+      // Finalized PRIOR-epoch advance — already folded into this epoch's on-chain
+      // start root (liveRoot was seeded to it at load). Skip; re-applying would fail
+      // the parent/transitionIndex checks. Lets the watcher replay from a start block
+      // that predates the live epoch (e.g. a stale CORETEX_REPLAY_FROM_BLOCK after an
+      // epoch advance) WITHOUT dead-locking; transitionIndex is per-epoch (resets to 0)
+      // so contiguity is preserved.
+      return;
+    }
     if (ev.epoch !== this.config.epoch) {
       throw new Error(`watcher: event epoch ${ev.epoch} ≠ configured ${this.config.epoch}`);
     }

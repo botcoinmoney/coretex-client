@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import {
   deriveBaselineSampleSeed,
   summarizeBaselineComposites,
-} from '../../../../scripts/lib/baseline-recalibration.mjs';
+} from '../../scripts/lib/baseline-recalibration.mjs';
 
 describe('baseline recalibration script helpers', () => {
   test('fixed seed mode reuses one hidden pack within a cron tick', () => {

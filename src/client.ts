@@ -1,6 +1,6 @@
-// Public CoreTex client entrypoint.
+// Public validator/client entrypoint.
 //
-// This surface is safe for standalone clients: replay, sync, state codecs,
+// This surface is safe for standalone validators: replay, sync, state codecs,
 // corpus verification, bundle attestation, and scoring/audit helpers. It does
 // not export the coordinator HTTP router, miner submit handler, receipt signer
 // dependencies, or CoreTexCoordinatorCore.

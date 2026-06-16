@@ -64,7 +64,7 @@ export const DEFAULT_COMPOSITE_WEIGHTS: CompositeWeights = {
 
 /**
  * §6.6 pipeline-version pin enforcement. The bundle profile pins
- * `pipelineVersion` so a replay client routes to the matching code
+ * `pipelineVersion` so a replay validator routes to the matching code
  * path. When a binary scores against a bundle that pins a different
  * version (future migration, downgrade attempt), throw fail-closed so
  * scoring doesn't silently produce wrong numbers. No env-var bypass:
@@ -386,7 +386,7 @@ export interface ScoringOptions {
   /**
    * §6.6 pipeline-version pin. When set, the scorer asserts the bundle's
    * pinned pipeline matches what this code implements (currently
-   * `'coretex-retrieval-v2-lens'`). Replay clients consume the pin to
+   * `'coretex-retrieval-v2-lens'`). Replay validators consume the pin to
    * route to the matching code path; a bundle that pins a future version
    * cannot be replayed by an older binary without an explicit override.
    */
@@ -594,7 +594,8 @@ export function parseQueryConflictIntent(queryText: string, entityNames: Readonl
  * "… what is the <aspect> detail?". Returns the intent-aspect token (lowercased) or null. Honest: query text
  * ONLY — no qrels, no family labels. NOTE: the aspect admission/boost HOOK is NOT yet wired into scoring
  * (aspect_constraint is not a launch surface); this selector + the `policyAspectIntentAdmission` profile flag
- * are no-op-safe scaffolding so a future boost-only arm can confirm lift before activation.
+ * are no-op-safe scaffolding so the r5.1 hook can drop in after the A100 boost-only arm confirms lift. See
+ * CHURN_AND_SELECTOR_HARDENING_HANDOFF.md.
  */
 export function parseQueryAspectIntent(queryText: string): string | null {
   const m = (queryText ?? '').toLowerCase().match(/what (?:is|are) the ([a-z0-9 _-]+?) (?:detail|note|setting|value|config|spec)\b/);
@@ -873,7 +874,7 @@ export interface PatchEvalResult {
  * Score a single query against the substrate using the v2-lens pipeline.
  *
  * Spec: specs/substrate_retrieval_semantics.md plus the active evaluator
- * profile described in release/calibration/CURRENT.md.
+ * profile pinned by the launch artifact manifest.
  *
  * Two-stage retrieval, substrate is the bias not the gate:
  *   Stage 1: blind BGE-M3 cosine over the full public corpus index →
@@ -1831,7 +1832,7 @@ export async function scoreSubstrateAgainstQuery(
   // §6.5+ Anchor-mandatory sub-cap. With many possible anchors and events
   // possibly carrying multiple truth docs, an unbounded mandatory pool could
   // exceed `rerankerInputTopK` and cause unbounded reranker work per query —
-  // a worst-case DoS for the open-source replay client. We cap mandatory
+  // a worst-case DoS for the open-source replay validator. We cap mandatory
   // inclusions at the cap itself, taking docs in (slot, docId) lexicographic
   // order so the truncation is byte-deterministic across replay hosts.
   const anchorMandatoryAll = candidates

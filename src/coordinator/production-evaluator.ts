@@ -30,6 +30,7 @@ import { hexToBytes, bytesToHex } from '../state/merkle.js';
 import { keccak256 } from '../state/keccak256.js';
 import {
   DEFAULT_PROFILE,
+  DEFAULT_BASE_RPC_CONFIG,
   buildCoordinatorBootAttestation,
   scoringOptionsFromProfile,
   type AttestedCoordinatorBootAttestation,
@@ -320,6 +321,7 @@ export type ProductionEvalRejectResult = {
   readonly outcome: 'reject';
   readonly code: string;
   readonly reason: string;
+  readonly innerRejectionReason?: string;
 };
 
 /** §3 artifact-bytes return: accepted production results carry the FULL
@@ -361,9 +363,14 @@ export type ProductionCoreTexEvaluator = RealEvaluator & {
     /** §8 keyless-scorer path — coordinator-derived gate/confirm seeds. The
      *  scorer host never holds the pre-reveal epoch secret; the coordinator
      *  derives both seeds and ships them with the job alongside the pinned
-     *  seedContext. Requires seedContext. The client's post-reveal
+     *  seedContext. Requires seedContext. The validator's post-reveal
      *  re-derivation from the revealed secret is the integrity backstop. */
     injectedSeeds?: { readonly gateSeed: string; readonly confirmSeed: string };
+    /** Coordinator-authoritative target block offset for an injected seedContext.
+     *  The keyless scorer receives this per job and stamps artifacts/proofs with
+     *  the same value the coordinator used to draw targetBlock. Local CPU scoring
+     *  omits it and uses the construction-time bundle/default offset. */
+    targetBlockOffset?: number;
   }): Promise<ProductionEvalResult>;
   /** Hash-bound boot attestation (§2): resolved model id + revision +
    *  reranker mode + instruction + prompt-template hash + Memory-IR mode. */
@@ -486,18 +493,6 @@ export function createCoreTexEvaluatorCore(deps: ProductionCoreTexEvaluatorCoreD
         throw new Error(`scorePatch: screenerThresholdPpm override must be a non-negative integer (got ${String(input.screenerThresholdPpm)})`);
       }
 
-      // §8 grinding dedup: a patch already evaluated at the same
-      // (epochId, parentStateRoot) is rejected WITHOUT re-evaluation —
-      // no new pack draw, no scorer run, no RPC blockhash wait.
-      const prior = await deps.dedupStore.get(dedupKey);
-      if (prior) {
-        return {
-          outcome: 'reject',
-          code: 'duplicate_submission',
-          reason: `patch ${patchHash} already evaluated at parent ${parentStateRoot} in epoch ${deps.epochId} (prior outcome: ${prior.outcome})`,
-        };
-      }
-
       const miner = input.miner.toLowerCase();
       const parent = input.parentState ?? await deps.parentStateLoader(input.parentStateRoot);
       const perSeed = new Map<string, PatchEvalResult>();
@@ -528,6 +523,21 @@ export function createCoreTexEvaluatorCore(deps: ProductionCoreTexEvaluatorCoreD
       const coordinatorPinnedSeed: PerPatchSeedContext | undefined = input.seedContext
         ? { ...input.seedContext, blockhash: input.seedContext.blockhash.toLowerCase() }
         : undefined;
+      // §8 grinding dedup: on the LOCAL CPU path, a patch already evaluated at
+      // the same (epochId, parentStateRoot) is rejected WITHOUT re-evaluation —
+      // no new pack draw, no scorer run, no RPC blockhash wait. On the REMOTE /
+      // keyless path the coordinator is the authoritative dedup/admission/seed
+      // owner and has already shipped the exact seed context. The scorer host's
+      // store is only defense-in-depth, so it must not globally block rejected
+      // attempts or cross-miner convergence before the coordinator verifies.
+      const prior = coordinatorPinnedSeed ? null : await deps.dedupStore.get(dedupKey);
+      if (prior) {
+        return {
+          outcome: 'reject',
+          code: 'duplicate_submission',
+          reason: `patch ${patchHash} already evaluated at parent ${parentStateRoot} in epoch ${deps.epochId} (prior outcome: ${prior.outcome})`,
+        };
+      }
       const priorAttempt = coordinatorPinnedSeed ? null : await deps.dedupStore.getAttempt(dedupKey);
       // §8 PENDING-WINDOW dedup (cross-miner): a 'drawn'-but-not-completed attempt
       // is the SAME (epoch, parentStateRoot, patchHash) already drawn/in-flight.
@@ -554,7 +564,7 @@ export function createCoreTexEvaluatorCore(deps: ProductionCoreTexEvaluatorCoreD
       // the retry is always admitted (feed the gate 0) and never re-charged.
       // On a first draw the gate sees the real derived count (this key is not yet
       // charged), so it rejects with NO draw and NO charge iff count >= cap.
-      const minerAdmissions = priorAttempt ? 0 : await deps.dedupStore.minerAdmissions(deps.epochId, miner);
+      const minerAdmissions = coordinatorPinnedSeed || priorAttempt ? 0 : await deps.dedupStore.minerAdmissions(deps.epochId, miner);
       // §8 ATOMIC seed-pin + admission-charge BEFORE scoring, unless this is a
       // retry that already has a 'drawn' attempt (its seed is reused, its
       // admission already charged). On the remote path the coordinator-pinned
@@ -562,9 +572,13 @@ export function createCoreTexEvaluatorCore(deps: ProductionCoreTexEvaluatorCoreD
       // store so its attempt state machine stays consistent (outcome upgrade
       // follows a recorded draw). recordSeedDrawnAndAdmission is idempotent on
       // the key, so this never re-rolls the seed nor double-charges the miner.
-      const onSeedDerived = priorAttempt
+      const onSeedDerived = coordinatorPinnedSeed || priorAttempt
         ? undefined
         : (seedContext: PerPatchSeedContext) => deps.dedupStore.recordSeedDrawnAndAdmission(dedupKey, seedContext, miner);
+      const effectiveTargetBlockOffset = input.targetBlockOffset ?? deps.targetBlockOffset;
+      if (!Number.isSafeInteger(effectiveTargetBlockOffset) || effectiveTargetBlockOffset <= 0) {
+        throw new Error(`targetBlockOffset must be a positive integer (got ${String(effectiveTargetBlockOffset)})`);
+      }
 
       const dual = await runPerPatchEvaluation({
         normalizedPatchBytes: patchBytes,
@@ -575,7 +589,7 @@ export function createCoreTexEvaluatorCore(deps: ProductionCoreTexEvaluatorCoreD
       }, {
         rpcClient: deps.rpcClient,
         scorer,
-        targetBlockOffset: deps.targetBlockOffset,
+        targetBlockOffset: effectiveTargetBlockOffset,
         thresholdPpm: effectiveThresholdPpm,
         perMinerCap: deps.perMinerCap,
         ...(deps.epochSecret ? { epochSecret: deps.epochSecret } : {}),
@@ -590,14 +604,22 @@ export function createCoreTexEvaluatorCore(deps: ProductionCoreTexEvaluatorCoreD
         ...(onSeedDerived ? { onSeedDerived } : {}),
       });
 
+      const drewPacks = dual.receivedAtBlock > 0;
+      if (drewPacks) {
+        const actualTargetBlockOffset = dual.targetBlock - dual.receivedAtBlock;
+        if (!Number.isSafeInteger(actualTargetBlockOffset) || actualTargetBlockOffset <= 0 || actualTargetBlockOffset !== effectiveTargetBlockOffset) {
+          throw new Error(`targetBlockOffset mismatch: targetBlock ${dual.targetBlock} != receivedAtBlock ${dual.receivedAtBlock} + offset ${effectiveTargetBlockOffset}`);
+        }
+      }
+
       // The patch consumed a pack draw iff seeds were derived. The admission was
       // ALREADY charged ATOMICALLY with the seed pin inside onSeedDerived (which
       // runPerPatchEvaluation invokes only AFTER the admission gate passes and
       // the seed is derived) — so there is no separate post-result charge to
       // make here (exactly-once, crash-safe). We only record the dedup outcome,
       // which is what short-circuits a completed resubmission.
-      const drewPacks = dual.receivedAtBlock > 0;
       const record = (outcome: CoreTexEvalDedupRecord['outcome'], code?: string) => {
+        if (coordinatorPinnedSeed) return Promise.resolve();
         const attemptState = outcome === 'reject' ? 'rejected' as const : 'accepted' as const;
         return Promise.resolve(deps.dedupStore.recordAttemptOutcome(dedupKey, attemptState, outcome, code))
           .then(() => deps.dedupStore.put({ ...dedupKey, outcome, ...(code ? { code } : {}) }));
@@ -610,6 +632,7 @@ export function createCoreTexEvaluatorCore(deps: ProductionCoreTexEvaluatorCoreD
           outcome: 'reject',
           code,
           reason: 'dual-pack evaluator rejected patch',
+          ...(dual.innerRejectionReason ? { innerRejectionReason: dual.innerRejectionReason } : {}),
         };
       }
 
@@ -628,7 +651,7 @@ export function createCoreTexEvaluatorCore(deps: ProductionCoreTexEvaluatorCoreD
           epochId: deps.epochId,
           receivedAtBlock: dual.receivedAtBlock,
           targetBlock: dual.targetBlock,
-          targetBlockOffset: deps.targetBlockOffset,
+          targetBlockOffset: effectiveTargetBlockOffset,
           blockhash: dual.blockhash.toLowerCase(),
           patchHash,
           parentStateRoot,
@@ -649,7 +672,7 @@ export function createCoreTexEvaluatorCore(deps: ProductionCoreTexEvaluatorCoreD
         corpusRoot: deps.corpusRoot,
         coreVersionHash: deps.bundleHash,
         hiddenSeedCommit,
-        targetBlockOffset: deps.targetBlockOffset,
+        targetBlockOffset: effectiveTargetBlockOffset,
       });
 
       if (stateAdvance) {
@@ -753,7 +776,7 @@ export async function createProductionCoreTexEvaluator(
     stateThresholdPpm,
     screenerThresholdPpm,
     replayTolerancePpm: profile.replayTolerancePpm,
-    targetBlockOffset: options.targetBlockOffset ?? 30,
+    targetBlockOffset: options.targetBlockOffset ?? profile.baseRpcConfig?.targetBlockOffset ?? DEFAULT_BASE_RPC_CONFIG.targetBlockOffset,
     perMinerCap: options.perMinerCap,
     rpcClient: options.rpcClient ?? new EnvBaseRpcClient(),
     dedupStore: options.dedupStore,

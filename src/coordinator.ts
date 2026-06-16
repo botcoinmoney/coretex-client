@@ -1,7 +1,7 @@
 // Coordinator-mounted entrypoint.
 //
-// The production SWCP coordinator imports this subpath. Standalone clients
-// should import `@botcoinmoney/coretex-client` or `@botcoinmoney/coretex-client/client`.
+// The production SWCP coordinator imports this subpath. Standalone validators
+// should import `@botcoinmoney/coretex-client` or `@botcoinmoney/coretex-client/validator` instead.
 export * from './client.js';
 export * from './coordinator/endpoints.js';
 export * from './coordinator/retrieval-data-source.js';

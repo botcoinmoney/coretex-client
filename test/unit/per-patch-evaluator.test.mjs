@@ -1,6 +1,7 @@
 /**
  * Per-patch evaluation orchestrator tests. All deps are injected
- * fakes — no I/O, no models.
+ * fakes — no I/O, no models. Per
+ * docs/CORETEX_V4_ONCHAIN_RANDOMNESS_PLAN.md §"Dual-Pack Confirmation".
  *
  * The orchestrator's job is to compose seed-derivation + blockhash
  * binding + admission + dual-pack scoring + receipt construction.

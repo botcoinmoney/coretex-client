@@ -11,7 +11,7 @@ typed structures the production retrieval scorer reads. The contract layer
 (`CortexState.acceptTransition`) is agnostic to the byte semantics; this
 spec is the off-chain source of truth.
 
-Word-range constants are pinned in `packages/coretex/src/state/types.ts`
+Word-range constants are pinned in `src/state/types.ts`
 (`RANGES`).
 
 ## Region map

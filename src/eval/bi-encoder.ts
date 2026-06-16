@@ -16,10 +16,8 @@
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createInterface } from 'node:readline';
-import { join } from 'node:path';
 
 import type { RetrievalKeyLayout } from './retrieval-corpus.js';
-import { resolveCortexPackageRoot } from './reranker.js';
 
 export interface BiEncoderInput {
   readonly text: string;
@@ -72,7 +70,7 @@ export function createPinnedBiEncoder(opts: PinnedBiEncoderOptions): BiEncoder {
   const scriptPath =
     opts.scriptPath ??
     process.env['CORETEX_BIENCODER_SCRIPT'] ??
-    join(resolveCortexPackageRoot(import.meta.url), 'scripts', 'bi_encoder_runner.py');
+    new URL('../../scripts/bi_encoder_runner.py', import.meta.url).pathname;
   const batchSize = opts.batchSize ?? 32;
 
   return {
@@ -198,7 +196,7 @@ export function createStreamingBiEncoder(
   const scriptPath =
     opts.scriptPath ??
     process.env['CORETEX_BIENCODER_SCRIPT'] ??
-    join(resolveCortexPackageRoot(import.meta.url), 'scripts', 'bi_encoder_runner.py');
+    new URL('../../scripts/bi_encoder_runner.py', import.meta.url).pathname;
   const child: ChildProcessWithoutNullStreams = spawn(pythonBin, [scriptPath, '--stream'], {
     stdio: ['pipe', 'pipe', 'pipe'],
     env: {

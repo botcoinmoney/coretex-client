@@ -9,7 +9,7 @@
  */
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { evolveCorpusDelta } from '../../../../scripts/lib/evolve-corpus.mjs';
+import { evolveCorpusDelta } from '../../scripts/lib/evolve-corpus.mjs';
 import {
   applyCorpusDelta,
   buildCorpusDelta,
