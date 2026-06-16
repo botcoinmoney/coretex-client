@@ -22,8 +22,8 @@ import {
 } from '../../dist/index.js';
 
 const LAYOUT = { dim: 8, headerBytes: 9, quantization: 'int8' };
-const LAUNCH_PROFILE_PATH = new URL('../../../../release/calibration/2026-06-04-memory-atom-v16/evaluator-profile-v2-dgen1-policy-r5-atom-v16-300k-enabled.json', import.meta.url);
-const LAUNCH_CORPUS_PATH = new URL('../../../../release/calibration/2026-06-04-memory-atom-v16/materialized/78336d1d/corpus.json', import.meta.url);
+const LAUNCH_PROFILE_PATH = new URL('../../release/calibration/2026-06-04-memory-atom-v16/evaluator-profile-v2-dgen1-policy-r5-atom-v16-300k-enabled.json', import.meta.url);
+const LAUNCH_CORPUS_PATH = new URL('../../release/calibration/2026-06-04-memory-atom-v16/materialized/78336d1d/corpus.json', import.meta.url);
 const launchMaterializedCorpusSkip = existsSync(LAUNCH_CORPUS_PATH)
   ? false
   : 'launch materialized corpus is a generated local artifact, not a tracked unit-test fixture';

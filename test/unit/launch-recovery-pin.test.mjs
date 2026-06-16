@@ -1,6 +1,6 @@
 /**
  * Launch-recovery pin: shipped per-(chainId, epochId) recovery base that
- * lets a fresh client start replay AFTER a one-off operator-bootstrap event
+ * lets a fresh validator start replay AFTER a one-off operator-bootstrap event
  * without traversing receipts that have no score-attested eval artifact.
  *
  * These tests cover:

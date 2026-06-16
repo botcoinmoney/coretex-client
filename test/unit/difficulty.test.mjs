@@ -19,7 +19,7 @@ const {
 
 describe('CoreTex V4 difficulty calculator', () => {
   test('constants are correct bigints', () => {
-    assert.equal(MIN_IMPROVEMENT_PPM, 2_500n);
+    assert.equal(MIN_IMPROVEMENT_PPM, 500n);
     assert.equal(MAX_IMPROVEMENT_PPM, 150_000n);
   });
 
@@ -142,9 +142,9 @@ describe('CoreTex V4 difficulty calculator', () => {
   });
 
   test('floor clamp: decay cannot go below MIN_IMPROVEMENT_PPM', () => {
-    // current=3_000, 0.85 → unclamped=2_550, within range
-    // Use a smaller current to force a floor hit: 2_900 * 0.85 = 2_465 < 2_500
-    const current = 2_900n;
+    // current=600 * 0.85 = 510 → not clamped
+    // Use a smaller current to force a floor hit: 550 * 0.85 = 468 < 500
+    const current = 550n;
     const result = nextMinImprovementPpm({
       current,
       observedAdvances: 0,
@@ -157,9 +157,9 @@ describe('CoreTex V4 difficulty calculator', () => {
   });
 
   test('floor clamp: small_drift_down at floor stays at floor', () => {
-    // current=3_000 * 0.85 (decay) = 2_550 → not clamped
-    // current=2_600 * 0.95 = 2_470 < 2_500 → clamped
-    const current = 2_600n;
+    // current=600 * 0.85 (decay) = 510 → not clamped
+    // current=520 * 0.95 = 494 < 500 → clamped
+    const current = 520n;
     const result = nextMinImprovementPpm({
       current,
       observedAdvances: 0,
@@ -253,8 +253,8 @@ describe('CoreTex V4 difficulty calculator', () => {
     // undefined → pinned MAX; a maxClampPpm <= floor is ignored (falls back to MAX).
     const a = nextMinImprovementPpm({ current: 149_000n, observedAdvances: 10, targetAdvances: 5, qualityAttempts: 8 });
     assert.equal(a.next, MAX_IMPROVEMENT_PPM);
-    const b = nextMinImprovementPpm({ current: 149_000n, observedAdvances: 10, targetAdvances: 5, qualityAttempts: 8, maxClampPpm: 1_000n });
-    assert.equal(b.next, MAX_IMPROVEMENT_PPM); // 1_000 < floor → ignored
+    const b = nextMinImprovementPpm({ current: 149_000n, observedAdvances: 10, targetAdvances: 5, qualityAttempts: 8, maxClampPpm: 500n });
+    assert.equal(b.next, MAX_IMPROVEMENT_PPM); // <= floor → ignored
     const c = nextMinImprovementPpm({ current: 10_000n, observedAdvances: 0, targetAdvances: 5, qualityAttempts: 20, minClampPpm: -5n });
     assert.equal(c.next, 8_500n); // negative floor ignored → normal decay, no clamp
     assert.equal(c.clamped, false);

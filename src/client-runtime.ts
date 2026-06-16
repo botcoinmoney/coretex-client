@@ -3,14 +3,14 @@
  * and coretex-client-sync.
  *
  * NOTHING in this module touches scoring semantics, thresholds, packs, or
- * calibration. It is purely about making the standalone client
+ * calibration. It is purely about making the standalone validator client
  * one-command and friendly:
  *
  *   1. Python venv bootstrap (BUILD 1) — make score replay self-contained
  *      given only `python3`. Idempotent (skips a working interpreter / an
  *      already-bootstrapped venv), opt-outable, and safe (no half-built venv
  *      claimed as ready). The resolved interpreter path is recorded into the
- *      client state file so sync reuses it via CORETEX_RERANKER_PYTHON.
+ *      validator state file so sync reuses it via CORETEX_RERANKER_PYTHON.
  *
  *   2. CPU thread default (BUILD 2) — pick a sane RERANKER_NUM_THREADS when the
  *      user has not set one (cap conservatively to avoid the NUMA/HT
@@ -60,19 +60,19 @@ export const PINNED_SCORER_DEPS: readonly string[] = [
 export const PINNED_TORCH_VERSION = '2.6.0';
 export const PINNED_TRANSFORMERS_VERSION = '4.55.0';
 
-/** Bootstrapped venv layout under the client state dir. */
+/** Bootstrapped venv layout under the validator state dir. */
 export const SCORER_VENV_DIRNAME = 'scorer-venv';
 
 /** Path of the venv interpreter under a state dir (POSIX layout: bin/python). */
 export function scorerVenvPython(stateDir: string): string {
-  // Clients run on Linux/CPU hosts (the reranker is CPU-pinned); POSIX
+  // Validators run on Linux/CPU hosts (the reranker is CPU-pinned); POSIX
   // venv layout (bin/python) is the only supported target. The Windows
   // Scripts/python.exe layout is intentionally not constructed.
   return join(stateDir, SCORER_VENV_DIRNAME, 'bin', 'python');
 }
 
 /** Result of the venv-python `--health` import probe. Mirrors the JSON object
- *  emitted by packages/coretex/scripts/reranker_runner.py:_run_health(). */
+ *  emitted by scripts/reranker_runner.py:_run_health(). */
 export interface ScorerHealth {
   readonly torch?: string | null;
   readonly transformers?: string | null;
@@ -123,11 +123,11 @@ export function probeScorerHealth(
  * A scorer health fingerprint is acceptable for CPU score replay iff:
  *   - torch reports the pinned version,
  *   - transformers reports the pinned version,
- *   - CUDA is NOT active (the client scorer is CPU-only by contract).
+ *   - CUDA is NOT active (the validator scorer is CPU-only by contract).
  */
 export function scorerHealthIsAcceptable(health: ScorerHealth | null): { ok: boolean; reason?: string } {
   if (!health) return { ok: false, reason: 'health probe failed (interpreter missing or torch/transformers not importable)' };
-  if (health.cuda === true) return { ok: false, reason: 'CUDA is active — the client scorer is CPU-only' };
+  if (health.cuda === true) return { ok: false, reason: 'CUDA is active — the validator scorer is CPU-only' };
   if (health.torch == null) return { ok: false, reason: 'torch not importable' };
   if (!String(health.torch).startsWith(PINNED_TORCH_VERSION)) {
     return { ok: false, reason: `torch ${health.torch} != pinned ${PINNED_TORCH_VERSION}` };
@@ -145,7 +145,7 @@ export function scorerHealthIsAcceptable(health: ScorerHealth | null): { ok: boo
 // scorer path is designed around, but it does NOT absorb a wrong torch /
 // transformers / model / prompt-template pin — those can shift logits well past
 // 5 ppm and silently corrupt a score replay. Before any score replay the
-// client therefore asserts that the resolved scorer runtime fingerprint
+// validator therefore asserts that the resolved scorer runtime fingerprint
 // matches the bundle manifest's reranker pins. This is a HARD GATE, not a
 // runtime-speed nicety: it never changes scores, it refuses to score at all
 // when the runtime cannot reproduce the pinned scorer.
@@ -170,7 +170,7 @@ export interface ScorerRuntimeBundlePins {
 
 /** The resolved scorer identity the sync is about to construct + score with. */
 export interface ResolvedScorerRuntime {
-  /** Resolved reranker model id (forced to the bundle pin by createClientReranker). */
+  /** Resolved reranker model id (forced to the bundle pin by createValidatorReranker). */
   readonly modelId: string;
   /** Resolved reranker revision. */
   readonly revision: string;
@@ -182,7 +182,7 @@ export interface ResolvedScorerRuntime {
  * Match a concrete installed version against a runtimePin range token. Accepts
  * the bundle's `X.Y.*` / `X.*` ranges and an exact `X.Y.Z`, stripping a wheel
  * build/pre suffix (e.g. '2.6.0+cpu') before comparing. Mirrors the bundle
- * module's matchSemverRange; duplicated here because this runtime helper is a
+ * module's matchSemverRange; duplicated here because client-runtime is a
  * standalone module (it ships the pinned-version constants for the same reason).
  */
 export function scorerVersionMatchesRange(installed: string, range: string): boolean {
@@ -273,7 +273,7 @@ export function manualBootstrapInstructions(venvPython: string): string {
     `  python3 -m venv <state-dir>/${SCORER_VENV_DIRNAME}`,
     `  ${venvPython} ${pinnedPipInstallArgv().join(' ')}`,
     `Then verify: ${venvPython} <package>/scripts/reranker_runner.py --health`,
-    'or manage your own interpreter and set CORETEX_RERANKER_PYTHON (skip this step with --no-venv-bootstrap / CORETEX_CLIENT_SKIP_VENV=1).',
+    'or manage your own interpreter and set CORETEX_RERANKER_PYTHON (skip this step with --no-venv-bootstrap / CORETEX_VALIDATOR_SKIP_VENV=1).',
   ].join('\n');
 }
 
@@ -297,7 +297,7 @@ export interface VenvBootstrapInputs {
   readonly envScorerPython?: string | undefined;
   /** python3 launcher used to CREATE the venv (default 'python3'). */
   readonly python3Bin?: string | undefined;
-  /** Opt out: --no-venv-bootstrap / CORETEX_CLIENT_SKIP_VENV=1. */
+  /** Opt out: --no-venv-bootstrap / CORETEX_VALIDATOR_SKIP_VENV=1. */
   readonly optOut: boolean;
 }
 
@@ -337,7 +337,7 @@ export function bootstrapScorerVenv(
     return {
       status: 'skipped-opt-out',
       scorerPython: inputs.envScorerPython ?? python3Bin,
-      detail: 'venv bootstrap opted out (--no-venv-bootstrap / CORETEX_CLIENT_SKIP_VENV=1); the operator manages CORETEX_RERANKER_PYTHON',
+      detail: 'venv bootstrap opted out (--no-venv-bootstrap / CORETEX_VALIDATOR_SKIP_VENV=1); the operator manages CORETEX_RERANKER_PYTHON',
     };
   }
 
@@ -466,7 +466,7 @@ export function resolveRerankerThreadDefault(inputs: {
       return { threads: n, source: 'override', reason: `RERANKER_NUM_THREADS=${n} set by operator (override honored)` };
     }
     // A malformed override is ignored (fall through to auto) rather than
-    // crashing the client — but we say so.
+    // crashing the validator — but we say so.
   }
   const physical = estimatePhysicalCores(inputs.logicalCpuCount);
   const threads = Math.max(1, Math.min(RERANKER_THREAD_CAP, physical));

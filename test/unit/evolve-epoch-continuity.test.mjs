@@ -32,7 +32,7 @@ import {
   splitForRecord,
 } from '../../dist/index.js';
 
-const repoRoot = resolve(fileURLToPath(new URL('.', import.meta.url)), '../../../..');
+const repoRoot = resolve(fileURLToPath(new URL('.', import.meta.url)), '../..');
 const SCRIPT = resolve(repoRoot, 'scripts/coretex-epoch-evolve.mjs');
 const MANIFEST = 'release/calibration/2026-06-04-memory-atom-v16/coretex-launch-v16-artifacts.json';
 const manifest = JSON.parse(readFileSync(resolve(repoRoot, MANIFEST), 'utf8'));

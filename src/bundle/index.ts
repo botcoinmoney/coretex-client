@@ -342,7 +342,7 @@ export interface EvaluatorProfile {
    * §5 Run 1 selection-policy attestation. When `firstStageTopK` is pinned via
    * the per-stratum recall@K rule WITHOUT meeting the target on all strata,
    * this field records the operator-override decision in the signed bundle so
-   * replay clients see that the override is explicit (not a silent threshold
+   * replay validators see that the override is explicit (not a silent threshold
    * violation). Hashed into `bundleHash` — any change requires a new bundle.
    */
   readonly firstStageTopKSelection?: FirstStageTopKSelection;
@@ -401,7 +401,8 @@ export interface EvaluatorProfile {
    */
   readonly baselineEvalSeedHex?: string;
   /**
-   * Per-patch on-chain randomness binding.
+   * Per-patch on-chain randomness binding
+   * (docs/CORETEX_V4_ONCHAIN_RANDOMNESS_PLAN.md).
    *
    * `chainId` + `blockTimeSeconds` pin the chain a verifier queries
    * for blockhashes; `targetBlockOffset` is the number of blocks past
@@ -415,7 +416,8 @@ export interface EvaluatorProfile {
    */
   readonly baseRpcConfig: BaseRpcConfigPin;
   /**
-   * Staged-active-root corpus policy.
+   * Staged-active-root corpus policy (per
+   * `docs/CORETEX_V4_ONCHAIN_RANDOMNESS_PLAN.md` §"Staged Active Root").
    *
    * The full launch corpus is generated up-front as a deterministic
    * RESERVE (seeds [0..seedsPerDomain) per domain). At launch the
@@ -449,7 +451,7 @@ export interface EvaluatorProfile {
    */
   readonly controllerParams?: ControllerParamsPin;
   /** LAUNCH-REQUIRED active-frontier / churn controller pin (EpochFrontier). When present, the
-   *  client rotates the active eval_hidden frontier deterministically and recomputes the
+   *  validator rotates the active eval_hidden frontier deterministically and recomputes the
    *  baseline on activeRootChanged. Hashed into bundleHash so churn behavior is attested. */
   readonly epochFrontier?: EpochFrontierPin;
 }
@@ -766,7 +768,8 @@ const DEFAULT_EVALUATOR_FILES = [
   'src/eval/bi-encoder.ts',
   'src/eval/reranker.ts',
   // Per-patch on-chain randomness stack — pinned so the bundleHash
-  // catches any drift in the acceptance/replay logic.
+  // catches any drift in the acceptance/replay logic. See
+  // docs/CORETEX_V4_ONCHAIN_RANDOMNESS_PLAN.md.
   'src/eval/seed-derivation.ts',
   'src/eval/live-eval-admission.ts',
   'src/coordinator/base-blockhash.ts',
@@ -821,7 +824,7 @@ export const DEFAULT_COMPOSITE_WEIGHTS_PIN: CompositeWeightPin = {
 };
 
 export const DEFAULT_PATCH_FLOORS: PatchAcceptanceFloorsPin = {
-  minImprovementPpm: 2500,
+  minImprovementPpm: 500,
   structuralFloor: 0.95,
   protectedRegressionFloor: 0.05,
   familyCatastrophicFloor: 0.85,
@@ -916,7 +919,7 @@ export const DEFAULT_PROFILE: EvaluatorProfile = {
   // NOTE: this DEFAULT_PROFILE is the CONSERVATIVE r4 baseline (PolicyAtoms OFF — the r5-no-atoms==r4 safety
   // baseline). It is NOT the launch config. The SIGNED LAUNCH profile is r5 with the 3 PolicyAtom families active:
   // release/bundle/evaluator-profile-v2-dgen1-policy-r5-{100k,300k}.json. Do not read these defaults as "what ships".
-  // Canonical r4/r5 explainer: release/calibration/CURRENT.md (top) + specs/coretex_state.md §Range C-r5/F-r5.
+  // Canonical r4/r5 layout: specs/coretex_state.md §Range C-r5/F-r5 plus signed launch profiles.
   pipelineVersion: 'coretex-retrieval-v2-lens-r4',  // Tier-2 substrate epoch (stride-1 MemoryIndex, 96-pair temporal)
   firstStageTopK: 200,             // calibration Run 1 will tune per-stratum
   rerankerInputTopK: 128,          // §6.5 MemReranker-style cross-encoder pool cap
@@ -1159,9 +1162,9 @@ export function buildBundleManifest(opts: BuildBundleManifestOptions): CoreTexBu
     },
     replay: {
       commands: [
-        'coretex-client-replay tx --tx <hash> --rpc <url> --parent-state <state.bin> --bundle-manifest <manifest.json> --core-version-hash <bundleHash>',
-        'coretex-client-replay current --events <events.json> --parent-state <state.bin> --bundle-manifest <manifest.json> --core-version-hash <bundleHash>',
-        'coretex-client-replay watch --rpc <url> --v4 <address> --cortex-state <address> --from-block <n> --parent-state <state.bin> --bundle-manifest <manifest.json> --core-version-hash <bundleHash>',
+        'coretex-replay tx --tx <hash> --rpc <url> --parent-state <state.bin> --bundle-manifest <manifest.json> --core-version-hash <bundleHash>',
+        'coretex-replay current --events <events.json> --parent-state <state.bin> --bundle-manifest <manifest.json> --core-version-hash <bundleHash>',
+        'coretex-replay watch --rpc <url> --v4 <address> --cortex-state <address> --from-block <n> --parent-state <state.bin> --bundle-manifest <manifest.json> --core-version-hash <bundleHash>',
       ],
       coordinatorCacheOptional: true as const,
       snapshots: (opts.snapshotFiles ?? []).map((path) => hashFile(opts.repoRoot, path, 'substrate-snapshot')),
@@ -1737,7 +1740,7 @@ export function assertBundleBindingAtStartup(opts: {
     opts.clientVersion,
   );
   // Do not hard-fail solely because version was not supplied by the host:
-  // that would brick clients during rollout. We fail closed only when
+  // that would brick validators during rollout. We fail closed only when
   // the supplied version is explicitly invalid or below the minimum.
   const shouldRefuseForClientVersion = clientCheck.code === 'client-version-outdated'
     || clientCheck.code === 'client-version-invalid';

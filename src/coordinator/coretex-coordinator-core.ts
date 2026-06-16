@@ -1,9 +1,9 @@
 /**
- * v0 CoreTex production coordinator core — the hardened semantics that
- * `coretex_miner_testing/mainnet-coord-v16.mjs` prototyped, ported into a
- * production-shaped TypeScript module. NO sims, NO proxy scoring, NO local
- * shell-outs — those are the responsibility of the production server harness
- * that mounts this core via the dependency interfaces below.
+ * v0 CoreTex production coordinator core. This is the production-shaped
+ * TypeScript module for receipt issuance, root tracking, and submit
+ * admission. NO sims, NO proxy scoring, NO local shell-outs — those are the
+ * responsibility of the production server harness that mounts this core via
+ * the dependency interfaces below.
  *
  * Hardened invariants enforced here:
  *   1. Chain-confirmed-only root tracking: `liveState` / `liveRoot` /
@@ -189,7 +189,7 @@ export type EvalResult =
   // §8 envelope strip: reject results carry NO score telemetry. The core never
   // forwards deterministicDeltaPpm / requiredDeltaPpm (or any equivalent score
   // gradient) into a rejection envelope.
-  | { readonly outcome: 'reject'; readonly code: string; readonly reason: string }
+  | { readonly outcome: 'reject'; readonly code: string; readonly reason: string; readonly innerRejectionReason?: string }
   | { readonly outcome: 'screener_pass'; readonly deterministicDeltaPpm: number;
       readonly evalReportHash: string; readonly artifactHash: string;
       readonly evaluationProof?: CoreTexDualPackEvaluationProof }
@@ -346,7 +346,7 @@ export interface CoreTexCoordinatorConfig {
   readonly exampleValidPatch?: unknown;
   readonly activeSubstrateSurfaces?: readonly string[];
   /** OPTIONAL public URL where the epoch signing public key (PEM) is published.
-   *  When set it is emitted on `/coretex/status` so `coretex-client-sync` can
+   *  When set it is emitted on `/coretex/status` so the client-sync client can
    *  auto-discover the key (fallback for `--public-key`). Omitted when unset. */
   readonly epochSigningPublicKeyUrl?: string;
   /** OPTIONAL operator-facing id of the epoch signing key (e.g. AWS KMS key id). */

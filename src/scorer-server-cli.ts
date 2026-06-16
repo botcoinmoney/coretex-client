@@ -20,7 +20,8 @@
  *   CORETEX_RERANKER_MODE=streaming CORETEX_RERANKER_ALLOW_CUDA=1
  *   RERANKER_INNER_BATCH (default 8)
  * plus CORETEX_BUNDLE_MANIFEST_PATH, CORETEX_CORPUS_PATH, CORETEX_EPOCH_ID,
- * CORETEX_EPOCH_SECRET, CORETEX_PER_MINER_SCREENER_CAP, BASE_RPC_URL.
+ * CORETEX_HIDDEN_SEED_COMMIT, CORETEX_PER_MINER_SCREENER_CAP, and
+ * CORETEX_SCORER_AUTH_TOKEN for any non-loopback bind.
  *
  * POST /score-job — see ScorerJobRequest / ScorerJobResult below.
  * GET  /healthz   — liveness + the loaded pins + scorerHealth.
@@ -147,6 +148,7 @@ export interface ScorerJobResult {
   readonly jobId: string;
   readonly accepted: boolean;
   readonly rejectionReason?: string;
+  readonly innerRejectionReason?: string;
   readonly scoreBeforePpm: number | null;
   readonly scoreAfterPpm: number | null;
   readonly deltaPpm: number;
@@ -427,6 +429,7 @@ export async function handleScoreJob(
         ...base,
         accepted: false,
         rejectionReason: result.code,
+        ...(result.innerRejectionReason ? { innerRejectionReason: result.innerRejectionReason } : {}),
         scoreBeforePpm: null,
         scoreAfterPpm: null,
         deltaPpm: 0,

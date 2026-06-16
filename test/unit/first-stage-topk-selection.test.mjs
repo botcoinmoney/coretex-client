@@ -17,7 +17,7 @@ import { fileURLToPath } from 'node:url';
 
 import { verifyBundleManifest } from '../../dist/index.js';
 
-const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
+const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const MANIFEST_PATH = resolve(REPO_ROOT, 'release/bundle/bundle-manifest-v2-ownerscope-candidate.json');
 
 function baseManifest() {

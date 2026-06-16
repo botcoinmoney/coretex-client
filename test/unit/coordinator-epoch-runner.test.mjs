@@ -12,9 +12,9 @@ import {
   readinessCheckedItems,
   shouldDeriveParentStateRootFromChain,
   validateCoordinatorEpochMetrics,
-} from '../../../../scripts/coretex-coordinator-epoch-runner.mjs';
+} from '../../scripts/coretex-coordinator-epoch-runner.mjs';
 
-const runnerPath = resolve(fileURLToPath(import.meta.url), '../../../../../scripts/coretex-coordinator-epoch-runner.mjs');
+const runnerPath = resolve(fileURLToPath(import.meta.url), '../../../scripts/coretex-coordinator-epoch-runner.mjs');
 
 describe('coretex coordinator epoch runner metrics merge', () => {
   test('missing CLI flags do not erase metrics-file counters', () => {

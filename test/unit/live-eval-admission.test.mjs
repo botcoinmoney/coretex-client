@@ -6,7 +6,10 @@
  *   2. duplicate-key-collapsed
  *   3. per-miner-cap-reached
  *
- * The tests below lock the field names and live-eval context.
+ * This is the surviving piece of the sealed-eval design after the rip
+ * (see docs/CORETEX_V4_ONCHAIN_RANDOMNESS_PLAN.md §"What Survives"). The
+ * tests below are adapted from the prior sealed-eval-screener-admission
+ * tests with the new field names and live-eval context.
  */
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';

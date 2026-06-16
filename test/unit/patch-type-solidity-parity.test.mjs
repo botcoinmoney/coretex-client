@@ -21,7 +21,7 @@ import { PATCH_HASH_DOMAIN_PREFIX } from '../../dist/eval/seed-derivation.js';
 
 const solPath = join(
   dirname(fileURLToPath(import.meta.url)),
-  '../../../../contracts/src/BotcoinMiningV4.sol',
+  '../../contracts/src/BotcoinMiningV4.sol',
 );
 const sol = existsSync(solPath) ? readFileSync(solPath, 'utf8') : null;
 

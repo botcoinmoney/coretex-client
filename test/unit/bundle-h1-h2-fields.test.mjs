@@ -1,7 +1,7 @@
 /**
  * Phase H1/H2 bundle profile fields — declared optional on
  * EvaluatorProfile and validated all-or-nothing for the baseline
- * group.
+ * group. See docs/CORETEX_V4_INDEFINITE_SCALABILITY_HARDENING_PLAN.md.
  */
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';

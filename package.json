@@ -1,6 +1,6 @@
 {
   "name": "@botcoinmoney/coretex-client",
-  "version": "0.2.0",
+  "version": "0.7.1",
   "private": false,
   "description": "Standalone Botcoin CoreTex client sync, replay, and setup tooling.",
   "license": "Apache-2.0",
@@ -41,9 +41,14 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "npm run test:unit",
+    "version:check": "node scripts/check-release-version.mjs",
+    "sync:from-coretex": "node tooling/sync-from-coretex.mjs",
     "test:unit": "node --test --test-concurrency=2 --test-reporter=spec ./test/unit/base-blockhash.test.mjs ./test/unit/bundle-base-rpc-config.test.mjs ./test/unit/bundle-client-version-policy.test.mjs ./test/unit/bundle-h1-h2-fields.test.mjs ./test/unit/bundle.test.mjs ./test/unit/canonical-json.test.mjs ./test/unit/codec.test.mjs ./test/unit/coretex-registry-replay.test.mjs ./test/unit/coordinator-contract.test.mjs ./test/unit/corpus-root-cache.test.mjs ./test/unit/corpus-serializer-roundtrip.test.mjs ./test/unit/epoch-rotation.test.mjs ./test/unit/eval-report-artifact.test.mjs ./test/unit/merkle.test.mjs ./test/unit/patch.test.mjs ./test/unit/qwen-prompt-template-golden.test.mjs ./test/unit/reducer.test.mjs ./test/unit/replay-cli.test.mjs ./test/unit/replay-v4.test.mjs ./test/unit/reranker-input-cap.test.mjs ./test/unit/reranker-length-bucketing-order.test.mjs ./test/unit/reranker-script-resolution.test.mjs ./test/unit/retrieval-decoder.test.mjs ./test/unit/rpc-fetch-target.test.mjs ./test/unit/seed-derivation-golden.test.mjs ./test/unit/seed-derivation.test.mjs ./test/unit/slot-policy.test.mjs ./test/unit/state-root-vectors.test.mjs ./test/unit/validate.test.mjs ./test/unit/client-package-fresh-install.test.mjs ./test/unit/client-reranker-fail-closed.test.mjs ./test/unit/client-runtime.test.mjs ./test/unit/client-setup-cli.test.mjs ./test/unit/client-sync-atomicity.test.mjs ./test/unit/client-sync-backlog-drain.test.mjs ./test/unit/client-sync-corpus-autoresolve.test.mjs ./test/unit/client-sync-defaults.test.mjs ./test/unit/client-sync-hardening.test.mjs ./test/unit/client-sync.test.mjs ./test/unit/launch-recovery-pin.test.mjs ./test/unit/workers.test.mjs",
     "pack:check": "npm pack --dry-run",
     "prepack": "npm run build"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "files": [
     "dist",

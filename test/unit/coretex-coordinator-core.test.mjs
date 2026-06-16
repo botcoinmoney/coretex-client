@@ -60,12 +60,12 @@ const baseConfig = {
   confirmationDepth: 4,
   receiptTtlSec: 60,
   perMinerScreenerCap: 50,
-  // §7 launch baseline for the pinned (genesis) context. 288438 with the
-  // default policy and 2700ppm state threshold derives a live screener
-  // threshold of 1350ppm.
+  // §7 launch baseline for the pinned (genesis) context. Under the cold-start
+  // repin this fixture advertises the lowered 500ppm min-improvement floor and
+  // 375ppm screener threshold.
   baselineParentScorePpm: 288438,
-  screenerThresholdPpm: 355,
-  minImprovementPpm: 2500,
+  screenerThresholdPpm: 375,
+  minImprovementPpm: 500,
   replayTolerancePpm: 200,
   targetBlockOffset: 30,
   patchWordBudget: 4,
@@ -685,8 +685,8 @@ describe('CoreTexCoordinatorCore — production submit path', () => {
         scoreAfterPpm: 2900,
         rewrittenPatchBytesHex: rewritten,
         evaluationProof: dualProofFor(ev.compactPatchBytes, GENESIS_ROOT, {
-          gate: { domain: 'gate', seedCommit: '0x' + '91'.repeat(32), accepted: true, scorePpm: 2600 },
-          confirm: { domain: 'confirm', seedCommit: '0x' + '92'.repeat(32), accepted: true, scorePpm: 2600 },
+          gate: { domain: 'gate', seedCommit: '0x' + '91'.repeat(32), accepted: true, scorePpm: 600 },
+          confirm: { domain: 'confirm', seedCommit: '0x' + '92'.repeat(32), accepted: true, scorePpm: 600 },
         }),
       }),
     };

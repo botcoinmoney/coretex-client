@@ -11,7 +11,7 @@
  * as floating-point intermediates and then rounded back to bigint.
  */
 
-export const MIN_IMPROVEMENT_PPM = 2_500n;
+export const MIN_IMPROVEMENT_PPM = 500n;
 export const MAX_IMPROVEMENT_PPM = 150_000n;
 
 export interface DifficultyInputs {

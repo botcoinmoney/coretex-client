@@ -65,8 +65,8 @@ async function main() {
   const [cmd, ...args] = process.argv.slice(2);
   if (!cmd || cmd === '--help' || cmd === '-h') {
     process.stderr.write(
-      'usage: coretex-client-replay {tx|current|watch} --parent-state state.bin [--logs logs.json | --rpc url --tx hash]\n'
-      + '       coretex-client-replay watch --rpc url --coretex-registry addr --parent-state state.bin --bundle-manifest manifest.json --expected-bundle-hash 0x... [--from-block n] [--to-block latest] [--once]\n'
+      'usage: coretex-replay {tx|current|watch} --parent-state state.bin [--logs logs.json | --rpc url --tx hash]\n'
+      + '       coretex-replay watch --rpc url --coretex-registry addr --parent-state state.bin --bundle-manifest manifest.json --expected-bundle-hash 0x... [--from-block n] [--to-block latest] [--once]\n'
       + '       canonical replay: --bundle-manifest manifest.json --expected-bundle-hash 0x... (or --core-version-hash 0x...) [--client-version x.y.z] [--allow-outdated-client]\n',
     );
     process.exit(cmd ? 0 : 1);
@@ -213,10 +213,10 @@ function verifyBundleIfRequested(args: readonly string[]): void {
 function requireCanonicalWatchBundle(args: readonly string[]): void {
   if (args.includes('--allow-unverified-bundle')) return;
   if (!opt(args, '--bundle-manifest')) {
-    die('coretex-client-replay watch requires --bundle-manifest for canonical replay (or --allow-unverified-bundle for local dev)');
+    die('coretex-replay watch requires --bundle-manifest for canonical replay (or --allow-unverified-bundle for local dev)');
   }
   if (!opt(args, '--expected-bundle-hash') && !opt(args, '--core-version-hash')) {
-    die('coretex-client-replay watch requires --expected-bundle-hash or --core-version-hash for canonical replay');
+    die('coretex-replay watch requires --expected-bundle-hash or --core-version-hash for canonical replay');
   }
 }
 

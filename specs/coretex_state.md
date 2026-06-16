@@ -93,7 +93,7 @@ referencible slots at 0–255 — ample for the 96-pair temporal ceiling (≤192
 
 > **Single decoder authority.** The debug CLI, eval stub, scorer, validators, and miner tooling
 > all use the canonical stride-1 substrate
-> interpretation above through `packages/coretex/src/substrate/retrieval-decoder.ts`.
+> interpretation above through `src/substrate/retrieval-decoder.ts`.
 
 ### Range C: RetrievalKeys (cells 384–671) — ⚠ RECLAIMED (r4): NOT a valid miner surface
 
@@ -182,12 +182,12 @@ edgeType enum:
   0x5 derived_from
   0x6 co_occurs_with
 
-> Note (decoder authority). The canonical decoder lives at `packages/coretex/src/substrate/retrieval-decoder.ts:decodeRelations`. The bit layout above mirrors `specs/substrate_retrieval_semantics.md §Relations entries`, which is authoritative. The earlier RELATES_TO / SUPERSEDES (only) / ROUTES_TO and SRC_IDX-top framing was a planning sketch and is superseded — miners who follow it will produce patches the decoder drops.
+> Note (decoder authority). The canonical decoder lives at `src/substrate/retrieval-decoder.ts:decodeRelations`. The bit layout above mirrors `specs/substrate_retrieval_semantics.md §Relations entries`, which is authoritative. The earlier RELATES_TO / SUPERSEDES (only) / ROUTES_TO and SRC_IDX-top framing was a planning sketch and is superseded — miners who follow it will produce patches the decoder drops.
 
 ### Range E: Temporal (cells 800–895)
 
 96 cells = **96 temporal records × 1 cell each**. The canonical decoder
-(`packages/coretex/src/substrate/retrieval-decoder.ts:decodeTemporal`)
+(`src/substrate/retrieval-decoder.ts:decodeTemporal`)
 and `substrate_retrieval_semantics.md §Temporal records` are
 authoritative for the per-record layout. The canonical decoder
 and `state/validate.ts` both use the same one-cell layout with reserved
@@ -296,7 +296,10 @@ mechanism is intentionally minimal:
 The protocol explicitly does NOT reward "more substrate used", does NOT
 gate the ladder on a vote, and does NOT preemptively allocate 2048.
 Dead-slot count is published as a diagnostic; everything else flows
-from miner competition under retrieval-native scoring.
+from miner competition under retrieval-native scoring. See
+`docs/CORETEX_V4_ONCHAIN_RANDOMNESS_PLAN.md` §"Auditor Follow-Ups" for
+the dead-slot-metric implementation, which lands as part of task #38
+alongside the epoch rotation manifest changes.
 
 **Trigger criteria (pinned pre-launch, ladder execution deferred until met):**
 
@@ -312,7 +315,7 @@ from miner competition under retrieval-native scoring.
    PID loop is exhausted as a difficulty lever.
 3. **Typed-relations scorer lever exhausted**: by then we should
    already have activated the typed/weighted Relations traversal lever
-   (`packages/coretex/src/eval/retrieval-benchmark.ts:287-293,337` —
+   (`src/eval/retrieval-benchmark.ts:287-293,337` —
    currently performs untyped/unweighted BFS even though the substrate
    stores 6 edge types + per-edge weights). If activation has not
    moved the needle, the substrate width itself is the bottleneck.

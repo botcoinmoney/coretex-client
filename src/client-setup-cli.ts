@@ -1,29 +1,27 @@
 #!/usr/bin/env node
 /**
- * coretex-client-setup — one-command client artifact hydration.
+ * coretex-client-setup — one-command validator artifact hydration.
  *
  * Standalone (installed-package) mode, the default:
  *   1. Fetches the launch artifact manifest from
  *      `<CORETEX_ARTIFACT_BASE_URL>/coretex-launch-v16-artifacts.json`
  *      (override: --manifest <path-or-url>).
- *   2. Downloads the bundle manifest + evaluator profile, plus either:
- *      a published materialized corpus triplet (preferred, when the manifest
- *      exposes it), or the source corpus + embeddings fallback. Every file is
- *      SHA-256 + byte-size verified under the client state dir (default
- *      `.coretex-client`, env CORETEX_CLIENT_STATE_DIR).
- *   3. Uses the published materialized corpus triplet directly, or materializes
- *      the production corpus locally via the in-package canonical materializer
- *      when no published triplet exists. The materialized corpusRoot is always
- *      cross-checked against the manifest.
+ *   2. Downloads the corpus + embeddings + bundle manifest + evaluator profile
+ *      into the validator state dir (default `.coretex-client`, env
+ *      CORETEX_VALIDATOR_STATE_DIR) with SHA-256 + byte-size verification.
+ *   3. Materializes the production corpus via the in-package canonical
+ *      materializer (scripts/materialize-production-corpus.mjs)
+ *      and cross-checks the materialized corpusRoot against the manifest.
  *   4. Writes the bundle manifest path, materialized corpus path, previous
- *      corpus root, and registry deploy block into the client state file so
+ *      corpus root, and registry deploy block into the validator state file so
  *      `coretex-client-sync` needs no manual flags.
  *
- * Repo-hydration mode (--repo-root <dir>): payloads land at their
+ * Repo-hydration mode (--repo-root <dir>, used by the
+ * scripts/setup-validator-artifacts.mjs shim): payloads land at their
  * committed repo-relative paths, bundle/profile are verified in place,
  * verifyBundleManifest() additionally checks the pinned source tree, and the
  * materialized root comes from the manifest. `--verify-only` / `--no-download`
- * behave exactly as the historical repo-hydration setup flow.
+ * behave exactly as the historical scripts/setup-validator-artifacts.mjs.
  */
 import { createHash } from 'node:crypto';
 import {
@@ -61,7 +59,7 @@ import {
 
 export const LAUNCH_ARTIFACT_MANIFEST_FILENAME = 'coretex-launch-v16-artifacts.json';
 export const LAUNCH_ARTIFACT_MANIFEST_SCHEMA = 'coretex.launch-artifacts.v1';
-export const CLIENT_STATE_FILENAME = 'client-sync-state.json';
+export const VALIDATOR_STATE_FILENAME = 'client-sync-state.json';
 const REPO_DEFAULT_MANIFEST = 'release/calibration/2026-06-04-memory-atom-v16/coretex-launch-v16-artifacts.json';
 
 const USAGE = `coretex-client-setup — hydrate + verify CoreTex client artifacts
@@ -75,10 +73,10 @@ Usage:
 
 Env:
   CORETEX_ARTIFACT_BASE_URL      artifact base URL (manifest + payloads)
-  CORETEX_CLIENT_STATE_DIR       state dir (default .coretex-client)
+  CORETEX_VALIDATOR_STATE_DIR    state dir (default .coretex-client)
   CORETEX_REGISTRY_DEPLOY_BLOCK  registry deploy block recorded for sync replay
   CORETEX_RERANKER_PYTHON        operator scorer interpreter (skips venv bootstrap when valid)
-  CORETEX_CLIENT_SKIP_VENV=1  skip the Python venv bootstrap (same as --no-venv-bootstrap)
+  CORETEX_VALIDATOR_SKIP_VENV=1  skip the Python venv bootstrap (same as --no-venv-bootstrap)
 
 Setup is artifact hydration and works fully offline — it never requires an RPC.
 Chain-config env vars (BASE_RPC_URL, CORETEX_REGISTRY_ADDRESS,
@@ -125,22 +123,8 @@ export interface LaunchArtifactPayload {
   readonly bytes?: number;
 }
 
-export interface LaunchMaterializedPayload {
-  readonly path: string;
-  readonly fileName?: string;
-  readonly sha256: string;
-  readonly bytes?: number;
-}
-
-export interface LaunchMaterializedTriplet {
-  readonly manifest: LaunchMaterializedPayload;
-  readonly corpusJson: LaunchMaterializedPayload;
-  readonly eventsNdjson: LaunchMaterializedPayload;
-  readonly rootLeavesNdjson: LaunchMaterializedPayload;
-}
-
 /** Final chain config published with the launch artifacts so operators never
- *  hand-copy addresses: setup records it into the client state file and
+ *  hand-copy addresses: setup records it into the validator state file and
  *  cross-checks any operator-provided env against it. Optional — absent until
  *  the final deployment is cut. */
 export interface LaunchManifestChainConfig {
@@ -164,7 +148,6 @@ export interface LaunchArtifactManifest {
   readonly bundleSha256: string;
   readonly profilePath: string;
   readonly profileSha256: string;
-  readonly materialized?: LaunchMaterializedTriplet;
   readonly chain?: LaunchManifestChainConfig;
 }
 
@@ -194,22 +177,6 @@ export function parseLaunchArtifactManifest(raw: unknown): LaunchArtifactManifes
   for (const payload of m.payloads) {
     if (typeof payload.path !== 'string' || typeof payload.sha256 !== 'string') {
       throw new Error(`launch artifact payload malformed (role=${String(payload.role)})`);
-    }
-  }
-  if (m.materialized !== undefined) {
-    const mt = m.materialized as LaunchMaterializedTriplet;
-    if (!mt || typeof mt !== 'object') throw new Error('launch artifact manifest materialized block is not an object');
-    for (const key of ['manifest', 'corpusJson', 'eventsNdjson', 'rootLeavesNdjson'] as const) {
-      const payload = mt[key];
-      if (!payload || typeof payload !== 'object') {
-        throw new Error(`launch artifact manifest materialized.${key} is missing`);
-      }
-      if (typeof payload.path !== 'string' || payload.path.length === 0 || typeof payload.sha256 !== 'string' || payload.sha256.length === 0) {
-        throw new Error(`launch artifact manifest materialized.${key} malformed`);
-      }
-      if (payload.bytes !== undefined && (!Number.isSafeInteger(payload.bytes) || payload.bytes < 0)) {
-        throw new Error(`launch artifact manifest materialized.${key}.bytes must be a non-negative integer`);
-      }
     }
   }
   if (m.chain !== undefined) {
@@ -271,9 +238,9 @@ export function payloadDownloadUrl(artifactBaseUrl: string, payload: { path: str
   return `${artifactBaseUrl.replace(/\/+$/, '')}/${suffix}`;
 }
 
-/** Merge-write the client state file: setup NEVER clobbers sync-owned
+/** Merge-write the validator state file: setup NEVER clobbers sync-owned
  *  fields (replay snapshot/cursor) and sync preserves setup-owned fields. */
-export function mergeClientStateFile(
+export function mergeValidatorStateFile(
   statePath: string,
   patch: Record<string, unknown>,
 ): Record<string, unknown> {
@@ -286,7 +253,7 @@ export function mergeClientStateFile(
       // the eval backlog/cursor): merging over a corrupt file would silently
       // discard it. Hard-fail; recovery is an explicit operator action.
       throw new Error(
-        `corrupt client state file at ${statePath}: ${err instanceof Error ? err.message : String(err)}. ` +
+        `corrupt validator state file at ${statePath}: ${err instanceof Error ? err.message : String(err)}. ` +
         'Restore it from backup, or delete it explicitly to re-run setup fresh.',
       );
     }
@@ -416,18 +383,12 @@ function materializeCorpus(opts: {
 }
 
 function materializedPaths(materializedRoot: string, bundleHash: string): {
-  dir: string; manifest: string; corpusJson: string; ndjson: string; rootLeaves: string;
+  dir: string; manifest: string; corpusJson: string; ndjson: string;
 } {
   const tag = bundleHash.slice(2, 10);
   const dir = join(materializedRoot, tag);
   const corpusJson = join(dir, 'corpus.json');
-  return {
-    dir,
-    manifest: join(dir, 'manifest.json'),
-    corpusJson,
-    ndjson: `${corpusJson}.events.ndjson`,
-    rootLeaves: `${corpusJson}.root-leaves.ndjson`,
-  };
+  return { dir, manifest: join(dir, 'manifest.json'), corpusJson, ndjson: `${corpusJson}.events.ndjson` };
 }
 
 function verifyMaterialized(materializedRoot: string, manifest: LaunchArtifactManifest, corpusSha: string, embSha: string): string {
@@ -435,7 +396,7 @@ function verifyMaterialized(materializedRoot: string, manifest: LaunchArtifactMa
   if (!existsSync(paths.manifest)) {
     die(`materialized cache missing: ${paths.manifest}. Run coretex-client-setup without --verify-only.`);
   }
-  if (!existsSync(paths.corpusJson) || !existsSync(paths.ndjson) || !existsSync(paths.rootLeaves)) {
+  if (!existsSync(paths.corpusJson) || !existsSync(paths.ndjson)) {
     die(`materialized corpus files missing under ${paths.dir}`);
   }
   const mat = JSON.parse(readFileSync(paths.manifest, 'utf8')) as Record<string, unknown>;
@@ -454,16 +415,6 @@ function verifyMaterialized(materializedRoot: string, manifest: LaunchArtifactMa
   }
   if (typeof mat.eventCount !== 'number' || mat.eventCount <= 0) {
     die(`materialized eventCount invalid: ${String(mat.eventCount)}`);
-  }
-  const rootLeafCache = mat.rootLeafCache as Record<string, unknown> | undefined;
-  if (!rootLeafCache || typeof rootLeafCache !== 'object') {
-    die('materialized rootLeafCache missing');
-  }
-  if (typeof rootLeafCache.eventCount !== 'number' || rootLeafCache.eventCount !== mat.eventCount) {
-    die(`materialized rootLeafCache.eventCount drift ${String(rootLeafCache.eventCount)} != ${String(mat.eventCount)}`);
-  }
-  if (String(rootLeafCache.root ?? '').toLowerCase() !== manifest.corpusRoot.toLowerCase()) {
-    die(`materialized rootLeafCache.root drift ${String(rootLeafCache.root)} != ${manifest.corpusRoot}`);
   }
   log(`OK materialized: ${paths.manifest}`);
   return paths.corpusJson;
@@ -510,42 +461,6 @@ async function ensurePayload(opts: {
   log(`OK ${opts.role}: ${opts.dest}`);
 }
 
-async function ensurePublishedMaterializedTriplet(opts: {
-  materializedRoot: string;
-  manifest: LaunchArtifactManifest;
-  base: string | null;
-  verifyOnly: boolean;
-  noDownload: boolean;
-  baseDir: string;
-  noProgress?: boolean;
-}): Promise<void> {
-  if (!opts.manifest.materialized) throw new Error('published materialized triplet missing');
-  const paths = materializedPaths(opts.materializedRoot, opts.manifest.bundleHash);
-  const entries: ReadonlyArray<{
-    readonly role: string;
-    readonly payload: LaunchMaterializedPayload;
-    readonly dest: string;
-  }> = [
-    { role: 'materialized-manifest', payload: opts.manifest.materialized.manifest, dest: paths.manifest },
-    { role: 'materialized-corpus-json', payload: opts.manifest.materialized.corpusJson, dest: paths.corpusJson },
-    { role: 'materialized-events-ndjson', payload: opts.manifest.materialized.eventsNdjson, dest: paths.ndjson },
-    { role: 'materialized-root-leaves', payload: opts.manifest.materialized.rootLeavesNdjson, dest: paths.rootLeaves },
-  ];
-  for (const entry of entries) {
-    await ensurePayload({
-      dest: entry.dest,
-      expected: { sha256: entry.payload.sha256, bytes: entry.payload.bytes },
-      role: entry.role,
-      url: opts.base ? payloadDownloadUrl(opts.base, entry.payload) : null,
-      verifyOnly: opts.verifyOnly,
-      noDownload: opts.noDownload,
-      baseDir: opts.baseDir,
-      ...(opts.noProgress !== undefined ? { noProgress: opts.noProgress } : {}),
-    });
-  }
-  log(`OK published materialized triplet: ${paths.dir}`);
-}
-
 async function main(): Promise<void> {
   if (has('help') || args.includes('-h')) {
     process.stdout.write(USAGE + '\n');
@@ -554,11 +469,11 @@ async function main(): Promise<void> {
   const verifyOnly = has('verify-only');
   const noDownload = has('no-download');
   const noProgress = has('no-progress');
-  const skipVenv = has('no-venv-bootstrap') || process.env['CORETEX_CLIENT_SKIP_VENV'] === '1';
+  const skipVenv = has('no-venv-bootstrap') || process.env['CORETEX_VALIDATOR_SKIP_VENV'] === '1';
   const repoRoot = opt('repo-root');
   const artifactBase = opt('artifact-base-url', process.env['CORETEX_ARTIFACT_BASE_URL']);
-  const stateDir = resolve(opt('state-dir', process.env['CORETEX_CLIENT_STATE_DIR'] ?? (repoRoot ? join(repoRoot, '.coretex-client') : '.coretex-client'))!);
-  const statePath = join(stateDir, CLIENT_STATE_FILENAME);
+  const stateDir = resolve(opt('state-dir', process.env['CORETEX_VALIDATOR_STATE_DIR'] ?? (repoRoot ? join(repoRoot, '.coretex-client') : '.coretex-client'))!);
+  const statePath = join(stateDir, VALIDATOR_STATE_FILENAME);
   const deployBlockRaw = opt('registry-deploy-block', process.env['CORETEX_REGISTRY_DEPLOY_BLOCK']);
   if (deployBlockRaw !== undefined && (!Number.isSafeInteger(Number(deployBlockRaw)) || Number(deployBlockRaw) < 0)) {
     die('--registry-deploy-block must be a non-negative integer');
@@ -643,22 +558,17 @@ async function main(): Promise<void> {
   const embPayload = manifest.payloads.find((p) => p.role === 'embeddings');
   if (!corpusPayload || !embPayload) die('launch artifact manifest must carry corpus + embeddings payloads');
 
-  const usePublishedMaterialized = !repoRoot && !verifyOnly && manifest.materialized !== undefined;
-  if (usePublishedMaterialized) {
-    log('published materialized corpus triplet present: skipping source corpus/embeddings download');
-  } else {
-    for (const payload of manifest.payloads) {
-      await ensurePayload({
-        dest: destFor(payload),
-        expected: { sha256: payload.sha256, bytes: payload.bytes },
-        role: payload.role,
-        url: base ? payloadDownloadUrl(base, payload) : null,
-        verifyOnly,
-        noDownload,
-        baseDir,
-        noProgress,
-      });
-    }
+  for (const payload of manifest.payloads) {
+    await ensurePayload({
+      dest: destFor(payload),
+      expected: { sha256: payload.sha256, bytes: payload.bytes },
+      role: payload.role,
+      url: base ? payloadDownloadUrl(base, payload) : null,
+      verifyOnly,
+      noDownload,
+      baseDir,
+      noProgress,
+    });
   }
 
   // ── bundle manifest + evaluator profile ──
@@ -711,17 +621,6 @@ async function main(): Promise<void> {
     : join(stateDir, 'materialized');
   if (verifyOnly) {
     verifyMaterialized(materializedRoot, manifest, corpusPayload.sha256, embPayload.sha256);
-  } else if (usePublishedMaterialized) {
-    await ensurePublishedMaterializedTriplet({
-      materializedRoot,
-      manifest,
-      base,
-      verifyOnly,
-      noDownload,
-      baseDir,
-      noProgress,
-    });
-    verifyMaterialized(materializedRoot, manifest, corpusPayload.sha256, embPayload.sha256);
   } else {
     materializeCorpus({
       profilePath: profileDest,
@@ -764,14 +663,14 @@ async function main(): Promise<void> {
     }
   }
 
-  // ── client state file: sync needs no manual flags after this ──
+  // ── validator state file: sync needs no manual flags after this ──
   const recordScorerPython = venv && venv.status !== 'skipped-opt-out';
   // Explicit operator deploy block wins; otherwise fall back to the manifest's
   // published chain config so sync replay needs no hand-copied value.
   const registryDeployBlock = deployBlockRaw !== undefined
     ? Number(deployBlockRaw)
     : manifest.chain?.registryDeployBlock;
-  const state = mergeClientStateFile(statePath, {
+  const state = mergeValidatorStateFile(statePath, {
     bundleHash: manifest.bundleHash,
     corpusRoot: manifest.corpusRoot,
     ...(registryDeployBlock !== undefined ? { registryDeployBlock } : {}),

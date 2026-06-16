@@ -30,7 +30,7 @@ import {
   QWEN_RERANKER_DEFAULT_INSTRUCTION,
 } from '../../dist/index.js';
 
-const repoRoot = fileURLToPath(new URL('../../../..', import.meta.url));
+const repoRoot = fileURLToPath(new URL('../..', import.meta.url));
 
 const PIN = { modelId: 'Qwen/Qwen3-Reranker-0.6B', revision: 'e61197ed45024b0ed8a2d74b80b4d909f1255473' };
 

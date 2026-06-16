@@ -1,26 +1,11 @@
 # @botcoinmoney/coretex-client
 
-CoreTex is a protocol for proposing, scoring, crediting, publishing, and
-replaying changes to a deterministic memory retrieval substrate. This package
-is the standalone validator client for that protocol: one setup command derives
-everything a client needs, and one sync command audits the chain end-to-end —
+CoreTex memory-codec validator client, decoder, evaluator, and CLIs. This
+package is installable standalone: one setup command derives everything a
+validator needs, and one sync command audits the chain end-to-end —
 epoch/context derived from chain, artifacts downloaded + hash-verified,
 registry logs replayed, roots verified, and accepted receipts re-scored
 post-reveal with the pinned production scorer.
-
-## External context
-
-- Full CoreTex docs: https://docs.agentmoney.net/coretex/
-  Covers the protocol model, substrate layout, corpus generation, retrieval
-  evaluation, mining flow, coordinator API, security model, and replay rules.
-- BotcoinMiningV4 on Base:
-  https://basescan.org/address/0xBc71E2428cc0955b3dF9f38F5cF5DE22a1fC1D9b#code
-  The verified receipt, credit, funding, epoch, and claim contract used by the
-  client for epoch context and post-reveal eval replay.
-- CoreTexRegistry on Base:
-  https://basescan.org/address/0x79A9e5a1Ab4D7834CB4f4fB952f1F583032021Bb#code
-  The verified registry contract that publishes live roots, epoch context pins,
-  transition events, and the replay surface this client validates.
 
 ## Install
 
@@ -30,7 +15,7 @@ npm install @botcoinmoney/coretex-client
 
 Host requirements for score replay: Node ≥ 20.10 and `python3`. By default,
 `coretex-client-setup` bootstraps a pinned CPU-only scorer venv under the
-client state dir, installs the bundle-compatible `torch` + `transformers`
+validator state dir, installs the bundle-compatible `torch` + `transformers`
 runtime, verifies it with the in-package runner, and records that interpreter
 for future syncs. Operators may provide their own interpreter with
 `CORETEX_RERANKER_PYTHON` or opt out with `--no-venv-bootstrap`, but the default
@@ -42,20 +27,17 @@ repo and installed layouts (`CORETEX_RERANKER_SCRIPT` overrides explicitly).
 
 ```bash
 export BASE_RPC_URL=https://mainnet.base.org
-export CORETEX_REGISTRY_ADDRESS=0x79A9e5a1Ab4D7834CB4f4fB952f1F583032021Bb
-export BOTCOIN_MINING_CONTRACT_ADDRESS=0xBc71E2428cc0955b3dF9f38F5cF5DE22a1fC1D9b
+export CORETEX_REGISTRY_ADDRESS=0x…          # CoreTexRegistry
+export BOTCOIN_MINING_CONTRACT_ADDRESS=0x…   # BotcoinMiningV4
 export CORETEX_ARTIFACT_BASE_URL=https://…/coretex/launch/v16
 
 # 1. Setup — fetches the launch manifest from
 #    $CORETEX_ARTIFACT_BASE_URL/coretex-launch-v16-artifacts.json, downloads
-#    bundle/profile plus the published materialized corpus triplet when present
-#    (corpus.json, .events.ndjson, .root-leaves.ndjson), all with SHA-256 +
-#    size verification into .coretex-client/. If no triplet is published, it
-#    falls back to downloading source corpus/embeddings and materializing
-#    locally. It also records the bundle manifest path + previous corpus root +
-#    registry deploy block in the client state file, and bootstraps/verifies the
-#    pinned CPU scorer venv unless explicitly disabled. Progress and ETA print
-#    to stderr.
+#    corpus/embeddings/bundle/profile with SHA-256 + size verification into
+#    .coretex-client/, materializes the production corpus, and records the
+#    bundle manifest path + previous corpus root + registry deploy block in
+#    the validator state file. It also bootstraps/verifies the pinned CPU scorer
+#    venv unless explicitly disabled. Progress and ETA print to stderr.
 npx coretex-client-setup --registry-deploy-block <deployBlock>
 
 # 2. Sync — epoch from V4 currentEpoch(), signed rotation/delta verification
@@ -74,11 +56,11 @@ npx coretex-client-sync verify-patch --hash 0x<evalReportHash> \
 ```
 
 `coretex-client-sync --help` / `coretex-client-setup --help` list every
-override flag (epoch, from-block, parent state, corpus, artifact URLs, ...).
+override flag (epoch, from-block, parent state, corpus, artifact URLs, …).
 
 ## Score honesty is fail-closed
 
-The client rescore path refuses anything but the bundle-pinned qwen3
+The validator rescore path refuses anything but the bundle-pinned qwen3
 production reranker (model id + revision from the bundle manifest), regardless
 of environment. A misconfigured env (`CORETEX_RERANKER=deterministic`, a
 conflicting `CORETEX_RERANKER_MODEL_ID`/`CORETEX_RERANKER_REVISION`, …) is a
@@ -97,13 +79,29 @@ because a skipped run attests nothing about scores.
 ## Library entry points
 
 ```js
-import { ... } from '@botcoinmoney/coretex-client';           // client surface
-import { ... } from '@botcoinmoney/coretex-client/client';    // explicit client surface
-import { ... } from '@botcoinmoney/coretex-client/full';      // full client internals
+import { … } from '@botcoinmoney/coretex-client';            // client surface (default)
+import { … } from '@botcoinmoney/coretex-client/coordinator'; // coordinator surface
+import { … } from '@botcoinmoney/coretex-client/full';        // everything
 ```
 
 ## More
 
-See `docs/CORETEX_CLIENT_STANDALONE_RUNBOOK.md` in the repository for the
-full standalone client runbook (state-dir layout, incremental replay
-snapshots, epoch-secret reveal flow, troubleshooting).
+The standalone validator client lives at
+https://github.com/botcoinmoney/coretex-client.
+
+## Release discipline
+
+This repository is the standalone release source for
+`@botcoinmoney/coretex-client`. Git tags, GitHub releases, the package version
+in `package.json`, and the runtime constant in `src/version.ts` must match.
+
+Shared protocol/client logic is synced from the canonical
+`botcoinmoney/coretex` repository. To refresh this repo from a checked-out
+CoreTex tree and record the upstream commit:
+
+```bash
+npm run sync:from-coretex -- --source /path/to/coretex
+```
+
+The sync script updates `SYNC_PROVENANCE.json` so releases can always be tied
+back to a specific upstream CoreTex commit.

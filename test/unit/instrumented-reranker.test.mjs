@@ -1,7 +1,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { makeInstrumentedReranker } from '../../../../scripts/lib/instrumented-reranker.mjs';
+import { makeInstrumentedReranker } from '../../scripts/lib/instrumented-reranker.mjs';
 
 describe('instrumented reranker batching', () => {
   test('backend chunking preserves score order and cache semantics', async () => {

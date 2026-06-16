@@ -22,6 +22,7 @@ import {
   qwenRerankerPromptTemplateHash,
   verifyPostRevealEvalReportArtifact,
 } from '../../dist/index.js';
+import { computePatchHash } from '../../dist/eval/seed-derivation.js';
 
 const PARENT_ROOT = `0x${'aa'.repeat(32)}`;
 const PARENT_ROOT_B = `0x${'ab'.repeat(32)}`;
@@ -41,6 +42,10 @@ function patchBytesHex(word = 0x1234n) {
     indices: [401],
     newWords: [word],
   }));
+}
+
+function hexToBytes(hex) {
+  return Uint8Array.from(Buffer.from(hex.replace(/^0x/i, ''), 'hex'));
 }
 
 function makeRpcClient(counters = { calls: 0 }, head = 1000) {
@@ -423,6 +428,44 @@ describe('createCoreTexEvaluatorCore — §8 coordinator-pinned seed (remote pat
     assert.equal(artifacts[0].seedDerivation.targetBlock, 5_000_030);
     assert.equal(artifacts[0].seedDerivation.blockhash, `0x${'7c'.repeat(32)}`);
   });
+
+  test('keyless scorer does not apply scorer-local duplicate_submission to coordinator-pinned retries', async () => {
+    const store = createInMemoryDedupStore();
+    const scorerCalls = { calls: 0 };
+    const patchHex = patchBytesHex();
+    const patchHash = computePatchHash(hexToBytes(patchHex)).toLowerCase();
+    const { core, counters } = makeCore({
+      dedupStore: store,
+      seedScorer: makeSeedScorer(scorerCalls, { accepted: false, reason: 'gate-acceptance-floor' }),
+    });
+    const PINNED = { receivedAtBlock: 5_000_000, targetBlock: 5_000_030, blockhash: `0x${'7c'.repeat(32)}` };
+    const injectedSeeds = { gateSeed: `0x${'8a'.repeat(32)}`, confirmSeed: `0x${'8b'.repeat(32)}` };
+
+    const first = await core.scorePatch({
+      patchBytesHex: patchHex,
+      parentStateRoot: PARENT_ROOT,
+      miner: MINER,
+      seedContext: PINNED,
+      injectedSeeds,
+    });
+    const second = await core.scorePatch({
+      patchBytesHex: patchHex,
+      parentStateRoot: PARENT_ROOT,
+      miner: MINER_B,
+      seedContext: PINNED,
+      injectedSeeds,
+    });
+
+    assert.equal(first.outcome, 'reject');
+    assert.equal(first.code, 'gate-acceptance-floor');
+    assert.equal(second.outcome, 'reject');
+    assert.equal(second.code, 'gate-acceptance-floor');
+    assert.equal(scorerCalls.calls, 2, 'both coordinator-pinned gate packs must score; no scorer-local duplicate short-circuit');
+    assert.equal(counters.rpc.calls, 0, 'keyless scorer never draws its own blockhash');
+    assert.equal(store.get({ epochId: 7, parentStateRoot: PARENT_ROOT, patchHash }), null, 'remote scorer host does not persist authoritative dedup outcomes');
+    assert.equal(store.minerAdmissions(7, MINER), 0, 'remote scorer host does not charge authoritative admissions');
+    assert.equal(store.minerAdmissions(7, MINER_B), 0, 'remote scorer host does not charge cross-miner admissions');
+  });
 });
 
 describe('createCoreTexEvaluatorCore — envelope strip (§8)', () => {
@@ -463,7 +506,7 @@ describe('createCoreTexEvaluatorCore — canonical artifact + attestation (§2/�
     assert.equal(artifact.seedDerivation.targetBlockOffset, 30);
     assert.equal(artifact.thresholdPpm, 1_000);
 
-    // A client replays the published artifact end-to-end.
+    // A validator replays the published artifact end-to-end.
     const verified = await verifyPostRevealEvalReportArtifact(JSON.parse(JSON.stringify(artifact)), {
       rpcClient: { async getBlockHash() { return BLOCKHASH; } },
       scorer: async () => ({ scorePpm: 50_000, accepted: true }),

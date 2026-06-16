@@ -271,7 +271,7 @@ describe('createRetrievalDataSource — v0 canonical surface', () => {
     }));
     assert.deepEqual(await rejected.submit({}), { status: 'rejected', code: 'W03_DETERMINISTIC_DELTA_TOO_LOW' });
 
-    const cutoverCodes = ['epoch_cutover_in_progress', 'awaiting_baseline_recompute', 'MinerReceiptChainBusy', 'duplicate_submission', 'CoordEpochMismatch'];
+    const cutoverCodes = ['epoch_cutover_in_progress', 'awaiting_baseline_recompute', 'MinerReceiptChainBusy', 'duplicate_submission', 'CoordEpochMismatch', 'SCORER_REJECTED'];
     for (const code of cutoverCodes) {
       const ds = createRetrievalDataSource(makeFactoryOpts({ submit: () => ({ status: 'rejected', code }) }));
       assert.deepEqual(await ds.submit({}), { status: 'rejected', code }, `code ${code} must pass the sanitizer whitelist`);

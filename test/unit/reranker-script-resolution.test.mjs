@@ -1,6 +1,6 @@
 /**
  * Package-root script resolution for the canonical Python reranker runner
- * (standalone-package fix: the old `new URL('../../../../scripts/…')` default
+ * (standalone-package fix: the old `new URL('../../scripts/…')` default
  * escaped an installed node_modules package).
  *
  * Asserts `resolveCortexPackageRoot` / `resolveRerankerScriptPath` against BOTH
@@ -40,9 +40,12 @@ function buildSimulatedPackage(pkgRoot) {
 }
 
 describe('reranker script path resolution (package-root walk-up)', () => {
-  test('repo-checkout layout: <repo>/dist/eval → <repo>', () => withTmpDir((dir) => {
-    const pkgRoot = join(dir, 'repo');
+  test('repo-checkout layout: <repo>/dist/eval → <repo>/packages/coretex', () => withTmpDir((dir) => {
+    const pkgRoot = join(dir, 'repo', 'packages', 'cortex');
+    // The workspace root has its OWN package.json with a different name — the
+    // walk must stop at the @botcoinmoney/coretex-client package, not the workspace root.
     mkdirSync(join(dir, 'repo'), { recursive: true });
+    writeFileSync(join(dir, 'repo', 'package.json'), JSON.stringify({ name: 'botcoin-coretex' }));
     const fromUrl = buildSimulatedPackage(pkgRoot);
     assert.equal(resolveCortexPackageRoot(fromUrl), pkgRoot);
     assert.equal(resolveRerankerScriptPath({}, fromUrl), join(pkgRoot, 'scripts', 'reranker_runner.py'));

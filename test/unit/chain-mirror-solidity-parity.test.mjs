@@ -4,7 +4,7 @@
  * Two hand-maintained mirrors of on-chain truth had no automated guard:
  *
  *   1. CORETEX_EVENT_TOPICS (replay/coretex-registry.ts) — topic hashes the
- *      client uses to decode CoreTexRegistry logs. Recomputed here from the
+ *      validator uses to decode CoreTexRegistry logs. Recomputed here from the
  *      event declarations parsed out of contracts/src/CoreTexRegistry.sol.
  *
  *   2. The CoreTexReceipt EIP-712 type string vs the CoreTexReceipt struct in
@@ -30,8 +30,8 @@ import { bytesToHex } from '../../dist/state/merkle.js';
 import { CORETEX_EVENT_TOPICS } from '../../dist/replay/coretex-registry.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
-const registrySolPath = join(here, '../../../../contracts/src/CoreTexRegistry.sol');
-const miningSolPath = join(here, '../../../../contracts/src/BotcoinMiningV4.sol');
+const registrySolPath = join(here, '../../contracts/src/CoreTexRegistry.sol');
+const miningSolPath = join(here, '../../contracts/src/BotcoinMiningV4.sol');
 const registrySol = existsSync(registrySolPath) ? readFileSync(registrySolPath, 'utf8') : null;
 const miningSol = existsSync(miningSolPath) ? readFileSync(miningSolPath, 'utf8') : null;
 

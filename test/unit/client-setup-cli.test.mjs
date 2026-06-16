@@ -1,14 +1,13 @@
 /**
  * coretex-client-setup — tiny-fixture end-to-end over a local file:// base
  * (NEVER the real 700MB launch payloads): manifest fetch, SHA-256 + byte-size
- * verified downloads into the state dir, the published materialized-triplet
- * fast path, the source-materialization fallback, and the client state file
- * that makes sync one-command.
+ * verified downloads into the state dir, in-package corpus materialization,
+ * and the validator state file that makes sync one-command.
  */
 import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { copyFileSync, mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, statSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, statSync, existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -30,7 +29,6 @@ let root;          // tmp root
 let origin;        // simulated artifact host (file:// base)
 let originUrl;
 let corpusRoot;    // computed canonical corpus root of the tiny fixture
-let sourceOnlyManifestUrl;
 
 function sha256(path) {
   return createHash('sha256').update(readFileSync(path)).digest('hex');
@@ -110,53 +108,7 @@ before(async () => {
     profilePath: 'release/x/tiny-profile.json',
     profileSha256: sha256(join(origin, 'tiny-profile.json')),
   };
-  const sourceOnlyManifestPath = join(origin, 'source-only-launch.json');
-  writeFileSync(sourceOnlyManifestPath, JSON.stringify(manifest));
-  sourceOnlyManifestUrl = pathToFileURL(sourceOnlyManifestPath).href;
-
-  const materializedRoot = join(origin, 'published-materialized');
-  const materialize = spawnSync(process.execPath, [
-    fileURLToPath(new URL('../../scripts/materialize-production-corpus.mjs', import.meta.url)),
-    '--profile', join(origin, 'tiny-profile.json'),
-    '--bundle', join(origin, 'tiny-bundle.json'),
-    '--corpus', join(origin, 'tiny-corpus.json'),
-    '--emb', join(origin, 'tiny-embeddings.json'),
-    '--materialized-root', materializedRoot,
-    '--force',
-  ], {
-    cwd: fileURLToPath(new URL('../..', import.meta.url)),
-    encoding: 'utf8',
-  });
-  assert.equal(materialize.status, 0, `stdout: ${materialize.stdout}\nstderr: ${materialize.stderr}`);
-
-  const tag = BUNDLE_HASH.slice(2, 10);
-  const produced = join(materializedRoot, tag);
-  const publishedNames = {
-    manifest: 'tiny-materialized-manifest.json',
-    corpusJson: 'tiny-materialized-corpus.json',
-    eventsNdjson: 'tiny-materialized-corpus.json.events.ndjson',
-    rootLeavesNdjson: 'tiny-materialized-corpus.json.root-leaves.ndjson',
-  };
-  copyFileSync(join(produced, 'manifest.json'), join(origin, publishedNames.manifest));
-  copyFileSync(join(produced, 'corpus.json'), join(origin, publishedNames.corpusJson));
-  copyFileSync(join(produced, 'corpus.json.events.ndjson'), join(origin, publishedNames.eventsNdjson));
-  copyFileSync(join(produced, 'corpus.json.root-leaves.ndjson'), join(origin, publishedNames.rootLeavesNdjson));
-
-  const materializedPayload = (name) => ({
-    path: `release/x/${name}`,
-    fileName: name,
-    sha256: sha256(join(origin, name)),
-    bytes: statSync(join(origin, name)).size,
-  });
-  writeFileSync(join(origin, LAUNCH_ARTIFACT_MANIFEST_FILENAME), JSON.stringify({
-    ...manifest,
-    materialized: {
-      manifest: materializedPayload(publishedNames.manifest),
-      corpusJson: materializedPayload(publishedNames.corpusJson),
-      eventsNdjson: materializedPayload(publishedNames.eventsNdjson),
-      rootLeavesNdjson: materializedPayload(publishedNames.rootLeavesNdjson),
-    },
-  }));
+  writeFileSync(join(origin, LAUNCH_ARTIFACT_MANIFEST_FILENAME), JSON.stringify(manifest));
 });
 
 after(() => {
@@ -215,27 +167,6 @@ describe('launch manifest helpers', () => {
     assert.throws(() => parseLaunchArtifactManifest({ ...base, chain: { ...chain, confirmationDepth: 1.5 } }), /confirmationDepth/);
   });
 
-  test('parseLaunchArtifactManifest validates the optional materialized triplet', () => {
-    const base = {
-      schema: 'coretex.launch-artifacts.v1',
-      name: 'n', corpusRoot: 'r', materializedRoot: 'm',
-      bundlePath: 'b', bundleHash: 'h', bundleSha256: 's',
-      profilePath: 'p', profileSha256: 'q',
-      payloads: [{ role: 'corpus', path: 'x', sha256: 'y' }],
-    };
-    const payload = { path: 'p', fileName: 'f', sha256: 'a'.repeat(64), bytes: 12 };
-    const materialized = {
-      manifest: payload,
-      corpusJson: payload,
-      eventsNdjson: payload,
-      rootLeavesNdjson: payload,
-    };
-    assert.deepEqual(parseLaunchArtifactManifest({ ...base, materialized }).materialized, materialized);
-    assert.throws(() => parseLaunchArtifactManifest({ ...base, materialized: { ...materialized, rootLeavesNdjson: undefined } }), /materialized.rootLeavesNdjson/);
-    assert.throws(() => parseLaunchArtifactManifest({ ...base, materialized: { ...materialized, corpusJson: { path: 'p' } } }), /materialized.corpusJson/);
-    assert.throws(() => parseLaunchArtifactManifest({ ...base, materialized: { ...materialized, eventsNdjson: { ...payload, bytes: -1 } } }), /materialized.eventsNdjson.bytes/);
-  });
-
   test('isEvmAddress accepts 20-byte 0x hex and rejects everything else', () => {
     assert.equal(isEvmAddress(`0x${'ab'.repeat(20)}`), true);
     assert.equal(isEvmAddress(`0x${'AB'.repeat(20)}`), true);
@@ -254,46 +185,13 @@ describe('launch manifest helpers', () => {
 });
 
 describe('coretex-client-setup — tiny fixture over file:// (spawned)', () => {
-  test('fresh setup prefers a published materialized triplet and skips source materialization', { timeout: 120_000 }, () => {
-    const stateDir = join(root, 'state-fast');
-    const proc = runSetup([
-      '--artifact-base-url', originUrl,
-      '--state-dir', stateDir,
-      '--registry-deploy-block', '4242',
-      '--no-venv-bootstrap',
-      '--no-progress',
-    ]);
-    assert.equal(proc.status, 0, `stdout: ${proc.stdout}\nstderr: ${proc.stderr}`);
-    assert.match(proc.stdout, /published materialized corpus triplet present/);
-    assert.doesNotMatch(proc.stdout, /MATERIALIZE:/);
-
-    // Source payloads are not hydrated when the manifest publishes the
-    // verified triplet; bundle/profile are still local for sync.
-    assert.equal(existsSync(join(stateDir, 'artifacts', 'tiny-corpus.json')), false);
-    assert.equal(existsSync(join(stateDir, 'artifacts', 'tiny-embeddings.json')), false);
-    for (const name of ['tiny-bundle.json', 'tiny-profile.json']) {
-      assert.equal(sha256(join(stateDir, 'artifacts', name)), sha256(join(origin, name)), `${name} drifted`);
-    }
-
-    const tag = BUNDLE_HASH.slice(2, 10);
-    assert.equal(sha256(join(stateDir, 'materialized', tag, 'manifest.json')), sha256(join(origin, 'tiny-materialized-manifest.json')));
-    assert.equal(sha256(join(stateDir, 'materialized', tag, 'corpus.json')), sha256(join(origin, 'tiny-materialized-corpus.json')));
-    assert.equal(sha256(join(stateDir, 'materialized', tag, 'corpus.json.events.ndjson')), sha256(join(origin, 'tiny-materialized-corpus.json.events.ndjson')));
-    assert.equal(sha256(join(stateDir, 'materialized', tag, 'corpus.json.root-leaves.ndjson')), sha256(join(origin, 'tiny-materialized-corpus.json.root-leaves.ndjson')));
-
-    const state = JSON.parse(readFileSync(join(stateDir, 'client-sync-state.json'), 'utf8'));
-    assert.equal(state.corpusRoot.toLowerCase(), corpusRoot.toLowerCase());
-    assert.equal(state.setup.corpusPath, join(stateDir, 'materialized', tag, 'corpus.json'));
-  });
-
-  test('source-only manifest downloads, verifies, materializes, and writes the one-command state file', { timeout: 120_000 }, () => {
+  test('fresh setup downloads, verifies, materializes, and writes the one-command state file', { timeout: 120_000 }, () => {
     const stateDir = join(root, 'state');
     // --no-venv-bootstrap: a real multi-GB torch install is NOT a unit test
     // (the bootstrap LOGIC is covered in client-runtime.test.mjs with a fake
     // spawner). This case proves artifact hydration + the state file.
     const proc = runSetup([
       '--artifact-base-url', originUrl,
-      '--manifest', sourceOnlyManifestUrl,
       '--state-dir', stateDir,
       '--registry-deploy-block', '4242',
       '--no-venv-bootstrap',
@@ -328,7 +226,7 @@ describe('coretex-client-setup — tiny fixture over file:// (spawned)', () => {
   });
 
   test('--verify-only passes on a hydrated state dir and never downloads', { timeout: 60_000 }, () => {
-    const proc = runSetup(['--artifact-base-url', originUrl, '--manifest', sourceOnlyManifestUrl, '--state-dir', join(root, 'state'), '--verify-only']);
+    const proc = runSetup(['--artifact-base-url', originUrl, '--state-dir', join(root, 'state'), '--verify-only']);
     assert.equal(proc.status, 0, `stderr: ${proc.stderr}`);
     assert.doesNotMatch(proc.stdout, /FETCH/);
   });

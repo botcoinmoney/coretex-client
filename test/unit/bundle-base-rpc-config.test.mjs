@@ -2,7 +2,8 @@
  * Bundle profile must pin baseRpcConfig (chain id, block time,
  * targetBlockOffset, replayBlockhashLookbackBlocks).
  *
- * Replay watchers need the chain config + lookback depth alongside the bundle so they
+ * Per docs/CORETEX_V4_ONCHAIN_RANDOMNESS_PLAN.md — replay watchers
+ * need the chain config + lookback depth alongside the bundle so they
  * can verify per-patch eval seeds were derived against the correct
  * future blockhash.
  */
@@ -51,7 +52,7 @@ describe('DEFAULT_PROFILE.baseRpcConfig', () => {
 
 describe('validateProfile — baseRpcConfig', () => {
   // We exercise validateProfile indirectly through verifyBundleManifest
-  // since the client isn't a public export. Each test mutates the
+  // since the validator isn't a public export. Each test mutates the
   // default profile, builds a manifest, and checks the error list.
 
   test('a bundle with the default config validates clean (no rpc-related errors)', () => {

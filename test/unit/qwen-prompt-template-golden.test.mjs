@@ -2,7 +2,7 @@
  * Golden TS↔Python parity for the canonical Qwen reranker prompt template
  * (§2 score-honesty / prompt unification).
  *
- * packages/coretex/scripts/reranker_runner.py is the CANONICAL template (every
+ * scripts/reranker_runner.py is the CANONICAL template (every
  * calibration baseline was derived through it; the repo-root
  * scripts/reranker_runner.py is a forwarding shim).
  * eval/reranker.ts:renderQwenRerankerPrompt must build the byte-identical

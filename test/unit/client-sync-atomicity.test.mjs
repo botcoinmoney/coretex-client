@@ -1,6 +1,6 @@
 /**
  * Finding 7 (integration): a sync that fails a MANDATORY check must leave the
- * prior trusted state — the TOFU key pin, the client state file, and the
+ * prior trusted state — the TOFU key pin, the validator state file, and the
  * substrate snapshot — BYTE-UNCHANGED. This spawns the compiled CLI against a
  * fake JSON-RPC endpoint that fails the bundle version self-check (a mandatory
  * gate), and asserts none of the three trusted files were mutated.
@@ -154,7 +154,7 @@ describe('Finding 7 — a mandatory-check failure leaves trusted state byte-unch
 
         // The mandatory version self-check fails → non-zero exit, named error.
         assert.notEqual(proc.status, 0);
-        assert.match(proc.stderr, /coretex client outdated/);
+        assert.match(proc.stderr, /validator client outdated/);
 
         // The three trusted-state files are BYTE-unchanged.
         assert.equal(readFileSync(pinPath, 'utf8'), priorPin);

@@ -26,10 +26,10 @@ import {
   noiseSuppressionUnits,
   relationLensUnitsForPackQuery,
   relationUnitsForEdges,
-} from '../../../../scripts/lib/v2-patch-families.mjs';
-import { baselineAtomHardness } from '../../../../scripts/lib/atom-hardness.mjs';
+} from '../../scripts/lib/v2-patch-families.mjs';
+import { baselineAtomHardness } from '../../scripts/lib/atom-hardness.mjs';
 
-const repoRoot = fileURLToPath(new URL('../../../..', import.meta.url));
+const repoRoot = fileURLToPath(new URL('../..', import.meta.url));
 
 const REV_A = '0123456789abcdef0123456789abcdef01234567';
 const REV_B = '89abcdef0123456789abcdef0123456789abcdef';

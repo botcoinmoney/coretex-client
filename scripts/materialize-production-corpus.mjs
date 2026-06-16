@@ -13,7 +13,7 @@
  * Manifest fields: gitCommit, bundleHash, profileHash, corpusRoot, BE/RR/layout pins,
  * sourceCorpusSha256, sourceEmbSha256, eventCount, materializedAtNote.
  *
- * Usage: node packages/coretex/scripts/materialize-production-corpus.mjs --profile <p> --bundle <b> --corpus <c> --emb <e> [--force]
+ * Usage: node scripts/materialize-production-corpus.mjs --profile <p> --bundle <b> --corpus <c> --emb <e> [--force]
  *   (scripts/materialize-production-corpus.mjs at the repo root is a forwarding shim)
  *   [--materialized-root release/calibration/.../materialized]
  */
