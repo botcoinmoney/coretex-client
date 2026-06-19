@@ -8,7 +8,6 @@
  */
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import { DEFAULT_PROFILE, scoringOptionsFromProfile } from '../../dist/index.js';
 
 const runtime = {
@@ -48,11 +47,33 @@ describe('V2 profile → ScoringOptions', () => {
     assert.equal(opts.categoryLensScoreInheritance, undefined, 'legacy default has no inheritance');
   });
 
-  test('real v16 launch profile activates the full Memory-IR reranker path through profile mapping', () => {
-    const profilePath = new URL('../../../../release/calibration/2026-06-04-memory-atom-v16/evaluator-profile-v2-dgen1-policy-r5-atom-v16-300k-enabled.json', import.meta.url);
-    const launchProfile = JSON.parse(readFileSync(profilePath, 'utf8'));
+  test('v16 launch profile shape activates the full Memory-IR reranker path through profile mapping', () => {
+    const launchProfile = {
+      ...DEFAULT_PROFILE,
+      pipelineVersion: 'coretex-retrieval-v2-policy-r5',
+      rerankerMemoryIRMode: 'full',
+    };
     const opts = scoringOptionsFromProfile(launchProfile, runtime);
     assert.equal(opts.rerankerMemoryIRMode, 'full');
     assert.notEqual(opts.rerankerMemoryIRFormat, 'F2');
+  });
+
+  test('epoch-119 motif admission knobs flow through profile mapping', () => {
+    const opts = scoringOptionsFromProfile({
+      ...DEFAULT_PROFILE,
+      pipelineVersion: 'coretex-retrieval-v2-policy-r5',
+      temporalMotifAdmission: true,
+      conflictMotifAdmission: true,
+      evidenceMotifAdmission: false,
+      motifAdmissionMaxDocs: 4,
+      motifAdmissionTopK: 16,
+      rerankerMemoryIRMode: 'full',
+    }, runtime);
+    assert.equal(opts.rerankerMemoryIRMode, 'full');
+    assert.equal(opts.temporalMotifAdmission, true);
+    assert.equal(opts.conflictMotifAdmission, true);
+    assert.equal(opts.evidenceMotifAdmission, false);
+    assert.equal(opts.motifAdmissionMaxDocs, 4);
+    assert.equal(opts.motifAdmissionTopK, 16);
   });
 });

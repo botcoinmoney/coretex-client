@@ -64,7 +64,7 @@ export const DEFAULT_COMPOSITE_WEIGHTS: CompositeWeights = {
 
 /**
  * §6.6 pipeline-version pin enforcement. The bundle profile pins
- * `pipelineVersion` so a replay client routes to the matching code
+ * `pipelineVersion` so a replay validator routes to the matching code
  * path. When a binary scores against a bundle that pins a different
  * version (future migration, downgrade attempt), throw fail-closed so
  * scoring doesn't silently produce wrong numbers. No env-var bypass:
@@ -130,6 +130,19 @@ export interface RenderedCandidateTrace {
   readonly rawText: string;
   readonly renderedText: string;
 }
+
+type CandidateSourceTag =
+  | 'stage1'
+  | 'anchorMandatory'
+  | 'anchorBFS'
+  | 'categoryLensBFS'
+  | 'policyAdmitted'
+  | 'entityResolution'
+  | 'scopeAtom'
+  | 'temporalRecord'
+  | 'temporalMotif'
+  | 'conflictMotif'
+  | 'evidenceMotif';
 
 export interface RetrievalQueryScoringTelemetry {
   readonly queryId: string;
@@ -361,6 +374,18 @@ export interface ScoringOptions {
    */
   readonly temporalStaleContrast?: boolean;
   /**
+   * Default-off motif admission hooks. These let resolved temporal/policy atoms
+   * generalize by public motif (attribute, conflict scope, relation intent)
+   * instead of requiring the hidden query to share the atom's exact anchor
+   * subject. They read only query-visible intent fields and public corpus
+   * metadata, never qrels/truthDocuments from the query.
+   */
+  readonly temporalMotifAdmission?: boolean;
+  readonly conflictMotifAdmission?: boolean;
+  readonly evidenceMotifAdmission?: boolean;
+  readonly motifAdmissionMaxDocs?: number;
+  readonly motifAdmissionTopK?: number;
+  /**
    * §6.5 reranker-input cap (MemReranker semantics). Number of pool
    * candidates that get forwarded to the cross-encoder reranker per
    * query — sorted by (biCosine + substrateBonus) descending, tie-break
@@ -386,7 +411,7 @@ export interface ScoringOptions {
   /**
    * §6.6 pipeline-version pin. When set, the scorer asserts the bundle's
    * pinned pipeline matches what this code implements (currently
-   * `'coretex-retrieval-v2-lens'`). Replay clients consume the pin to
+   * `'coretex-retrieval-v2-lens'`). Replay validators consume the pin to
    * route to the matching code path; a bundle that pins a future version
    * cannot be replayed by an older binary without an explicit override.
    */
@@ -594,7 +619,8 @@ export function parseQueryConflictIntent(queryText: string, entityNames: Readonl
  * "… what is the <aspect> detail?". Returns the intent-aspect token (lowercased) or null. Honest: query text
  * ONLY — no qrels, no family labels. NOTE: the aspect admission/boost HOOK is NOT yet wired into scoring
  * (aspect_constraint is not a launch surface); this selector + the `policyAspectIntentAdmission` profile flag
- * are no-op-safe scaffolding so a future boost-only arm can confirm lift before activation.
+ * are no-op-safe scaffolding so the r5.1 hook can drop in after the A100 boost-only arm confirms lift. See
+ * CHURN_AND_SELECTOR_HARDENING_HANDOFF.md.
  */
 export function parseQueryAspectIntent(queryText: string): string | null {
   const m = (queryText ?? '').toLowerCase().match(/what (?:is|are) the ([a-z0-9 _-]+?) (?:detail|note|setting|value|config|spec)\b/);
@@ -873,7 +899,7 @@ export interface PatchEvalResult {
  * Score a single query against the substrate using the v2-lens pipeline.
  *
  * Spec: specs/substrate_retrieval_semantics.md plus the active evaluator
- * profile described in release/calibration/CURRENT.md.
+ * profile pinned by the launch artifact manifest.
  *
  * Two-stage retrieval, substrate is the bias not the gate:
  *   Stage 1: blind BGE-M3 cosine over the full public corpus index →
@@ -994,7 +1020,7 @@ export async function scoreSubstrateAgainstQuery(
   // AND anchorMandatory); store all that applied. Pure diagnostic — does
   // not affect scoring. Surfaced in PerQueryBreakdown.cappedDocSources so
   // calibration can answer "which mechanism delivered the top-10 docs?"
-  type SourceTag = 'stage1' | 'anchorMandatory' | 'anchorBFS' | 'categoryLensBFS' | 'policyAdmitted' | 'entityResolution' | 'scopeAtom' | 'temporalRecord';
+  type SourceTag = CandidateSourceTag;
   type CandidateRecord = {
     docId: string;
     embedding: Uint8Array;
@@ -1356,6 +1382,8 @@ export async function scoreSubstrateAgainstQuery(
   // relationExpansionBudget; the reranker still judges. Substrate chooses WHICH
   // anchored event + edgeType to follow; it cannot fabricate corpus edges.
   const eventByCorpusIdForPhaseA = corpusByCorpusId(corpus);
+  const corpusEventById = (eventId: string): ProductionCorpusEvent | undefined =>
+    eventByCorpusIdForPhaseA.get(eventId);
   const relEdgeTypesBySlot = new Map<number, Set<string>>();
   for (const e of relationAnchorEdgesEnabled ? decoded.relations : []) {
     let s = relEdgeTypesBySlot.get(e.sourceSlot);
@@ -1601,7 +1629,7 @@ export async function scoreSubstrateAgainstQuery(
     }
   }
   const temporalRecordAppliesToQuery = (eventId: string): boolean => {
-    const ev = corpus.byId.get(eventId);
+    const ev = corpusEventById(eventId);
     if (!ev?.validity) return isTemporalQuery; // pre-v16/back-compat temporal path
     if (!isTemporalQuery) return false;
     const intent = query.publicIntent;
@@ -1610,15 +1638,122 @@ export async function scoreSubstrateAgainstQuery(
     if (!subject || !attribute) return false;
     return ev.validity.subjectEntityId === subject && ev.validity.attribute === attribute;
   };
+  const motifAdmissionMaxDocs = Math.max(0, Math.min(opts.motifAdmissionMaxDocs ?? 4, 64));
+  const motifAdmissionTopK = Math.max(1, Math.min(opts.motifAdmissionTopK ?? 16, 256));
+  const temporalMotifAttributes = new Set<string>();
+  for (const eventId of [...temporalBoostEventIds, ...temporalSuppressEventIds]) {
+    const attr = corpusEventById(eventId)?.validity?.attribute;
+    if (attr) temporalMotifAttributes.add(attr);
+  }
+  const temporalMotifRoleByEventId = new Map<string, 'current' | 'superseded'>();
+  const temporalMotifAppliesToQuery = opts.temporalMotifAdmission === true
+    && isTemporalQuery
+    && motifAdmissionMaxDocs > 0
+    && !!(query.publicIntent?.attribute)
+    && temporalMotifAttributes.has(query.publicIntent!.attribute!);
+  if (temporalMotifAppliesToQuery) {
+    const subject = query.publicIntent?.subjectEntityId ?? query.subjectEntityId;
+    const attribute = query.publicIntent?.attribute;
+    if (subject && attribute) {
+      let remaining = motifAdmissionMaxDocs;
+      const events = getOrBuildValidityMotifIndex(corpus).get(`${attribute}\0${subject}`) ?? [];
+      const ordered = [...events].sort((a, b) => {
+        const ra = temporalValidityRole(a) === 'current' ? 0 : 1;
+        const rb = temporalValidityRole(b) === 'current' ? 0 : 1;
+        if (ra !== rb) return ra - rb;
+        return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+      });
+      for (const ev of ordered) {
+        if (remaining <= 0) break;
+        const role = temporalValidityRole(ev);
+        const docs = addAtomEventDocs(ev, 'temporalMotif', remaining);
+        if (docs.length === 0) continue;
+        temporalMotifRoleByEventId.set(ev.id, role);
+        remaining -= docs.length;
+      }
+    }
+  }
   if (validityAtomEnabled && query.publicIntent?.atom === 'validity_atom') {
     let remaining = 4;
     for (const eventId of [...temporalBoostEventIds, ...temporalSuppressEventIds].sort()) {
       if (remaining <= 0) break;
       if (!temporalRecordAppliesToQuery(eventId)) continue;
-      const ev = corpus.byId.get(eventId);
+      const ev = corpusEventById(eventId);
       if (!ev?.validity || !isMemoryDocumentEventId(ev.id)) continue;
       const docs = addAtomEventDocs(ev, 'temporalRecord', remaining);
       remaining -= docs.length;
+    }
+  }
+  const temporalLifecycleForQueryEvent = (eventId: string): 'current' | 'superseded' | 'none' => {
+    if (temporalRecordAppliesToQuery(eventId)) {
+      if (temporalBoostEventIds.has(eventId)) return 'current';
+      if (temporalSuppressEventIds.has(eventId)) return 'superseded';
+    }
+    return temporalMotifRoleByEventId.get(eventId) ?? 'none';
+  };
+
+  const conflictMotifDocIds = new Set<string>();
+  const conflictMotifEventIds = new Set<string>();
+  if (opts.policyAtomsMode === true
+      && opts.conflictMotifAdmission === true
+      && opts.enableConflictLifecycleAtoms !== false
+      && motifAdmissionMaxDocs > 0
+      && query.family === 'conflict_lifecycle') {
+    const scopeClass = conflictScopeClassForQuery(query.queryText ?? '');
+    const subject = query.subjectEntityId ?? query.publicIntent?.subjectEntityId;
+    const conflictAtoms = decoded.conflictLifecycleAtoms
+      .map((atom) => ({ atom, anchor: anchorSlotToEvent.get(atom.targetSlot) }))
+      .filter((x): x is { atom: NonNullable<typeof decoded.conflictLifecycleAtoms[number]>; anchor: ProductionCorpusEvent } =>
+        !!x.anchor && eventCarriesConflictMotif(x.anchor));
+    if (scopeClass && subject && conflictAtoms.length > 0) {
+      let remaining = motifAdmissionMaxDocs;
+      const events = getOrBuildConflictMotifIndex(corpus).get(`${subject}\0${scopeClass}`) ?? [];
+      const ordered = [...events].sort((a, b) => {
+        const ca = isConflictCurrentLike(a) ? 0 : 1;
+        const cb = isConflictCurrentLike(b) ? 0 : 1;
+        if (ca !== cb) return ca - cb;
+        return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+      });
+      for (const ev of ordered) {
+        if (remaining <= 0) break;
+        const docs = addAtomEventDocs(ev, 'conflictMotif', remaining);
+        if (docs.length === 0) continue;
+        conflictMotifEventIds.add(ev.id);
+        if (isConflictCurrentLike(ev)) for (const d of docs) conflictMotifDocIds.add(d);
+        remaining -= docs.length;
+      }
+    }
+  }
+
+  const evidenceMotifDocIds = new Set<string>();
+  const relationIntentsForEvidenceMotif = parseQueryRelationIntent(query.queryText ?? '');
+  if (opts.policyAtomsMode === true
+      && opts.evidenceMotifAdmission === true
+      && opts.enableEvidenceBundleAtoms !== false
+      && motifAdmissionMaxDocs > 0
+      && relationIntentsForEvidenceMotif.size > 0) {
+    const evidenceAtoms = decoded.evidenceBundleAtoms.filter((atom) => {
+      if (!evidenceActionAllowed(atom.action)) return false;
+      const anchor = anchorSlotToEvent.get(atom.targetSlot);
+      return !!anchor && (anchor.relations ?? []).some((rel) => relationIntentsForEvidenceMotif.has(rel.edgeType));
+    });
+    if (evidenceAtoms.length > 0) {
+      let remaining = motifAdmissionMaxDocs;
+      const seedEvents = new Set(stage1Docs.slice(0, motifAdmissionTopK).map((d) => d.eventId));
+      for (const eventId of [...seedEvents].sort()) {
+        if (remaining <= 0) break;
+        const ev = eventByCorpusIdForPhaseA.get(eventId);
+        if (!ev) continue;
+        for (const rel of ev.relations ?? []) {
+          if (remaining <= 0) break;
+          if (!relationIntentsForEvidenceMotif.has(rel.edgeType)) continue;
+          const target = eventByCorpusIdForPhaseA.get(rel.other_id);
+          if (!target) continue;
+          const docs = addAtomEventDocs(target, 'evidenceMotif', remaining);
+          for (const d of docs) evidenceMotifDocIds.add(d);
+          remaining -= docs.length;
+        }
+      }
     }
   }
 
@@ -1734,9 +1869,10 @@ export async function scoreSubstrateAgainstQuery(
     // Temporal bonus driven by the miner's decoded Temporal records, event-scoped
     // (reaches stage1-retrieved docs of marked events), NOT corpus labels.
     let temporalBonus = 0;
-    if (isTemporalQuery && temporalRecordAppliesToQuery(record.eventId) && (ownTemporalTruthIds === null || ownTemporalTruthIds.has(record.docId))) {
-      if (temporalSuppressEventIds.has(record.eventId)) temporalBonus = -opts.temporalStaleSuppression;
-      else if (temporalBoostEventIds.has(record.eventId)) temporalBonus = opts.temporalCurrentBoost;
+    const temporalLifecycle = temporalLifecycleForQueryEvent(record.eventId);
+    if (isTemporalQuery && temporalLifecycle !== 'none' && (ownTemporalTruthIds === null || ownTemporalTruthIds.has(record.docId))) {
+      if (temporalLifecycle === 'superseded') temporalBonus = -opts.temporalStaleSuppression;
+      else if (temporalLifecycle === 'current') temporalBonus = opts.temporalCurrentBoost;
     }
 
     // Phase B: docs that entered the pool via a category-lens carry the
@@ -1831,7 +1967,7 @@ export async function scoreSubstrateAgainstQuery(
   // §6.5+ Anchor-mandatory sub-cap. With many possible anchors and events
   // possibly carrying multiple truth docs, an unbounded mandatory pool could
   // exceed `rerankerInputTopK` and cause unbounded reranker work per query —
-  // a worst-case DoS for the open-source replay client. We cap mandatory
+  // a worst-case DoS for the open-source replay validator. We cap mandatory
   // inclusions at the cap itself, taking docs in (slot, docId) lexicographic
   // order so the truncation is byte-deterministic across replay hosts.
   const anchorMandatoryAll = candidates
@@ -1844,7 +1980,10 @@ export async function scoreSubstrateAgainstQuery(
       || c.record.sources.has('policyAdmitted')
       || c.record.sources.has('entityResolution')
       || c.record.sources.has('scopeAtom')
-      || c.record.sources.has('temporalRecord'))
+      || c.record.sources.has('temporalRecord')
+      || c.record.sources.has('temporalMotif')
+      || c.record.sources.has('conflictMotif')
+      || c.record.sources.has('evidenceMotif'))
     .sort((a, b) => {
       const sa = a.record.memorySlot ?? 0;
       const sb = b.record.memorySlot ?? 0;
@@ -1893,7 +2032,7 @@ export async function scoreSubstrateAgainstQuery(
   const atomMemoryIRActive = opts.policyAtomsMode === true
     && (opts.enableEntityResolutionAtoms === true || opts.enableScopeAtoms === true)
     && (atomAdmittedEntityDocIds.size > 0 || atomAdmittedScopeDocIds.size > 0);
-  const temporalMemoryIRActive = temporalBoostEventIds.size > 0 || temporalSuppressEventIds.size > 0;
+  const temporalMemoryIRActive = temporalBoostEventIds.size > 0 || temporalSuppressEventIds.size > 0 || temporalMotifRoleByEventId.size > 0;
   const mirFull = opts.rerankerMemoryIRMode === 'full'
     && (typeof opts.rerankerMemoryIRLookup === 'function' || atomMemoryIRActive || temporalMemoryIRActive);
   // Memory-IR sidecar doc rendering (F2): prefix the substrate's DERIVED lifecycle header so a
@@ -1904,11 +2043,11 @@ export async function scoreSubstrateAgainstQuery(
   // compiled state), NOT corpus labels. temporalBoost/Suppress are resolved above from decoded.temporal.
   const mirResolved = opts.rerankerMemoryIRSource === 'resolved';
   const atomMemoryIR = (c: typeof rerankerCandidates[number]): MemoryIR | null => {
-    const ev = corpus.byId.get(c.record.eventId);
+    const ev = corpusEventById(c.record.eventId);
     if (!ev || !isMemoryDocumentEventId(ev.id)) return null;
     const ir: MemoryIR = {};
-    if (temporalRecordAppliesToQuery(c.record.eventId) && temporalBoostEventIds.has(c.record.eventId)) ir.lifecycle = 'current';
-    else if (temporalRecordAppliesToQuery(c.record.eventId) && temporalSuppressEventIds.has(c.record.eventId)) ir.lifecycle = 'superseded';
+    const lifecycle = temporalLifecycleForQueryEvent(c.record.eventId);
+    if (lifecycle !== 'none') ir.lifecycle = lifecycle;
     if (atomAdmittedEntityDocIds.has(c.record.docId)) {
       ir.evidence_role = 'answer';
       ir.relation_path = ['coreference_of'];
@@ -1924,18 +2063,26 @@ export async function scoreSubstrateAgainstQuery(
       // FULL IR: render the protocol header over the resolved IR + RAW event text (train==serve).
       const ir = (typeof opts.rerankerMemoryIRLookup === 'function' ? opts.rerankerMemoryIRLookup(query.id, c.record.eventId) : null)
         ?? ((atomMemoryIRActive || temporalMemoryIRActive) ? atomMemoryIR(c) : null);
-      return renderMemoryIRDoc(ir, c.record.text);
+      // Per-family mirFull gate: render memory-IR ONLY for candidates that actually
+      // resolve an IR for THIS query. When ir is null (e.g. relation / off-family queries
+      // while the substrate merely CONTAINS temporal records or policy atoms), fall through
+      // to the bundleDoc/mirF2 path so off-family candidates keep their category-lens
+      // evidence bundle and are not format-shifted. Removes the global-mirFull relation-lane
+      // regression (any temporal record previously re-rendered EVERY family's candidates and
+      // disabled the lens reorder); temporal/atom candidates still get full IR, so temporal
+      // remains mineable.
+      if (ir) return renderMemoryIRDoc(ir, c.record.text);
     }
     const base = bundleDoc(c);
     if (!mirF2) return base;
     const lc = mirResolved
-      ? (temporalBoostEventIds.has(c.record.eventId) ? 'current' : temporalSuppressEventIds.has(c.record.eventId) ? 'superseded' : 'none')
+      ? temporalLifecycleForQueryEvent(c.record.eventId)
       : (lifecycleIdx!.get(c.record.eventId) ?? 'none');
     // Launch refinement: only prepend the lifecycle header for docs ACTUALLY in a supersedes chain
     // (lifecycle current/superseded). For lifecycle=none docs the header is pure noise (it slightly
     // hurt aspect_constraint in the full-benchmark), so they get raw text → no off-family regression.
     if (lc === 'none') return base;
-    const ev = corpus.byId.get(c.record.eventId);
+    const ev = corpusEventById(c.record.eventId);
     const subj = (ev?.entityIds ?? []).find((e) => !(opts.policyGenericEntityIds ?? []).includes(e)) ?? '?';
     return `[lifecycle=${lc} | subject=${subj}] ${base}`;
   };
@@ -2072,7 +2219,7 @@ export async function scoreSubstrateAgainstQuery(
       for (const c of [...candidates].sort((a, b) => a.record.docId < b.record.docId ? -1 : a.record.docId > b.record.docId ? 1 : 0)) {
         if (suppressed.size >= maxSuppress) break;
         if (atomAdmittedScopeDocIds.has(c.record.docId)) continue;
-        const ev = corpus.byId.get(c.record.eventId);
+        const ev = corpusEventById(c.record.eventId);
         if (!ev || !isMemoryDocumentEventId(ev.id)) continue;
         if (!(ev.entityIds ?? []).some((id) => atomQuerySubjects.has(id))) continue;
         if (!scopeDiffers(ev.scope, atomQueryScope)) continue;
@@ -2140,6 +2287,34 @@ export async function scoreSubstrateAgainstQuery(
         for (const d of ownDocs) addBonus(d, sign(atom.action) * beta * UNIT);
         if (opts.policyEmitTraces) policyTraces.push({ atomId: `cl#${atom.atomIndex}`, atomFamily: 'conflict_lifecycle', selectorMatched: true, action: atom.action, anchorEvent: anchorEv.id, docsMoved: ownDocs.length, evidencePath: [], beta });
       }
+    }
+    if (opts.conflictMotifAdmission === true && conflictMotifDocIds.size > 0) {
+      const beta = Math.min(opts.policyMaxBudgetConflict ?? 300, 0xffff) / 1000;
+      for (const d of conflictMotifDocIds) addBonus(d, beta * UNIT);
+      if (opts.policyEmitTraces) {
+        policyTraces.push({
+          atomId: 'cl#motif',
+          atomFamily: 'conflict_lifecycle',
+          selectorMatched: true,
+          action: 'boost',
+          anchorEvent: [...conflictMotifEventIds].sort()[0] ?? null,
+          docsMoved: conflictMotifDocIds.size,
+          evidencePath: [...conflictMotifEventIds].sort().map((id) => `scope_motif->${id}`),
+          beta,
+        });
+      }
+    }
+    if (opts.evidenceMotifAdmission === true && evidenceMotifDocIds.size > 0 && opts.policyEmitTraces) {
+      policyTraces.push({
+        atomId: 'eb#motif',
+        atomFamily: 'evidence_bundle',
+        selectorMatched: true,
+        action: 'include',
+        anchorEvent: null,
+        docsMoved: evidenceMotifDocIds.size,
+        evidencePath: [...relationIntentsForEvidenceMotif].sort().map((t) => `relation_motif:${t}`),
+        beta: 0,
+      });
     }
     // Abstention: SPLIT — miner atom supplies the public no-evidence-path policy; the confidence
     // gate (top1 < threshold) is the OPERATOR PROFILE calibration. Abstain only when BOTH hold.
@@ -2302,7 +2477,7 @@ export async function scoreSubstrateAgainstQuery(
     queryTotalMs: Date.now() - queryScoreStartMs,
   });
   const temporalRecordDriven = [...temporalBoostEventIds, ...temporalSuppressEventIds]
-    .some((eventId) => temporalRecordAppliesToQuery(eventId));
+    .some((eventId) => temporalRecordAppliesToQuery(eventId)) || temporalMotifRoleByEventId.size > 0;
   const policyTraceDriven = policyTraces.length > 0;
   return { ranked, top1Score, cappedDocIds, cappedDocSources, cappedDocComponents, finalRankingTop20, answerInCap, finalRankingFull, renderedCandidatesTop20, rerankerInputCandidates, policyTraces, policyAbstain, temporalRecordDriven, memoryIRDriven, policyTraceDriven };
 }
@@ -2514,7 +2689,11 @@ function getOrBuildRecordIdIndex(corpus: ProductionCorpus): Map<bigint, Producti
  *  from stage-1 candidates. Mirrors `corpus.byId` (already on the loaded
  *  ProductionCorpus object) but exposed as a typed accessor for clarity. */
 function corpusByCorpusId(corpus: ProductionCorpus): ReadonlyMap<string, ProductionCorpusEvent> {
-  return corpus.byId;
+  const direct = (corpus as { readonly byId?: ReadonlyMap<string, ProductionCorpusEvent> }).byId;
+  if (direct) return direct;
+  const built = new Map<string, ProductionCorpusEvent>();
+  for (const event of corpus.events) built.set(event.id, event);
+  return built;
 }
 
 /** Phase B inverse-relation index. For each target event id, list of
@@ -2552,7 +2731,7 @@ function addEventTruthsToPool(
     memorySlot: number | null;
     isCurrentTruth: boolean;
     isStaleTruth: boolean;
-    sources: Set<'stage1' | 'anchorMandatory' | 'anchorBFS' | 'categoryLensBFS' | 'policyAdmitted' | 'entityResolution' | 'scopeAtom' | 'temporalRecord'>;
+    sources: Set<CandidateSourceTag>;
   }>,
   categoryLensWeightByDocId: Map<string, number>,
   normWeight: number,
@@ -2589,6 +2768,97 @@ function addEventTruthsToPool(
     added++;
   }
   return added;
+}
+
+function temporalValidityRole(event: ProductionCorpusEvent): 'current' | 'superseded' {
+  return event.validity?.validUntil || event.validity?.supersededBy ? 'superseded' : 'current';
+}
+
+const validityMotifIndexCache = new WeakMap<ProductionCorpus, Map<string, ProductionCorpusEvent[]>>();
+function getOrBuildValidityMotifIndex(corpus: ProductionCorpus): Map<string, ProductionCorpusEvent[]> {
+  const cached = validityMotifIndexCache.get(corpus);
+  if (cached) return cached;
+  const index = new Map<string, ProductionCorpusEvent[]>();
+  for (const ev of corpus.events) {
+    if (!isMemoryDocumentEventId(ev.id)) continue;
+    const subject = ev.validity?.subjectEntityId;
+    const attribute = ev.validity?.attribute;
+    if (!subject || !attribute) continue;
+    const key = `${attribute}\0${subject}`;
+    const list = index.get(key);
+    if (list) list.push(ev); else index.set(key, [ev]);
+  }
+  for (const list of index.values()) list.sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+  validityMotifIndexCache.set(corpus, index);
+  return index;
+}
+
+function normalizeScopeClass(value: string | null | undefined): string | null {
+  const s = (value ?? '').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+  return s.length > 0 ? s : null;
+}
+
+function conflictScopeClassForQuery(queryText: string): string | null {
+  const m = (queryText ?? '').toLowerCase().match(/^for\s+([^,]+),/);
+  return normalizeScopeClass(m?.[1]);
+}
+
+function eventScopeMatchesClass(ev: ProductionCorpusEvent, scopeClass: string): boolean {
+  const scope = ev.scope;
+  if (!scope) return false;
+  for (const v of Object.values(scope)) {
+    const norm = normalizeScopeClass(v);
+    if (!norm) continue;
+    if (norm === scopeClass || norm.endsWith(`_${scopeClass}`) || norm.includes(`_${scopeClass}_`)) return true;
+  }
+  return false;
+}
+
+function eventCarriesConflictMotif(ev: ProductionCorpusEvent): boolean {
+  if (ev.scope?.topicId === 'topic_lifecycle_conflict') return true;
+  return (ev.relations ?? []).some((rel) =>
+    rel.label === 'contradicts' || rel.edgeType === 'co_occurs_with' && /contradict/i.test(rel.label ?? ''));
+}
+
+function isConflictCurrentLike(ev: ProductionCorpusEvent): boolean {
+  const text = `${ev.queryText} ${(ev.truthDocuments ?? []).map((d) => d.text).join(' ')}`.toLowerCase();
+  if (/\b(?:previously|prior|once|formerly|old value|prior value)\b/.test(text)) return false;
+  if (/\b(?:current|currently|now|as of|replacing|replaced|switched from|is now|current value)\b/.test(text)) return true;
+  return /\b(?:runs|uses|stays|keeps)\b/.test(text) && !/\b(?:ran|was)\b/.test(text);
+}
+
+const conflictMotifIndexCache = new WeakMap<ProductionCorpus, Map<string, ProductionCorpusEvent[]>>();
+function getOrBuildConflictMotifIndex(corpus: ProductionCorpus): Map<string, ProductionCorpusEvent[]> {
+  const cached = conflictMotifIndexCache.get(corpus);
+  if (cached) return cached;
+  const index = new Map<string, ProductionCorpusEvent[]>();
+  for (const ev of corpus.events) {
+    if (!isMemoryDocumentEventId(ev.id)) continue;
+    if (!eventCarriesConflictMotif(ev)) continue;
+    const subjects = (ev.entityIds ?? []).filter((id) => id !== 'e_universe');
+    for (const subject of subjects) {
+      for (const v of Object.values(ev.scope ?? {})) {
+        const norm = normalizeScopeClass(v);
+        if (!norm) continue;
+        const parts = norm.split('_');
+        for (let i = 0; i < parts.length; i++) {
+          const suffix = parts.slice(i).join('_');
+          if (!suffix || suffix === 'primary' || suffix === 'lifecycle_conflict') continue;
+          if (!eventScopeMatchesClass(ev, suffix)) continue;
+          const key = `${subject}\0${suffix}`;
+          const list = index.get(key);
+          if (list) {
+            if (!list.some((x) => x.id === ev.id)) list.push(ev);
+          } else {
+            index.set(key, [ev]);
+          }
+        }
+      }
+    }
+  }
+  for (const list of index.values()) list.sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+  conflictMotifIndexCache.set(corpus, index);
+  return index;
 }
 
 /**
@@ -3051,8 +3321,9 @@ export async function evaluateRetrievalBenchmarkPatch(
 
   // Per-record protected regression check.
   const beforeById = new Map(before.perQuery.map((q) => [q.recordId, q]));
+  const corpusEventById = corpusByCorpusId(corpus);
   for (const q of after.perQuery) {
-    const ev = corpus.byId.get(q.recordId);
+    const ev = corpusEventById.get(q.recordId);
     if (!ev || !ev.protected) continue;
     const prev = beforeById.get(q.recordId);
     if (!prev) continue;

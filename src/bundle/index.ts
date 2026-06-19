@@ -230,6 +230,12 @@ export interface EvaluatorProfile {
    *  (parseQueryConflictIntent) instead of the coarse CONFLICT_SET_MEMBER entity selector — eliminates
    *  the off-family damage. MUST be true whenever enableConflictLifecycleAtoms is true at launch. */
   readonly policyConflictIntentAdmission?: boolean;
+  /** Default-off public motif hooks for temporal/conflict/evidence admission. */
+  readonly temporalMotifAdmission?: boolean;
+  readonly conflictMotifAdmission?: boolean;
+  readonly evidenceMotifAdmission?: boolean;
+  readonly motifAdmissionMaxDocs?: number;
+  readonly motifAdmissionTopK?: number;
   /** aspect_constraint (A100 CANDIDATE — default-off scaffold; NOT a launch surface yet): gate aspect-atom
    *  admission on a PUBLIC parsed aspect intent (parseQueryAspectIntent). The boost HOOK is not yet wired
    *  (r5.1, pending the A100 boost-only verdict) — this flag is no-op-safe scaffolding; validated strictly
@@ -1015,6 +1021,11 @@ export function scoringOptionsFromProfile(
     ...(profile.enableRelationAnchorEdges !== undefined ? { enableRelationAnchorEdges: profile.enableRelationAnchorEdges } : {}),
     ...(profile.policyEvidenceAllowedActions !== undefined ? { policyEvidenceAllowedActions: profile.policyEvidenceAllowedActions } : {}),
     ...(profile.policyConflictIntentAdmission !== undefined ? { policyConflictIntentAdmission: profile.policyConflictIntentAdmission } : {}),
+    ...(profile.temporalMotifAdmission !== undefined ? { temporalMotifAdmission: profile.temporalMotifAdmission } : {}),
+    ...(profile.conflictMotifAdmission !== undefined ? { conflictMotifAdmission: profile.conflictMotifAdmission } : {}),
+    ...(profile.evidenceMotifAdmission !== undefined ? { evidenceMotifAdmission: profile.evidenceMotifAdmission } : {}),
+    ...(profile.motifAdmissionMaxDocs !== undefined ? { motifAdmissionMaxDocs: profile.motifAdmissionMaxDocs } : {}),
+    ...(profile.motifAdmissionTopK !== undefined ? { motifAdmissionTopK: profile.motifAdmissionTopK } : {}),
     ...(profile.enableAspectConstraintAtoms !== undefined ? { enableAspectConstraintAtoms: profile.enableAspectConstraintAtoms } : {}),
     ...(profile.policyAspectIntentAdmission !== undefined ? { policyAspectIntentAdmission: profile.policyAspectIntentAdmission } : {}),
     ...(profile.policyAspectBoost !== undefined ? { policyAspectBoost: profile.policyAspectBoost } : {}),
