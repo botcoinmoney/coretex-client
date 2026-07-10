@@ -201,6 +201,13 @@ export function verifyScorerResult(args: {
   if (!hexEq(job.policyHash, active.workPolicyHash)) {
     return { ok: false, code: "SCORER_STALE_CONTEXT", reason: `job policyHash != active ${active.workPolicyHash}` };
   }
+  if (active.pipelineVersion !== undefined) {
+    if (job.scoringPipelineVersion !== active.pipelineVersion) {
+      return { ok: false, code: "SCORER_STALE_CONTEXT", reason: `job scoringPipelineVersion ${job.scoringPipelineVersion ?? "absent"} != active ${active.pipelineVersion}` };
+    }
+  } else if (job.scoringPipelineVersion !== undefined) {
+    return { ok: false, code: "SCORER_STALE_CONTEXT", reason: `job pins scoringPipelineVersion ${job.scoringPipelineVersion} but active context is unversioned` };
+  }
   // Active-frontier overlay pin (armed bundles only). Both directions refuse:
   // an overlay-law epoch never accepts a result from a job that didn't pin the
   // root, and a broad-law epoch never accepts a job that pinned one.
@@ -292,6 +299,17 @@ export function verifyScorerResult(args: {
       reason: `scorer echoed policyHash ${result.policyHash} != job policyHash ${job.policyHash}`,
     };
   }
+  if (active.pipelineVersion !== undefined) {
+    if (result.scoringPipelineVersion !== active.pipelineVersion) {
+      return {
+        ok: false,
+        code: "SCORER_PIPELINE_ECHO_MISMATCH",
+        reason: `scorer loaded law ${result.scoringPipelineVersion ?? "absent"} != active ${active.pipelineVersion}`,
+      };
+    }
+  } else if (result.scoringPipelineVersion !== undefined) {
+    return { ok: false, code: "SCORER_PIPELINE_ECHO_MISMATCH", reason: `scorer echoed ${result.scoringPipelineVersion} for an unversioned active context` };
+  }
 
   // (4) threshold logic on the RETURNED scores. The coordinator owns the
   //     accept/reject decision — the scorer's `accepted` flag is advisory and
@@ -344,6 +362,13 @@ export function verifyScorerResult(args: {
   const ctx = result.artifact.context;
   if (!ctx || typeof ctx !== "object") {
     return { ok: false, code: "SCORER_ARTIFACT_CONTEXT_MISMATCH", reason: "artifact context missing" };
+  }
+  if (active.pipelineVersion !== undefined) {
+    if (ctx.scoringPipelineVersion !== active.pipelineVersion) {
+      return { ok: false, code: "SCORER_ARTIFACT_CONTEXT_MISMATCH", reason: `artifact scoringPipelineVersion ${ctx.scoringPipelineVersion ?? "absent"} != active ${active.pipelineVersion}` };
+    }
+  } else if (ctx.scoringPipelineVersion !== undefined) {
+    return { ok: false, code: "SCORER_ARTIFACT_CONTEXT_MISMATCH", reason: `artifact pins scoringPipelineVersion ${ctx.scoringPipelineVersion} for an unversioned active context` };
   }
   if (!hexEq(ctx.parentStateRoot, active.parentStateRoot)) {
     return { ok: false, code: "SCORER_ARTIFACT_CONTEXT_MISMATCH", reason: `artifact parentStateRoot != active ${active.parentStateRoot}` };
@@ -409,6 +434,10 @@ function validateResultSchema(result: ScorerJobResult, expectedProofKind: "coret
   }
   if (!Number.isSafeInteger(result.thresholdPpmUsed) || result.thresholdPpmUsed < 0) return "thresholdPpmUsed invalid";
   if (!isBytes32(result.policyHash)) return "policyHash must be bytes32";
+  if (result.scoringPipelineVersion !== undefined
+      && (typeof result.scoringPipelineVersion !== "string" || result.scoringPipelineVersion.length === 0)) {
+    return "scoringPipelineVersion must be a non-empty string when present";
+  }
   if (typeof result.pairTraceHash !== "string" || typeof result.scoreArrayHash !== "string") return "trace hashes missing";
   if (!result.scorerHealth || typeof result.scorerHealth !== "object") return "scorerHealth missing";
   if (result.accepted) {

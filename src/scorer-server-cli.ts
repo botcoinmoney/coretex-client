@@ -138,6 +138,7 @@ export interface ScorerJobRequest {
   readonly corpusRoot: string;
   readonly bundleHash: string;
   readonly coreVersionHash: string;
+  readonly scoringPipelineVersion?: string;
   /** LIVE screener threshold (ppm) the coordinator is enforcing for THIS job.
    *  The scorer uses THIS for its advisory accept/reject + the committed
    *  artifact thresholdPpm — never CORETEX_SCREENER_THRESHOLD_PPM env, which
@@ -171,6 +172,7 @@ export interface ScorerStateJobRequest {
   readonly corpusRoot: string;
   readonly bundleHash: string;
   readonly coreVersionHash: string;
+  readonly scoringPipelineVersion?: string;
   /** Caller-derived deterministic bytes32 baseline seed. */
   readonly baselineSeedHex: string;
   /** Baseline samples (default 1, max MAX_SCORE_STATE_SAMPLES). */
@@ -212,6 +214,8 @@ export interface ScorerJobResult {
   /** Echoes `job.policyHash` so the coordinator can reject a result computed
    *  under a drifted policy/core-version pin. */
   readonly policyHash: string;
+  /** Echo of the law actually loaded by the scorer. */
+  readonly scoringPipelineVersion?: string;
   /** Present only when accepted (built via the canonical eval-report builder). */
   readonly evalReportHash?: string;
   readonly artifactHash?: string;
@@ -259,6 +263,8 @@ export interface ScorerStateJobResult {
   readonly corpusRoot: string;
   readonly bundleHash: string;
   readonly coreVersionHash: string;
+  /** Echo of the law actually loaded by the scorer. */
+  readonly scoringPipelineVersion?: string;
   readonly wallMs: number;
   readonly scorerHealth: ScorerHealth;
 }
@@ -272,6 +278,8 @@ export interface ScorerLoadedPins {
   readonly bundleHash: string;
   readonly corpusRoot: string;
   readonly coreVersionHash: string;
+  /** evaluator.profile.pipelineVersion from the loaded bundle. */
+  readonly scoringPipelineVersion?: string;
   /** keccak256(epochSecret) the scorer was booted against (the secretless host
    *  is configured with the public commit, never the secret). When a job's
    *  publicEvalContext carries hiddenSeedCommit, it must match this. */
@@ -293,6 +301,7 @@ export interface ScorerPinCheckedJob {
   readonly corpusRoot: string;
   readonly bundleHash: string;
   readonly coreVersionHash: string;
+  readonly scoringPipelineVersion?: string;
   readonly publicEvalContext?: ScorerPublicEvalContext;
   readonly expectedScorerPins: ScorerExpectedPins;
 }
@@ -319,6 +328,13 @@ export function checkScorerJobPins(job: ScorerPinCheckedJob, loaded: ScorerLoade
   if (!hexEq(job.corpusRoot, loaded.corpusRoot)) return `job.corpusRoot != loaded ${loaded.corpusRoot}`;
   if (!hexEq(job.bundleHash, loaded.bundleHash)) return `job.bundleHash != loaded ${loaded.bundleHash}`;
   if (!hexEq(job.coreVersionHash, loaded.coreVersionHash)) return `job.coreVersionHash != loaded ${loaded.coreVersionHash}`;
+  if (loaded.scoringPipelineVersion !== undefined) {
+    if (job.scoringPipelineVersion !== loaded.scoringPipelineVersion) {
+      return `job.scoringPipelineVersion ${job.scoringPipelineVersion ?? 'absent'} != loaded ${loaded.scoringPipelineVersion}`;
+    }
+  } else if (job.scoringPipelineVersion !== undefined) {
+    return `job.scoringPipelineVersion ${job.scoringPipelineVersion} pinned but the scorer loaded an unversioned bundle`;
+  }
   const jobCommit = job.publicEvalContext?.hiddenSeedCommit;
   if (jobCommit !== undefined && loaded.hiddenSeedCommit !== undefined && !hexEq(jobCommit, loaded.hiddenSeedCommit)) {
     return `publicEvalContext.hiddenSeedCommit != loaded ${loaded.hiddenSeedCommit}`;
@@ -446,6 +462,9 @@ function validateJobShape(job: unknown): string | null {
   if (typeof j.miner !== 'string' || !/^0x[0-9a-fA-F]{40}$/.test(j.miner)) return 'miner must be an address';
   if (!Number.isSafeInteger(j.thresholdPpm) || (j.thresholdPpm as number) < 0) return 'thresholdPpm must be a non-negative integer';
   if (typeof j.policyHash !== 'string' || !/^0x[0-9a-fA-F]{64}$/.test(j.policyHash)) return 'policyHash must be bytes32';
+  if (j.scoringPipelineVersion !== undefined && (typeof j.scoringPipelineVersion !== 'string' || j.scoringPipelineVersion.length === 0)) {
+    return 'scoringPipelineVersion must be a non-empty string when present';
+  }
   if (!j.expectedScorerPins || typeof j.expectedScorerPins !== 'object') return 'expectedScorerPins required';
   return null;
 }
@@ -466,6 +485,9 @@ function validateStateJobShape(job: unknown): string | null {
   }
   if (j.samples !== undefined && (!Number.isSafeInteger(j.samples) || (j.samples as number) < 1 || (j.samples as number) > MAX_SCORE_STATE_SAMPLES)) {
     return `samples must be an integer in [1, ${MAX_SCORE_STATE_SAMPLES}]`;
+  }
+  if (j.scoringPipelineVersion !== undefined && (typeof j.scoringPipelineVersion !== 'string' || j.scoringPipelineVersion.length === 0)) {
+    return 'scoringPipelineVersion must be a non-empty string when present';
   }
   if (!j.expectedScorerPins || typeof j.expectedScorerPins !== 'object') return 'expectedScorerPins required';
   return null;
@@ -557,6 +579,9 @@ export async function handleScoreJob(
     // threshold / policy.
     thresholdPpmUsed: job.thresholdPpm,
     policyHash: job.policyHash.toLowerCase(),
+    ...(deps.loadedPins.scoringPipelineVersion !== undefined
+      ? { scoringPipelineVersion: deps.loadedPins.scoringPipelineVersion }
+      : {}),
     pairTraceHash: trace.pairTraceHash,
     scoreArrayHash: trace.scoreArrayHash,
     totalScoredPairCount: trace.totalScoredPairCount,
@@ -661,6 +686,9 @@ export async function handleScoreStateJob(
       corpusRoot: job.corpusRoot.toLowerCase(),
       bundleHash: job.bundleHash.toLowerCase(),
       coreVersionHash: job.coreVersionHash.toLowerCase(),
+      ...(deps.loadedPins.scoringPipelineVersion !== undefined
+        ? { scoringPipelineVersion: deps.loadedPins.scoringPipelineVersion }
+        : {}),
       wallMs,
       scorerHealth: deps.scorerHealth,
     },
@@ -900,6 +928,9 @@ async function bootScorer(env: NodeJS.ProcessEnv): Promise<BootedScorer> {
     bundleHash: bundle.bundleHash.toLowerCase(),
     corpusRoot: corpusMeta.corpusRoot.toLowerCase(),
     coreVersionHash: bundle.bundleHash.toLowerCase(),
+    ...(bundle.evaluator?.profile?.pipelineVersion !== undefined
+      ? { scoringPipelineVersion: bundle.evaluator.profile.pipelineVersion }
+      : {}),
     hiddenSeedCommit,
     ...(activeFrontier !== undefined ? { activeFrontierRoot: activeFrontier.expectedRoot } : {}),
     code,

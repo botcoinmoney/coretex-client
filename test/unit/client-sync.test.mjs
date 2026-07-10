@@ -145,6 +145,8 @@ describe('client sync CLI — epoch secret reveal status + mode flags', () => {
 
   test('policyAtomsMode derives HARD from the manifest pipelineVersion', () => {
     assert.equal(policyAtomsModeFromManifest({ evaluator: { profile: { pipelineVersion: 'coretex-retrieval-v2-policy-r5' } } }), true);
+    assert.equal(policyAtomsModeFromManifest({ evaluator: { profile: { pipelineVersion: 'coretex-bmu-v1-r5state' } } }), true);
+    assert.equal(policyAtomsModeFromManifest({ evaluator: { profile: { pipelineVersion: 'coretex-bmu-v2-r5state' } } }), true);
     assert.equal(policyAtomsModeFromManifest({ evaluator: { profile: { pipelineVersion: 'coretex-retrieval-v2-lens-r4' } } }), false);
     assert.equal(policyAtomsModeFromManifest({}), false);
   });

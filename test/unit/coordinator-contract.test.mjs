@@ -226,14 +226,13 @@ describe('v0 coordinator data-source contract', () => {
     assert.deepEqual(hits, [], 'stress-harness caps/classifiers must not become production rejection logic');
   });
 
-  test('client sync CLI does not import coordinator-only control-plane modules', () => {
+  test('client sync CLI imports no coordinator control plane beyond the shared production scorer', () => {
     const body = readFileSync(new URL('../../src/client-sync-cli.ts', import.meta.url), 'utf8');
     const imports = body.split('\n').filter((line) => /^\s*import\s/.test(line)).join('\n');
     for (const forbidden of [
       'coretex-coordinator',
       '/coordinator/coretex-coordinator-core',
       '/coordinator/endpoints',
-      '/coordinator/production-evaluator',
       '/coordinator/per-patch-evaluator',
       '@aws-sdk',
       'child_process',

@@ -125,6 +125,17 @@ describe('post-reveal eval report artifact', () => {
     assert.equal(hashPostRevealEvalReportArtifact(artifact), artifact.artifactHash);
   });
 
+  test('scoringPipelineVersion is bound into the artifact hash domain', async () => {
+    const receipt = await buildReceipt();
+    const v1 = buildPostRevealEvalReportArtifact(artifactFields(receipt, {
+      context: { ...artifactFields(receipt).context, scoringPipelineVersion: 'coretex-bmu-v1-r5state' },
+    }));
+    const v2 = buildPostRevealEvalReportArtifact(artifactFields(receipt, {
+      context: { ...artifactFields(receipt).context, scoringPipelineVersion: 'coretex-bmu-v2-r5state' },
+    }));
+    assert.notEqual(v1.artifactHash, v2.artifactHash);
+  });
+
   test('round-trips builder → JSON → hash → verify', async () => {
     const artifact = JSON.parse(JSON.stringify(await buildArtifact()));
     const result = await verifyPostRevealEvalReportArtifact(artifact, verifyDeps(artifact));

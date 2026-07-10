@@ -475,6 +475,8 @@ export interface ProductionCoreTexEvaluatorCoreDeps {
   readonly hiddenSeedCommit?: string; // bytes32 hex
   readonly corpusRoot: string;        // bytes32 hex
   readonly bundleHash: string;        // bytes32 hex
+  /** Loaded bundle scoring-law pin; emitted into the artifact hash domain. */
+  readonly scoringPipelineVersion?: string;
   /** Present iff the bundle armed `epochFrontier.liveEvalPack`: the pinned
    *  active-frontier root the seedScorer's overlay set was verified against.
    *  Echoed into the eval-report artifact context and the dual-pack proof. */
@@ -746,6 +748,9 @@ export function createCoreTexEvaluatorCore(deps: ProductionCoreTexEvaluatorCoreD
           coreVersionHash: deps.bundleHash.toLowerCase(),
           hiddenSeedCommit,
           replayTolerancePpm: deps.replayTolerancePpm,
+          ...(deps.scoringPipelineVersion !== undefined
+            ? { scoringPipelineVersion: deps.scoringPipelineVersion }
+            : {}),
           ...(deps.activeFrontierRoot !== undefined ? { activeFrontierRoot: deps.activeFrontierRoot.toLowerCase() } : {}),
         },
         ...(bmuFamilySummary !== undefined ? { bmuFamilySummary } : {}),
@@ -907,6 +912,7 @@ export async function createProductionCoreTexEvaluator(
     ...(options.hiddenSeedCommit ? { hiddenSeedCommit: options.hiddenSeedCommit } : {}),
     corpusRoot: corpus.corpusRoot,
     bundleHash: bundle.bundleHash,
+    ...(profile.pipelineVersion !== undefined ? { scoringPipelineVersion: profile.pipelineVersion } : {}),
     ...(options.activeFrontier !== undefined ? { activeFrontierRoot: options.activeFrontier.expectedRoot } : {}),
     stateThresholdPpm,
     screenerThresholdPpm,

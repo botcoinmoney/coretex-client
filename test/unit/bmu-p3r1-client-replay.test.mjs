@@ -159,7 +159,7 @@ const reranker = {
   },
 };
 
-function scoringOpts() {
+function scoringOpts(pipelineVersion = 'coretex-bmu-v1-r5state') {
   return {
     weights: { w_retrieval: 0.75, w_temporal: 0.08, w_relation_recall: 0.07, w_abstention: 0.05, w_structural_sanity: 0.05 },
     retrievalKeyLayout: LAYOUT,
@@ -169,7 +169,7 @@ function scoringOpts() {
     relationHopBudget: 2, abstentionThreshold: 0.001, rerankerTopK: 10, rerankerInputTopK: 128,
     firstStageTopK: 64, lensTopK: 36, lensWeight: 0.1, anchorWeight: 0.15, relationExpansionBudget: 50,
     temporalCurrentBoost: 0.1, temporalStaleSuppression: 0.1,
-    pipelineVersion: 'coretex-bmu-v1-r5state', policyAtomsMode: true,
+    pipelineVersion, policyAtomsMode: true,
   };
 }
 
@@ -182,7 +182,7 @@ function ctxFor(profile) {
   return {
     corpus,
     profile,
-    scoringOpts: scoringOpts(),
+    scoringOpts: scoringOpts(profile.pipelineVersion),
     thresholdPpm: 0,
     reranker: { model: 'unit-test-reranker' },
     activeFrontierIdsResolver: () => activeIds,
@@ -227,7 +227,7 @@ function seedsFor(patchBytes) {
   return { patchHash, gateSeed: deriveGateEvalSeed(seedInput), confirmSeed: deriveConfirmEvalSeed(seedInput) };
 }
 
-function artifactFor({ patchBytes, patchHash, gateSeed, confirmSeed, gateScorePpm, confirmScorePpm, version }) {
+function artifactFor({ patchBytes, patchHash, gateSeed, confirmSeed, gateScorePpm, confirmScorePpm, version, scoringPipelineVersion }) {
   const receipt = {
     patchHash, dedupKey: computeDedupKey(parentRoot, patchBytes), parentRoot, minerAddress: '0x' + '11'.repeat(20),
     epochId: EPOCH, receivedAtBlock: 10, targetBlock: 25, blockhash: BLOCKHASH,
@@ -249,6 +249,7 @@ function artifactFor({ patchBytes, patchHash, gateSeed, confirmSeed, gateScorePp
       parentStateRoot: parentRoot, corpusRoot: corpus.corpusRoot, coreVersionHash: BUNDLE_HASH,
       hiddenSeedCommit: bytesToHex(keccak256(hexToBytes(EPOCH_SECRET))).toLowerCase(),
       replayTolerancePpm: 250,
+      ...(scoringPipelineVersion !== undefined ? { scoringPipelineVersion } : {}),
       activeFrontierRoot: B32('08'),
     },
   });
@@ -299,6 +300,28 @@ describe('MAJOR-2: validator score replay under the BMU law (§9 site 18)', () =
       () => scorerForParent(ctxFor(bmuProfile()), ZERO_STATE, r5Artifact),
       /does not pair with the loaded bundle's scoring law/,
     );
+  });
+
+  test('BMU v2 replay requires an exact artifact scoringPipelineVersion while historical v1 remains replayable', () => {
+    const patchBytes = noopPatchBytes();
+    const { patchHash, gateSeed, confirmSeed } = seedsFor(patchBytes);
+    const common = {
+      patchBytes, patchHash, gateSeed, confirmSeed,
+      gateScorePpm: 0, confirmScorePpm: 0,
+      version: 'coretex-bmu-post-reveal-eval-report-v1',
+    };
+    const v1Ctx = ctxFor(bmuProfile());
+    const v2Ctx = ctxFor(bmuProfile({ pipelineVersion: 'coretex-bmu-v2-r5state' }));
+    const historicalV1 = artifactFor(common);
+    const v1Pinned = artifactFor({ ...common, scoringPipelineVersion: 'coretex-bmu-v1-r5state' });
+    const v2Pinned = artifactFor({ ...common, scoringPipelineVersion: 'coretex-bmu-v2-r5state' });
+
+    assert.doesNotThrow(() => scorerForParent(v1Ctx, ZERO_STATE, historicalV1));
+    assert.doesNotThrow(() => scorerForParent(v1Ctx, ZERO_STATE, v1Pinned));
+    assert.doesNotThrow(() => scorerForParent(v2Ctx, ZERO_STATE, v2Pinned));
+    assert.throws(() => scorerForParent(v2Ctx, ZERO_STATE, historicalV1), /scoringPipelineVersion 'absent'/);
+    assert.throws(() => scorerForParent(v2Ctx, ZERO_STATE, v1Pinned), /does not match loaded bundle/);
+    assert.throws(() => scorerForParent(v1Ctx, ZERO_STATE, v2Pinned), /does not match loaded bundle/);
   });
 
   test('an R5-SCORED BMU artifact (the pre-fix wrong-law behavior) is REJECTED beyond tolerance', { timeout: 240_000 }, async () => {

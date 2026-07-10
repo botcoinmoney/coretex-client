@@ -10,7 +10,7 @@
  */
 
 import type { CortexState, Patch } from '../state/index.js';
-import { CORETEX_PIPELINE_VERSION_R5, CORETEX_PIPELINE_VERSION_BMU_V1 } from '../pipeline-versions.js';
+import { CORETEX_PIPELINE_VERSION_R5, CORETEX_PIPELINE_VERSION_BMU_V1, CORETEX_PIPELINE_VERSION_BMU_V2 } from '../pipeline-versions.js';
 import { applyPatch } from '../state/patch.js';
 import { keccak256 } from '../state/keccak256.js';
 import { decodeSubstrate, type DecodedSubstrate, type RelationCategoryLens, POLICY_SELECTOR } from '../substrate/retrieval-decoder.js';
@@ -26,7 +26,7 @@ import type {
   PublicScopeMetadata,
   RetrievalKeyLayout,
 } from './retrieval-corpus.js';
-import { isMemoryDocumentEventId } from './retrieval-corpus.js';
+import { codePointCompare, isMemoryDocumentEventId } from './retrieval-corpus.js';
 import {
   buildPublicCorpusIndex,
   publicTextTokens,
@@ -143,7 +143,9 @@ type CandidateSourceTag =
   | 'temporalRecord'
   | 'temporalMotif'
   | 'conflictMotif'
-  | 'evidenceMotif';
+  | 'evidenceMotif'
+  /** BMU v2's generic, bounded public directed-path admission. */
+  | 'publicPath';
 
 export interface RetrievalQueryScoringTelemetry {
   readonly queryId: string;
@@ -387,6 +389,21 @@ export interface ScoringOptions {
   readonly motifAdmissionMaxDocs?: number;
   readonly motifAdmissionTopK?: number;
   /**
+   * BMU v2 generic public-path bundle. Stage-1 supplies a bounded number of
+   * public seed events; each ordered step traverses only its declared public
+   * edge direction and admits a bounded, deterministically sorted branch.
+   * Admitted documents receive no additive promotion; they enter the same
+   * Qwen candidate set as every other admitted branch.
+   */
+  readonly bmuPublicPathBundle?: {
+    readonly stage1SeedLimit: number;
+    readonly branchLimit: number;
+    readonly steps: readonly {
+      readonly direction: 'outgoing' | 'incoming';
+      readonly edgeTypes: readonly string[];
+    }[];
+  };
+  /**
    * §6.5 reranker-input cap (MemReranker semantics). Number of pool
    * candidates that get forwarded to the cross-encoder reranker per
    * query — sorted by (biCosine + substrateBonus) descending, tie-break
@@ -549,7 +566,7 @@ export interface ScoringOptions {
  *  words read as typed PolicyAtoms (this binary implements BOTH r4 and r5;
  *  r4 stays replayable). The active decode is chosen by the profile's pin. */
 export const CORETEX_PIPELINE_VERSION_THIS_BINARY = 'coretex-retrieval-v2-lens-r4';
-export { CORETEX_PIPELINE_VERSION_R5, CORETEX_PIPELINE_VERSION_BMU_V1, isR5StateLaw, isBmuScoringLaw } from '../pipeline-versions.js';
+export { CORETEX_PIPELINE_VERSION_R5, CORETEX_PIPELINE_VERSION_BMU_V1, CORETEX_PIPELINE_VERSION_BMU_V2, isR5StateLaw, isBmuScoringLaw, isBmuV2ScoringLaw } from '../pipeline-versions.js';
 /** Versions this binary can replay (r4 + r5 + bmu-v1 coexist; decode mode is
  *  the r5 law for both r5 and bmu-v1 — BMU_SPEC.md §3; scoring law routes on
  *  `isBmuScoringLaw`, spec §9 site 1). */
@@ -557,6 +574,7 @@ export const CORETEX_PIPELINE_VERSIONS_SUPPORTED: ReadonlySet<string> = new Set(
   CORETEX_PIPELINE_VERSION_THIS_BINARY,
   CORETEX_PIPELINE_VERSION_R5,
   CORETEX_PIPELINE_VERSION_BMU_V1,
+  CORETEX_PIPELINE_VERSION_BMU_V2,
 ]);
 
 /**
@@ -1165,6 +1183,65 @@ export async function scoreSubstrateAgainstQuery(
     }
     return added;
   };
+
+  // BMU v2: one generic directed public-path bundle. It reads only public
+  // stage-1 event ids and public relation edges. It never inspects qrels,
+  // family/task/role labels, publicIntent, timestamps, or lifecycle metadata.
+  if (opts.bmuPublicPathBundle !== undefined) {
+    const law = opts.bmuPublicPathBundle;
+    if (!Number.isInteger(law.stage1SeedLimit) || law.stage1SeedLimit < 1 || law.stage1SeedLimit > 16) {
+      throw new Error(`bmuPublicPathBundle.stage1SeedLimit must be an integer in [1, 16] (got ${String(law.stage1SeedLimit)})`);
+    }
+    if (!Number.isInteger(law.branchLimit) || law.branchLimit < 1 || law.branchLimit > 8) {
+      throw new Error(`bmuPublicPathBundle.branchLimit must be an integer in [1, 8] (got ${String(law.branchLimit)})`);
+    }
+    if (!Array.isArray(law.steps) || law.steps.length < 1 || law.steps.length > 4) {
+      throw new Error('bmuPublicPathBundle.steps must contain 1..4 ordered steps');
+    }
+    const maxBranchAdmissions = law.stage1SeedLimit * (law.branchLimit ** law.steps.length);
+    if (maxBranchAdmissions > opts.rerankerInputTopK) {
+      throw new Error(`bmuPublicPathBundle can admit up to ${maxBranchAdmissions} branches but rerankerInputTopK is ${opts.rerankerInputTopK}; refusing non-uniform Qwen admission`);
+    }
+    const publicEvents = new Map(corpus.events.map((event) => [event.id, event]));
+    const incoming = new Map<string, ProductionCorpusEvent[]>();
+    for (const event of corpus.events) {
+      for (const relation of event.relations ?? []) {
+        const list = incoming.get(relation.other_id) ?? [];
+        list.push(event);
+        incoming.set(relation.other_id, list);
+      }
+    }
+    for (const list of incoming.values()) list.sort((a, b) => codePointCompare(a.id, b.id));
+    let frontier = [...new Set(stage1Docs.slice(0, law.stage1SeedLimit).map((doc) => doc.eventId))]
+      .sort(codePointCompare);
+    for (const step of law.steps) {
+      if ((step.direction !== 'outgoing' && step.direction !== 'incoming')
+          || !Array.isArray(step.edgeTypes) || step.edgeTypes.length === 0
+          || step.edgeTypes.some((edge: string) => typeof edge !== 'string' || edge.length === 0)) {
+        throw new Error('bmuPublicPathBundle step must declare direction and non-empty public edgeTypes');
+      }
+      const edgeTypes = new Set(step.edgeTypes);
+      const next = new Set<string>();
+      for (const eventId of frontier) {
+        const event = publicEvents.get(eventId);
+        if (!event) continue;
+        const neighbors = step.direction === 'outgoing'
+          ? (event.relations ?? [])
+            .filter((relation) => edgeTypes.has(relation.edgeType))
+            .map((relation) => publicEvents.get(relation.other_id))
+            .filter((candidate): candidate is ProductionCorpusEvent => candidate !== undefined)
+          : (incoming.get(eventId) ?? []).filter((candidate) =>
+            (candidate.relations ?? []).some((relation) => relation.other_id === eventId && edgeTypes.has(relation.edgeType)),
+          );
+        for (const target of neighbors.sort((a, b) => codePointCompare(a.id, b.id)).slice(0, law.branchLimit)) {
+          addAtomEventDocs(target, 'publicPath', 1);
+          next.add(target.id);
+        }
+      }
+      frontier = [...next].sort(codePointCompare);
+      if (frontier.length === 0) break;
+    }
+  }
 
   // v16 atom prototype path, package-level and profile-gated:
   // - entity_resolution_atom: policy-anchor MemoryIndex slots selected by public subject/name/role/scope metadata.
@@ -2053,7 +2130,8 @@ export async function scoreSubstrateAgainstQuery(
       || c.record.sources.has('temporalRecord')
       || c.record.sources.has('temporalMotif')
       || c.record.sources.has('conflictMotif')
-      || c.record.sources.has('evidenceMotif'))
+      || c.record.sources.has('evidenceMotif')
+      || c.record.sources.has('publicPath'))
     .sort((a, b) => {
       const sa = a.record.memorySlot ?? 0;
       const sb = b.record.memorySlot ?? 0;

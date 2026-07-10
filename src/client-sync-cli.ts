@@ -46,7 +46,7 @@ import { pathToFileURL } from 'node:url';
 import http from 'node:http';
 import https from 'node:https';
 
-import { isBmuScoringLaw } from './pipeline-versions.js';
+import { isBmuScoringLaw, isBmuV2ScoringLaw, isR5StateLaw } from './pipeline-versions.js';
 import { scoreBmuAgainstSeed } from './coordinator/production-evaluator.js';
 import {
   coretexRangeLogs,
@@ -428,7 +428,7 @@ export function deriveEpochSecretRevealStatus(hiddenSeedCommit: string, epochSec
 
 /** Mode flags derive HARD from the chain-pinned bundle manifest — never a silent default. */
 export function policyAtomsModeFromManifest(manifest: { evaluator?: { profile?: { pipelineVersion?: string } } }): boolean {
-  return manifest.evaluator?.profile?.pipelineVersion === 'coretex-retrieval-v2-policy-r5';
+  return isR5StateLaw(manifest.evaluator?.profile?.pipelineVersion);
 }
 
 // ── one-command defaults (unit-tested directly) ───────────────────────────────
@@ -1439,6 +1439,18 @@ export function scorerForParent(
     throw new Error(
       `artifact version '${artifact.version}' does not pair with the loaded bundle's scoring law `
       + `('${ctx.profile.pipelineVersion ?? 'unpinned'}' expects '${expectedVersion}') — wrong bundle for this artifact, refusing to rescore`,
+    );
+  }
+  const artifactPipelineVersion = artifact.context.scoringPipelineVersion;
+  if (isBmuV2ScoringLaw(ctx.profile.pipelineVersion)) {
+    if (artifactPipelineVersion !== ctx.profile.pipelineVersion) {
+      throw new Error(
+        `BMU v2 artifact scoringPipelineVersion '${artifactPipelineVersion ?? 'absent'}' does not match loaded bundle '${ctx.profile.pipelineVersion}' — refusing cross-law replay`,
+      );
+    }
+  } else if (artifactPipelineVersion !== undefined && artifactPipelineVersion !== ctx.profile.pipelineVersion) {
+    throw new Error(
+      `artifact scoringPipelineVersion '${artifactPipelineVersion}' does not match loaded bundle '${ctx.profile.pipelineVersion ?? 'unpinned'}' — refusing cross-law replay`,
     );
   }
   // Overlay-law parity, FAIL-CLOSED both ways: an artifact pinning an

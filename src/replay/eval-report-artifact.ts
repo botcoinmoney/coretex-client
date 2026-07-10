@@ -59,6 +59,9 @@ export interface CoreTexPostRevealEvalReportArtifact {
     readonly coreVersionHash: string;
     readonly hiddenSeedCommit: string;
     readonly replayTolerancePpm: number;
+    /** Explicit scoring-law hash-domain pin. Required on newly emitted
+     * versioned artifacts; optional only for historical replay. */
+    readonly scoringPipelineVersion?: string;
     /** Present iff the bundle armed `epochFrontier.liveEvalPack`: the on-chain
      *  active-frontier root the scored packs' live-eval overlay was verified
      *  against. A replaying validator must reconstruct the same overlay from a
@@ -219,6 +222,10 @@ function validateArtifactShape(artifact: CoreTexPostRevealEvalReportArtifact): s
   }
   if (!Number.isSafeInteger(artifact.context.replayTolerancePpm) || artifact.context.replayTolerancePpm < 0) {
     return 'context.replayTolerancePpm invalid';
+  }
+  if (artifact.context.scoringPipelineVersion !== undefined
+      && (typeof artifact.context.scoringPipelineVersion !== 'string' || artifact.context.scoringPipelineVersion.length === 0)) {
+    return 'context.scoringPipelineVersion must be a non-empty string when present';
   }
   const receipt = artifact.receipt;
   if (!receipt || typeof receipt !== 'object') return 'receipt missing';

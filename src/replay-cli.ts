@@ -20,6 +20,7 @@ import {
   type CoreTexBundleManifest,
 } from './bundle/index.js';
 import { CORTEX_CLIENT_VERSION } from './version.js';
+import { isR5StateLaw } from './pipeline-versions.js';
 
 function die(message: string): never {
   process.stderr.write(message + '\n');
@@ -147,7 +148,7 @@ function derivePolicyAtomsMode(args: readonly string[], manifestPath: string | u
     die('cannot derive policyAtomsMode: pass --bundle-manifest (pinned to the on-chain coreVersionHash) or an explicit --policy-atoms-mode on|off — refusing to silently default');
   }
   const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as CoreTexBundleManifest;
-  return manifest?.evaluator?.profile?.pipelineVersion === 'coretex-retrieval-v2-policy-r5';
+  return isR5StateLaw(manifest?.evaluator?.profile?.pipelineVersion);
 }
 
 function expectedReplayPins(args: readonly string[]): {

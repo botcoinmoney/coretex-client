@@ -32,7 +32,7 @@ import type { CortexState, Patch } from '../state/index.js';
 import { applyPatch } from '../state/patch.js';
 import { keccak256 } from '../state/keccak256.js';
 import { bytesToHex } from '../state/merkle.js';
-import { isBmuScoringLaw } from '../pipeline-versions.js';
+import { isBmuScoringLaw, isBmuV2ScoringLaw } from '../pipeline-versions.js';
 import {
   evaluateRetrievalBenchmarkState,
   type CompositeScore,
@@ -45,6 +45,7 @@ import {
   BMU_FAMILIES,
   BMU_COMPOSITION_TARGETS,
   BMU_FRESH_WINDOW_DEFAULT,
+  BMU_MULTI_HOP_FORCED_INHERIT_ALPHA,
   type BmuFamily,
   type BmuTask,
   bmuFamilyForLogicalFamily,
@@ -233,6 +234,20 @@ export interface BmuScoringContext {
   readonly judgeScoreGrid?: number;
 }
 
+/**
+ * BMU v2's law-owned routing primitive. No family, task, role, or intent
+ * value participates in routing. Its maximum 64 branch admissions fit the
+ * normal reranker cap and therefore receive uniform Qwen admission.
+ */
+export const BMU_V2_PUBLIC_PATH_BUNDLE = Object.freeze({
+  stage1SeedLimit: 4,
+  branchLimit: 4,
+  steps: Object.freeze([
+    Object.freeze({ direction: 'outgoing' as const, edgeTypes: Object.freeze(['supports', 'supersedes', 'coreference_of', 'causes', 'derived_from', 'co_occurs_with']) }),
+    Object.freeze({ direction: 'incoming' as const, edgeTypes: Object.freeze(['supports', 'supersedes', 'coreference_of', 'causes', 'derived_from', 'co_occurs_with']) }),
+  ]),
+});
+
 // ─── State evaluation (the LAW entrypoint) ────────────────────────────────────
 
 /**
@@ -266,8 +281,33 @@ export async function evaluateBmuBenchmarkState(
   }
   // exposeFullRanking feeds the judge; bmuPolicyBonusClamp arms the §13.2
   // rev3.3 per-doc atom-contribution cap (P_cap = 1) — part of the BMU LAW,
-  // never a bundle knob.
-  const r5 = await evaluateRetrievalBenchmarkState(state, corpus, pack, { ...opts, exposeFullRanking: true, bmuPolicyBonusClamp: true });
+  // never a bundle knob. v2 removes all v1 family/intent helpers and instead
+  // admits a bounded, family-agnostic public path to the normal reranker.
+  const v2 = isBmuV2ScoringLaw(opts.pipelineVersion);
+  const scorePack = v2
+    ? { ...pack, events: pack.events.map((event) => {
+      const { publicIntent: _publicIntent, ...withoutPublicIntent } = event;
+      return withoutPublicIntent;
+    }) }
+    : pack;
+  const r5 = await evaluateRetrievalBenchmarkState(state, corpus, scorePack, {
+    ...opts,
+    exposeFullRanking: true,
+    bmuPolicyBonusClamp: true,
+    ...(v2 ? {
+      temporalMotifAdmission: false,
+      conflictMotifAdmission: false,
+      evidenceMotifAdmission: false,
+      policyConflictIntentAdmission: false,
+      policyQueryConditionedAdmission: false,
+      policyRelationTypedAdmission: false,
+      enableEntityResolutionAtoms: false,
+      enableScopeAtoms: false,
+      enableConflictLifecycleAtoms: false,
+      enableEvidenceBundleAtoms: false,
+      bmuPublicPathBundle: BMU_V2_PUBLIC_PATH_BUNDLE,
+    } : {}),
+  });
 
   const perTask: BmuPerTaskResult[] = [];
   const famSum: Record<BmuFamily, number> = { temporal: 0, conflict_lifecycle: 0, multi_hop_relation: 0, near_collision_abstention: 0 };
@@ -507,6 +547,7 @@ export interface BmuRmaxProfileShape {
   readonly temporalCurrentBoost?: number;
   readonly temporalStaleSuppression?: number;
   readonly categoryLensFinalBonusWeight?: number;
+  readonly categoryLensScoreInheritance?: number;
   readonly enableAspectConstraintAtoms?: boolean;
   readonly policyAspectBoost?: number;
 }
@@ -515,6 +556,9 @@ export interface BmuRmaxProfileShape {
  *  clamps the summed per-doc policyBonus to ±P_cap·UNIT before quantization
  *  (`bmuPolicyBonusClamp`, armed unconditionally by the BMU law module). */
 export const BMU_JUDGE_POLICY_CAP = 1;
+
+/** Runtime multi-hop inheritance is included in the range proof. */
+export const BMU_JUDGE_FORCED_INHERIT_ALPHA = BMU_MULTI_HOP_FORCED_INHERIT_ALPHA;
 
 /**
  * §13.2 range analysis (rev3.3 pinned arithmetic): with the per-doc
@@ -532,11 +576,25 @@ export const BMU_JUDGE_POLICY_CAP = 1;
 export function computeBmuJudgeRmax(profile: BmuRmaxProfileShape): number {
   const lensW = profile.lensWeight ?? 0.1;
   const anchorW = profile.anchorWeight ?? 0.15;
-  const temporalW = Math.max(profile.temporalCurrentBoost ?? 0.1, profile.temporalStaleSuppression ?? 0.1);
+  const temporalCurrentW = profile.temporalCurrentBoost ?? 0.1;
+  const temporalStaleW = profile.temporalStaleSuppression ?? 0.1;
   const catLensFinalW = profile.categoryLensFinalBonusWeight ?? lensW;
   const aspectW = profile.enableAspectConstraintAtoms === true ? (profile.policyAspectBoost ?? 0) : 0;
-  const B = lensW + anchorW + temporalW + catLensFinalW + aspectW;
-  return 1 + B + 2 * BMU_JUDGE_POLICY_CAP;
+  const inheritAlpha = profile.categoryLensScoreInheritance ?? 0;
+  const named = { lensWeight: lensW, anchorWeight: anchorW, temporalCurrentBoost: temporalCurrentW,
+    temporalStaleSuppression: temporalStaleW, categoryLensFinalBonusWeight: catLensFinalW,
+    policyAspectBoost: aspectW, categoryLensScoreInheritance: inheritAlpha };
+  for (const [name, value] of Object.entries(named)) {
+    if (!Number.isFinite(value) || value < 0) {
+      throw new Error(`BMU judge Rmax: ${name} must be a finite non-negative number (got ${String(value)})`);
+    }
+  }
+  if (inheritAlpha > 1) {
+    throw new Error(`BMU judge Rmax: categoryLensScoreInheritance must be in [0,1] (got ${inheritAlpha})`);
+  }
+  const rerankerMax = Math.max(1, inheritAlpha, BMU_JUDGE_FORCED_INHERIT_ALPHA);
+  return rerankerMax + lensW + anchorW + temporalCurrentW + temporalStaleW
+    + catLensFinalW + aspectW + 2 * BMU_JUDGE_POLICY_CAP;
 }
 
 export function assertBmuJudgeRmax(profile: BmuRmaxProfileShape): void {
@@ -671,6 +729,8 @@ export interface BmuArmGateReport {
   /** GLOBAL m=1 census violations (rev3.2): a subjectEntityId or templateId in
    *  more than one ACTIVE cluster across ALL families. */
   readonly multiplicityViolations: readonly string[];
+  /** Missing or inconsistent canonical identity/alias holdout keys. */
+  readonly identityHoldoutViolations: readonly string[];
   readonly reasons: readonly string[];
 }
 
@@ -728,6 +788,9 @@ export function evaluateBmuArmGate(input: {
   // GLOBAL m=1 census: key → set of distinct active motifGroupIds.
   const clustersBySubject = new Map<string, Set<string>>();
   const clustersByTemplate = new Map<string, Set<string>>();
+  const clustersByEntityHoldout = new Map<string, Set<string>>();
+  const holdoutSignatureByMotif = new Map<string, string>();
+  const identityHoldoutViolationSet = new Set<string>();
 
   let total = 0;
   for (const e of input.corpus.events) {
@@ -747,6 +810,31 @@ export function evaluateBmuArmGate(input: {
     const t = clustersByTemplate.get(task.templateId) ?? new Set<string>();
     t.add(task.motifGroupId);
     clustersByTemplate.set(task.templateId, t);
+    const holdoutKeys = task.entityHoldoutKeys;
+    if (!Array.isArray(holdoutKeys) || holdoutKeys.length === 0) {
+      identityHoldoutViolationSet.add(`motifGroupId ${task.motifGroupId} has no entityHoldoutKeys (historical rows are not arm-eligible)`);
+    } else {
+      const sorted = [...new Set(holdoutKeys)].sort(codePointCompare);
+      const canonicalSubjectKey = e.subjectEntityId ? `id:${e.subjectEntityId}` : null;
+      if (canonicalSubjectKey !== null && !sorted.includes(canonicalSubjectKey)) {
+        identityHoldoutViolationSet.add(`motifGroupId ${task.motifGroupId} omits canonical subject holdout key ${canonicalSubjectKey}`);
+      }
+      if (e.ownerEntityId && e.ownerEntityId !== e.subjectEntityId && sorted.includes(`id:${e.ownerEntityId}`)) {
+        identityHoldoutViolationSet.add(`motifGroupId ${task.motifGroupId} includes shared owner id ${e.ownerEntityId} in entityHoldoutKeys`);
+      }
+      const signature = sorted.join('\n');
+      const priorSignature = holdoutSignatureByMotif.get(task.motifGroupId);
+      if (priorSignature !== undefined && priorSignature !== signature) {
+        identityHoldoutViolationSet.add(`motifGroupId ${task.motifGroupId} has inconsistent entityHoldoutKeys across rows`);
+      } else {
+        holdoutSignatureByMotif.set(task.motifGroupId, signature);
+      }
+      for (const key of sorted) {
+        const clusters = clustersByEntityHoldout.get(key) ?? new Set<string>();
+        clusters.add(task.motifGroupId);
+        clustersByEntityHoldout.set(key, clusters);
+      }
+    }
   }
 
   const reasons: string[] = [];
@@ -778,8 +866,15 @@ export function evaluateBmuArmGate(input: {
   for (const [template, clusters] of clustersByTemplate) {
     if (clusters.size > 1) multiplicityViolations.push(`templateId ${template} in ${clusters.size} active clusters (${[...clusters].sort().join(', ')})`);
   }
+  for (const [identity, clusters] of clustersByEntityHoldout) {
+    if (clusters.size > 1) multiplicityViolations.push(`entityHoldoutKey ${identity} in ${clusters.size} active clusters (${[...clusters].sort().join(', ')})`);
+  }
   if (multiplicityViolations.length > 0) {
     reasons.push(`m=1 multiplicity census failed: ${multiplicityViolations.length} violation(s)`);
+  }
+  const identityHoldoutViolations = [...identityHoldoutViolationSet].sort(codePointCompare);
+  if (identityHoldoutViolations.length > 0) {
+    reasons.push(`entity/alias holdout census failed: ${identityHoldoutViolations.length} violation(s)`);
   }
 
   return {
@@ -791,6 +886,7 @@ export function evaluateBmuArmGate(input: {
     nMinRequired: BMU_ARM_GATE_N_MIN,
     perFamily,
     multiplicityViolations,
+    identityHoldoutViolations,
     reasons,
   };
 }
@@ -921,6 +1017,7 @@ export async function evaluateBmuBaseline(
     compositeScore: scores[0]!,
     familyUtilitiesPpm,
     familyUtilitiesDigest: computeBmuFamilyUtilitiesDigest({
+      scoringPipelineVersion: scoringOpts.pipelineVersion!,
       epochId: pack.epochId,
       corpusRoot: pack.corpusRoot,
       baselineSeedHex: pack.evalSeedHex,
@@ -943,18 +1040,23 @@ export async function evaluateBmuBaseline(
  * for authority, trusted for compute, same as the scalar itself).
  */
 export function computeBmuFamilyUtilitiesDigest(input: {
+  readonly scoringPipelineVersion: string;
   readonly epochId: number;
   readonly corpusRoot: string;
   readonly baselineSeedHex: string;
   readonly parentScorePpm: number;
   readonly familyUtilitiesPpm: Readonly<Record<string, number>>;
 }): string {
+  if (!isBmuScoringLaw(input.scoringPipelineVersion)) {
+    throw new Error(`computeBmuFamilyUtilitiesDigest: '${input.scoringPipelineVersion}' is not a BMU scoring law`);
+  }
   const canonical = JSON.stringify({
     baselineSeedHex: input.baselineSeedHex.toLowerCase(),
     corpusRoot: input.corpusRoot.toLowerCase(),
     epochId: input.epochId,
     familyUtilitiesPpm: Object.fromEntries(Object.entries(input.familyUtilitiesPpm).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))),
     parentScorePpm: input.parentScorePpm,
+    scoringPipelineVersion: input.scoringPipelineVersion,
   });
   return bytesToHex(keccak256(utf8.encode(canonical))).toLowerCase();
 }

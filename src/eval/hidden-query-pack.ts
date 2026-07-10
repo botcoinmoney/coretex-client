@@ -908,8 +908,8 @@ export function bmuEventExcluded(event: ProductionCorpusEvent, excludeKeys: Read
   return bmuExclusionKeysForEvent(event).some((k) => excludeKeys.has(k));
 }
 
-/** The §6.3 exclusion key set X of a (gate) pack: the union of every pack
- *  row's namespaced motifGroupId/subjectEntityId/templateId keys. */
+/** The §6.3 exclusion key set X of a (gate) pack, including hidden canonical
+ * entity/alias identity keys. */
 export function bmuExclusionKeySetForPack(pack: QueryPack): ReadonlySet<string> {
   const keys = new Set<string>();
   for (const e of pack.events) {
