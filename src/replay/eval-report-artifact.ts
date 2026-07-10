@@ -5,12 +5,12 @@
  * builder computes ONE hash and sets BOTH `artifactHash` and
  * `evalReportHash` to it, and the accepted receipt carries that same
  * bytes32 on-chain. There is no second "local" artifact schema — the
- * production evaluator builds this exact shape and clients re-fetch it
+ * production evaluator builds this exact shape and validators re-fetch it
  * from `<CORETEX_ARTIFACT_BASE_URL>/eval-reports/<artifactHash>.json`
  * (see `evalReportArtifactRelativePath`).
  *
  * The artifact surfaces the FULL seed-derivation inputs as mandatory
- * fields (`seedDerivation`) so a client can re-derive the gate/confirm
+ * fields (`seedDerivation`) so a validator can re-derive the gate/confirm
  * hidden packs independently after the epochSecret reveal, plus the
  * dual-pack acceptance threshold so the min(gate, confirm) >= threshold
  * semantics are verifiable, not asserted.
@@ -37,7 +37,11 @@ export interface CoreTexEvalSeedDerivationInputs {
 }
 
 export interface CoreTexPostRevealEvalReportArtifact {
-  readonly version: 'coretex-post-reveal-eval-report-v1';
+  /** 'coretex-bmu-post-reveal-eval-report-v1' under the BMU scoring law
+   *  (§8.3): same canonical hasher, same spool-before-sign rule; paired with
+   *  the active bundle's pipelineVersion fail-closed BOTH directions by
+   *  verifyScorerResult. */
+  readonly version: 'coretex-post-reveal-eval-report-v1' | 'coretex-bmu-post-reveal-eval-report-v1';
   /** == artifactHash. The on-chain receipt's evalReportHash IS the artifact hash. */
   readonly evalReportHash: string;
   readonly artifactHash: string;
@@ -55,6 +59,33 @@ export interface CoreTexPostRevealEvalReportArtifact {
     readonly coreVersionHash: string;
     readonly hiddenSeedCommit: string;
     readonly replayTolerancePpm: number;
+    /** Present iff the bundle armed `epochFrontier.liveEvalPack`: the on-chain
+     *  active-frontier root the scored packs' live-eval overlay was verified
+     *  against. A replaying validator must reconstruct the same overlay from a
+     *  set hashing to this root. Absent for broad-only-law epochs (artifact
+     *  bytes/hash unchanged). */
+    readonly activeFrontierRoot?: string;
+  };
+  /**
+   * BMU §8.3: the ONLY per-row-adjacent detail a PUBLISHED artifact may add —
+   * per-family aggregates (U_f for gate/confirm on parent and candidate,
+   * per-family regressed-row counts) plus the §6.3 exclusion-set digest.
+   * Per-row u(t) detail is NEVER published (it lives in the coordinator's
+   * private spool lane — §6.5 part 3 redaction). Present ONLY on
+   * 'coretex-bmu-post-reveal-eval-report-v1' artifacts.
+   */
+  readonly bmuFamilySummary?: {
+    readonly gate: {
+      readonly parentFamilyUtilitiesPpm: Readonly<Record<string, number>>;
+      readonly candidateFamilyUtilitiesPpm: Readonly<Record<string, number>>;
+      readonly regressedRowsByFamily: Readonly<Record<string, number>>;
+    };
+    readonly confirm: {
+      readonly parentFamilyUtilitiesPpm: Readonly<Record<string, number>>;
+      readonly candidateFamilyUtilitiesPpm: Readonly<Record<string, number>>;
+      readonly regressedRowsByFamily: Readonly<Record<string, number>>;
+    };
+    readonly exclusionSetDigest: string;
   };
 }
 
@@ -66,7 +97,7 @@ export type PostRevealEvalArtifactVerificationResult =
 
 export const EVAL_REPORT_ARTIFACT_DIR = 'eval-reports';
 
-/** Canonical published path under CORETEX_ARTIFACT_BASE_URL. The client's
+/** Canonical published path under CORETEX_ARTIFACT_BASE_URL. The validator's
  *  verify-patch fetches exactly this layout; the publish side must import
  *  this helper rather than re-encode the convention. */
 export function evalReportArtifactRelativePath(artifactHash: string): string {
@@ -155,7 +186,10 @@ export async function verifyPostRevealEvalReportArtifact(
 
 function validateArtifactShape(artifact: CoreTexPostRevealEvalReportArtifact): string | null {
   if (!artifact || typeof artifact !== 'object') return 'artifact must be an object';
-  if (artifact.version !== 'coretex-post-reveal-eval-report-v1') return 'version mismatch';
+  if (artifact.version !== 'coretex-post-reveal-eval-report-v1' && artifact.version !== 'coretex-bmu-post-reveal-eval-report-v1') return 'version mismatch';
+  if (artifact.bmuFamilySummary !== undefined && artifact.version !== 'coretex-bmu-post-reveal-eval-report-v1') {
+    return 'bmuFamilySummary is only legal on coretex-bmu-post-reveal-eval-report-v1 artifacts';
+  }
   if (!isBytes32(artifact.evalReportHash)) return 'evalReportHash must be bytes32';
   if (!isBytes32(artifact.artifactHash)) return 'artifactHash must be bytes32';
   if (!Number.isSafeInteger(artifact.epochId) || artifact.epochId < 0) return 'epochId invalid';
@@ -180,6 +214,9 @@ function validateArtifactShape(artifact: CoreTexPostRevealEvalReportArtifact): s
   for (const key of ['parentStateRoot', 'corpusRoot', 'coreVersionHash', 'hiddenSeedCommit'] as const) {
     if (!isBytes32(artifact.context[key])) return `context.${key} must be bytes32`;
   }
+  if (artifact.context.activeFrontierRoot !== undefined && !isBytes32(artifact.context.activeFrontierRoot)) {
+    return 'context.activeFrontierRoot must be bytes32 when present';
+  }
   if (!Number.isSafeInteger(artifact.context.replayTolerancePpm) || artifact.context.replayTolerancePpm < 0) {
     return 'context.replayTolerancePpm invalid';
   }
@@ -201,7 +238,7 @@ function validateArtifactShape(artifact: CoreTexPostRevealEvalReportArtifact): s
 }
 
 /** The mandatory seedDerivation block must agree with the receipt + context
- *  it claims to describe — a client re-derives packs from THESE fields,
+ *  it claims to describe — a validator re-derives packs from THESE fields,
  *  so any drift between them and the replay-verified receipt is a forgery. */
 function validateSeedDerivationBinding(artifact: CoreTexPostRevealEvalReportArtifact): string | null {
   const seed = artifact.seedDerivation;

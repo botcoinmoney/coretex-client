@@ -18,6 +18,7 @@ import {
   POLICY_SELECTOR,
   POLICY_EVIDENCE_FEATURE,
   POLICY_TARGET_NONE,
+  conflictScopeClassForQuery,
   parseQueryRelationIntent,
 } from '../../dist/index.js';
 import { RANGES } from '../../dist/state/types.js';
@@ -48,6 +49,37 @@ describe('r5 PolicyAtom decode/encode roundtrip', () => {
     assert.equal(d.abstentionAtoms[0].targetSlot, POLICY_TARGET_NONE);
     assert.equal(d.abstentionAtoms[0].flags, 0x01);
     assert.equal(d.decodeFailures, 0, 'clean r5 decode has zero failures');
+  });
+});
+
+describe('r5 conflict motif public scope parsing', () => {
+  test('leading possessive subject phrase resolves to the public condition scope', () => {
+    assert.equal(
+      conflictScopeClassForQuery("For Launch Conflict 000's travel care, which renewal depot is current?"),
+      'travel_care',
+    );
+  });
+
+  test('plain leading scope remains unchanged', () => {
+    assert.equal(
+      conflictScopeClassForQuery('For weekend care, what is the current depot?'),
+      'weekend_care',
+    );
+  });
+
+  test('scope-mismatch decoy query text resolves to a different public scope class', () => {
+    assert.equal(
+      conflictScopeClassForQuery("What is Launch Conflict 000's current renewal depot for home care?"),
+      null,
+    );
+    assert.equal(
+      conflictScopeClassForQuery('For home care, what is the current depot?'),
+      'home_care',
+    );
+    assert.notEqual(
+      conflictScopeClassForQuery('For travel care, which depot is current?'),
+      conflictScopeClassForQuery('For home care, which depot is current?'),
+    );
   });
 });
 

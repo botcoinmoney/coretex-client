@@ -1,9 +1,9 @@
 /**
- * v0 CoreTex production coordinator core — the hardened semantics that
- * `coretex_miner_testing/mainnet-coord-v16.mjs` prototyped, ported into a
- * production-shaped TypeScript module. NO sims, NO proxy scoring, NO local
- * shell-outs — those are the responsibility of the production server harness
- * that mounts this core via the dependency interfaces below.
+ * v0 CoreTex production coordinator core. This is the production-shaped
+ * TypeScript module for receipt issuance, root tracking, and submit
+ * admission. NO sims, NO proxy scoring, NO local shell-outs — those are the
+ * responsibility of the production server harness that mounts this core via
+ * the dependency interfaces below.
  *
  * Hardened invariants enforced here:
  *   1. Chain-confirmed-only root tracking: `liveState` / `liveRoot` /
@@ -71,6 +71,7 @@
  */
 
 import { merkleizeState, bytesToHex } from '../state/merkle.js';
+import { isBmuScoringLaw } from '../pipeline-versions.js';
 import { decodePatch, encodePatch, applyPatch } from '../state/patch.js';
 import { keccak256 } from '../state/keccak256.js';
 import { computePatchHash } from '../eval/seed-derivation.js';
@@ -182,6 +183,10 @@ export interface RealEvaluator {
      *  under the pinned blockhash; the secretless scorer injects them verbatim.
      *  Requires seedContext. The local CPU evaluator path omits it. */
     injectedSeeds?: { readonly gateSeed: string; readonly confirmSeed: string };
+    /** OPTIONAL coordinator-authoritative offset for the supplied seedContext.
+     *  Remote/keyless evaluators use it to stamp artifacts/proofs with the same
+     *  targetBlockOffset the coordinator used when drawing targetBlock. */
+    targetBlockOffset?: number;
   }): Promise<EvalResult> | EvalResult;
 }
 
@@ -189,7 +194,7 @@ export type EvalResult =
   // §8 envelope strip: reject results carry NO score telemetry. The core never
   // forwards deterministicDeltaPpm / requiredDeltaPpm (or any equivalent score
   // gradient) into a rejection envelope.
-  | { readonly outcome: 'reject'; readonly code: string; readonly reason: string }
+  | { readonly outcome: 'reject'; readonly code: string; readonly reason: string; readonly innerRejectionReason?: string }
   | { readonly outcome: 'screener_pass'; readonly deterministicDeltaPpm: number;
       readonly evalReportHash: string; readonly artifactHash: string;
       readonly evaluationProof?: CoreTexDualPackEvaluationProof }
@@ -201,7 +206,9 @@ export type EvalResult =
       readonly evaluationProof?: CoreTexDualPackEvaluationProof };
 
 export interface CoreTexDualPackEvaluationProof {
-  readonly kind: 'coretex-dual-pack-v1';
+  /** 'coretex-bmu-dual-pack-v1' under the BMU law (§8.3) — validated against
+   *  the active bundle's pipelineVersion BOTH directions (fail-closed). */
+  readonly kind: 'coretex-dual-pack-v1' | 'coretex-bmu-dual-pack-v1';
   readonly mode: 'future_blockhash_dual_pack';
   readonly epochId: number;
   readonly receivedAtBlock: number;
@@ -214,6 +221,10 @@ export interface CoreTexDualPackEvaluationProof {
   readonly coreVersionHash: string;
   readonly hiddenSeedCommit: string;
   readonly epochSecretCommit: string;
+  /** Present iff the bundle armed `epochFrontier.liveEvalPack`: the on-chain
+   *  active-frontier root the scored packs' live-eval overlay was verified
+   *  against. Absent for broad-only-law epochs (proof bytes unchanged). */
+  readonly activeFrontierRoot?: string;
   readonly gate: {
     readonly domain: 'gate';
     readonly seedCommit: string;
@@ -346,7 +357,7 @@ export interface CoreTexCoordinatorConfig {
   readonly exampleValidPatch?: unknown;
   readonly activeSubstrateSurfaces?: readonly string[];
   /** OPTIONAL public URL where the epoch signing public key (PEM) is published.
-   *  When set it is emitted on `/coretex/status` so `coretex-client-sync` can
+   *  When set it is emitted on `/coretex/status` so the validator-sync client can
    *  auto-discover the key (fallback for `--public-key`). Omitted when unset. */
   readonly epochSigningPublicKeyUrl?: string;
   /** OPTIONAL operator-facing id of the epoch signing key (e.g. AWS KMS key id). */
@@ -456,6 +467,11 @@ export class CoreTexCoordinatorCore {
   private replayFromBlock = 0;
   private finalityLagBlocks = 0;
   private lastEpochMismatch: bigint | null = null;
+  // Transient RPC-blip dampening: a brief chain-read failure should not flip
+  // acceptingSubmissions (which would diverge health vs status). The first
+  // failure in a streak starts the clock; any successful read clears it.
+  private transientChainFailureSinceMs: number | null = null;
+  private static readonly TRANSIENT_CHAIN_FAILURE_GRACE_MS = 60_000;
   private currentBaselineVariancePpm: number | undefined;
 
   // §9 concurrency lane: FIFO submit queue + shared submit/tick mutex + freeze
@@ -619,19 +635,40 @@ export class CoreTexCoordinatorCore {
         this.signingEnabled = true;
         this.unhealthyReason = null;
       }
+      // Every chain read in this tick succeeded (we reached here without
+      // throwing), so clear any transient-failure streak even when parity is
+      // not yet available (e.g. AwaitingFinality) — the grace tracks read
+      // health, not parity, so it must not linger once reads recover.
+      this.markChainReadHealthy();
       this.gcPending(Math.floor(Date.now() / 1000));
     } catch (e) {
+      this.metrics.watcherFaultCount += 1;
+      // Transient chain-read blip during a tick: within the grace window keep the
+      // prior healthy signing state instead of fail-closing on a momentary RPC
+      // fault (prevents health/status flapping during RPC fallback storms).
+      if (this.isTransientChainReadError(e) && this.signingEnabled && this.withinTransientChainGrace()) {
+        console.warn('[coretex-core] watcher transient chain read (within grace):', e);
+        return;
+      }
       this.signingEnabled = false;
       // Public surfaces (health/status `reason`) must not carry raw provider
       // errors — ethers messages can embed the credentialed RPC request URL.
       console.error('[coretex-core] watcher fault:', e);
       this.unhealthyReason = 'watcher-fault: chain read failed (see coordinator logs)';
-      this.metrics.watcherFaultCount += 1;
     }
   }
 
   // ── chain-event verification + apply ─────────────────────────────────────
   private applyChainEvent(ev: CoreTexStateAdvancedEvent): void {
+    if (ev.epoch < this.config.epoch) {
+      // Finalized PRIOR-epoch advance — already folded into this epoch's on-chain
+      // start root (liveRoot was seeded to it at load). Skip; re-applying would fail
+      // the parent/transitionIndex checks. Lets the watcher replay from a start block
+      // that predates the live epoch (e.g. a stale CORETEX_REPLAY_FROM_BLOCK after an
+      // epoch advance) WITHOUT dead-locking; transitionIndex is per-epoch (resets to 0)
+      // so contiguity is preserved.
+      return;
+    }
     if (ev.epoch !== this.config.epoch) {
       throw new Error(`watcher: event epoch ${ev.epoch} ≠ configured ${this.config.epoch}`);
     }
@@ -774,6 +811,34 @@ export class CoreTexCoordinatorCore {
     return true;
   }
 
+  /** Classify a chain-read rejection as a transient RPC blip (timeout / busy /
+   *  queue saturation) vs a hard fault. Public surfaces never see the raw error. */
+  private isTransientChainReadError(err: unknown): boolean {
+    const e = err as { code?: unknown; message?: unknown } | null;
+    const code = String(e?.code ?? '');
+    const message = String(e?.message ?? err ?? '');
+    return (
+      code === 'TIMEOUT' ||
+      code === 'RPC_BUSY' ||
+      message.includes('RPC timeout after') ||
+      message.includes('RPC queue wait exceeded') ||
+      message.includes('RPC queue full') ||
+      message.includes('request timeout')
+    );
+  }
+
+  /** True while a transient chain-read failure streak is still inside the grace
+   *  window. Records the first failure time; cleared by markChainReadHealthy(). */
+  private withinTransientChainGrace(): boolean {
+    const now = Date.now();
+    if (this.transientChainFailureSinceMs === null) this.transientChainFailureSinceMs = now;
+    return now - this.transientChainFailureSinceMs < CoreTexCoordinatorCore.TRANSIENT_CHAIN_FAILURE_GRACE_MS;
+  }
+
+  private markChainReadHealthy(): void {
+    this.transientChainFailureSinceMs = null;
+  }
+
   private async checkEpochStillCurrent(): Promise<boolean> {
     const v4Epoch = await this.chain.getV4CurrentEpoch();
     if (v4Epoch === this.config.epoch) {
@@ -855,7 +920,16 @@ export class CoreTexCoordinatorCore {
 
   // ── public-facing handlers ─────────────────────────────────────────────────
   async getStatus(query: Record<string, string | readonly string[] | undefined> = {}): Promise<unknown> {
-    await this.checkEpochStillCurrent();
+    // Status is a read, not a signing action. A transient chain-read blip in the
+    // epoch check must not flip acceptingSubmissions for readers or diverge status
+    // from health; within the grace window keep the watcher-maintained state.
+    // Submit/signing paths do NOT catch this and stay strict.
+    try {
+      await this.checkEpochStillCurrent();
+    } catch (e) {
+      if (!(this.isTransientChainReadError(e) && this.signingEnabled && this.withinTransientChainGrace())) throw e;
+      console.warn('[coretex-core] getStatus epoch check transient (within grace); reporting prior state:', e);
+    }
     const minerRaw = firstQueryValue(query.miner);
     const miner = typeof minerRaw === 'string' && isAddress(minerRaw) ? minerRaw.toLowerCase() : null;
     const qualified = await this.chain.getQualifiedScreenerPassesSinceLastStateAdvance(this.config.epoch);
@@ -894,7 +968,7 @@ export class CoreTexCoordinatorCore {
       activeFrontierRoot: this.config.expectedEpochPins.activeFrontierRoot,
       baselineManifestHash: this.config.expectedEpochPins.baselineManifestHash,
       // OPTIONAL epoch signing key metadata: emitted only when the operator
-      // publishes the key, so client-sync can auto-discover `--public-key`.
+      // publishes the key, so validator-sync can auto-discover `--public-key`.
       ...(this.config.epochSigningPublicKeyUrl ? { epochSigningPublicKeyUrl: this.config.epochSigningPublicKeyUrl } : {}),
       ...(this.config.epochSigningPublicKeyId ? { epochSigningPublicKeyId: this.config.epochSigningPublicKeyId } : {}),
       ...(this.config.epochSigningPublicKeyFingerprint ? { epochSigningPublicKeyFingerprint: this.config.epochSigningPublicKeyFingerprint } : {}),
@@ -1127,6 +1201,7 @@ export class CoreTexCoordinatorCore {
       hiddenSeedCommit: this.config.expectedEpochPins.hiddenSeedCommit,
       minDualPackScorePpm: prepared.screenerThresholdPpm,
       ...(this.config.targetBlockOffset !== undefined ? { targetBlockOffset: this.config.targetBlockOffset } : {}),
+      proofKind: expectedDualPackProofKind(this.config.pipelineVersion),
     });
     if (proofInvalid) {
       return this.rejectSubmission('DUAL_PACK_PROOF_INVALID', proofInvalid);
@@ -1238,6 +1313,7 @@ export class CoreTexCoordinatorCore {
         hiddenSeedCommit: this.config.expectedEpochPins.hiddenSeedCommit,
         minDualPackScorePpm: minStateAdvanceDelta,
         ...(this.config.targetBlockOffset !== undefined ? { targetBlockOffset: this.config.targetBlockOffset } : {}),
+        proofKind: expectedDualPackProofKind(this.config.pipelineVersion),
       });
       if (proofInvalidForStateAdvance) {
         return this.rejectSubmission('DUAL_PACK_PROOF_INVALID', proofInvalidForStateAdvance);
@@ -1776,6 +1852,11 @@ function validateAcceptedEvalResult(result: EvalResult): { code: string; reason:
   return null;
 }
 
+/** §8.3 pairing: the proof kind the active bundle's scoring law REQUIRES. */
+export function expectedDualPackProofKind(pipelineVersion: string | undefined): CoreTexDualPackEvaluationProof['kind'] {
+  return isBmuScoringLaw(pipelineVersion) ? 'coretex-bmu-dual-pack-v1' : 'coretex-dual-pack-v1';
+}
+
 function validateDualPackProof(
   result: Exclude<EvalResult, { readonly outcome: 'reject' }>,
   expected: {
@@ -1789,11 +1870,14 @@ function validateDualPackProof(
     readonly minDualPackScorePpm?: number;
     readonly gateSeedCommit?: string;
     readonly confirmSeedCommit?: string;
+    /** Expected proof kind for the active scoring law (§8.3 pairing: an r5
+     *  bundle never accepts a BMU proof and vice versa). Default r5 kind. */
+    readonly proofKind?: CoreTexDualPackEvaluationProof['kind'];
   },
 ): string | null {
   const proof = result.evaluationProof;
   if (!proof || typeof proof !== 'object') return 'accepted evaluation missing dual-pack proof';
-  if (proof.kind !== 'coretex-dual-pack-v1') return 'dual-pack proof kind mismatch';
+  if (proof.kind !== (expected.proofKind ?? 'coretex-dual-pack-v1')) return 'dual-pack proof kind mismatch';
   if (proof.mode !== 'future_blockhash_dual_pack') return 'dual-pack proof mode mismatch';
   if (proof.epochId !== expected.epoch) return 'dual-pack proof epoch mismatch';
   if (!Number.isSafeInteger(proof.receivedAtBlock) || proof.receivedAtBlock < 0) return 'dual-pack proof receivedAtBlock invalid';

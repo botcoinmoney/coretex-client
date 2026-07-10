@@ -17,6 +17,7 @@ import { existsSync, readFileSync, openSync, readSync, closeSync, fstatSync } fr
 import { keccak256 } from '../state/keccak256.js';
 import { bytesToHex } from '../state/merkle.js';
 import { canonicalJson, bytesToBareHex as uint8ToHex } from '../canonical/json.js';
+import { validateBmuTaskOnEvent, validateBmuCorpusConsistency, type BmuTask } from './bmu-task.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -182,10 +183,16 @@ export interface PublicQueryIntent {
   readonly atom?: string;
   readonly subjectEntityId?: string;
   readonly attribute?: string;
+  readonly lifecycleScope?: string;
+  readonly collisionScope?: string;
+  readonly topic?: string;
+  readonly targetAttribute?: string;
+  readonly hopCount?: number;
   readonly queryTime?: string;
   readonly name?: string;
   readonly alias?: string;
   readonly roleAlias?: string;
+  readonly selector?: string;
   readonly projectId?: string;
   readonly sessionId?: string;
   readonly topicId?: string;
@@ -291,6 +298,18 @@ export interface ProductionCorpusEvent {
    * quotas and the epoch frontier prefer it over `family` when present.
    */
   readonly logicalFamily?: string;
+  /**
+   * BMU v1 task fields (BMU_SPEC.md §4.1) — the ONE field the BMU law adds to
+   * eval_hidden query rows: required/forbidden evidence, answer id, budget B,
+   * family, cluster identity (motifGroupId) and surface-form template id.
+   * Optional-and-absent on every pre-BMU row (absent keys do not change
+   * canonical event hashes — the same back-compat convention as `entityIds`),
+   * so pre-flip stamped minting (§6.7a) is hash/replay-safe. NOTE: while the
+   * r5 SCORER never reads it, VALIDATION IS LIVE FROM THE FIRST STAMPED MINT
+   * — a present-but-invalid bmuTask fail-closes `loadProductionCorpus`, which
+   * is why generators/the bridge run `lintBmuTaskForMint` at mint time.
+   */
+  readonly bmuTask?: BmuTask;
 }
 
 export interface ProductionCorpus {
@@ -545,7 +564,7 @@ export function computeCorpusRoot(events: readonly ProductionCorpusEvent[]): str
  * hash (corpusRoot leaf ordering, hidden-pack derivation ordering). NEVER use
  * `localeCompare` here: ICU collation is locale/version-dependent (e.g.
  * 'a_x' vs 'a0x' order flips between locale and codepoint order), which would
- * make pinned roots differ across client environments.
+ * make pinned roots differ across validator environments.
  */
 export const codePointCompare = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 
@@ -915,6 +934,40 @@ export function loadProductionCorpus(path: string, options: LoadProductionCorpus
       throw new Error(`production corpus event ${e.id} embeddings model mismatch`);
     }
   }
+  // BMU task validation (BMU_SPEC.md §4.1 — fail-closed, unconditional).
+  // No-op on every pre-BMU corpus (no row carries bmuTask), but LIVE from the
+  // first stamped mint even under the r5 law; when present the
+  // task must be internally consistent, reference only real doc ids, and match
+  // the §5.6 family namespaces — the corpus REFUSES to load otherwise. The doc
+  // id universe is built lazily on the first bmuTask row so pre-BMU loads pay
+  // nothing.
+  {
+    let corpusDocIds: Set<string> | null = null;
+    const docIdExists = (docId: string): boolean => {
+      if (!corpusDocIds) {
+        corpusDocIds = new Set<string>();
+        for (const e of events) {
+          for (const t of e.truthDocuments) corpusDocIds.add(t.id);
+          for (const n of e.hardNegatives) corpusDocIds.add(n.id);
+        }
+      }
+      return corpusDocIds.has(docId);
+    };
+    const bmuErrors: string[] = [];
+    let sawBmuTask = false;
+    for (const e of events) {
+      if (e.bmuTask === undefined) continue;
+      sawBmuTask = true;
+      bmuErrors.push(...validateBmuTaskOnEvent(e, docIdExists));
+      if (bmuErrors.length >= 20) break; // fail-closed either way; cap the report
+    }
+    if (sawBmuTask && bmuErrors.length === 0) {
+      bmuErrors.push(...validateBmuCorpusConsistency(events));
+    }
+    if (bmuErrors.length > 0) {
+      throw new Error(`production corpus bmuTask validation failed (refusing to load):\n  ${bmuErrors.join('\n  ')}`);
+    }
+  }
   return {
     events,
     byId: new Map(events.map((e) => [e.id, e])),
@@ -957,6 +1010,7 @@ export function serializeProductionCorpus(corpus: ProductionCorpus): CorpusFileS
     ...(e.band !== undefined ? { band: e.band } : {}),
     ...(e.grounding !== undefined ? { grounding: e.grounding } : {}),
     ...(e.logicalFamily !== undefined ? { logicalFamily: e.logicalFamily } : {}),
+    ...(e.bmuTask !== undefined ? { bmuTask: e.bmuTask } : {}),
     provenance: e.provenance,
     embeddings: {
       modelId: e.embeddings.modelId,

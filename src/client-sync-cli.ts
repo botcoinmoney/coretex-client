@@ -46,6 +46,8 @@ import { pathToFileURL } from 'node:url';
 import http from 'node:http';
 import https from 'node:https';
 
+import { isBmuScoringLaw } from './pipeline-versions.js';
+import { scoreBmuAgainstSeed } from './coordinator/production-evaluator.js';
 import {
   coretexRangeLogs,
   decodeCoreTexStateAdvanced,
@@ -77,7 +79,7 @@ import {
 } from './replay/launch-recovery-pin.js';
 import { DEFAULT_PROFILE, scoringOptionsFromProfile, type CoreTexBundleManifest } from './bundle/index.js';
 import { buildCorpusRootLeafCache, computeCorpusRoot, loadProductionCorpus, type ProductionCorpus } from './eval/retrieval-corpus.js';
-import { deriveQueryPack } from './eval/hidden-query-pack.js';
+import { deriveQueryPack, deriveScoredQueryPack, type LiveEvalPackLaw } from './eval/hidden-query-pack.js';
 import { computeAcceptanceThresholdPpm, evaluateRetrievalBenchmarkPatch } from './eval/retrieval-benchmark.js';
 import { biEncoderFromEnv } from './eval/bi-encoder.js';
 import {
@@ -1336,6 +1338,7 @@ interface ClientScorerContext {
   readonly scoringOpts: ReturnType<typeof scoringOptionsFromProfile>;
   readonly thresholdPpm: number;
   readonly reranker: { model: string; close?: () => Promise<void> };
+  readonly activeFrontierIdsResolver?: (root: string) => ReadonlySet<string>;
 }
 
 /**
@@ -1418,9 +1421,80 @@ function assertScorerRuntimePin(bundle: CoreTexBundleManifest): void {
   }
 }
 
-function scorerForParent(ctx: ClientScorerContext, parentState: CortexState, epochId: number) {
+export function scorerForParent(
+  ctx: ClientScorerContext,
+  parentState: CortexState,
+  artifact: CoreTexPostRevealEvalReportArtifact,
+) {
+  const epochId = artifact.epochId;
+  const activeFrontierRoot = artifact.context.activeFrontierRoot;
+  // ── SCORING-LAW routing (BMU_SPEC §9 LAW site 18; P3-R1 MAJOR-2) ──────────
+  // The artifact VERSION must pair with the loaded bundle's pipelineVersion
+  // BOTH directions before any rescore: a BMU artifact rescored under the r5
+  // law (or vice versa) replays the WRONG pack law AND the wrong objective —
+  // the score comparison would be meaningless, so this fails closed instead.
+  const bmuLaw = isBmuScoringLaw(ctx.profile.pipelineVersion);
+  const expectedVersion = bmuLaw ? 'coretex-bmu-post-reveal-eval-report-v1' : 'coretex-post-reveal-eval-report-v1';
+  if (artifact.version !== expectedVersion) {
+    throw new Error(
+      `artifact version '${artifact.version}' does not pair with the loaded bundle's scoring law `
+      + `('${ctx.profile.pipelineVersion ?? 'unpinned'}' expects '${expectedVersion}') — wrong bundle for this artifact, refusing to rescore`,
+    );
+  }
+  // Overlay-law parity, FAIL-CLOSED both ways: an artifact pinning an
+  // activeFrontierRoot must be rescored with the SAME root-verified overlay the
+  // production scorer used, and a broad-law artifact must never be rescored
+  // under an overlay-armed bundle (either mismatch would replay the wrong pack).
+  const law: LiveEvalPackLaw | undefined = ctx.profile.epochFrontier?.liveEvalPack;
+  let activeLiveEval: { readonly activeIds: ReadonlySet<string>; readonly law: LiveEvalPackLaw } | undefined;
+  if (activeFrontierRoot !== undefined) {
+    if (!law || law.limit <= 0) {
+      throw new Error(`artifact pins activeFrontierRoot ${activeFrontierRoot} but the loaded bundle profile does not arm epochFrontier.liveEvalPack — wrong bundle for this epoch`);
+    }
+    if (!ctx.activeFrontierIdsResolver) {
+      throw new Error('artifact pins activeFrontierRoot but no active-frontier id source is provisioned — set CORETEX_ACTIVE_FRONTIER_IDS_PATH or CORETEX_ACTIVE_FRONTIER_IDS_DIR');
+    }
+    activeLiveEval = { activeIds: ctx.activeFrontierIdsResolver(activeFrontierRoot), law };
+  } else if (law && law.limit > 0) {
+    throw new Error('loaded bundle arms epochFrontier.liveEvalPack but the artifact pins no activeFrontierRoot — refusing a broad-only rescore under an overlay-law bundle');
+  }
+  if (bmuLaw) {
+    // BMU leg: the SAME side-aware pack derivation + BMU objective the
+    // production scorer used (scoreBmuAgainstSeed is the production code
+    // path): bmuTask+frontier eligibility, familySlots seeded overlay, and
+    // the §6.3 confirm-side exclusion re-derived from the artifact's
+    // receipt.gateSeed. BMU requires the overlay armed (validated by the
+    // bundle) — activeLiveEval is always present here (checked above via the
+    // mandatory activeFrontierRoot pairing).
+    if (!activeLiveEval) {
+      throw new Error('BMU artifact rescore requires the root-verified active-frontier overlay — missing activeFrontierRoot pairing');
+    }
+    const gateSeedHex = artifact.receipt.gateSeed;
+    const bmuScoring = ctx.profile.judgeScoreGrid !== undefined ? { judgeScoreGrid: ctx.profile.judgeScoreGrid } : {};
+    return async ({ normalizedPatchBytes, evalSeed, which }: { normalizedPatchBytes: Uint8Array; evalSeed: string; which?: 'gate' | 'confirm' }) => {
+      const scored = await scoreBmuAgainstSeed({
+        epochId,
+        parent: parentState,
+        patch: decodePatch(normalizedPatchBytes),
+        corpus: ctx.corpus,
+        profile: ctx.profile,
+        evalSeed,
+        which: which ?? (evalSeed.toLowerCase() === gateSeedHex.toLowerCase() ? 'gate' : 'confirm'),
+        gateSeedHex,
+        scoringOpts: ctx.scoringOpts,
+        thresholdPpm: ctx.thresholdPpm,
+        activeLiveEval: activeLiveEval!,
+        bmuScoring,
+      });
+      return {
+        scorePpm: scored.deltaPpm,
+        accepted: scored.accepted,
+        ...(scored.reason ? { rejectionReason: scored.reason } : {}),
+      };
+    };
+  }
   return async ({ normalizedPatchBytes, evalSeed }: { normalizedPatchBytes: Uint8Array; evalSeed: string }) => {
-    const queryPack = deriveQueryPack(epochId, evalSeed, ctx.corpus, ctx.profile.hiddenPack);
+    const queryPack = deriveScoredQueryPack(epochId, evalSeed, ctx.corpus, ctx.profile.hiddenPack, activeLiveEval);
     const scored = await evaluateRetrievalBenchmarkPatch(parentState, decodePatch(normalizedPatchBytes), ctx.corpus, queryPack, ctx.scoringOpts, {
       ...ctx.profile.patchAcceptanceFloors,
       acceptanceThresholdPpm: ctx.thresholdPpm,
@@ -2228,7 +2302,7 @@ async function runSync({ stateDir, statePath, pinPath, savedState, setup, stagin
         const result = await verifyPostRevealEvalReportArtifact(artifact, {
           rpcClient,
           epochSecret: secret,
-          scorer: scorerForParent(entryCtx, parentState, artifact.epochId),
+          scorer: scorerForParent(entryCtx, parentState, artifact),
         });
         if (!result.ok) {
           throw new Error(`post-reveal eval verification FAILED for ${artifactUrl}: ${result.code} ${result.detail}`);
@@ -2435,7 +2509,7 @@ async function verifyPatchMain() {
     const result = await verifyPostRevealEvalReportArtifact(artifact, {
       rpcClient: createBaseRpcClient(rpcUrl),
       epochSecret,
-      scorer: scorerForParent(ctx, parent, artifact.epochId),
+      scorer: scorerForParent(ctx, parent, artifact),
     });
     process.stdout.write(JSON.stringify({
       command: 'coretex-client-sync verify-patch',

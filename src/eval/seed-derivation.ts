@@ -3,7 +3,8 @@
  *
  * Each patch derives TWO domain-separated seeds — `gate` and `confirm` —
  * from the same blockhash. A patch must clear threshold on both packs
- * to be accepted.
+ * to be accepted (see "Dual-Pack Confirmation" in the controlling plan
+ * docs/CORETEX_V4_ONCHAIN_RANDOMNESS_PLAN.md).
  *
  * Anti-pre-testing property: blockhash(receivedAtBlock + targetBlockOffset)
  * does not exist when the patch arrives at the coordinator. The
@@ -180,7 +181,7 @@ export const SCORE_DELTA_WIRE_BYTES = 8;
  * before signing, so the on-chain bytes never matched the artifact's hash).
  * Hashing the scoreDelta-zeroed bytes makes one semantic patch one hash:
  * dedup/seed/artifact are reroll-proof, and the rewritten on-chain advance
- * binds to the same artifact (the client compares this hash, not the literal
+ * binds to the same artifact (the validator compares this hash, not the literal
  * on-chain patchHash). The contract still enforces the real scoreDelta in the
  * wire bytes via its independent `scoreDelta == scoreAfter-scoreBefore` check.
  */

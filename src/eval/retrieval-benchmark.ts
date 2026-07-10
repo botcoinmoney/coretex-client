@@ -10,6 +10,7 @@
  */
 
 import type { CortexState, Patch } from '../state/index.js';
+import { CORETEX_PIPELINE_VERSION_R5, CORETEX_PIPELINE_VERSION_BMU_V1 } from '../pipeline-versions.js';
 import { applyPatch } from '../state/patch.js';
 import { keccak256 } from '../state/keccak256.js';
 import { decodeSubstrate, type DecodedSubstrate, type RelationCategoryLens, POLICY_SELECTOR } from '../substrate/retrieval-decoder.js';
@@ -520,6 +521,15 @@ export interface ScoringOptions {
   readonly rerankerMemoryIRLookup?: (queryId: string, eventId: string) => import('./memory-ir-render.js').MemoryIR | null;
   /** Diagnostic-only: surface rendered candidate text in PerQueryBreakdown. Default off. */
   readonly exposeRenderedCandidates?: boolean;
+  /**
+   * BMU §13.2 per-doc atom-contribution cap (rev3.3): when true, the SUMMED
+   * policyBonus for each doc is clamped to ±1·UNIT before it enters the
+   * composite `finalReorderingScore` (P_cap = 1 — what makes the judge's
+   * Rmax = 1 + B + 2·P_cap ≤ 4 honest against multi-atom same-doc stacking).
+   * Set ONLY by the BMU law module (`evaluateBmuBenchmarkState`); absent ⇒
+   * byte-identical r5 behavior (raw summed bonuses).
+   */
+  readonly bmuPolicyBonusClamp?: boolean;
   /** Diagnostic-only scoring telemetry sink. Default off and no reward-path effect. */
   readonly scoringTelemetry?: (event: RetrievalQueryScoringTelemetry) => void;
 }
@@ -539,11 +549,14 @@ export interface ScoringOptions {
  *  words read as typed PolicyAtoms (this binary implements BOTH r4 and r5;
  *  r4 stays replayable). The active decode is chosen by the profile's pin. */
 export const CORETEX_PIPELINE_VERSION_THIS_BINARY = 'coretex-retrieval-v2-lens-r4';
-export const CORETEX_PIPELINE_VERSION_R5 = 'coretex-retrieval-v2-policy-r5';
-/** Versions this binary can replay (r4 + r5 coexist; decode mode chosen by the profile pin). */
+export { CORETEX_PIPELINE_VERSION_R5, CORETEX_PIPELINE_VERSION_BMU_V1, isR5StateLaw, isBmuScoringLaw } from '../pipeline-versions.js';
+/** Versions this binary can replay (r4 + r5 + bmu-v1 coexist; decode mode is
+ *  the r5 law for both r5 and bmu-v1 — BMU_SPEC.md §3; scoring law routes on
+ *  `isBmuScoringLaw`, spec §9 site 1). */
 export const CORETEX_PIPELINE_VERSIONS_SUPPORTED: ReadonlySet<string> = new Set([
   CORETEX_PIPELINE_VERSION_THIS_BINARY,
   CORETEX_PIPELINE_VERSION_R5,
+  CORETEX_PIPELINE_VERSION_BMU_V1,
 ]);
 
 /**
@@ -598,6 +611,15 @@ export function parseQueryRelationIntent(queryText: string): Set<string> {
   return types;
 }
 
+function relationIntentTypesForQuery(query: ProductionCorpusEvent): Set<string> {
+  const types = parseQueryRelationIntent(query.queryText ?? '');
+  // BMU launch rows expose public intent metadata to miners. Treat it as a
+  // public selector hint, not as a qrel: it says the query is asking for a
+  // chain operation, not which docs are correct.
+  if (query.publicIntent?.atom === 'multi_hop_chain') types.add('supports');
+  return types;
+}
+
 /**
  * PUBLIC conflict-intent parse for conflict_lifecycle PolicyAtom admission (the conflict analogue of
  * `parseQueryRelationIntent`). A conflict/scope-contested question leads with a SCOPE clause — "For <scope>,
@@ -611,6 +633,11 @@ export function parseQueryConflictIntent(queryText: string, entityNames: Readonl
   if (!m) return false;                       // no leading scope clause → not a contested/scope question
   const scope = (m[1] ?? '').trim();
   return !entityNames.has(scope);             // leading phrase is the SUBJECT (aspect) → not conflict; else a scope condition → conflict
+}
+
+function queryCarriesConflictIntent(query: ProductionCorpusEvent, entityNames: ReadonlySet<string>): boolean {
+  return query.publicIntent?.atom === 'conflict_cluster'
+    || parseQueryConflictIntent(query.queryText ?? '', entityNames);
 }
 
 /**
@@ -667,10 +694,22 @@ const PUBLIC_SCOPE_KEYS = ['projectId', 'sessionId', 'topicId', 'taskId', 'userS
 
 function publicScopeIntent(query: ProductionCorpusEvent): PublicScopeMetadata | null {
   const out: Record<string, string> = {};
-  const raw = query.scope ?? query.publicIntent ?? {};
+  const raw = query.scope ?? {};
   for (const k of PUBLIC_SCOPE_KEYS) {
     const v = raw[k];
     if (typeof v === 'string' && v.length > 0) out[k] = v;
+  }
+  // BMU conflict_cluster rows expose lifecycleScope as public miner metadata.
+  // Map it into topicId so scope-mismatch suppress can fire without qrels.
+  if (!out.topicId) {
+    const lifecycleScope = typeof query.publicIntent?.lifecycleScope === 'string'
+      ? query.publicIntent.lifecycleScope
+      : null;
+    if (lifecycleScope && lifecycleScope.length > 0) out.topicId = lifecycleScope;
+  }
+  for (const k of PUBLIC_SCOPE_KEYS) {
+    const v = query.publicIntent?.[k];
+    if (typeof v === 'string' && v.length > 0 && !out[k]) out[k] = v;
   }
   return Object.keys(out).length > 0 ? out : null;
 }
@@ -851,7 +890,7 @@ export interface PerQueryBreakdown {
    * complete reranked list and recompute nDCG faithfully. Undefined unless the
    * opt-in is set. Pure diagnostic — does not affect scoring.
    */
-  readonly finalRankingFull?: readonly { docId: string; relevance: number; rerankerScore: number }[];
+  readonly finalRankingFull?: readonly { docId: string; relevance: number; rerankerScore: number; finalReorderingScore?: number }[];
   /** Diagnostic-only rendered candidate text for the final top-20. Undefined unless exposeRenderedCandidates=true. */
   readonly renderedCandidatesTop20?: readonly RenderedCandidateTrace[];
   /** Diagnostic-only rendered candidate text for reranker input cap. Undefined unless exposeRenderedCandidates=true. */
@@ -958,7 +997,7 @@ export async function scoreSubstrateAgainstQuery(
     temporalBonus: number;
   }[];
   answerInCap: boolean;
-  finalRankingFull: readonly { docId: string; relevance: number; rerankerScore: number }[] | undefined;
+  finalRankingFull: readonly { docId: string; relevance: number; rerankerScore: number; finalReorderingScore?: number }[] | undefined;
   renderedCandidatesTop20: readonly RenderedCandidateTrace[] | undefined;
   rerankerInputCandidates: readonly RenderedCandidateTrace[] | undefined;
   policyTraces: readonly PolicyAtomTrace[];
@@ -1069,9 +1108,12 @@ export async function scoreSubstrateAgainstQuery(
     if (ev) anchorSlotToEvent.set(m, ev);
     if (slot.policyAnchor) policyAnchorSlots.add(m);
   }
-  const resolvedQuerySubjects = opts.policyEntityRegistry
-    ? resolveQuerySubjects(query.queryText, query.subjectEntityId, opts.policyEntityRegistry, opts.policyGenericEntityIds)
-    : new Set<string>();
+  const resolvedQuerySubjects = resolveQuerySubjects(
+    query.queryText,
+    query.subjectEntityId,
+    opts.policyEntityRegistry,
+    opts.policyGenericEntityIds,
+  );
   const routingAnchorAllowed = (ev: ProductionCorpusEvent): boolean => {
     if (opts.scopeRoutingAnchorsToQuerySubject !== true) return true;
     if (resolvedQuerySubjects.size === 0) return false; // fail closed: no public subject, no scoped anchor injection
@@ -1128,7 +1170,7 @@ export async function scoreSubstrateAgainstQuery(
   // - entity_resolution_atom: policy-anchor MemoryIndex slots selected by public subject/name/role/scope metadata.
   // - scope_atom: policy-anchor MemoryIndex slots selected by public subject + orthogonal scope metadata.
   // No qrels, doc-id allowlists, split/lane/family labels, or header text are read.
-  if (opts.policyAtomsMode === true && (opts.enableEntityResolutionAtoms === true || opts.enableScopeAtoms === true) && opts.policyEntityRegistry) {
+  if (opts.policyAtomsMode === true && (opts.enableEntityResolutionAtoms === true || opts.enableScopeAtoms === true)) {
     const generic = new Set(opts.policyGenericEntityIds ?? []);
     const roleAliases = queryRoleAliasPredicates(query, opts.policyEntityRegistry);
     const atomAnchorSlots = [...policyAnchorSlots]
@@ -1138,6 +1180,7 @@ export async function scoreSubstrateAgainstQuery(
     const scopeAnchorSlots = atomAnchorSlots.filter((slot) => slot >= 192);
     const hasEntityResolutionIntent =
       query.publicIntent?.atom === 'entity_resolution_atom'
+      || query.publicIntent?.atom === 'near_collision_cluster'
       || parseQueryRelationIntent(query.queryText ?? '').has('coreference_of')
       || parseQueryLifecycleIntent(query.queryText ?? '') === 'coreference_of';
 
@@ -1205,7 +1248,7 @@ export async function scoreSubstrateAgainstQuery(
   // Category-B: PUBLIC relation-intent parse of THIS query (empty = no relation intent). Shared by the
   // admission block (below) and the evidence-bundle boost (later) so both filter on the same typed reach.
   const policyRelationTyped = opts.policyRelationTypedAdmission === true;
-  const policyIntentTypes: Set<string> = policyRelationTyped ? parseQueryRelationIntent(query.queryText ?? '') : new Set();
+  const policyIntentTypes: Set<string> = policyRelationTyped ? relationIntentTypesForQuery(query) : new Set();
   // r5 lifecycle intent gate: when the query carries an explicit lifecycle phrase ("was replaced",
   // "superseded", "renamed", "also known as"), the `supersedes` / `coreference_of` edges become
   // admissible alongside the relation-typed set. This prevents the supersedes-flood failure mode
@@ -1217,7 +1260,7 @@ export async function scoreSubstrateAgainstQuery(
   // when relation-typed admission is on, an edge is admissible only if its type is in the parsed intent.
   const edgeAdmissible = (edgeType: string): boolean =>
     POLICY_PUBLIC_EDGES.has(edgeType) && (!policyRelationTyped || policyIntentTypes.has(edgeType));
-  if (opts.policyAtomsMode === true && opts.policyQueryConditionedAdmission === true && opts.policyEntityRegistry) {
+  if (opts.policyAtomsMode === true && opts.policyQueryConditionedAdmission === true) {
     const qtext = (query.queryText ?? '').toLowerCase();
     const generic = new Set(opts.policyGenericEntityIds ?? []);
     // Resolve the query's subject. PUBLIC exact grounding (query.subjectEntityId) wins; the name-text
@@ -1236,13 +1279,17 @@ export async function scoreSubstrateAgainstQuery(
     const conflictAtomsAdm = opts.enableConflictLifecycleAtoms !== false ? decoded.conflictLifecycleAtoms : [];
     const hasConflictAtomsAdm = conflictAtomsAdm.length > 0;
     const hasNoiseSuppressAtomsAdm = evidenceAtomsAdm.some((a) => a.selector === POLICY_SELECTOR.ANSWER_DENSITY && a.action === 'suppress');
+    // multi_hop_chain public intent is the BMU off-path suppress surface: miners
+    // may write evidence_bundle suppress against co_occurs_with neighbors without
+    // a separate noise_suppression intent atom.
     const hasNoiseSuppressionIntent = query.publicIntent?.atom === 'noise_suppression'
+      || query.publicIntent?.atom === 'multi_hop_chain'
       || /\b(?:retired draft|lexical noise|noise|distractor)\b/.test(qtext);
     // CONFLICT-INTENT-typed admission (the conflict analogue of relation-typed): conflict atoms fire only on
     // queries carrying public conflict/scope intent, so they stay silent on co-subject aspect/temporal queries.
     const conflictIntentGate = opts.policyConflictIntentAdmission === true;
-    const queryHasConflictIntent = !conflictIntentGate
-      || parseQueryConflictIntent(query.queryText ?? '', new Set((opts.policyEntityRegistry ?? []).flatMap((e) => e.names)));
+    const conflictIntentMatched = !conflictIntentGate
+      || queryCarriesConflictIntent(query, new Set((opts.policyEntityRegistry ?? []).flatMap((e) => e.names)));
     if (querySubjects.size > 0 && (!policyRelationTyped || policyIntentTypes.size > 0 || hasConflictAtomsAdm || (hasNoiseSuppressAtomsAdm && hasNoiseSuppressionIntent))) {
       const eventByCorpusIdAdmit = corpusByCorpusId(corpus);
       const admitDocs = (ev: ProductionCorpusEvent) => {
@@ -1259,7 +1306,7 @@ export async function scoreSubstrateAgainstQuery(
         { conflict: true, atoms: conflictAtomsAdm },
       ];
       for (const { conflict, atoms } of taggedSets) {
-        if (conflict && conflictIntentGate && !queryHasConflictIntent) continue; // conflict-intent typed gate
+        if (conflict && conflictIntentGate && !conflictIntentMatched) continue; // conflict-intent typed gate
         for (const atom of atoms) {
           const eA = anchorSlotToEvent.get(atom.targetSlot);
           if (!eA) continue;
@@ -1274,10 +1321,33 @@ export async function scoreSubstrateAgainstQuery(
           if (!selectorMatchedAnchorEvents.has(eA.id)) { selectorMatchedAnchorEvents.add(eA.id); policyAnchorsAdmitted++; }
           admitDocs(eA);                                  // admit the anchor itself (the conflict doc / bridge)
           if (!conflict && !noiseSuppressAtom) {            // evidence routing admits its typed PUBLIC-edge reach
-            for (const rel of eA.relations ?? []) {        // (conflict scope = the anchor's OWN docs only)
-              if (!edgeAdmissible(rel.edgeType)) continue;
-              const tgt = eventByCorpusIdAdmit.get(rel.other_id);
-              if (tgt) admitDocs(tgt);
+            // BMU multi_hop_chain: distant hop-2 / answer docs intentionally omit
+            // the query subject (grounding:'distant'). A boost on the subject-
+            // bearing bridge must therefore admit the supports path out to hop 2
+            // so the answer can enter the pool under categoryLensHopBudget=1.
+            const multiHopBoost = !conflict
+              && query.publicIntent?.atom === 'multi_hop_chain'
+              && atom.action === 'boost';
+            const hopBudget = multiHopBoost ? 2 : 1;
+            const frontier: Array<{ id: string; hop: number }> = [{ id: eA.id, hop: 0 }];
+            const seen = new Set<string>([eA.id]);
+            while (frontier.length > 0) {
+              const cur = frontier.shift()!;
+              if (cur.hop >= hopBudget) continue;
+              const curEv = eventByCorpusIdAdmit.get(cur.id);
+              if (!curEv) continue;
+              for (const rel of curEv.relations ?? []) {
+                if (multiHopBoost) {
+                  if (rel.edgeType !== 'supports') continue;
+                } else if (!edgeAdmissible(rel.edgeType)) {
+                  continue;
+                }
+                const tgt = eventByCorpusIdAdmit.get(rel.other_id);
+                if (!tgt || seen.has(tgt.id)) continue;
+                seen.add(tgt.id);
+                admitDocs(tgt);
+                frontier.push({ id: tgt.id, hop: cur.hop + 1 });
+              }
             }
           }
         }
@@ -1699,7 +1769,7 @@ export async function scoreSubstrateAgainstQuery(
       && opts.enableConflictLifecycleAtoms !== false
       && motifAdmissionMaxDocs > 0
       && query.family === 'conflict_lifecycle') {
-    const scopeClass = conflictScopeClassForQuery(query.queryText ?? '');
+    const scopeClass = conflictScopeClassForEvent(query);
     const subject = query.subjectEntityId ?? query.publicIntent?.subjectEntityId;
     const conflictAtoms = decoded.conflictLifecycleAtoms
       .map((atom) => ({ atom, anchor: anchorSlotToEvent.get(atom.targetSlot) }))
@@ -1726,7 +1796,7 @@ export async function scoreSubstrateAgainstQuery(
   }
 
   const evidenceMotifDocIds = new Set<string>();
-  const relationIntentsForEvidenceMotif = parseQueryRelationIntent(query.queryText ?? '');
+  const relationIntentsForEvidenceMotif = relationIntentTypesForQuery(query);
   if (opts.policyAtomsMode === true
       && opts.evidenceMotifAdmission === true
       && opts.enableEvidenceBundleAtoms !== false
@@ -2126,9 +2196,47 @@ export async function scoreSubstrateAgainstQuery(
   // peer scores low, so it confers no boost (flood-resistant). The reported
   // `rerankerScore` stays RAW (honest attribution); only the final reorder uses
   // the inherited score. alpha=0 ⇒ exact legacy behavior.
+  //
+  // BMU multi_hop_chain: when an evidence_bundle boost is present, also inherit
+  // along the public supports path out to hop 2 (b1→b2→ans). Distant answer
+  // docs intentionally omit the query subject, so lens hop-budget 1 alone cannot
+  // promote them; the boost atom is the miner's public signal that the supports
+  // chain is the intended promotion path.
   const inheritAlpha = opts.categoryLensScoreInheritance ?? 0;
+  const multiHopChainIntentForInherit = query.publicIntent?.atom === 'multi_hop_chain';
+  const multiHopBoostPresent = multiHopChainIntentForInherit
+    && opts.enableEvidenceBundleAtoms !== false
+    && decoded.evidenceBundleAtoms.some((a) => evidenceActionAllowed(a.action) && a.action === 'boost');
+  if (multiHopBoostPresent) {
+    const eventByCorpusIdInherit = corpusByCorpusId(corpus);
+    for (const atom of decoded.evidenceBundleAtoms) {
+      if (!evidenceActionAllowed(atom.action) || atom.action !== 'boost') continue;
+      const anchorEv = anchorSlotToEvent.get(atom.targetSlot);
+      if (!anchorEv || !selectorMatchedAnchorEvents.has(anchorEv.id)) continue;
+      const frontier: Array<{ id: string; hop: number }> = [{ id: anchorEv.id, hop: 0 }];
+      const seen = new Set<string>([anchorEv.id]);
+      while (frontier.length > 0) {
+        const cur = frontier.shift()!;
+        if (cur.hop >= 2) continue;
+        const curEv = eventByCorpusIdInherit.get(cur.id);
+        if (!curEv) continue;
+        for (const rel of curEv.relations ?? []) {
+          if (rel.edgeType !== 'supports') continue;
+          const tgt = eventByCorpusIdInherit.get(rel.other_id);
+          if (!tgt || seen.has(tgt.id)) continue;
+          seen.add(tgt.id);
+          addLensPeer(cur.id, tgt.id);
+          // Also peer with the boost anchor so hop-2 answers inherit the
+          // subject-bearing bridge score, not only the intermediate hop.
+          if (tgt.id !== anchorEv.id) addLensPeer(anchorEv.id, tgt.id);
+          frontier.push({ id: tgt.id, hop: cur.hop + 1 });
+        }
+      }
+    }
+  }
   const effectiveRerankByDocId = new Map<string, number>();
-  if (inheritAlpha > 0 && lensPeerEvents.size > 0) {
+  const inheritAlphaEff = multiHopBoostPresent ? Math.max(inheritAlpha, 1.0) : inheritAlpha;
+  if (inheritAlphaEff > 0 && lensPeerEvents.size > 0) {
     const docsByEvent = new Map<string, string[]>();
     for (const c of candidates) {
       const arr = docsByEvent.get(c.record.eventId);
@@ -2148,14 +2256,14 @@ export async function scoreSubstrateAgainstQuery(
           }
         }
       }
-      const inherited = inheritAlpha * peerMax;
+      const inherited = inheritAlphaEff * peerMax;
       effectiveRerankByDocId.set(c.record.docId, inherited > own ? inherited : own);
       if (_dbg && c.record.sources.has('categoryLensBFS')) { _dbgLensDocs++; if (peers && peers.size) _dbgWithPeers++; if (peerMax > 0) _dbgPeerMaxPos++; if (inherited > own) _dbgLifted++; }
     }
     if (_dbg) console.error(`[inherit-dbg] q=${query.id} lensPeerEvents=${lensPeerEvents.size} catLensDocs=${_dbgLensDocs} withPeers=${_dbgWithPeers} peerMax>0=${_dbgPeerMaxPos} lifted=${_dbgLifted}`);
   }
   const effRerank = (docId: string, raw: number): number =>
-    inheritAlpha > 0 ? (effectiveRerankByDocId.get(docId) ?? raw) : raw;
+    inheritAlphaEff > 0 ? (effectiveRerankByDocId.get(docId) ?? raw) : raw;
 
   // ─── r5 PolicyAtoms: BOUNDED QUERY-LOCAL final-reorder nudges ─────────────
   // Reproduces the A100 oracle's per-query bounded intervention from PUBLIC structure
@@ -2168,9 +2276,13 @@ export async function scoreSubstrateAgainstQuery(
   const policyBonusByDocId = new Map<string, number>();
   const policyTraces: PolicyAtomTrace[] = [];
   let policyAbstain = false;
+  // Query-local policy nudge UNIT (max−min rerankerScore); hoisted so the BMU
+  // per-doc clamp below can read it. 0 unless policyAtomsMode computes it.
+  let policyUnit = 0;
   if (opts.policyAtomsMode === true) {
     const rsVals = rerankerCandidates.map((c) => rerankerScoreByDocId.get(c.record.docId) ?? 0);
     const UNIT = rsVals.length ? Math.max(...rsVals) - Math.min(...rsVals) : 0;
+    policyUnit = UNIT;
     const docsByEventLocal = new Map<string, string[]>();
     for (const c of candidates) {
       const a = docsByEventLocal.get(c.record.eventId);
@@ -2252,6 +2364,7 @@ export async function scoreSubstrateAgainstQuery(
 
     // Evidence-bundle / answer-density: target = anchor's PUBLIC-edge reach (+ anchor's own docs for bundle/include).
     if (opts.enableEvidenceBundleAtoms !== false) {
+      const multiHopChainIntent = query.publicIntent?.atom === 'multi_hop_chain';
       for (const atom of decoded.evidenceBundleAtoms) {
         if (!evidenceActionAllowed(atom.action)) continue;
         const anchorEv = anchorSlotToEvent.get(atom.targetSlot);
@@ -2259,17 +2372,84 @@ export async function scoreSubstrateAgainstQuery(
         const beta = Math.min(atom.budget, opts.policyMaxBudgetEvidence ?? atom.budget) / 1000;
         const target = new Set<string>();
         const evidencePath: string[] = [];
-        for (const rel of anchorEv.relations ?? []) {
-          if (!edgeAdmissible(rel.edgeType)) continue; // Category-B: typed reach only (else all public edges)
-          const tgt = eventByCorpusIdForPhaseA.get(rel.other_id);
-          if (!tgt || !docsByEventLocal.has(tgt.id)) continue;
-          for (const d of docsByEventLocal.get(tgt.id)!) target.add(d);
-          evidencePath.push(`${rel.edgeType}->${tgt.id}`);
+        // BMU multi_hop_chain:
+        // - suppress on a chain anchor demotes co_occurs_with off-path neighbors
+        // - boost on a chain anchor promotes the supports path out to hop 2 so a
+        //   3-hop answer (b1→b2→ans) is reachable under categoryLensHopBudget=1
+        //   without putting the query subject on distant docs.
+        if (multiHopChainIntent && atom.action === 'suppress') {
+          for (const rel of anchorEv.relations ?? []) {
+            if (rel.edgeType !== 'co_occurs_with') continue;
+            const tgt = eventByCorpusIdForPhaseA.get(rel.other_id);
+            if (!tgt || !docsByEventLocal.has(tgt.id)) continue;
+            for (const d of docsByEventLocal.get(tgt.id)!) target.add(d);
+            evidencePath.push(`co_occurs_with->${tgt.id}`);
+          }
+          // Also allow suppress when the miner anchors the trap doc itself.
+          if (target.size === 0) {
+            for (const d of docsByEventLocal.get(anchorEv.id) ?? []) target.add(d);
+            evidencePath.push('self');
+          }
+          // Off-subject demotion: foreign multi-hop clusters share topic templates and
+          // otherwise flood top-B. A public suppress@bridge keeps the supports closure
+          // (+ same-subject docs) and demotes everything else in the local candidate set.
+          const supportsClosure = new Set<string>([anchorEv.id]);
+          {
+            const frontier: Array<{ id: string; hop: number }> = [{ id: anchorEv.id, hop: 0 }];
+            while (frontier.length > 0) {
+              const cur = frontier.shift()!;
+              if (cur.hop >= 2) continue;
+              const curEv = eventByCorpusIdForPhaseA.get(cur.id);
+              if (!curEv) continue;
+              for (const rel of curEv.relations ?? []) {
+                if (rel.edgeType !== 'supports') continue;
+                if (supportsClosure.has(rel.other_id)) continue;
+                supportsClosure.add(rel.other_id);
+                frontier.push({ id: rel.other_id, hop: cur.hop + 1 });
+              }
+            }
+          }
+          const qSubj = query.subjectEntityId ?? query.publicIntent?.subjectEntityId ?? null;
+          for (const c of candidates) {
+            if (supportsClosure.has(c.record.eventId)) continue;
+            const ev = eventByCorpusIdForPhaseA.get(c.record.eventId);
+            if (qSubj && (ev?.entityIds ?? []).includes(qSubj)) continue;
+            target.add(c.record.docId);
+            evidencePath.push(`off_subject->${c.record.eventId}`);
+          }
+        } else if (multiHopChainIntent && atom.action === 'boost') {
+          const frontier: Array<{ id: string; hop: number }> = [{ id: anchorEv.id, hop: 0 }];
+          const seen = new Set<string>([anchorEv.id]);
+          while (frontier.length > 0) {
+            const cur = frontier.shift()!;
+            if (cur.hop >= 2) continue;
+            const curEv = eventByCorpusIdForPhaseA.get(cur.id);
+            if (!curEv) continue;
+            for (const rel of curEv.relations ?? []) {
+              if (rel.edgeType !== 'supports') continue;
+              const tgt = eventByCorpusIdForPhaseA.get(rel.other_id);
+              if (!tgt || seen.has(tgt.id)) continue;
+              seen.add(tgt.id);
+              if (docsByEventLocal.has(tgt.id)) {
+                for (const d of docsByEventLocal.get(tgt.id)!) target.add(d);
+                evidencePath.push(`supports@${cur.hop + 1}->${tgt.id}`);
+              }
+              frontier.push({ id: tgt.id, hop: cur.hop + 1 });
+            }
+          }
+        } else {
+          for (const rel of anchorEv.relations ?? []) {
+            if (!edgeAdmissible(rel.edgeType)) continue; // Category-B: typed reach only (else all public edges)
+            const tgt = eventByCorpusIdForPhaseA.get(rel.other_id);
+            if (!tgt || !docsByEventLocal.has(tgt.id)) continue;
+            for (const d of docsByEventLocal.get(tgt.id)!) target.add(d);
+            evidencePath.push(`${rel.edgeType}->${tgt.id}`);
+          }
+          if (atom.selector === POLICY_SELECTOR.ANSWER_DENSITY && atom.action === 'suppress') {
+            for (const d of docsByEventLocal.get(anchorEv.id) ?? []) target.add(d);
+          }
+          if (atom.action === 'bundle' || atom.action === 'include') for (const d of docsByEventLocal.get(anchorEv.id) ?? []) target.add(d);
         }
-        if (atom.selector === POLICY_SELECTOR.ANSWER_DENSITY && atom.action === 'suppress') {
-          for (const d of docsByEventLocal.get(anchorEv.id) ?? []) target.add(d);
-        }
-        if (atom.action === 'bundle' || atom.action === 'include') for (const d of docsByEventLocal.get(anchorEv.id) ?? []) target.add(d);
         if (target.size === 0) continue;
         for (const d of target) addBonus(d, sign(atom.action) * beta * UNIT);
         if (opts.policyEmitTraces) policyTraces.push({ atomId: `eb#${atom.atomIndex}`, atomFamily: 'evidence_bundle', selectorMatched: true, action: atom.action, anchorEvent: anchorEv.id, docsMoved: target.size, evidencePath, beta });
@@ -2277,7 +2457,15 @@ export async function scoreSubstrateAgainstQuery(
     }
     // Conflict_lifecycle: target = anchor event's OWN docs (miner anchors boost@resolved, suppress@candidate;
     // resolved-vs-candidate is the miner's PUBLIC supersedes-structure judgment, encoded as the action choice).
+    // When the query carries public conflict_cluster intent + lifecycleScope, also suppress same-subject
+    // docs whose public scope differs from the query scope (scope-mismatch decoys). This is the public
+    // operation that makes conflict mineable under B=4 without per-decoy anchors.
     if (opts.enableConflictLifecycleAtoms !== false) {
+      const conflictScopeClass = conflictScopeClassForEvent(query);
+      const conflictSubject = query.subjectEntityId ?? query.publicIntent?.subjectEntityId ?? null;
+      const conflictClusterIntent = query.publicIntent?.atom === 'conflict_cluster';
+      let conflictScopeSuppressBeta = 0;
+      const conflictScopeSuppressed = new Set<string>();
       for (const atom of decoded.conflictLifecycleAtoms) {
         const anchorEv = anchorSlotToEvent.get(atom.targetSlot);
         if (!anchorEv || !policyFires(anchorEv.id)) continue; // r5.1: selector-match (admission) else top-K gate
@@ -2285,7 +2473,41 @@ export async function scoreSubstrateAgainstQuery(
         const ownDocs = docsByEventLocal.get(anchorEv.id) ?? [];
         if (ownDocs.length === 0) continue;
         for (const d of ownDocs) addBonus(d, sign(atom.action) * beta * UNIT);
+        if (conflictClusterIntent && conflictScopeClass && conflictSubject) {
+          conflictScopeSuppressBeta = Math.max(conflictScopeSuppressBeta, beta);
+        }
         if (opts.policyEmitTraces) policyTraces.push({ atomId: `cl#${atom.atomIndex}`, atomFamily: 'conflict_lifecycle', selectorMatched: true, action: atom.action, anchorEvent: anchorEv.id, docsMoved: ownDocs.length, evidencePath: [], beta });
+      }
+      if (conflictClusterIntent && conflictScopeClass && conflictSubject && conflictScopeSuppressBeta > 0) {
+        const maxSuppress = Math.max(0, Math.min(opts.policyScopeMaxSuppress ?? 4, 256));
+        for (const c of [...candidates].sort((a, b) => a.record.docId < b.record.docId ? -1 : a.record.docId > b.record.docId ? 1 : 0)) {
+          if (conflictScopeSuppressed.size >= maxSuppress) break;
+          const ev = corpusEventById(c.record.eventId);
+          if (!ev || !isMemoryDocumentEventId(ev.id)) continue;
+          if (!(ev.entityIds ?? []).includes(conflictSubject)) continue;
+          // Prefer stamped PublicScopeMetadata; fall back to text-derived class only when scope is absent.
+          if (ev.scope && Object.keys(ev.scope).length > 0) {
+            if (eventScopeMatchesClass(ev, conflictScopeClass)) continue;
+          } else {
+            const textScope = conflictScopeClassForQuery(ev.queryText ?? '');
+            if (!textScope || textScope === conflictScopeClass) continue;
+          }
+          conflictScopeSuppressed.add(c.record.docId);
+        }
+        for (const docId of conflictScopeSuppressed) addBonus(docId, -conflictScopeSuppressBeta * UNIT);
+        if (opts.policyEmitTraces && conflictScopeSuppressed.size > 0) {
+          policyTraces.push({
+            atomId: 'cl#scope_mismatch',
+            atomFamily: 'conflict_lifecycle',
+            selectorMatched: true,
+            action: 'suppress',
+            anchorEvent: null,
+            docsMoved: conflictScopeSuppressed.size,
+            evidencePath: [`lifecycleScope!=${conflictScopeClass}`],
+            beta: conflictScopeSuppressBeta,
+            suppressedDocIds: [...conflictScopeSuppressed].sort(),
+          });
+        }
       }
     }
     if (opts.conflictMotifAdmission === true && conflictMotifDocIds.size > 0) {
@@ -2343,15 +2565,25 @@ export async function scoreSubstrateAgainstQuery(
   }
 
   // ─── Pinned final ranking formula ────────────────────────────────────────
+  // BMU §13.2 (rev3.3): under the BMU law the SUMMED per-doc policyBonus is
+  // clamped to ±1·UNIT (P_cap = 1) before entering the composite — multi-atom
+  // same-doc stacking cannot exceed one UNIT of nudge. Flag absent ⇒ returns
+  // the raw sum, byte-identical to the r5 formula (57a29ea-pinned).
+  const policyBonusFor = (docId: string): number => {
+    const raw = policyBonusByDocId.get(docId) ?? 0;
+    if (opts.bmuPolicyBonusClamp !== true) return raw;
+    const cap = policyUnit;
+    return raw > cap ? cap : raw < -cap ? -cap : raw;
+  };
   const qrelById = new Map(query.qrels.map((q) => [q.documentId, q.relevance]));
-  const ranked = candidates
+  const rankedScored = candidates
     .map((c) => {
       const r = rerankerScoreByDocId.get(c.record.docId) ?? 0;
       return {
         documentId: c.record.docId,
         memorySlot: c.record.memorySlot,
         rerankerScore: r,
-        finalReorderingScore: effRerank(c.record.docId, r) + c.finalBonus + (policyBonusByDocId.get(c.record.docId) ?? 0),
+        finalReorderingScore: effRerank(c.record.docId, r) + c.finalBonus + policyBonusFor(c.record.docId),
         relevance: qrelById.get(c.record.docId) ?? 0,
       };
     })
@@ -2361,13 +2593,13 @@ export async function scoreSubstrateAgainstQuery(
       }
       if (b.rerankerScore !== a.rerankerScore) return b.rerankerScore - a.rerankerScore;
       return a.documentId < b.documentId ? -1 : a.documentId > b.documentId ? 1 : 0;
-    })
-    .map((r) => ({
-      documentId: r.documentId,
-      memorySlot: r.memorySlot,
-      rerankerScore: r.rerankerScore,
-      relevance: r.relevance,
-    }));
+    });
+  const ranked = rankedScored.map((r) => ({
+    documentId: r.documentId,
+    memorySlot: r.memorySlot,
+    rerankerScore: r.rerankerScore,
+    relevance: r.relevance,
+  }));
 
   const top1Score = ranked.length > 0 ? ranked[0]!.rerankerScore : 0;
   // Expose the cap pool's docIds so gates G1/G2 can verify substrate
@@ -2390,7 +2622,7 @@ export async function scoreSubstrateAgainstQuery(
   const finalRankingTop20 = ranked.slice(0, 20).map((r, idx) => {
     const c = componentsByDocId.get(r.documentId);
     const cs = c?.record.sources;
-    const finalReorderingScore = effRerank(r.documentId, r.rerankerScore ?? 0) + (c?.finalBonus ?? 0) + (policyBonusByDocId.get(r.documentId) ?? 0);
+    const finalReorderingScore = effRerank(r.documentId, r.rerankerScore ?? 0) + (c?.finalBonus ?? 0) + policyBonusFor(r.documentId);
     return {
       docId: r.documentId,
       rank: idx + 1,
@@ -2437,9 +2669,11 @@ export async function scoreSubstrateAgainstQuery(
   // (no relevance>0 qrels) there is no answer to admit, so this is false.
   const capSetForAnswer = new Set(cappedDocIds);
   const answerInCap = query.qrels.some((q) => q.relevance > 0 && capSetForAnswer.has(q.documentId));
-  // Opt-in: the FULL reranked list (diagnostic only, for offline oracle probes).
+  // Opt-in: the FULL reranked list (diagnostic only, for offline oracle probes;
+  // the BMU deterministic judge consumes `finalReorderingScore` from here to
+  // re-rank on the quantized-composite chain — BMU_SPEC.md §13.2).
   const finalRankingFull = opts.exposeFullRanking === true
-    ? ranked.map((r) => ({ docId: r.documentId, relevance: r.relevance, rerankerScore: r.rerankerScore }))
+    ? rankedScored.map((r) => ({ docId: r.documentId, relevance: r.relevance, rerankerScore: r.rerankerScore, finalReorderingScore: r.finalReorderingScore }))
     : undefined;
   const renderedTrace = (docId: string, rank: number): RenderedCandidateTrace | null => {
     const c = componentsByDocId.get(docId);
@@ -2798,9 +3032,23 @@ function normalizeScopeClass(value: string | null | undefined): string | null {
   return s.length > 0 ? s : null;
 }
 
-function conflictScopeClassForQuery(queryText: string): string | null {
+export function conflictScopeClassForQuery(queryText: string): string | null {
   const m = (queryText ?? '').toLowerCase().match(/^for\s+([^,]+),/);
-  return normalizeScopeClass(m?.[1]);
+  let scope = (m?.[1] ?? '').trim();
+  // Launch BMU conflict rows phrase the leading condition as
+  // "<subject>'s <scope>" ("For Launch Conflict 000's travel care, ...").
+  // The public corpus scope stores just the condition ("travel care"), so
+  // strip the possessive subject before matching scope classes.
+  const possessive = scope.match(/^.+?['\u2019]s\s+(.+)$/);
+  if (possessive?.[1]) scope = possessive[1];
+  return normalizeScopeClass(scope);
+}
+
+function conflictScopeClassForEvent(query: ProductionCorpusEvent): string | null {
+  const publicScope = typeof query.publicIntent?.lifecycleScope === 'string'
+    ? query.publicIntent.lifecycleScope
+    : null;
+  return normalizeScopeClass(publicScope) ?? conflictScopeClassForQuery(query.queryText ?? '');
 }
 
 function eventScopeMatchesClass(ev: ProductionCorpusEvent, scopeClass: string): boolean {

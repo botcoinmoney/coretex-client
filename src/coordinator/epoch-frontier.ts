@@ -12,10 +12,72 @@
 // is deterministically reproducible from (seed, evalHiddenIds, familyOf, mode, params, prevHonestAccepts).
 
 import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 
 const h12 = (s: string): number => parseInt(createHash('sha256').update(s).digest('hex').slice(0, 12), 16);
 // bytes32 root: full 32-byte sha256 (0x + 64 hex) — a short prefix would mis-encode on-chain and desync replay.
 const rootHash = (ids: Iterable<string>): string => '0x' + createHash('sha256').update([...ids].sort().join('|')).digest('hex');
+
+/** The canonical active-frontier root: sha256 over the sorted id set joined by '|'.
+ *  This is EXACTLY the on-chain `activeFrontierRoot` encoding — exported so scoring
+ *  surfaces can verify a provisioned active-id set against the pinned root. */
+export const activeFrontierRootOf = (ids: Iterable<string>): string => rootHash(ids);
+
+/** Published active-frontier id-set artifact (written at cutover next to the
+ *  frontier state; synced to the scorer host like corpus/bundle). Self-verifying:
+ *  consumers recompute `activeFrontierRootOf(activeIds)` and refuse a mismatch. */
+export interface ActiveFrontierIdsArtifact {
+  readonly schema: 'coretex.active-frontier-ids.v1';
+  readonly epochId: number;
+  readonly activeFrontierRoot: string;
+  readonly activeIds: readonly string[];
+}
+
+export function buildActiveFrontierIdsArtifact(epochId: number, activeIds: Iterable<string>): ActiveFrontierIdsArtifact {
+  const sorted = [...activeIds].sort();
+  return {
+    schema: 'coretex.active-frontier-ids.v1',
+    epochId,
+    activeFrontierRoot: rootHash(sorted),
+    activeIds: sorted,
+  };
+}
+
+/**
+ * Fail-closed loader for the active-frontier id set every scoring surface uses
+ * when the bundle arms `epochFrontier.liveEvalPack`. Accepts either the
+ * published `coretex.active-frontier-ids.v1` artifact or a persisted
+ * `coretex.epoch-frontier-state.v1` runtime state (its `active` tuples).
+ * ALWAYS verifies `activeFrontierRootOf(ids) === expectedRoot` (the on-chain
+ * pin) and throws on any mismatch — a scorer must never overlay an unattested
+ * (cherry-pickable) active set.
+ */
+export function loadActiveFrontierIds(filePath: string, expectedRoot: string): ReadonlySet<string> {
+  const raw = JSON.parse(readFileSync(filePath, 'utf8')) as
+    | ActiveFrontierIdsArtifact
+    | EpochFrontierRuntimeState
+    | { readonly activeIds?: readonly string[]; readonly active?: readonly (readonly [string, number])[] };
+  let ids: readonly string[];
+  if (Array.isArray((raw as ActiveFrontierIdsArtifact).activeIds)) {
+    ids = (raw as ActiveFrontierIdsArtifact).activeIds;
+  } else if (Array.isArray((raw as EpochFrontierRuntimeState).active)) {
+    ids = (raw as EpochFrontierRuntimeState).active.map((entry) => entry[0]);
+  } else {
+    throw new Error(`active frontier ids file ${filePath} has neither activeIds[] nor active[] — unsupported schema`);
+  }
+  if (ids.length === 0) throw new Error(`active frontier ids file ${filePath} contains an empty active set`);
+  if (ids.some((id) => typeof id !== 'string' || id.length === 0)) {
+    throw new Error(`active frontier ids file ${filePath} contains non-string/empty ids`);
+  }
+  const set = new Set(ids);
+  const got = rootHash(set);
+  const want = expectedRoot.toLowerCase();
+  if (!/^0x[0-9a-f]{64}$/.test(want)) throw new Error(`expected activeFrontierRoot must be bytes32 hex (got ${expectedRoot})`);
+  if (got !== want) {
+    throw new Error(`active frontier ids file ${filePath} root mismatch: computed ${got} != pinned ${want} — refusing to score with an unattested active set`);
+  }
+  return set;
+}
 
 export type EpochFrontierMode = 'off' | 'C0' | 'C1' | 'C2' | 'C3' | 'C4';
 
@@ -143,15 +205,48 @@ export function makeEpochFrontier({
     activeRoot: rootHash(active.keys()), reserveRoot: rootHash(order.slice(reservePtr)), retiredRoot: rootHash(retired),
   });
 
-  function stepEpoch(epoch: number, prevHonestAccepts: number | null, prevQualityAttempts: number | null = null): EpochFrontierSnapshot {
+  /**
+   * `prunedActive` = ACTIVE ids force-removed OUTSIDE this step (corpus
+   * removals pruned via `pruneEpochFrontierState` before re-hydration). The
+   * epoch runner's defense-in-depth check charges those prunes against the
+   * same per-step root-delta budget
+   * (`max(activated, retired + prunedActive) <= maxRootDeltaPerEpoch`), so the
+   * step MUST leave them headroom: aged drain + churn retire at most
+   * `maxRootDeltaPerEpoch - prunedActive` rows. Without this, any evolve that
+   * removes even one active eval_hidden id while the aged drain saturates the
+   * budget would hard-fail the rotation for the entire drain.
+   */
+  function stepEpoch(epoch: number, prevHonestAccepts: number | null, prevQualityAttempts: number | null = null, prunedActive = 0): EpochFrontierSnapshot {
     if (!initialized) { initialized = true; const a = activateNext(K, epoch); injectedSinceLastStep = 0; return snapshot(epoch, a, 0, 0); }
+    const rootDeltaBudget = Math.max(0, maxRootDeltaPerEpoch - Math.max(0, prunedActive));
+    // Pruned ACTIVE rows vanished without a paired activation (pruning happens
+    // outside stepEpoch), so backfill them from the reserve like retirements —
+    // otherwise aggressive pruning shrinks the active set permanently even with
+    // a full reserve (observed: prune-to-EMPTY in the evolve continuity fixture,
+    // which every production loader would fail closed on). Capped at the full
+    // per-step budget: the runner's check max(activated, retired + prunedActive)
+    // already fails a prune count that busts the budget on its own.
+    const pruneBackfill = Math.min(Math.max(0, prunedActive), maxRootDeltaPerEpoch);
     let ret = 0;
     if (Number.isFinite(maxAge)) {
-      const aged = [...active.entries()].filter(([, ae]) => epoch - ae >= maxAge).map(([id]) => id);
+      // Age-based retirement is a BOUNDED drain, never a spike: retire at most
+      // rootDeltaBudget aged rows per step, oldest activation first (same
+      // deterministic tiebreak as retireOldest). Unbounded aged retirement on a
+      // shared-activation-epoch cohort (e.g. the genesis window, all activated at
+      // epoch 0) would flush the ENTIRE active set the first evolve a finite maxAge
+      // bites — measured 9300/9319 rows in one step on the live epoch-136 frontier
+      // state — obliterating the root-delta bound and the overlay's active set.
+      // Behavior is unchanged for every historical bundle: no armed profile has
+      // ever pinned a finite maxAge (default Infinity, live pins null).
+      const aged = [...active.entries()]
+        .filter(([, ae]) => epoch - ae >= maxAge)
+        .sort((x, y) => (x[1] - y[1]) || (orderIdx.get(x[0])! - orderIdx.get(y[0])!))
+        .slice(0, rootDeltaBudget)
+        .map(([id]) => id);
       for (const id of aged) { active.delete(id); retired.add(id); cumulativeRetired++; ret++; }
     }
     if (mode === 'off' || mode === 'C0') {
-      const a = activateNext(ret, epoch);
+      const a = activateNext(ret + pruneBackfill, epoch);
       injectedSinceLastStep = 0;
       return snapshot(epoch, a, ret, 0);
     }
@@ -179,10 +274,13 @@ export function makeEpochFrontier({
     if (mode === 'C3' && injectedSinceLastStep > 0) {
       rate = Math.max(rate, Math.min(maxChurn, Math.max(minChurn, injectedSinceLastStep)));
     }
-    rate = Math.min(rate, maxRootDeltaPerEpoch);
+    // Aged retirement and external active prunes share the per-step root-delta
+    // budget with churn: aged + churn + prunedActive never exceed
+    // maxRootDeltaPerEpoch.
+    rate = Math.min(rate, Math.max(0, rootDeltaBudget - ret));
     rate = Math.min(rate, Math.max(0, order.length - reservePtr));
     ret += retireOldest(rate);
-    const a = activateNext(ret, epoch);
+    const a = activateNext(ret + pruneBackfill, epoch);
     injectedSinceLastStep = 0;
     return snapshot(epoch, a, ret, rate);
   }

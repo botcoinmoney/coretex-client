@@ -32,6 +32,9 @@ import type { RetrievalKeyLayout } from '../eval/retrieval-corpus.js';
 import type { ScoringOptions } from '../eval/retrieval-benchmark.js';
 import type { BiEncoder } from '../eval/bi-encoder.js';
 import type { CrossEncoderReranker } from '../eval/reranker.js';
+import type { LiveEvalPackLaw } from '../eval/hidden-query-pack.js';
+import { CORETEX_PIPELINE_VERSION_BMU_V1, isR5StateLaw, isBmuScoringLaw } from '../pipeline-versions.js';
+import { assertValidBmuWeights, computeBmuJudgeRmax, BMU_JUDGE_RMAX_LIMIT, BMU_ROW_QUANTUM_PPM } from '../eval/bmu-benchmark.js';
 import { canonicalJson } from '../canonical/json.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -183,7 +186,7 @@ export interface EvaluatorProfile {
   /** Pinned scorer pipeline. v2-lens is the two-stage corpus-retrieval + substrate-bias pipeline.
    *  `coretex-retrieval-v2-policy-r5` = the PolicyAtom epoch (reclaimed RetrievalKeys+Codebook
    *  words read as typed PolicyAtoms; r4 stays replayable). */
-  readonly pipelineVersion?: 'coretex-retrieval-v2-lens' | 'coretex-retrieval-v2-lens-r2' | 'coretex-retrieval-v2-lens-r3' | 'coretex-retrieval-v2-lens-r4' | 'coretex-retrieval-v2-policy-r5';
+  readonly pipelineVersion?: 'coretex-retrieval-v2-lens' | 'coretex-retrieval-v2-lens-r2' | 'coretex-retrieval-v2-lens-r3' | 'coretex-retrieval-v2-lens-r4' | 'coretex-retrieval-v2-policy-r5' | 'coretex-bmu-v1-r5state';
   /** Calibration-blessed list of reward-active substrate surfaces (named for
    *  the miner API). The reward-active set is this list UNION the surfaces
    *  derived from the per-family enable flags — see rewardActiveSubstrateSurfaces. */
@@ -272,6 +275,13 @@ export interface EvaluatorProfile {
    * launch value: 128 (32× speedup over full-pool reranking).
    */
   readonly rerankerInputTopK?: number;
+  /**
+   * BMU §13.2 judge quantization grid g in composite finalReorderingScore
+   * space (default 1e-3). Only meaningful under
+   * pipelineVersion = 'coretex-bmu-v1-r5state'; validated positive and
+   * ≤ 0.1 so the grid can never coarsen away real ordering.
+   */
+  readonly judgeScoreGrid?: number;
   /** Stage-2 lens-bonus contributing vectors per query. Capped by RetrievalKey slot count. */
   readonly lensTopK?: number;
   /** Stage-2 lens bonus scale (Run 0). */
@@ -348,7 +358,7 @@ export interface EvaluatorProfile {
    * §5 Run 1 selection-policy attestation. When `firstStageTopK` is pinned via
    * the per-stratum recall@K rule WITHOUT meeting the target on all strata,
    * this field records the operator-override decision in the signed bundle so
-   * replay clients see that the override is explicit (not a silent threshold
+   * replay validators see that the override is explicit (not a silent threshold
    * violation). Hashed into `bundleHash` — any change requires a new bundle.
    */
   readonly firstStageTopKSelection?: FirstStageTopKSelection;
@@ -407,7 +417,8 @@ export interface EvaluatorProfile {
    */
   readonly baselineEvalSeedHex?: string;
   /**
-   * Per-patch on-chain randomness binding.
+   * Per-patch on-chain randomness binding
+   * (docs/CORETEX_V4_ONCHAIN_RANDOMNESS_PLAN.md).
    *
    * `chainId` + `blockTimeSeconds` pin the chain a verifier queries
    * for blockhashes; `targetBlockOffset` is the number of blocks past
@@ -421,7 +432,8 @@ export interface EvaluatorProfile {
    */
   readonly baseRpcConfig: BaseRpcConfigPin;
   /**
-   * Staged-active-root corpus policy.
+   * Staged-active-root corpus policy (per
+   * `docs/CORETEX_V4_ONCHAIN_RANDOMNESS_PLAN.md` §"Staged Active Root").
    *
    * The full launch corpus is generated up-front as a deterministic
    * RESERVE (seeds [0..seedsPerDomain) per domain). At launch the
@@ -455,7 +467,7 @@ export interface EvaluatorProfile {
    */
   readonly controllerParams?: ControllerParamsPin;
   /** LAUNCH-REQUIRED active-frontier / churn controller pin (EpochFrontier). When present, the
-   *  client rotates the active eval_hidden frontier deterministically and recomputes the
+   *  validator rotates the active eval_hidden frontier deterministically and recomputes the
    *  baseline on activeRootChanged. Hashed into bundleHash so churn behavior is attested. */
   readonly epochFrontier?: EpochFrontierPin;
 }
@@ -490,7 +502,7 @@ export interface BaseRpcConfigPin {
 export const DEFAULT_BASE_RPC_CONFIG: BaseRpcConfigPin = {
   chainId: 8453,                          // Base mainnet
   blockTimeSeconds: 2,
-  targetBlockOffset: 30,                  // ≈ 60 s on Base
+  targetBlockOffset: 15,                  // ≈ 30 s on Base
   replayBlockhashLookbackBlocks: 50_000,  // ≈ 28 h coverage
 };
 
@@ -535,6 +547,16 @@ export interface EpochFrontierPin {
   readonly seed: string;
   readonly baselineRecompute: 'activeRootChanged';
   readonly majorDeltaPolicy: 'corpusRootChanged';
+  /** SCORING-LAW pin: when present with limit > 0, every scored gate/confirm/baseline
+   *  pack admits up to `limit` newest ACTIVE live-eval (`zz_e*`) eval_hidden rows via
+   *  `admitActiveLiveEvalEvents` (`deriveScoredQueryPack`), with the active set verified
+   *  against the on-chain `activeFrontierRoot` before any scoring. This is what makes
+   *  evolve-minted clustered rows actually reachable by miners: without it a fresh
+   *  cluster's dual-pack sampling probability on the launch corpus is ~0 (measured
+   *  0/200 seed pairs), so the corpus-evolve runway lever cannot restore acceptance.
+   *  Hashed into bundleHash — arming/changing it is an attested scorer-law transition
+   *  (rebaseline + scorer sync + validator parity), never an env toggle. */
+  readonly liveEvalPack?: LiveEvalPackLaw;
 }
 
 /** difficulty.ts protocol defaults, expressed as a controller pin (the legacy pre-pin shape). */
@@ -757,42 +779,43 @@ const DEFAULT_SPEC_FILES = [
 // dev-only tooling and is NOT part of launch attestation/reference claims. (Re-add ONLY if/when
 // coretex_py is brought to full r5 parity with cross-impl byte-exact tests.)
 const DEFAULT_IMPL_FILES = [
-  'src/state/codec.ts',
-  'src/state/merkle.ts',
-  'src/state/patch.ts',
-  'src/state/types.ts',
-  'src/state/validate.ts',
+  'packages/coretex/src/state/codec.ts',
+  'packages/coretex/src/state/merkle.ts',
+  'packages/coretex/src/state/patch.ts',
+  'packages/coretex/src/state/types.ts',
+  'packages/coretex/src/state/validate.ts',
 ] as const;
 
 const DEFAULT_EVALUATOR_FILES = [
-  'src/eval/retrieval-corpus.ts',
-  'src/eval/retrieval-benchmark.ts',
-  'src/eval/ir-metrics.ts',
-  'src/eval/hidden-query-pack.ts',
-  'src/eval/bi-encoder.ts',
-  'src/eval/reranker.ts',
+  'packages/coretex/src/eval/retrieval-corpus.ts',
+  'packages/coretex/src/eval/retrieval-benchmark.ts',
+  'packages/coretex/src/eval/ir-metrics.ts',
+  'packages/coretex/src/eval/hidden-query-pack.ts',
+  'packages/coretex/src/eval/bi-encoder.ts',
+  'packages/coretex/src/eval/reranker.ts',
   // Per-patch on-chain randomness stack — pinned so the bundleHash
-  // catches any drift in the acceptance/replay logic.
-  'src/eval/seed-derivation.ts',
-  'src/eval/live-eval-admission.ts',
-  'src/coordinator/base-blockhash.ts',
-  'src/coordinator/patch-received-notice.ts',
-  'src/coordinator/per-patch-evaluator.ts',
-  'src/coordinator/retrieval-data-source.ts',
-  'src/coordinator/epoch-frontier.ts',
-  'src/replay/per-patch.ts',
-  'src/substrate/retrieval-decoder.ts',
-  'src/substrate/structural-validity.ts',
-  'src/substrate/slot-policy.ts',
-  'src/corpus/admission.ts',
-  'src/corpus/delta.ts',
-  'src/corpus/logical-delta-bridge.ts',
-  'src/corpus/epoch-rotation.ts',
-  'src/rewards/difficulty.ts',
-  'src/rewards/work-units.ts',
-  'src/coordinator/endpoints.ts',
-  'src/replay/v4.ts',
-  'src/replay-cli.ts',
+  // catches any drift in the acceptance/replay logic. See
+  // docs/CORETEX_V4_ONCHAIN_RANDOMNESS_PLAN.md.
+  'packages/coretex/src/eval/seed-derivation.ts',
+  'packages/coretex/src/eval/live-eval-admission.ts',
+  'packages/coretex/src/coordinator/base-blockhash.ts',
+  'packages/coretex/src/coordinator/patch-received-notice.ts',
+  'packages/coretex/src/coordinator/per-patch-evaluator.ts',
+  'packages/coretex/src/coordinator/retrieval-data-source.ts',
+  'packages/coretex/src/coordinator/epoch-frontier.ts',
+  'packages/coretex/src/replay/per-patch.ts',
+  'packages/coretex/src/substrate/retrieval-decoder.ts',
+  'packages/coretex/src/substrate/structural-validity.ts',
+  'packages/coretex/src/substrate/slot-policy.ts',
+  'packages/coretex/src/corpus/admission.ts',
+  'packages/coretex/src/corpus/delta.ts',
+  'packages/coretex/src/corpus/logical-delta-bridge.ts',
+  'packages/coretex/src/corpus/epoch-rotation.ts',
+  'packages/coretex/src/rewards/difficulty.ts',
+  'packages/coretex/src/rewards/work-units.ts',
+  'packages/coretex/src/coordinator/endpoints.ts',
+  'packages/coretex/src/replay/v4.ts',
+  'packages/coretex/src/replay-cli.ts',
 ] as const;
 
 // runtimePin is the floor of installed Python runtime versions a coordinator
@@ -827,7 +850,7 @@ export const DEFAULT_COMPOSITE_WEIGHTS_PIN: CompositeWeightPin = {
 };
 
 export const DEFAULT_PATCH_FLOORS: PatchAcceptanceFloorsPin = {
-  minImprovementPpm: 2500,
+  minImprovementPpm: 500,
   structuralFloor: 0.95,
   protectedRegressionFloor: 0.05,
   familyCatastrophicFloor: 0.85,
@@ -922,7 +945,7 @@ export const DEFAULT_PROFILE: EvaluatorProfile = {
   // NOTE: this DEFAULT_PROFILE is the CONSERVATIVE r4 baseline (PolicyAtoms OFF — the r5-no-atoms==r4 safety
   // baseline). It is NOT the launch config. The SIGNED LAUNCH profile is r5 with the 3 PolicyAtom families active:
   // release/bundle/evaluator-profile-v2-dgen1-policy-r5-{100k,300k}.json. Do not read these defaults as "what ships".
-  // Canonical r4/r5 explainer: release/calibration/CURRENT.md (top) + specs/coretex_state.md §Range C-r5/F-r5.
+  // Canonical r4/r5 layout: specs/coretex_state.md §Range C-r5/F-r5 plus signed launch profiles.
   pipelineVersion: 'coretex-retrieval-v2-lens-r4',  // Tier-2 substrate epoch (stride-1 MemoryIndex, 96-pair temporal)
   firstStageTopK: 200,             // calibration Run 1 will tune per-stratum
   rerankerInputTopK: 128,          // §6.5 MemReranker-style cross-encoder pool cap
@@ -996,8 +1019,10 @@ export function scoringOptionsFromProfile(
     ...(profile.categoryLensEvidenceBundle !== undefined ? { categoryLensEvidenceBundle: profile.categoryLensEvidenceBundle } : {}),
     ...(profile.temporalStaleContrast !== undefined ? { temporalStaleContrast: profile.temporalStaleContrast } : {}),
     pipelineVersion: profile.pipelineVersion,
-    // ─── r5 PolicyAtoms: policyAtomsMode is driven HARD by the pinned pipelineVersion ───
-    ...(profile.pipelineVersion === 'coretex-retrieval-v2-policy-r5' ? { policyAtomsMode: true } : {}),
+    // ─── r5 PolicyAtoms: policyAtomsMode is driven HARD by the pinned pipelineVersion.
+    //     SET-MEMBERSHIP (spec §9 site 3): the BMU v1 STATE law IS the r5
+    //     policy-atoms law (I2) — 'coretex-bmu-v1-r5state' derives true too. ───
+    ...(isR5StateLaw(profile.pipelineVersion) ? { policyAtomsMode: true } : {}),
     ...(profile.enableEvidenceBundleAtoms !== undefined ? { enableEvidenceBundleAtoms: profile.enableEvidenceBundleAtoms } : {}),
     ...(profile.enableConflictLifecycleAtoms !== undefined ? { enableConflictLifecycleAtoms: profile.enableConflictLifecycleAtoms } : {}),
     ...(profile.enableAbstentionAtoms !== undefined ? { enableAbstentionAtoms: profile.enableAbstentionAtoms } : {}),
@@ -1170,9 +1195,9 @@ export function buildBundleManifest(opts: BuildBundleManifestOptions): CoreTexBu
     },
     replay: {
       commands: [
-        'coretex-client-replay tx --tx <hash> --rpc <url> --parent-state <state.bin> --bundle-manifest <manifest.json> --core-version-hash <bundleHash>',
-        'coretex-client-replay current --events <events.json> --parent-state <state.bin> --bundle-manifest <manifest.json> --core-version-hash <bundleHash>',
-        'coretex-client-replay watch --rpc <url> --v4 <address> --cortex-state <address> --from-block <n> --parent-state <state.bin> --bundle-manifest <manifest.json> --core-version-hash <bundleHash>',
+        'coretex-replay tx --tx <hash> --rpc <url> --parent-state <state.bin> --bundle-manifest <manifest.json> --core-version-hash <bundleHash>',
+        'coretex-replay current --events <events.json> --parent-state <state.bin> --bundle-manifest <manifest.json> --core-version-hash <bundleHash>',
+        'coretex-replay watch --rpc <url> --v4 <address> --cortex-state <address> --from-block <n> --parent-state <state.bin> --bundle-manifest <manifest.json> --core-version-hash <bundleHash>',
       ],
       coordinatorCacheOptional: true as const,
       snapshots: (opts.snapshotFiles ?? []).map((path) => hashFile(opts.repoRoot, path, 'substrate-snapshot')),
@@ -1440,8 +1465,9 @@ function validateProfile(profile: EvaluatorProfile, errors?: string[]): void {
   // r5 enables only meaningful under the policy-r5 pipeline pin (warn-as-error: prevents
   // accidentally shipping r5 atoms under an r4 profile, where they would be ignored).
   const r5Enabled = profile.enableEvidenceBundleAtoms || profile.enableConflictLifecycleAtoms || profile.enableAbstentionAtoms || profile.enableAspectConstraintAtoms || profile.enableValidityAtoms || profile.enableEntityResolutionAtoms || profile.enableScopeAtoms;
-  if (r5Enabled && profile.pipelineVersion !== 'coretex-retrieval-v2-policy-r5') {
-    out.push('r5 PolicyAtom enables require pipelineVersion = coretex-retrieval-v2-policy-r5');
+  // SET-MEMBERSHIP (spec §9 site 4): BMU v1 rides the r5 policy state law.
+  if (r5Enabled && !isR5StateLaw(profile.pipelineVersion)) {
+    out.push('r5 PolicyAtom enables require an r5-state-law pipelineVersion (coretex-retrieval-v2-policy-r5 or coretex-bmu-v1-r5state)');
   }
   // aspect_constraint is an A100 CANDIDATE, not a launch surface: its boost hook is not wired (r5.1).
   // Fail closed so it cannot be silently shipped or half-enabled. Admission requires the enable; the
@@ -1473,6 +1499,105 @@ function validateProfile(profile: EvaluatorProfile, errors?: string[]): void {
     if (f.baselineRecompute !== 'activeRootChanged') out.push("epochFrontier.baselineRecompute must be 'activeRootChanged'");
     if (f.majorDeltaPolicy !== 'corpusRootChanged') out.push("epochFrontier.majorDeltaPolicy must be 'corpusRootChanged'");
     if (f.maxRootDeltaPerEpoch !== undefined && (!Number.isInteger(f.maxRootDeltaPerEpoch) || f.maxRootDeltaPerEpoch < 1)) out.push('epochFrontier.maxRootDeltaPerEpoch must be a positive integer when present');
+    // maxAge: null = retirement-by-age disabled (JSON has no Infinity); finite values
+    // must be positive integers — maxAge < 1 would age out every row every epoch.
+    if (f.maxAge !== undefined && f.maxAge !== null && (!Number.isInteger(f.maxAge) || f.maxAge < 1)) out.push('epochFrontier.maxAge must be null or a positive integer when present');
+    if (f.liveEvalPack !== undefined) {
+      const lp = f.liveEvalPack;
+      if (!Number.isInteger(lp.limit) || lp.limit < 1) out.push('epochFrontier.liveEvalPack.limit must be a positive integer');
+      // The overlay evicts only non-quota base rows; leave at least the quota
+      // reservation plus an equal share of broad rows so the dual broad packs
+      // keep their regression-safety function.
+      const quotaSum = profile.hiddenPack.quotas.reduce((acc, q) => acc + q.minCount, 0);
+      if (Number.isInteger(lp.limit) && lp.limit > profile.hiddenPack.packSize - quotaSum) {
+        out.push(`epochFrontier.liveEvalPack.limit must be <= packSize - quota reservation (${profile.hiddenPack.packSize - quotaSum})`);
+      }
+      if (lp.familyPriority !== undefined && (!Array.isArray(lp.familyPriority) || lp.familyPriority.some((s) => typeof s !== 'string' || s.length === 0))) {
+        out.push('epochFrontier.liveEvalPack.familyPriority must be an array of non-empty strings when present');
+      }
+      if (lp.dedupePublicIntent !== undefined && typeof lp.dedupePublicIntent !== 'boolean') {
+        out.push('epochFrontier.liveEvalPack.dedupePublicIntent must be a boolean when present');
+      }
+      // BMU §6.2 slot law (familySlots may only appear under the BMU pipeline).
+      if (lp.familySlots !== undefined) {
+        if (!isBmuScoringLaw(profile.pipelineVersion)) {
+          out.push('epochFrontier.liveEvalPack.familySlots requires pipelineVersion = coretex-bmu-v1-r5state');
+        }
+        const slotFamilies = ['temporal', 'conflict_lifecycle', 'multi_hop_relation', 'near_collision_abstention'];
+        let slotSum = 0;
+        for (const [k, v] of Object.entries(lp.familySlots)) {
+          if (!slotFamilies.includes(k)) out.push(`epochFrontier.liveEvalPack.familySlots key '${k}' is not a BMU family enum name`);
+          else if (!Number.isInteger(v) || (v as number) < 0) out.push(`epochFrontier.liveEvalPack.familySlots.${k} must be a non-negative integer`);
+          else slotSum += v as number;
+        }
+        if (Number.isInteger(lp.limit) && slotSum !== lp.limit) {
+          out.push(`epochFrontier.liveEvalPack.familySlots must sum to limit (${slotSum} != ${lp.limit})`);
+        }
+      }
+      if (lp.freshWindow !== undefined && (!Number.isInteger(lp.freshWindow) || lp.freshWindow < 1)) {
+        out.push('epochFrontier.liveEvalPack.freshWindow must be a positive integer when present');
+      }
+    }
+  }
+
+  // ─── BMU v1 bundle validation (spec §9 site 17 additions; all fail-closed) ───
+  if (isBmuScoringLaw(profile.pipelineVersion)) {
+    const f = profile.epochFrontier;
+    if (!f) {
+      out.push('BMU bundles require epochFrontier (the frontier is mandatory under the BMU law, §6.5)');
+    } else {
+      // §6.2: finite maxAge REQUIRED — maxAge: null (the liveeval8
+      // counterexample) is illegal under coretex-bmu-v1-r5state.
+      if (f.maxAge === undefined || f.maxAge === null) {
+        out.push('BMU bundles require a FINITE epochFrontier.maxAge (retirement-by-age is mandatory; null/absent is illegal, §6.2)');
+      }
+      const lp = f.liveEvalPack;
+      if (!lp || !(lp.limit > 0)) {
+        out.push('BMU bundles require an armed epochFrontier.liveEvalPack (limit ≥ 1, §6.2)');
+      } else {
+        if (lp.familySlots === undefined) {
+          out.push('BMU bundles require epochFrontier.liveEvalPack.familySlots (the §6.2 slot law)');
+        } else {
+          // §2.3 composition validator: |(Q_f + O_f)/packSize − w_f| ≤ 0.03.
+          try {
+            assertValidBmuWeights({
+              packSize: profile.hiddenPack.packSize,
+              quotas: profile.hiddenPack.quotas,
+              familySlots: lp.familySlots,
+            });
+          } catch (err) {
+            out.push(`BMU composition validation failed: ${(err as Error).message}`);
+          }
+        }
+      }
+    }
+    // §2.4 variance law (F5): cross-pack parent variance MUST NOT enter the
+    // acceptance threshold — the source must resolve to 'unavailable'.
+    const source = profile.baselineVarianceSource ?? 'unavailable';
+    if (source !== 'unavailable') {
+      out.push(`BMU bundles pin baselineVarianceSource = 'unavailable' (variance term ≡ 0, §2.4; got '${source}')`);
+    }
+    // §2.4 threshold law: minImprovementPpm within [q+1, 2q] preserves the
+    // one-flip-rejecting / two-flip-advancing staircase (q = 15,625).
+    const minImp = profile.patchAcceptanceFloors?.minImprovementPpm;
+    if (!Number.isInteger(minImp) || minImp < BMU_ROW_QUANTUM_PPM + 1 || minImp > 2 * BMU_ROW_QUANTUM_PPM) {
+      out.push(`BMU bundles require patchAcceptanceFloors.minImprovementPpm in [${BMU_ROW_QUANTUM_PPM + 1}, ${2 * BMU_ROW_QUANTUM_PPM}] (one flip can never advance, §2.4; got ${String(minImp)})`);
+    }
+    // §13.2 judge grid + Rmax range validation.
+    if (profile.judgeScoreGrid !== undefined
+        && (typeof profile.judgeScoreGrid !== 'number' || !(profile.judgeScoreGrid > 0) || profile.judgeScoreGrid > 0.1 || !Number.isFinite(profile.judgeScoreGrid))) {
+      out.push('judgeScoreGrid must be a finite number in (0, 0.1] when present');
+    }
+    try {
+      const rmax = computeBmuJudgeRmax(profile);
+      if (rmax > BMU_JUDGE_RMAX_LIMIT + 1e-9) {
+        out.push(`BMU judge Rmax ${rmax.toFixed(3)} exceeds ${BMU_JUDGE_RMAX_LIMIT} (§13.2) — re-pin bonus betas / policy budget caps`);
+      }
+    } catch (err) {
+      out.push(`BMU judge Rmax validation failed: ${(err as Error).message}`);
+    }
+  } else if (profile.judgeScoreGrid !== undefined) {
+    out.push('judgeScoreGrid is only meaningful under pipelineVersion = coretex-bmu-v1-r5state');
   }
   if (profile.replayTolerancePpm > profile.patchAcceptanceFloors.minImprovementPpm)
     out.push('replayTolerancePpm must be <= patchAcceptanceFloors.minImprovementPpm');
@@ -1748,7 +1873,7 @@ export function assertBundleBindingAtStartup(opts: {
     opts.clientVersion,
   );
   // Do not hard-fail solely because version was not supplied by the host:
-  // that would brick clients during rollout. We fail closed only when
+  // that would brick validators during rollout. We fail closed only when
   // the supplied version is explicitly invalid or below the minimum.
   const shouldRefuseForClientVersion = clientCheck.code === 'client-version-outdated'
     || clientCheck.code === 'client-version-invalid';

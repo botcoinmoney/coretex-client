@@ -35,17 +35,30 @@ import {
   type AttestedCoordinatorBootAttestation,
   type CoreTexBundleManifest,
   type EvaluatorProfile,
+  DEFAULT_BASE_RPC_CONFIG,
 } from '../bundle/index.js';
 import {
   loadProductionCorpus,
   type ProductionCorpus,
 } from '../eval/retrieval-corpus.js';
-import { deriveQueryPack } from '../eval/hidden-query-pack.js';
+import { deriveScoredQueryPack, bmuExclusionKeySetForPack, type LiveEvalPackLaw } from '../eval/hidden-query-pack.js';
+import { loadActiveFrontierIds } from './epoch-frontier.js';
 import {
+  assertPipelineVersionMatches,
   computeAcceptanceThresholdPpm,
   evaluateRetrievalBenchmarkPatch,
   type PatchEvalResult,
 } from '../eval/retrieval-benchmark.js';
+import { isBmuScoringLaw } from '../pipeline-versions.js';
+import {
+  evaluateBmuArmGate,
+  evaluateBmuBaseline,
+  evaluateBmuBenchmarkPatch,
+  bmuExclusionSetDigest,
+  bmuRegressedRowsByFamily,
+  type BmuScore,
+  type BmuScoringContext,
+} from '../eval/bmu-benchmark.js';
 import { biEncoderFromEnv } from '../eval/bi-encoder.js';
 import {
   createQwen3Reranker,
@@ -62,6 +75,7 @@ import {
 } from '../replay/eval-report-artifact.js';
 import { rpcFetchTarget } from '../replay/v4.js';
 import { computeCoreTexScreenerThresholdPpm } from '../rewards/work-units.js';
+import { evaluateBaseline, type BaselineScores } from '../rewards/baseline.js';
 import {
   runPerPatchEvaluation,
   dualPackProofFromPerPatchReceipt,
@@ -320,6 +334,7 @@ export type ProductionEvalRejectResult = {
   readonly outcome: 'reject';
   readonly code: string;
   readonly reason: string;
+  readonly innerRejectionReason?: string;
 };
 
 /** §3 artifact-bytes return: accepted production results carry the FULL
@@ -361,15 +376,43 @@ export type ProductionCoreTexEvaluator = RealEvaluator & {
     /** §8 keyless-scorer path — coordinator-derived gate/confirm seeds. The
      *  scorer host never holds the pre-reveal epoch secret; the coordinator
      *  derives both seeds and ships them with the job alongside the pinned
-     *  seedContext. Requires seedContext. The client's post-reveal
+     *  seedContext. Requires seedContext. The validator's post-reveal
      *  re-derivation from the revealed secret is the integrity backstop. */
     injectedSeeds?: { readonly gateSeed: string; readonly confirmSeed: string };
+    /** Coordinator-authoritative target block offset for an injected seedContext.
+     *  The keyless scorer receives this per job and stamps artifacts/proofs with
+     *  the same value the coordinator used to draw targetBlock. Local CPU scoring
+     *  omits it and uses the construction-time bundle/default offset. */
+    targetBlockOffset?: number;
   }): Promise<ProductionEvalResult>;
+  /** Keyless baseline re-scoring (cutover baseline recompute): score a BARE
+   *  substrate on the pack derived from a CALLER-PROVIDED deterministic
+   *  bytes32 seed under this evaluator's loaded corpus + overlay law
+   *  (`deriveScoredQueryPack` — byte-identical to `deriveQueryPack` when no
+   *  overlay is armed). PATCHLESS + DEDUP-FREE + ADMISSION-FREE by
+   *  construction: never consults the dedup store, per-miner caps, or the
+   *  future-blockhash seed machinery. The seed is caller-authoritative and
+   *  deterministic — NEVER a future blockhash. */
+  scoreState(input: {
+    parentState: CortexState;
+    baselineSeedHex: string;
+    samples?: number;
+  }): Promise<BaselineScores>;
   /** Hash-bound boot attestation (§2): resolved model id + revision +
    *  reranker mode + instruction + prompt-template hash + Memory-IR mode. */
   readonly bootAttestation: AttestedCoordinatorBootAttestation;
   close?: () => Promise<void>;
 };
+
+/** Hard cap on `scoreState` baseline samples per job (each sample is a full
+ *  hidden-pack evaluation on the GPU). */
+export const MAX_SCORE_STATE_SAMPLES = 32;
+
+/** The evaluator surface the shared core can build WITHOUT the factory-scoped
+ *  corpus/profile/scoring options. `scoreState` needs those, so only
+ *  `createProductionCoreTexEvaluator` attaches it (the core alone never
+ *  exposes it — tests driving the core directly get no baseline lane). */
+export type CoreTexEvaluatorCore = Omit<ProductionCoreTexEvaluator, 'scoreState'>;
 
 export interface ProductionCoreTexEvaluatorOptions {
   readonly epochId: number;
@@ -411,6 +454,13 @@ export interface ProductionCoreTexEvaluatorOptions {
    *  (assertResolvedRerankerMatchesPin enforces this). The integration sidecar
    *  passes nothing, so the default CPU path is unchanged. */
   readonly rerankerFactory?: (plan: ProductionRerankerPlan) => Promise<CrossEncoderReranker> | CrossEncoderReranker;
+  /** REQUIRED iff the bundle profile arms `epochFrontier.liveEvalPack` (scored packs
+   *  then include the active live-eval overlay): path to the active-frontier id set
+   *  (`coretex.active-frontier-ids.v1` artifact or persisted frontier runtime state)
+   *  plus the on-chain pinned `activeFrontierRoot` it must hash to. Construction
+   *  fails closed on: armed-profile-without-input, input-without-armed-profile,
+   *  and any id-set/root mismatch. */
+  readonly activeFrontier?: { readonly idsPath: string; readonly expectedRoot: string };
 }
 
 // ─── Core orchestration (scorer-injectable; production + tests share it) ─────
@@ -425,6 +475,10 @@ export interface ProductionCoreTexEvaluatorCoreDeps {
   readonly hiddenSeedCommit?: string; // bytes32 hex
   readonly corpusRoot: string;        // bytes32 hex
   readonly bundleHash: string;        // bytes32 hex
+  /** Present iff the bundle armed `epochFrontier.liveEvalPack`: the pinned
+   *  active-frontier root the seedScorer's overlay set was verified against.
+   *  Echoed into the eval-report artifact context and the dual-pack proof. */
+  readonly activeFrontierRoot?: string;
   readonly stateThresholdPpm: number;
   readonly screenerThresholdPpm: number;
   readonly replayTolerancePpm: number;
@@ -445,12 +499,30 @@ export interface ProductionCoreTexEvaluatorCoreDeps {
      *  override when supplied, else the construction-time default. The seed
      *  scorer's acceptance floors honor exactly this number. */
     readonly thresholdPpm: number;
+    /** Which pack this seed scores ('gate'/'confirm'). BMU pack derivation is
+     *  side-aware (§6.3 gate-before-confirm exclusion); r5 scorers ignore it. */
+    readonly which?: 'gate' | 'confirm';
+    /** The GATE seed of the dual evaluation — the BMU confirm side re-derives
+     *  the gate pack's exclusion set X from it; r5 scorers ignore it. */
+    readonly gateSeed?: string;
   }) => Promise<PatchEvalResult>;
+  /** BMU §8.3 wiring (present iff the bundle pins coretex-bmu-v1-r5state):
+   *  the artifact version + proof kind pairing and the published per-family
+   *  aggregates builder. Absent ⇒ r5 artifact/proof kinds, byte-identical. */
+  readonly bmu?: {
+    readonly artifactVersion: 'coretex-bmu-post-reveal-eval-report-v1';
+    readonly proofKind: 'coretex-bmu-dual-pack-v1';
+    readonly familySummary: (args: {
+      readonly gate: PatchEvalResult;
+      readonly confirm: PatchEvalResult;
+      readonly gateSeedHex: string;
+    }) => NonNullable<CoreTexPostRevealEvalReportArtifact['bmuFamilySummary']>;
+  };
   readonly publishArtifact?: (artifact: CoreTexPostRevealEvalReportArtifact) => Promise<void> | void;
   readonly close?: () => Promise<void>;
 }
 
-export function createCoreTexEvaluatorCore(deps: ProductionCoreTexEvaluatorCoreDeps): ProductionCoreTexEvaluator {
+export function createCoreTexEvaluatorCore(deps: ProductionCoreTexEvaluatorCoreDeps): CoreTexEvaluatorCore {
   validatePerMinerCap(deps.perMinerCap);
   if (!deps.dedupStore) {
     throw new Error('production CoreTex evaluator requires a CoreTexEvalDedupStore (fail-closed: no in-memory default)');
@@ -469,7 +541,7 @@ export function createCoreTexEvaluatorCore(deps: ProductionCoreTexEvaluatorCoreD
     return deps.hiddenSeedCommit.toLowerCase();
   })();
 
-  const evaluator: ProductionCoreTexEvaluator = {
+  const evaluator: CoreTexEvaluatorCore = {
     bootAttestation: deps.bootAttestation,
     async scorePatch(input) {
       const patchBytes = parseHex(input.patchBytesHex, 'patchBytesHex');
@@ -486,23 +558,15 @@ export function createCoreTexEvaluatorCore(deps: ProductionCoreTexEvaluatorCoreD
         throw new Error(`scorePatch: screenerThresholdPpm override must be a non-negative integer (got ${String(input.screenerThresholdPpm)})`);
       }
 
-      // §8 grinding dedup: a patch already evaluated at the same
-      // (epochId, parentStateRoot) is rejected WITHOUT re-evaluation —
-      // no new pack draw, no scorer run, no RPC blockhash wait.
-      const prior = await deps.dedupStore.get(dedupKey);
-      if (prior) {
-        return {
-          outcome: 'reject',
-          code: 'duplicate_submission',
-          reason: `patch ${patchHash} already evaluated at parent ${parentStateRoot} in epoch ${deps.epochId} (prior outcome: ${prior.outcome})`,
-        };
-      }
-
       const miner = input.miner.toLowerCase();
       const parent = input.parentState ?? await deps.parentStateLoader(input.parentStateRoot);
       const perSeed = new Map<string, PatchEvalResult>();
-      const scorer: PerPatchScorer = async ({ normalizedPatchBytes, evalSeed }) => {
-        const result = await deps.seedScorer({ parent, normalizedPatchBytes, evalSeed, thresholdPpm: effectiveThresholdPpm });
+      const scorer: PerPatchScorer = async ({ normalizedPatchBytes, evalSeed, which, gateSeed }) => {
+        const result = await deps.seedScorer({
+          parent, normalizedPatchBytes, evalSeed, thresholdPpm: effectiveThresholdPpm,
+          which,
+          ...(gateSeed !== undefined ? { gateSeed } : {}),
+        });
         perSeed.set(evalSeed.toLowerCase(), result);
         const score = {
           scorePpm: result.deltaPpm,
@@ -528,6 +592,21 @@ export function createCoreTexEvaluatorCore(deps: ProductionCoreTexEvaluatorCoreD
       const coordinatorPinnedSeed: PerPatchSeedContext | undefined = input.seedContext
         ? { ...input.seedContext, blockhash: input.seedContext.blockhash.toLowerCase() }
         : undefined;
+      // §8 grinding dedup: on the LOCAL CPU path, a patch already evaluated at
+      // the same (epochId, parentStateRoot) is rejected WITHOUT re-evaluation —
+      // no new pack draw, no scorer run, no RPC blockhash wait. On the REMOTE /
+      // keyless path the coordinator is the authoritative dedup/admission/seed
+      // owner and has already shipped the exact seed context. The scorer host's
+      // store is only defense-in-depth, so it must not globally block rejected
+      // attempts or cross-miner convergence before the coordinator verifies.
+      const prior = coordinatorPinnedSeed ? null : await deps.dedupStore.get(dedupKey);
+      if (prior) {
+        return {
+          outcome: 'reject',
+          code: 'duplicate_submission',
+          reason: `patch ${patchHash} already evaluated at parent ${parentStateRoot} in epoch ${deps.epochId} (prior outcome: ${prior.outcome})`,
+        };
+      }
       const priorAttempt = coordinatorPinnedSeed ? null : await deps.dedupStore.getAttempt(dedupKey);
       // §8 PENDING-WINDOW dedup (cross-miner): a 'drawn'-but-not-completed attempt
       // is the SAME (epoch, parentStateRoot, patchHash) already drawn/in-flight.
@@ -554,7 +633,7 @@ export function createCoreTexEvaluatorCore(deps: ProductionCoreTexEvaluatorCoreD
       // the retry is always admitted (feed the gate 0) and never re-charged.
       // On a first draw the gate sees the real derived count (this key is not yet
       // charged), so it rejects with NO draw and NO charge iff count >= cap.
-      const minerAdmissions = priorAttempt ? 0 : await deps.dedupStore.minerAdmissions(deps.epochId, miner);
+      const minerAdmissions = coordinatorPinnedSeed || priorAttempt ? 0 : await deps.dedupStore.minerAdmissions(deps.epochId, miner);
       // §8 ATOMIC seed-pin + admission-charge BEFORE scoring, unless this is a
       // retry that already has a 'drawn' attempt (its seed is reused, its
       // admission already charged). On the remote path the coordinator-pinned
@@ -562,9 +641,13 @@ export function createCoreTexEvaluatorCore(deps: ProductionCoreTexEvaluatorCoreD
       // store so its attempt state machine stays consistent (outcome upgrade
       // follows a recorded draw). recordSeedDrawnAndAdmission is idempotent on
       // the key, so this never re-rolls the seed nor double-charges the miner.
-      const onSeedDerived = priorAttempt
+      const onSeedDerived = coordinatorPinnedSeed || priorAttempt
         ? undefined
         : (seedContext: PerPatchSeedContext) => deps.dedupStore.recordSeedDrawnAndAdmission(dedupKey, seedContext, miner);
+      const effectiveTargetBlockOffset = input.targetBlockOffset ?? deps.targetBlockOffset;
+      if (!Number.isSafeInteger(effectiveTargetBlockOffset) || effectiveTargetBlockOffset <= 0) {
+        throw new Error(`targetBlockOffset must be a positive integer (got ${String(effectiveTargetBlockOffset)})`);
+      }
 
       const dual = await runPerPatchEvaluation({
         normalizedPatchBytes: patchBytes,
@@ -575,7 +658,7 @@ export function createCoreTexEvaluatorCore(deps: ProductionCoreTexEvaluatorCoreD
       }, {
         rpcClient: deps.rpcClient,
         scorer,
-        targetBlockOffset: deps.targetBlockOffset,
+        targetBlockOffset: effectiveTargetBlockOffset,
         thresholdPpm: effectiveThresholdPpm,
         perMinerCap: deps.perMinerCap,
         ...(deps.epochSecret ? { epochSecret: deps.epochSecret } : {}),
@@ -590,14 +673,22 @@ export function createCoreTexEvaluatorCore(deps: ProductionCoreTexEvaluatorCoreD
         ...(onSeedDerived ? { onSeedDerived } : {}),
       });
 
+      const drewPacks = dual.receivedAtBlock > 0;
+      if (drewPacks) {
+        const actualTargetBlockOffset = dual.targetBlock - dual.receivedAtBlock;
+        if (!Number.isSafeInteger(actualTargetBlockOffset) || actualTargetBlockOffset <= 0 || actualTargetBlockOffset !== effectiveTargetBlockOffset) {
+          throw new Error(`targetBlockOffset mismatch: targetBlock ${dual.targetBlock} != receivedAtBlock ${dual.receivedAtBlock} + offset ${effectiveTargetBlockOffset}`);
+        }
+      }
+
       // The patch consumed a pack draw iff seeds were derived. The admission was
       // ALREADY charged ATOMICALLY with the seed pin inside onSeedDerived (which
       // runPerPatchEvaluation invokes only AFTER the admission gate passes and
       // the seed is derived) — so there is no separate post-result charge to
       // make here (exactly-once, crash-safe). We only record the dedup outcome,
       // which is what short-circuits a completed resubmission.
-      const drewPacks = dual.receivedAtBlock > 0;
       const record = (outcome: CoreTexEvalDedupRecord['outcome'], code?: string) => {
+        if (coordinatorPinnedSeed) return Promise.resolve();
         const attemptState = outcome === 'reject' ? 'rejected' as const : 'accepted' as const;
         return Promise.resolve(deps.dedupStore.recordAttemptOutcome(dedupKey, attemptState, outcome, code))
           .then(() => deps.dedupStore.put({ ...dedupKey, outcome, ...(code ? { code } : {}) }));
@@ -610,14 +701,27 @@ export function createCoreTexEvaluatorCore(deps: ProductionCoreTexEvaluatorCoreD
           outcome: 'reject',
           code,
           reason: 'dual-pack evaluator rejected patch',
+          ...(dual.innerRejectionReason ? { innerRejectionReason: dual.innerRejectionReason } : {}),
         };
       }
 
       const chosen = chooseStateAdvanceScore(dual, perSeed);
       const minDualDelta = Math.min(dual.gateScorePpm, dual.confirmScorePpm);
       const stateAdvance = minDualDelta >= deps.stateThresholdPpm && chosen.accepted;
+      // BMU §8.3: the published artifact carries per-family aggregates ONLY
+      // (per-row u(t) never leaves the private lane); fail-closed if the dual
+      // results are missing (they never are for an accepted receipt).
+      let bmuFamilySummary: CoreTexPostRevealEvalReportArtifact['bmuFamilySummary'];
+      if (deps.bmu) {
+        const gateResult = perSeed.get(dual.gateSeed.toLowerCase());
+        const confirmResult = perSeed.get(dual.confirmSeed.toLowerCase());
+        if (!gateResult || !confirmResult) {
+          throw new Error('production evaluator internal error: BMU dual results missing for family summary');
+        }
+        bmuFamilySummary = deps.bmu.familySummary({ gate: gateResult, confirm: confirmResult, gateSeedHex: dual.gateSeed });
+      }
       const artifact = buildPostRevealEvalReportArtifact({
-        version: 'coretex-post-reveal-eval-report-v1',
+        version: deps.bmu ? deps.bmu.artifactVersion : 'coretex-post-reveal-eval-report-v1',
         epochId: deps.epochId,
         minerAddress: miner,
         outcome: stateAdvance ? 'STATE_ADVANCE' : 'SCREENER_PASS',
@@ -628,7 +732,7 @@ export function createCoreTexEvaluatorCore(deps: ProductionCoreTexEvaluatorCoreD
           epochId: deps.epochId,
           receivedAtBlock: dual.receivedAtBlock,
           targetBlock: dual.targetBlock,
-          targetBlockOffset: deps.targetBlockOffset,
+          targetBlockOffset: effectiveTargetBlockOffset,
           blockhash: dual.blockhash.toLowerCase(),
           patchHash,
           parentStateRoot,
@@ -642,14 +746,18 @@ export function createCoreTexEvaluatorCore(deps: ProductionCoreTexEvaluatorCoreD
           coreVersionHash: deps.bundleHash.toLowerCase(),
           hiddenSeedCommit,
           replayTolerancePpm: deps.replayTolerancePpm,
+          ...(deps.activeFrontierRoot !== undefined ? { activeFrontierRoot: deps.activeFrontierRoot.toLowerCase() } : {}),
         },
+        ...(bmuFamilySummary !== undefined ? { bmuFamilySummary } : {}),
       });
       if (deps.publishArtifact) await deps.publishArtifact(artifact);
       const proof = dualPackProofFromPerPatchReceipt(dual, {
         corpusRoot: deps.corpusRoot,
         coreVersionHash: deps.bundleHash,
         hiddenSeedCommit,
-        targetBlockOffset: deps.targetBlockOffset,
+        targetBlockOffset: effectiveTargetBlockOffset,
+        ...(deps.activeFrontierRoot !== undefined ? { activeFrontierRoot: deps.activeFrontierRoot } : {}),
+        ...(deps.bmu ? { proofKind: deps.bmu.proofKind } : {}),
       });
 
       if (stateAdvance) {
@@ -706,11 +814,60 @@ export async function createProductionCoreTexEvaluator(
     throw new Error('production CoreTex evaluator requires a CoreTexEvalDedupStore (fail-closed: no in-memory default)');
   }
 
+  // Active live-eval overlay (frontier-aware scored packs). FAIL-CLOSED pairing:
+  // an armed profile without a root-verified active set must never score broad-only
+  // (silent law drift), and a provisioned active set under an unarmed profile must
+  // never silently overlay (unattested law).
+  const liveEvalPackLaw: LiveEvalPackLaw | undefined = profile.epochFrontier?.liveEvalPack;
+  let activeLiveEval: { readonly activeIds: ReadonlySet<string>; readonly law: LiveEvalPackLaw } | undefined;
+  if (liveEvalPackLaw && liveEvalPackLaw.limit > 0) {
+    if (!options.activeFrontier) {
+      throw new Error(
+        'bundle profile arms epochFrontier.liveEvalPack but no activeFrontier {idsPath, expectedRoot} was provided — refusing to score broad-only under an overlay-law bundle',
+      );
+    }
+    activeLiveEval = {
+      activeIds: loadActiveFrontierIds(options.activeFrontier.idsPath, options.activeFrontier.expectedRoot),
+      law: liveEvalPackLaw,
+    };
+  } else if (options.activeFrontier) {
+    throw new Error(
+      'activeFrontier input provided but the bundle profile does not arm epochFrontier.liveEvalPack — refusing an unattested pack-law overlay',
+    );
+  }
+
   const corpus = loadProductionCorpus(options.corpusPath, {
     verifyCorpusRoot: true,
     verifySplits: true,
     ...(options.corpusRootLeafCachePath !== undefined ? { corpusRootLeafCachePath: options.corpusRootLeafCachePath } : {}),
   });
+
+  // ─── BMU scoring law (BMU_SPEC.md; spec §9 sites 1/15) ────────────────────
+  // Boot fails closed on any pipelineVersion this binary does not implement,
+  // and — under the BMU law — on a missing overlay law or an unmet §6.7b
+  // ARM-GATE census (post-arm posture: the pool is the active frontier set).
+  assertPipelineVersionMatches(profile.pipelineVersion);
+  const bmuLaw = isBmuScoringLaw(profile.pipelineVersion);
+  const bmuScoring: BmuScoringContext = profile.judgeScoreGrid !== undefined ? { judgeScoreGrid: profile.judgeScoreGrid } : {};
+  if (bmuLaw) {
+    if (!activeLiveEval || !liveEvalPackLaw?.familySlots) {
+      throw new Error('BMU bundles require an armed epochFrontier.liveEvalPack with familySlots + a root-verified active frontier (§6.2/§6.5) — refusing to construct');
+    }
+    // BOOT posture (P3-R1 BLOCKER-1 ruling): STRUCTURAL census only —
+    // per-family minima + global m=1 over the ACTIVE set. Freshness binds at
+    // the ARM posture only (bulk-activate tooling); a post-arm steady-state
+    // reboot whose newest mint is older than freshWindow must stay live.
+    const armGate = evaluateBmuArmGate({
+      corpus,
+      poolIds: activeLiveEval.activeIds,
+      epochId: options.epochId,
+      ...(liveEvalPackLaw.freshWindow !== undefined ? { freshWindow: liveEvalPackLaw.freshWindow } : {}),
+      posture: 'boot',
+    });
+    if (!armGate.ok) {
+      throw new Error(`BMU boot census refused (§6.7b, structural): ${armGate.reasons.join('; ')}`);
+    }
+  }
   const layout = corpus.biEncoderRetrievalKeyLayout;
   const biEncoder = biEncoderFromEnv(layout, {
     modelId: corpus.biEncoderModelId,
@@ -744,23 +901,40 @@ export async function createProductionCoreTexEvaluator(
   }));
 
   const closable = reranker as CrossEncoderReranker & { close?: () => Promise<void> };
-  return createCoreTexEvaluatorCore({
+  const evaluator = createCoreTexEvaluatorCore({
     epochId: options.epochId,
     ...(options.epochSecret ? { epochSecret: options.epochSecret } : {}),
     ...(options.hiddenSeedCommit ? { hiddenSeedCommit: options.hiddenSeedCommit } : {}),
     corpusRoot: corpus.corpusRoot,
     bundleHash: bundle.bundleHash,
+    ...(options.activeFrontier !== undefined ? { activeFrontierRoot: options.activeFrontier.expectedRoot } : {}),
     stateThresholdPpm,
     screenerThresholdPpm,
     replayTolerancePpm: profile.replayTolerancePpm,
-    targetBlockOffset: options.targetBlockOffset ?? 30,
+    targetBlockOffset: options.targetBlockOffset ?? profile.baseRpcConfig?.targetBlockOffset ?? DEFAULT_BASE_RPC_CONFIG.targetBlockOffset,
     perMinerCap: options.perMinerCap,
     rpcClient: options.rpcClient ?? new EnvBaseRpcClient(),
     dedupStore: options.dedupStore,
     bootAttestation,
     parentStateLoader: options.parentStateLoader,
-    seedScorer: async ({ parent, normalizedPatchBytes, evalSeed, thresholdPpm }) => {
+    seedScorer: async ({ parent, normalizedPatchBytes, evalSeed, thresholdPpm, which, gateSeed }) => {
       const seedPatch = decodePatch(normalizedPatchBytes);
+      if (bmuLaw) {
+        return scoreBmuAgainstSeed({
+          epochId: options.epochId,
+          parent,
+          patch: seedPatch,
+          corpus,
+          profile,
+          evalSeed,
+          which: which ?? 'gate',
+          gateSeedHex: gateSeed ?? evalSeed,
+          scoringOpts,
+          thresholdPpm,
+          activeLiveEval: activeLiveEval!,
+          bmuScoring,
+        });
+      }
       return scoreAgainstSeed({
         epochId: options.epochId,
         parent,
@@ -770,11 +944,72 @@ export async function createProductionCoreTexEvaluator(
         evalSeed,
         scoringOpts,
         thresholdPpm,
+        ...(activeLiveEval !== undefined ? { activeLiveEval } : {}),
       });
     },
+    ...(bmuLaw ? {
+      bmu: {
+        artifactVersion: 'coretex-bmu-post-reveal-eval-report-v1' as const,
+        proofKind: 'coretex-bmu-dual-pack-v1' as const,
+        familySummary: ({ gate, confirm, gateSeedHex }) => {
+          const asBmu = (r: PatchEvalResult, side: string): { before: BmuScore; after: BmuScore } => {
+            const cast = r as unknown as { before: BmuScore; after: BmuScore };
+            if (!cast.before?.bmu || !cast.after?.bmu) {
+              throw new Error(`BMU family summary: ${side} result carries no BMU breakdown (law routing bug — fail closed)`);
+            }
+            return cast;
+          };
+          const g = asBmu(gate, 'gate');
+          const c = asBmu(confirm, 'confirm');
+          const gatePack = deriveScoredQueryPack(options.epochId, gateSeedHex, corpus, profile.hiddenPack, activeLiveEval, {});
+          return {
+            gate: {
+              parentFamilyUtilitiesPpm: g.before.bmu.familyUtilitiesPpm,
+              candidateFamilyUtilitiesPpm: g.after.bmu.familyUtilitiesPpm,
+              regressedRowsByFamily: bmuRegressedRowsByFamily(g.before, g.after),
+            },
+            confirm: {
+              parentFamilyUtilitiesPpm: c.before.bmu.familyUtilitiesPpm,
+              candidateFamilyUtilitiesPpm: c.after.bmu.familyUtilitiesPpm,
+              regressedRowsByFamily: bmuRegressedRowsByFamily(c.before, c.after),
+            },
+            exclusionSetDigest: bmuExclusionSetDigest(bmuExclusionKeySetForPack(gatePack)),
+          };
+        },
+      },
+    } : {}),
     ...(options.publishArtifact ? { publishArtifact: options.publishArtifact } : {}),
     ...(typeof closable.close === 'function' ? { close: () => closable.close!() } : {}),
-  });
+  }) as ProductionCoreTexEvaluator;
+  // Keyless baseline re-scoring: implemented HERE (not in the core) because it
+  // needs the factory-scoped corpus/profile/scoringOpts/activeLiveEval. Attached
+  // by property assignment on the core's returned object so every core-built
+  // member (bootAttestation, close, scorePatch closure state) is preserved.
+  // deriveScoredQueryPack is the SAME composition the live screener's
+  // seedScorer uses, so the overlay law applies to baselines exactly as it
+  // applies to scored patches (and degrades to the broad pack when unarmed).
+  evaluator.scoreState = async (input) => {
+    if (typeof input.baselineSeedHex !== 'string' || !/^0x[0-9a-fA-F]{64}$/.test(input.baselineSeedHex)) {
+      throw new Error('scoreState: baselineSeedHex must be bytes32 hex (a caller-derived deterministic seed — never a future blockhash)');
+    }
+    const samples = input.samples ?? 1;
+    if (!Number.isSafeInteger(samples) || samples < 1 || samples > MAX_SCORE_STATE_SAMPLES) {
+      throw new Error(`scoreState: samples must be an integer in [1, ${MAX_SCORE_STATE_SAMPLES}] (got ${String(input.samples)})`);
+    }
+    if (bmuLaw) {
+      // BMU baseline lane (§8.4/§10): the SAME §6.2-§6.4 pack law (gate-side
+      // composition, caller-provided deterministic seed, EMPTY exclusion set)
+      // so baselines are measured under exactly the law patches score under.
+      // Drives BOTH lanes: blank-state (anti-cheat floor) and parent-baseline
+      // (the two-pass rebaseline; blank ≠ parent trap) — the caller supplies
+      // the substrate.
+      const statePack = deriveScoredQueryPack(options.epochId, input.baselineSeedHex, corpus, profile.hiddenPack, activeLiveEval, {});
+      return evaluateBmuBaseline(input.parentState, corpus, statePack, scoringOpts, bmuScoring, { samples });
+    }
+    const statePack = deriveScoredQueryPack(options.epochId, input.baselineSeedHex, corpus, profile.hiddenPack, activeLiveEval);
+    return evaluateBaseline(input.parentState, corpus, statePack, scoringOpts, { samples });
+  };
+  return evaluator;
 }
 
 async function createPinnedQwen3Reranker(plan: ProductionRerankerPlan): Promise<CrossEncoderReranker> {
@@ -820,12 +1055,48 @@ async function scoreAgainstSeed(args: {
   readonly evalSeed: string;
   readonly scoringOpts: ReturnType<typeof scoringOptionsFromProfile>;
   readonly thresholdPpm: number;
+  readonly activeLiveEval?: { readonly activeIds: ReadonlySet<string>; readonly law: LiveEvalPackLaw };
 }): Promise<PatchEvalResult> {
-  const pack = deriveQueryPack(args.epochId, args.evalSeed, args.corpus, args.profile.hiddenPack);
+  const pack = deriveScoredQueryPack(args.epochId, args.evalSeed, args.corpus, args.profile.hiddenPack, args.activeLiveEval);
   return evaluateRetrievalBenchmarkPatch(args.parent, args.patch, args.corpus, pack, args.scoringOpts, {
     ...args.profile.patchAcceptanceFloors,
     acceptanceThresholdPpm: args.thresholdPpm,
   });
+}
+
+/**
+ * BMU per-seed scoring (§6.3): the gate side scores the seen-motif pack; the
+ * confirm side re-derives the gate pack from the shipped gateSeed, takes its
+ * exclusion set X (motif/subject/template), and scores the HELD-OUT pack.
+ * Pack derivation is pure + deterministic, so the confirm-side gate-pack
+ * re-derivation costs no scoring work and replays byte-identically (§6.6).
+ */
+export async function scoreBmuAgainstSeed(args: {
+  readonly epochId: number;
+  readonly parent: CortexState;
+  readonly patch: Patch;
+  readonly corpus: ProductionCorpus;
+  readonly profile: EvaluatorProfile;
+  readonly evalSeed: string;
+  readonly which: 'gate' | 'confirm';
+  readonly gateSeedHex: string;
+  readonly scoringOpts: ReturnType<typeof scoringOptionsFromProfile>;
+  readonly thresholdPpm: number;
+  readonly activeLiveEval: { readonly activeIds: ReadonlySet<string>; readonly law: LiveEvalPackLaw };
+  readonly bmuScoring: BmuScoringContext;
+}): Promise<PatchEvalResult> {
+  let pack;
+  if (args.which === 'confirm') {
+    const gatePack = deriveScoredQueryPack(args.epochId, args.gateSeedHex, args.corpus, args.profile.hiddenPack, args.activeLiveEval, {});
+    const exclusionKeys = bmuExclusionKeySetForPack(gatePack);
+    pack = deriveScoredQueryPack(args.epochId, args.evalSeed, args.corpus, args.profile.hiddenPack, args.activeLiveEval, { excludeKeys: exclusionKeys });
+  } else {
+    pack = deriveScoredQueryPack(args.epochId, args.evalSeed, args.corpus, args.profile.hiddenPack, args.activeLiveEval, {});
+  }
+  return evaluateBmuBenchmarkPatch(args.parent, args.patch, args.corpus, pack, args.scoringOpts, {
+    ...args.profile.patchAcceptanceFloors,
+    acceptanceThresholdPpm: args.thresholdPpm,
+  }, args.bmuScoring);
 }
 
 function chooseStateAdvanceScore(

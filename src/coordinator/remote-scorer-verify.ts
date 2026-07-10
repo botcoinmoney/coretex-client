@@ -8,8 +8,9 @@
  * live next to the wire types they protect. The integration repo imports and
  * re-exports these; tests on both sides exercise the same function.
  */
-import type { ScorerJobRequest, ScorerJobResult } from '../scorer-server-cli.js';
+import type { ScorerCodeHealth, ScorerJobRequest, ScorerJobResult } from '../scorer-server-cli.js';
 import type { EvalResult } from './coretex-coordinator-core.js';
+import { isBmuScoringLaw } from '../pipeline-versions.js';
 import { bytesToHex, keccak256 } from '../index.js';
 import {
   hashPostRevealEvalReportArtifact,
@@ -28,12 +29,24 @@ export interface RemoteScorerActiveContext {
   /** Live screener threshold (ppm) — min(gate, confirm) must clear this for an
    *  accepted result. The coordinator owns this number, NOT the scorer. */
   readonly thresholdPpm: number;
+  /** Present iff the active bundle arms `epochFrontier.liveEvalPack`: the
+   *  on-chain pinned active-frontier root. Jobs and accepted proofs must pin
+   *  the SAME root; results scored under a different (or absent) overlay are
+   *  refused as stale/pin-mismatched. */
+  readonly activeFrontierRoot?: string;
+  /** The active bundle's pinned pipelineVersion — drives the §8.3 proof-kind
+   *  + artifact-version pairing (check 3): a BMU-law epoch REFUSES an r5
+   *  proof/artifact and vice versa, BOTH directions fail-closed (mirroring
+   *  the overlay-pairing precedent). Absent ⇒ the r5 kinds are required (a
+   *  BMU result can never slip past a coordinator that has not armed BMU). */
+  readonly pipelineVersion?: string;
 }
 
 export interface RemoteScorerExpectedHealth {
   readonly modelId: string;
   readonly revision: string;
   readonly promptTemplateHash: string;
+  readonly code?: ScorerCodeHealth;
 }
 
 /** §8 the coordinator-drawn future-blockhash seed (pinned before dispatch). */
@@ -58,6 +71,21 @@ export type VerifyScorerResult =
 
 function hexEq(a: string | undefined, b: string | undefined): boolean {
   return typeof a === "string" && typeof b === "string" && a.toLowerCase() === b.toLowerCase();
+}
+
+function compareScorerCodeHealth(expected: ScorerCodeHealth | undefined, actual: ScorerCodeHealth | undefined): string | null {
+  if (!expected) return null;
+  if (!actual || typeof actual !== "object") return "missing";
+  for (const key of Object.keys(expected) as Array<keyof ScorerCodeHealth>) {
+    const want = expected[key];
+    const got = actual[key];
+    if (typeof want === "string") {
+      if (typeof got !== "string" || got.toLowerCase() !== want.toLowerCase()) return `${String(key)} ${String(got)} != ${want}`;
+    } else if (want !== got) {
+      return `${String(key)} ${String(got)} != ${String(want)}`;
+    }
+  }
+  return null;
 }
 
 /**
@@ -145,8 +173,10 @@ export function verifyScorerResult(args: {
     return { ok: false, code: "SCORER_JOB_NOT_OUTSTANDING", reason: `jobId ${job.jobId} is not an outstanding queued job` };
   }
 
-  // (3) result schema valid.
-  const schema = validateResultSchema(result);
+  // (3) result schema valid — incl. the §8.3 proof-kind pairing against the
+  //     active bundle's scoring law (BOTH directions fail-closed).
+  const expectedProofKind = isBmuScoringLaw(active.pipelineVersion) ? "coretex-bmu-dual-pack-v1" : "coretex-dual-pack-v1";
+  const schema = validateResultSchema(result, expectedProofKind);
   if (schema) return { ok: false, code: "SCORER_RESULT_MALFORMED", reason: schema };
 
   // (2) parent/state-root/epoch/bundle/corpus context STILL matches active
@@ -171,6 +201,17 @@ export function verifyScorerResult(args: {
   if (!hexEq(job.policyHash, active.workPolicyHash)) {
     return { ok: false, code: "SCORER_STALE_CONTEXT", reason: `job policyHash != active ${active.workPolicyHash}` };
   }
+  // Active-frontier overlay pin (armed bundles only). Both directions refuse:
+  // an overlay-law epoch never accepts a result from a job that didn't pin the
+  // root, and a broad-law epoch never accepts a job that pinned one.
+  const jobActiveFrontierRoot = job.expectedScorerPins?.activeFrontierRoot;
+  if (active.activeFrontierRoot !== undefined) {
+    if (!hexEq(jobActiveFrontierRoot, active.activeFrontierRoot)) {
+      return { ok: false, code: "SCORER_STALE_CONTEXT", reason: `job activeFrontierRoot ${jobActiveFrontierRoot ?? "absent"} != active ${active.activeFrontierRoot}` };
+    }
+  } else if (jobActiveFrontierRoot !== undefined) {
+    return { ok: false, code: "SCORER_STALE_CONTEXT", reason: "job pins activeFrontierRoot but the active context has no live-eval overlay armed" };
+  }
 
   // (5) scorerHealth reports the expected model/revision/promptTemplateHash and
   //     dtype=fp32 / tf32=false / cuda=true.
@@ -187,6 +228,10 @@ export function verifyScorerResult(args: {
   if (h.dtype !== "fp32") return { ok: false, code: "SCORER_HEALTH_MISMATCH", reason: `dtype ${h.dtype} != fp32` };
   if (h.tf32 !== false) return { ok: false, code: "SCORER_HEALTH_MISMATCH", reason: `tf32 ${h.tf32} != false` };
   if (h.cuda !== true) return { ok: false, code: "SCORER_HEALTH_MISMATCH", reason: `cuda ${h.cuda} != true` };
+  const codeMismatch = compareScorerCodeHealth(expectedHealth.code, h.code);
+  if (codeMismatch) {
+    return { ok: false, code: "SCORER_CODE_HASH_MISMATCH", reason: `scorer code ${codeMismatch}` };
+  }
 
   // (6) the result's pins (corpusRoot / bundleHash / coreVersionHash) match
   //     active. The scorer echoes the pins it loaded via expectedScorerPins on
@@ -201,6 +246,13 @@ export function verifyScorerResult(args: {
     }
     if (!hexEq(p.parentStateRoot, active.parentStateRoot)) {
       return { ok: false, code: "SCORER_PIN_MISMATCH", reason: `proof parentStateRoot != active ${active.parentStateRoot}` };
+    }
+    if (active.activeFrontierRoot !== undefined) {
+      if (!hexEq(p.activeFrontierRoot, active.activeFrontierRoot)) {
+        return { ok: false, code: "SCORER_PIN_MISMATCH", reason: `proof activeFrontierRoot ${p.activeFrontierRoot ?? "absent"} != active ${active.activeFrontierRoot}` };
+      }
+    } else if (p.activeFrontierRoot !== undefined) {
+      return { ok: false, code: "SCORER_PIN_MISMATCH", reason: "proof pins activeFrontierRoot but the active context has no live-eval overlay armed" };
     }
     const expectedGateSeedCommit = seedCommit(job.publicEvalContext?.gateSeed);
     const expectedConfirmSeedCommit = seedCommit(job.publicEvalContext?.confirmSeed);
@@ -279,6 +331,16 @@ export function verifyScorerResult(args: {
       reason: `recomputed artifact hash ${recomputed} != artifactHash ${result.artifactHash} / evalReportHash ${result.evalReportHash}`,
     };
   }
+  const expectedArtifactVersion = isBmuScoringLaw(active.pipelineVersion)
+    ? "coretex-bmu-post-reveal-eval-report-v1"
+    : "coretex-post-reveal-eval-report-v1";
+  if (result.artifact.version !== expectedArtifactVersion) {
+    return {
+      ok: false,
+      code: "SCORER_ARTIFACT_CONTEXT_MISMATCH",
+      reason: `artifact version '${result.artifact.version}' does not pair with the active scoring law (expected '${expectedArtifactVersion}')`,
+    };
+  }
   const ctx = result.artifact.context;
   if (!ctx || typeof ctx !== "object") {
     return { ok: false, code: "SCORER_ARTIFACT_CONTEXT_MISMATCH", reason: "artifact context missing" };
@@ -291,6 +353,13 @@ export function verifyScorerResult(args: {
   }
   if (!hexEq(ctx.coreVersionHash, active.coreVersionHash)) {
     return { ok: false, code: "SCORER_ARTIFACT_CONTEXT_MISMATCH", reason: `artifact coreVersionHash != active ${active.coreVersionHash}` };
+  }
+  if (active.activeFrontierRoot !== undefined) {
+    if (!hexEq(ctx.activeFrontierRoot, active.activeFrontierRoot)) {
+      return { ok: false, code: "SCORER_ARTIFACT_CONTEXT_MISMATCH", reason: `artifact activeFrontierRoot ${ctx.activeFrontierRoot ?? "absent"} != active ${active.activeFrontierRoot}` };
+    }
+  } else if (ctx.activeFrontierRoot !== undefined) {
+    return { ok: false, code: "SCORER_ARTIFACT_CONTEXT_MISMATCH", reason: "artifact pins activeFrontierRoot but the active context has no live-eval overlay armed" };
   }
 
   // Reconstruct the EvalResult the coordinator core consumes. The core then
@@ -330,7 +399,7 @@ export function verifyScorerResult(args: {
   };
 }
 
-function validateResultSchema(result: ScorerJobResult): string | null {
+function validateResultSchema(result: ScorerJobResult, expectedProofKind: "coretex-dual-pack-v1" | "coretex-bmu-dual-pack-v1"): string | null {
   if (typeof result.accepted !== "boolean") return "accepted must be boolean";
   if (typeof result.deltaPpm !== "number" || !Number.isFinite(result.deltaPpm)) return "deltaPpm invalid";
   if (!Number.isSafeInteger(result.gateScorePpm) || !Number.isSafeInteger(result.confirmScorePpm)) {
@@ -345,7 +414,9 @@ function validateResultSchema(result: ScorerJobResult): string | null {
   if (result.accepted) {
     if (!isBytes32(result.evalReportHash)) return "accepted result missing evalReportHash";
     if (!isBytes32(result.artifactHash)) return "accepted result missing artifactHash";
-    if (result.evaluationProof && result.evaluationProof.kind !== "coretex-dual-pack-v1") return "evaluationProof kind invalid";
+    if (result.evaluationProof && result.evaluationProof.kind !== expectedProofKind) {
+      return `evaluationProof kind '${result.evaluationProof.kind}' does not pair with the active scoring law (expected '${expectedProofKind}')`;
+    }
   }
   return null;
 }

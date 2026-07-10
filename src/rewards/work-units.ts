@@ -18,10 +18,11 @@ import { keccak256 } from '../state/keccak256.js';
 import { canonicalJson } from '../canonical/json.js';
 
 export const WORK_BPS_DIVISOR = 10_000n;
+export const MAX_CORETEX_WORK_BPS = 300_000n;
 export const LANE_CORETEX = 2;
 export const OUTCOME_CORETEX_SCREENER_PASS = 1;
 export const OUTCOME_CORETEX_STATE_ADVANCE = 2;
-export const CORTEX_RULES_VERSION = 0xC0;
+export const CORTEX_RULES_VERSION = 0xC1;
 
 export interface StateAdvanceWorkTier {
   readonly minQualifiedScreenerPassesSinceLastStateAdvance: string | bigint | number;
@@ -82,14 +83,14 @@ export const DEFAULT_CORETEX_WORK_POLICY: CoreTexWorkPolicy = Object.freeze({
     outcome: OUTCOME_CORETEX_SCREENER_PASS,
     minLocalModelDeltaPpm: '0',
     maxRelevantNearCollisionPpm: '250000',
-    workUnitsBps: '10000',
+    workUnitsBps: '20000',
     calibration: Object.freeze({
       scoreScalePpm: '1000000',
       minDeltaPpm: '50',
-      remainingHeadroomBps: '5',
+      remainingHeadroomBps: '1',
       noiseFloorMultiplierBps: '20000',
       plateauEasingMaxBps: '5000',
-      stateAdvanceThresholdFloorBps: '5000',
+      stateAdvanceThresholdFloorBps: '2000',
       antiGamingProbeMultiplierBps: '20000',
       maxAntiGamingPenaltyBps: '50000',
       maxThresholdPpm: '150000',
@@ -102,11 +103,10 @@ export const DEFAULT_CORETEX_WORK_POLICY: CoreTexWorkPolicy = Object.freeze({
     requireLiveStateAdvance: true,
     difficultyCounter: 'qualifiedScreenerPassesSinceLastStateAdvance',
     tiers: Object.freeze([
-      Object.freeze({ minQualifiedScreenerPassesSinceLastStateAdvance: '0', workUnitsBps: '30000' }),
-      Object.freeze({ minQualifiedScreenerPassesSinceLastStateAdvance: '25', workUnitsBps: '40000' }),
-      Object.freeze({ minQualifiedScreenerPassesSinceLastStateAdvance: '100', workUnitsBps: '60000' }),
-      Object.freeze({ minQualifiedScreenerPassesSinceLastStateAdvance: '250', workUnitsBps: '90000' }),
-      Object.freeze({ minQualifiedScreenerPassesSinceLastStateAdvance: '500', workUnitsBps: '120000' }),
+      Object.freeze({ minQualifiedScreenerPassesSinceLastStateAdvance: '0', workUnitsBps: '100000' }),
+      Object.freeze({ minQualifiedScreenerPassesSinceLastStateAdvance: '2', workUnitsBps: '150000' }),
+      Object.freeze({ minQualifiedScreenerPassesSinceLastStateAdvance: '5', workUnitsBps: '200000' }),
+      Object.freeze({ minQualifiedScreenerPassesSinceLastStateAdvance: '10', workUnitsBps: '300000' }),
     ]),
   }),
   antiGaming: Object.freeze({
@@ -352,7 +352,9 @@ export function coreTexWorkPolicyHash(policy: CoreTexWorkPolicy = DEFAULT_CORETE
 export function assertValidCoreTexWorkPolicy(policy: CoreTexWorkPolicy): void {
   if (policy.name.length === 0) throw new RangeError('policy.name is required');
   if (policy.version <= 0) throw new RangeError('policy.version must be positive');
-  if (policy.rulesVersion !== CORTEX_RULES_VERSION) throw new RangeError('policy.rulesVersion must be 0xC0');
+  if (policy.rulesVersion !== CORTEX_RULES_VERSION) {
+    throw new RangeError(`policy.rulesVersion must be 0x${CORTEX_RULES_VERSION.toString(16).toUpperCase()}`);
+  }
   if (policy.lane !== LANE_CORETEX) throw new RangeError('policy.lane must be CoreTex');
   if (toBigInt(policy.bpsDivisor, 'bpsDivisor') !== WORK_BPS_DIVISOR) {
     throw new RangeError('policy.bpsDivisor must be 10000');
@@ -395,8 +397,8 @@ export function assertValidCoreTexWorkPolicy(policy: CoreTexWorkPolicy): void {
     throw new RangeError('policy.stateAdvance.outcome must be 2');
   }
   const screenerBps = toBigInt(policy.screenerPass.workUnitsBps, 'screenerPass.workUnitsBps');
-  if (screenerBps !== WORK_BPS_DIVISOR) {
-    throw new RangeError('screener pass must stay exactly 1x');
+  if (screenerBps === 0n || screenerBps > MAX_CORETEX_WORK_BPS) {
+    throw new RangeError('screener pass work bps out of bounds');
   }
   if (policy.stateAdvance.tiers.length === 0) {
     throw new RangeError('stateAdvance.tiers must not be empty');
@@ -412,6 +414,8 @@ export function assertValidCoreTexWorkPolicy(policy: CoreTexWorkPolicy): void {
     const bps = toBigInt(tier.workUnitsBps, `stateAdvance.tiers[${i}].workUnitsBps`);
     if (min <= prevMin) throw new RangeError('stateAdvance.tiers must have strictly increasing min counts');
     if (bps < 3n * WORK_BPS_DIVISOR) throw new RangeError('state advance must be at least 3x');
+    if (bps < screenerBps) throw new RangeError('state advance must be at least screener bps');
+    if (bps > MAX_CORETEX_WORK_BPS) throw new RangeError('state advance exceeds V4 max work bps');
     if (bps < prevBps) throw new RangeError('stateAdvance.tiers bps must be nondecreasing');
     prevMin = min;
     prevBps = bps;

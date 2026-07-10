@@ -74,6 +74,11 @@ export type PerPatchScorer = (args: {
   readonly parentRoot: string;
   readonly evalSeed: string;          // bytes32 hex
   readonly which: 'gate' | 'confirm'; // tag so the scorer can log / inspect
+  /** The GATE seed of this dual-pack evaluation (equal to `evalSeed` on the
+   *  gate call). BMU scorers need it on the CONFIRM call to re-derive the
+   *  gate pack's §6.3 exclusion set X; r5 scorers ignore it (additive,
+   *  optional — existing fakes/wiring unchanged). */
+  readonly gateSeed?: string;
 }) => Promise<PerPatchScoreResult>;
 
 /**
@@ -113,8 +118,8 @@ export interface PerPatchEvaluatorDeps {
   readonly dedupCache: ReadonlyMap<string, PerPatchReceipt>;
   /** Per-miner admission counter. Same contract as dedupCache. */
   readonly minerAdmissions: ReadonlyMap<string, number>;
-  /** Max wait for the future blockhash. Defaults to 120 s (2× the
-   *  60 s budget at targetBlockOffset=30) — generous enough that
+  /** Max wait for the future blockhash. Defaults to 120 s (4× the
+   *  30 s budget at targetBlockOffset=15) — generous enough that
    *  Base must be genuinely stalled for this to fire. */
   readonly waitTimeoutMs?: number;
   /** §8 anti-grinding — OPTIONAL pinned seed context. When supplied, the
@@ -140,7 +145,7 @@ export interface PerPatchEvaluatorDeps {
    *  deriveGate/ConfirmEvalSeed and ships them with the job, so the scorer
    *  host never receives the pre-reveal secret. Requires `seedContext` (the
    *  pinned blockhash the seeds were derived under) — the artifact's
-   *  seedDerivation section still records the full witness, and the client's
+   *  seedDerivation section still records the full witness, and the validator's
    *  post-reveal re-derivation from the revealed secret is the integrity
    *  backstop against a mis-derived injection. */
   readonly injectedSeeds?: { readonly gateSeed: string; readonly confirmSeed: string };
@@ -174,10 +179,15 @@ export interface PerPatchReceipt {
     | 'gate-acceptance-floor'            // gate pack failed structural/protected/family acceptance floors
     | 'confirm-acceptance-floor'         // confirm pack failed structural/protected/family acceptance floors
     | 'admit-malformed-input';
+  readonly innerRejectionReason?: string;
 }
 
 export interface PerPatchDualPackEvaluationProof {
-  readonly kind: 'coretex-dual-pack-v1';
+  /** 'coretex-bmu-dual-pack-v1' (§8.3): same shape, BMU scoring law — paired
+   *  fail-closed BOTH directions with the active bundle's pipelineVersion by
+   *  verifyScorerResult (an r5 bundle never accepts a BMU proof and vice
+   *  versa, mirroring the overlay-pairing precedent). */
+  readonly kind: 'coretex-dual-pack-v1' | 'coretex-bmu-dual-pack-v1';
   readonly mode: 'future_blockhash_dual_pack';
   readonly epochId: number;
   readonly receivedAtBlock: number;
@@ -190,6 +200,10 @@ export interface PerPatchDualPackEvaluationProof {
   readonly coreVersionHash: string;
   readonly hiddenSeedCommit: string;
   readonly epochSecretCommit: string;
+  /** Present iff the bundle armed `epochFrontier.liveEvalPack`: the on-chain
+   *  active-frontier root the scored packs' live-eval overlay was verified
+   *  against. Absent for broad-only-law epochs (proof bytes unchanged). */
+  readonly activeFrontierRoot?: string;
   readonly gate: {
     readonly domain: 'gate';
     readonly seedCommit: string;
@@ -211,13 +225,16 @@ export function dualPackProofFromPerPatchReceipt(
     readonly coreVersionHash: string;
     readonly hiddenSeedCommit: string;
     readonly targetBlockOffset: number;
+    readonly activeFrontierRoot?: string;
+    /** BMU (§8.3): emit 'coretex-bmu-dual-pack-v1'. Default unchanged. */
+    readonly proofKind?: PerPatchDualPackEvaluationProof['kind'];
   },
 ): PerPatchDualPackEvaluationProof {
   if (!receipt.accepted) {
     throw new Error('dualPackProofFromPerPatchReceipt: receipt was not accepted');
   }
   return {
-    kind: 'coretex-dual-pack-v1',
+    kind: context.proofKind ?? 'coretex-dual-pack-v1',
     mode: 'future_blockhash_dual_pack',
     epochId: receipt.epochId,
     receivedAtBlock: receipt.receivedAtBlock,
@@ -230,6 +247,7 @@ export function dualPackProofFromPerPatchReceipt(
     coreVersionHash: context.coreVersionHash.toLowerCase(),
     hiddenSeedCommit: context.hiddenSeedCommit.toLowerCase(),
     epochSecretCommit: context.hiddenSeedCommit.toLowerCase(),
+    ...(context.activeFrontierRoot !== undefined ? { activeFrontierRoot: context.activeFrontierRoot.toLowerCase() } : {}),
     gate: {
       domain: 'gate',
       seedCommit: seedCommit(receipt.gateSeed),
@@ -351,7 +369,7 @@ export async function runPerPatchEvaluation(
   if (deps.injectedSeeds) {
     // Keyless-scorer path: the coordinator derived both seeds (it holds the
     // secret) and pinned them with the seed context. Validate shape only —
-    // correctness is enforced by the client's post-reveal re-derivation.
+    // correctness is enforced by the validator's post-reveal re-derivation.
     if (!deps.seedContext) {
       throw new Error('runPerPatchEvaluation: injectedSeeds require a pinned seedContext (no scorer-side blockhash draw with injected seeds)');
     }
@@ -387,6 +405,7 @@ export async function runPerPatchEvaluation(
     parentRoot: request.parentRoot,
     evalSeed: gateSeed,
     which: 'gate',
+    gateSeed,
   });
   const gateScorePpm = gate.scorePpm;
   // A pack passes ONLY if it clears the dual-pack threshold AND the canonical acceptance floors
@@ -402,6 +421,7 @@ export async function runPerPatchEvaluation(
       gateScorePpm, confirmScorePpm: 0,
       accepted: false,
       rejectionReason: !gate.accepted ? 'gate-acceptance-floor' : 'gate-below-threshold',
+      ...(!gate.accepted && gate.rejectionReason ? { innerRejectionReason: gate.rejectionReason } : {}),
     };
   }
 
@@ -410,6 +430,7 @@ export async function runPerPatchEvaluation(
     parentRoot: request.parentRoot,
     evalSeed: confirmSeed,
     which: 'confirm',
+    gateSeed,
   });
   const confirmScorePpm = confirm.scorePpm;
   const confirmPass = confirmScorePpm >= deps.thresholdPpm && confirm.accepted;
@@ -424,7 +445,7 @@ export async function runPerPatchEvaluation(
     gateSeed, confirmSeed,
     gateScorePpm, confirmScorePpm,
     accepted: confirmPass,
-    ...(!confirmPass ? { rejectionReason: confirmReason } : {}),
+    ...(!confirmPass ? { rejectionReason: confirmReason, ...(!confirm.accepted && confirm.rejectionReason ? { innerRejectionReason: confirm.rejectionReason } : {}) } : {}),
   };
 }
 

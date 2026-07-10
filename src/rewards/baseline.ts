@@ -20,9 +20,10 @@
  * manifest. Any independent verifier reproduces it from the bundle +
  * corpus root + eval seed + pinned models.
  *
- * The active evaluator profile and launch bundle define the current
- * baseline-reset / rate-matching lane.
- */
+   * Spec: epoch rotation manifests define the current baseline-reset /
+   * rate-matching lane; verifier reproducibility is pinned by bundle, corpus
+   * root, eval seed, and model hashes.
+   */
 
 import type { CortexState } from '../state/types.js';
 import type { CompositeScore, ScoringOptions } from '../eval/retrieval-benchmark.js';
@@ -55,6 +56,18 @@ export interface BaselineScores {
   readonly epochId: number;
   /** The exact CompositeScore object from the first sample (full breakdown). */
   readonly compositeScore: CompositeScore;
+  /**
+   * BMU §8.4: per-family baseline utility decomposition (U_f in ppm) from the
+   * first sample. Present ONLY when the baseline was scored under the BMU law
+   * (`evaluateBmuBaseline`); absent on every r5-law response — coordinators
+   * MUST tolerate absence.
+   */
+  readonly familyUtilitiesPpm?: Readonly<Record<string, number>>;
+  /** Integrity binding for `familyUtilitiesPpm` (P3-R1 MINOR): keccak256 over
+   *  the canonical decomposition + its scoring context
+   *  (`computeBmuFamilyUtilitiesDigest`). Consumers MUST recompute + compare
+   *  before trusting the decomposition. BMU lane only. */
+  readonly familyUtilitiesDigest?: string;
 }
 
 export interface EvaluateBaselineOptions {

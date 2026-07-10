@@ -14,6 +14,7 @@
  */
 import type { ProductionCorpus, ProductionCorpusEvent, ProductionCorpusFamily, CorpusSplit, RelationAnnotation, HardNegativeRecord, RelationEdgeType, HardNegativeCategory, PublicScopeMetadata, PublicValidityMetadata, PublicQueryIntent } from '../eval/retrieval-corpus.js';
 import { assertGradedRelevance, splitForRecord } from '../eval/retrieval-corpus.js';
+import { lintBmuTaskForMint, type BmuTask } from '../eval/bmu-task.js';
 
 export interface LogicalDeltaDoc {
   readonly id: string;
@@ -68,6 +69,9 @@ export interface LogicalDeltaQuery {
   readonly scope?: PublicScopeMetadata;
   readonly publicIntent?: PublicQueryIntent;
   readonly liveUpdateEpoch?: number;
+  /** BMU v1 task fields stamped by the generator (BMU_SPEC.md §4.1/§6.7a).
+   *  Pre-flip inert under the r5 law; validated fail-closed at corpus load. */
+  readonly bmuTask?: BmuTask;
 }
 
 export interface LogicalDelta {
@@ -312,7 +316,15 @@ export function bridgeLogicalDeltaToProductionEvents(
         ...(r.label ? { label: r.label } : {}),
       })),
       ...(d.entityIds && d.entityIds.length > 0 ? { entityIds: [...d.entityIds] } : {}),
-      ...(d.scope ? { scope: d.scope } : {}),
+      // Public lifecycleScope is miner-visible conflict/scope metadata. Map it
+      // into PublicScopeMetadata.topicId so conflict scope-mismatch suppress
+      // can discriminate same-subject decoys without reading qrels.
+      ...((d.scope || d.lifecycleScope) ? {
+        scope: {
+          ...(d.scope ?? {}),
+          ...(d.lifecycleScope && !(d.scope?.topicId) ? { topicId: d.lifecycleScope } : {}),
+        },
+      } : {}),
       ...(d.validity ? { validity: d.validity } : {}),
       ...(d.aliases && d.aliases.length > 0 ? { aliases: [...d.aliases] } : {}),
       ...(d.roleAliases && d.roleAliases.length > 0 ? { roleAliases: [...d.roleAliases] } : {}),
@@ -375,7 +387,27 @@ export function bridgeLogicalDeltaToProductionEvents(
       q.subjectEntityId !== undefined ? { subjectEntityId: q.subjectEntityId } : {},
       q.scope ? { scope: q.scope } : {},
       q.publicIntent ? { publicIntent: q.publicIntent } : {},
+      // BMU §6.7a pass-through: this bridge constructs events from an EXPLICIT
+      // field allowlist, so without this line an upstream-stamped bmuTask would
+      // be silently DROPPED and the row could never be BMU-pack-eligible.
+      // Hash-wise replay-safe (rows carry bmuTask from birth; absent on every
+      // pre-BMU row) — but VALIDATION IS LIVE FROM THE FIRST STAMPED MINT:
+      // the corpus loader fail-closes on an invalid bmuTask, so stamped mints
+      // are linted below and an invalid one refuses the DELTA, never bricking
+      // the next live corpus load.
+      q.bmuTask ? { bmuTask: q.bmuTask } : {},
     ) as ProductionCorpusEvent;
+    if (q.bmuTask) {
+      // MINT-TIME lint (P3-R1 MINOR): full §4.1 validation against the
+      // post-delta doc universe (added docs + previous corpus).
+      const lintErrors = lintBmuTaskForMint(qEvent, (docId) => resolveDocMeta(docId, addedDocsById, previousCorpus) != null);
+      if (lintErrors.length > 0) {
+        throw new Error(
+          `bridgeLogicalDeltaToProductionEvents: bmuTask mint lint FAILED for query ${q.id} `
+          + `— an invalid stamped mint must be refused at MINT, not brick the live corpus load: ${lintErrors.join('; ')}`,
+        );
+      }
+    }
     if (bucketed === 'temporal') {
       (qEvent as { temporal?: unknown }).temporal = { validFromEpoch: 1, validUntilEpoch: Number.MAX_SAFE_INTEGER, currentStaleFlag: false };
     }

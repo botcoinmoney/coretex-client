@@ -7,6 +7,7 @@
  */
 
 import type { CortexState, Patch, PatchError, PatchResult } from './types.js';
+import { isR5StateLaw } from '../pipeline-versions.js';
 import { ERROR_NAMES, PATCH_TYPE, PATCH_TYPE_RANGE_TABLE, RANGES } from './types.js';
 import { writeBigEndian32, readBigEndian32 } from './codec.js';
 import { merkleizeState } from './merkle.js';
@@ -509,7 +510,9 @@ function isPolicyMixedCompanionIndex(idx: number): boolean {
 }
 
 export function buildAllowedPatchTypes(opts?: { readonly pipelineVersion?: string }): ReadonlyArray<{ readonly name: string; readonly byte: number; readonly wordIndexRange: readonly [number, number] }> {
-  const r5 = opts?.pipelineVersion === 'coretex-retrieval-v2-policy-r5';
+  // SET-MEMBERSHIP (BMU_SPEC §9 site 7): 'coretex-bmu-v1-r5state' IS the r5
+  // state law (I2) — KEY_UPDATE/CODEBOOK_UPDATE/HEADER_UPDATE stay suppressed.
+  const r5 = isR5StateLaw(opts?.pipelineVersion);
   // r5 suppresses KEY_UPDATE (its entire range IS the reclaimed PolicyAtom region 384-671) and
   // CODEBOOK_UPDATE (896-991 reserved-zero). MIXED is KEPT — it is the calibration-derived type for
   // atomic cross-region compiles: temporal pair (MemoryIndex+Temporal, e.g. [32,33,800]) and reclaimed
