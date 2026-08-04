@@ -100,15 +100,13 @@ def build_export(*, snapshot_payload: Mapping[str, Any],
             "deterministic_admission": dict(admission),
         },
         "authorities": dict(source_divergence),
-        "release": {
-            "format": release_document.get("format"),
-            "classification": release_document.get("classification"),
-            "chain_id": release_document.get("chain_id"),
-            "addresses": release_document.get("addresses"),
-            "runtime_code_hashes": release_document.get("runtime_code_hashes"),
-            "source": release_document.get("source"),
-            "runtime_packet_sha256": release_document.get("runtime_packet_sha256"),
-        },
+        # OMITTED, NEVER NULL. The canonical value grammar refuses `null` on purpose: a field
+        # is either present with a well-typed value or absent, and encoding "I do not have this"
+        # as a present null makes the two indistinguishable to anyone re-deriving the bytes.
+        "release": {key: release_document[key]
+                    for key in ("format", "classification", "chain_id", "addresses",
+                                "runtime_code_hashes", "source", "runtime_packet_sha256")
+                    if release_document.get(key) is not None},
         "unverified": [dict(item) for item in unverified],
     }
     fr.canonical_bytes(document)                     # fail fast on anything uncanonicalisable

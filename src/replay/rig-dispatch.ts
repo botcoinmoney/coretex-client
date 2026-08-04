@@ -38,8 +38,8 @@
  */
 import { keccak256 } from '../state/keccak256.js';
 import { bytesToHex } from '../state/merkle.js';
-import { CORETEX_EVENT_TOPICS, type RpcLog } from './coretex-registry.js';
-import { V4_EVENT_TOPICS } from './v4.js';
+import { CORETEX_EVENT_TOPICS } from './coretex-registry.js';
+import { V4_EVENT_TOPICS, type RpcLog } from './v4.js';
 
 function eventTopic(sig: string): string {
   return bytesToHex(keccak256(new TextEncoder().encode(sig)));

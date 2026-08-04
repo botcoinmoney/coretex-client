@@ -75,19 +75,30 @@ class EpochLaw:
                 "core_version_hash": self.core_version_hash}
 
     def as_dict(self) -> Dict[str, Any]:
+        # A value that is not known is OMITTED, and its absence is stated explicitly by the
+        # `revealed` / `available` booleans beside it. Emitting `null` instead would be refused
+        # by the canonical grammar, and — worse — would make "sealed secret" and "no such field"
+        # the same bytes.
+        entropy: Dict[str, Any] = {"revealed": self.revealed_secret is not None}
+        if self.entropy_commitment is not None:
+            entropy["commitment"] = self.entropy_commitment
+        if self.revealed_secret is not None:
+            entropy["revealed_secret"] = self.revealed_secret
+        policy: Dict[str, Any] = {"available": self.rules_version is not None}
+        for key, value in (("rules_version", self.rules_version),
+                           ("policy_hash", self.policy_hash),
+                           ("screener_work_bps", self.screener_work_bps),
+                           ("effective_epoch", self.policy_effective_epoch)):
+            if value is not None:
+                policy[key] = value
         return {
             "format": LAW_FORMAT, "epoch": self.epoch,
             "enforced_pins": self.enforced_pins(),
             "baseline_manifest_hash": self.baseline_manifest_hash,
             "context_parent_state_root": self.context_parent_state_root,
-            "entropy": {"commitment": self.entropy_commitment,
-                        "revealed_secret": self.revealed_secret,
-                        "revealed": self.revealed_secret is not None},
-            "policy": {"rules_version": self.rules_version, "policy_hash": self.policy_hash,
-                       "screener_work_bps": self.screener_work_bps,
-                       "effective_epoch": self.policy_effective_epoch,
-                       "available": self.rules_version is not None},
-            "sources": dict(self.sources),
+            "entropy": entropy,
+            "policy": policy,
+            "sources": {k: v for k, v in sorted(self.sources.items()) if v is not None},
         }
 
 

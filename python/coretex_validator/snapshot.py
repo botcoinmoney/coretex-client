@@ -147,11 +147,12 @@ def build_unsigned(*, transition: jn.JoinedTransition, law: hl.EpochLaw,
             "outcome": int(receipt["outcome"]),
         },
         "artifacts": {name: root for name, root in sorted(dict(artifact_roots).items())},
-        "provenance": {
-            "transaction_hash": str(advance.provenance.transaction_hash or "").lower(),
-            "block_number": advance.provenance.block_number,
-            "log_index": advance.provenance.log_index,
-        },
+        # Same omit-never-null rule as elsewhere: a feed that did not report a block number is
+        # not a snapshot of block `null`.
+        "provenance": {key: value for key, value in (
+            ("transaction_hash", str(advance.provenance.transaction_hash or "").lower() or None),
+            ("block_number", advance.provenance.block_number),
+            ("log_index", advance.provenance.log_index)) if value is not None},
         "checks": sorted(set(transition.checks)),
     }
     if lineage:
