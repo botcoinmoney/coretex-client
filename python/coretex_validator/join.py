@@ -59,6 +59,29 @@ _SIGNED_MEMBERS = len(binding.CORETEX_RECEIPT_TYPES[binding.CORETEX_RECEIPT_PRIM
 OUTCOME_SCREENER_PASS = 1
 OUTCOME_STATE_ADVANCE = 2
 
+#: THE PUBLISHED CHECK VOCABULARY, and it is published rather than internal because it goes INSIDE
+#: the canonical snapshot bytes — so a lane that invented its own spelling would produce a payload
+#: that could not reproduce, however correct its logic.
+#:
+#: The names carry the NORMATIVE step numbers from RIG-CORETEX-REGISTRY-DESIGN.md §7.2, which is
+#: the right vocabulary for a public artifact: a reader can follow "step4_receipt_hash_bound"
+#: straight to the paragraph that says what step 4 is and why it is the load-bearing one. This
+#: package previously used descriptive names of its own (``receipt_hash_binds_calldata_to_credit``
+#: and friends); they said the same things and reproduced nothing.
+STEP1_ADVANCE_DECODED = "step1_advance_decoded"
+STEP2_CREDIT_EVENT_JOINED = "step2_credit_event_joined"
+STEP3_CALLDATA_DECODED = "step3_calldata_decoded"
+STEP4_RECEIPT_HASH_BOUND = "step4_receipt_hash_bound"
+STEP5_ARTIFACT_HASH_BOUND = "step5_artifact_hash_bound_via_digest"
+STEP6_CALLDATA_BOUND_TO_LOGS = "step6_calldata_bound_to_logs"
+STEP7_COORDINATOR_SIGNATURE = "step7_coordinator_signature_verified"
+STEP8_PATCH_HASH_VERIFIED = "step8_patch_hash_verified"
+
+#: The eight, in order. A transition that reports fewer has not been fully joined.
+JOIN_STEPS = (STEP1_ADVANCE_DECODED, STEP2_CREDIT_EVENT_JOINED, STEP3_CALLDATA_DECODED,
+              STEP4_RECEIPT_HASH_BOUND, STEP5_ARTIFACT_HASH_BOUND, STEP6_CALLDATA_BOUND_TO_LOGS,
+              STEP7_COORDINATOR_SIGNATURE, STEP8_PATCH_HASH_VERIFIED)
+
 
 class JoinError(Exception):
     def __init__(self, code: str, message: str) -> None:
@@ -347,7 +370,7 @@ def join_advance(advance: rig.StateAdvanced, credit: rig.CoreTexCreditAccepted,
     is step 4: that is what binds the calldata to the confirmed credit, and without it every
     field this join recovers is unattributed.
     """
-    checks: List[str] = []
+    checks: List[str] = [STEP1_ADVANCE_DECODED]
 
     # 2. B cross-checks.
     if credit.epoch != advance.epoch:
@@ -361,15 +384,14 @@ def join_advance(advance: rig.StateAdvanced, credit: rig.CoreTexCreditAccepted,
             "JOIN_FIELD_MISMATCH",
             f"creditsEarned {credit.credits_earned} != improvementCredits "
             f"{advance.improvement_credits}; the two contracts disagree about what was paid")
-    checks.append("credit_cross_check")
+    checks.append(STEP2_CREDIT_EVENT_JOINED)
 
     # 3. C.
     receipt = decode_submit_calldata(calldata)
-    checks.append("calldata_decoded")
+    checks.append(STEP3_CALLDATA_DECODED)
 
     # 5 (before 4, because 4 consumes the digest). artifactHash is member 15 of the SIGNED struct.
     digest = receipt.digest(domain_separator)
-    checks.append("eip712_digest_recomputed")
 
     # 4. THE load-bearing step.
     recomputed = receipt.receipt_hash(digest)
@@ -379,9 +401,10 @@ def join_advance(advance: rig.StateAdvanced, credit: rig.CoreTexCreditAccepted,
             f"recomputed receiptHash {recomputed} != the mining log's {credit.receipt_hash}. This "
             "is the step that binds the calldata to the confirmed credit, so nothing downstream "
             "of it — artifactHash, workPolicyHash, the signature — can be relied on")
-    checks.append("receipt_hash_binds_calldata_to_credit")
-    checks.append("artifact_hash_bound_via_digest")
-    checks.append("work_policy_hash_bound_via_receipt_hash")
+    # Step 4 proves workPolicyHash too (it is inside the preimage) and, via the digest it
+    # consumes, artifactHash — signed member 15, which no event and no registry parameter carries.
+    checks.append(STEP4_RECEIPT_HASH_BOUND)
+    checks.append(STEP5_ARTIFACT_HASH_BOUND)
 
     # 6. C to A.
     for calldata_name, advance_name in _C_TO_A_FIELDS:
@@ -401,7 +424,7 @@ def join_advance(advance: rig.StateAdvanced, credit: rig.CoreTexCreditAccepted,
             "JOIN_FIELD_MISMATCH",
             "the calldata's compactPatchBytes differ from the ones the registry logged. Member 25 "
             "is UNSIGNED, so this is exactly the substitution patchHash exists to catch")
-    checks.append("calldata_binds_to_advance")
+    checks.append(STEP6_CALLDATA_BOUND_TO_LOGS)
 
     # 7. The signature — coordinator authentication, AFTER the binding is already proved.
     recovered = ""
@@ -413,19 +436,18 @@ def join_advance(advance: rig.StateAdvanced, credit: rig.CoreTexCreditAccepted,
                 "JOIN_SIGNATURE_INVALID",
                 f"ecrecover(digest, signature) = {recovered}, mining.coordinatorSigner() = "
                 f"{coordinator_signer}")
-        checks.append("coordinator_signature")
+        checks.append(STEP7_COORDINATOR_SIGNATURE)
     else:
-        checks.append("coordinator_signature_SKIPPED")
+        checks.append("step7_coordinator_signature_SKIPPED")
 
     # 8. The patch.
     rig.check_patch_hash(advance)
-    checks.append("patch_hash_over_compact_patch_bytes")
+    checks.append(STEP8_PATCH_HASH_VERIFIED)
 
     if int(receipt["outcome"]) != OUTCOME_STATE_ADVANCE:
         raise JoinError("JOIN_FIELD_MISMATCH",
                         f"an advance's receipt must declare outcome {OUTCOME_STATE_ADVANCE} "
                         f"(state advance); this one declares {receipt['outcome']}")
-    checks.append("outcome_is_state_advance")
 
     return JoinedTransition(
         advance=advance, credit=credit, receipt=receipt, digest=digest,
@@ -512,9 +534,9 @@ def join_all(decoded: rig.DecodedLogs, *, calldata_for, domain_separator: bytes,
                     raise JoinError("JOIN_FIELD_MISMATCH",
                                     f"a credit with no advance must declare outcome "
                                     f"{OUTCOME_SCREENER_PASS}; it declares {receipt['outcome']}")
-                checks += ["receipt_hash_binds_calldata_to_credit", "outcome_is_screener_pass",
-                           "coordinator_signature" if verify_signature
-                           else "coordinator_signature_SKIPPED"]
+                checks += [STEP3_CALLDATA_DECODED, STEP4_RECEIPT_HASH_BOUND,
+                           STEP7_COORDINATOR_SIGNATURE if verify_signature
+                           else "step7_coordinator_signature_SKIPPED"]
             except JoinError as exc:
                 unresolved.append({"code": exc.code, "transaction_hash": tx,
                                    "epoch": credit.epoch, "reason": exc.message})

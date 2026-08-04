@@ -147,21 +147,26 @@ value or absent, and encoding "I do not have this" as a present `null` makes a *
 secret and a **missing** field the same bytes. Absence is now encoded by absence, with explicit
 `revealed` / `available` booleans carrying the "known absent" meaning.
 
-### F8 — The resolver publishes a different snapshot schema
+### F8 — RESOLVED: the resolver's per-epoch schema is the published one
 
-The Phase 6 resolver lane emits `coretex.rig-state.resolver-snapshot/v1`: a richer document than
-this package assembles, carrying profiles, composition, locks, migration, prior-snapshot linkage,
-a resolver key identity, and embedded join-recipe / receipt-layout records. This client builds
-`coretex.rig-resolver-snapshot/v1` from the chain-derivable subset.
+This package first built a PER-TRANSITION snapshot. It lost the scope decision, and the reasoning
+is worth keeping because it is not a matter of taste: the consumer is an isolated runtime agent
+performing PORTABLE ACTIVATION. It needs the STATE at an epoch — live root, per-profile release
+roots, composed manifest, law locks — not the story of one advance. A per-transition document
+describes an **edge**; activation needs a **node**. Lineage still matters and belongs inside the
+epoch snapshot as evidence, which is where the resolver puts it.
 
-**The canonicalisation rule is already shared** — both sides serialise with
-`frontier.canonical_bytes` (key-sorted, separator-tight, floats refused, `null` refused) and
-address the result with `sha256`. That is the part that must not diverge, and it does not. Landing
-support for the resolver's schema is therefore a *builder*, not a re-think.
+The published schema is therefore `coretex.rig-state.resolver-snapshot/v1`, 23 top-level keys.
+`resolver_snapshot.py` reproduces it. The ordering discipline this package established — rebuild
+the unsigned payload from chain truth, compare bytes, and only then look at a signature —
+survives unchanged and was adopted on both sides.
 
-Until then, `reproduce()` **refuses** a schema it cannot build, with a precise reason. It does not
-emit a field-level diff between two different document shapes: that reads like a finding, is
-entirely noise, and is exactly the sort of output that gets explained away.
+**Two classes of key, and they are not evidence of the same thing.** `SCHEMA_CONSTANT_KEYS`
+(`derivation`, `canonicalization`, `disclosure`, `prior`, `resolver`, …) are spec text, identical
+in every snapshot of this schema; reproducing them proves a transcription is right and says
+nothing about any chain. `CHAIN_DERIVED_KEYS` are read back from the chain, the logs, the calldata
+and the store. The comparison report keeps them apart so "the constant blocks matched" can never
+be presented as evidence about a deployment.
 
 ### F9 — Only `getHeader` returns a zero-filled struct; the other reads revert
 

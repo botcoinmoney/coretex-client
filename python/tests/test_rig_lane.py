@@ -644,3 +644,86 @@ class TestSignatureArtifactHasTwoFields:
         result = snap.verify_signature(payload, proc.stdout.strip(), signer)
         assert not result.valid
         assert "superseded domain tag" in result.reason
+
+
+class TestResolverSchemaReproduction:
+    """The published schema is the RESOLVER's per-epoch shape, and this package reproduces it."""
+
+    def test_the_published_check_vocabulary_is_the_normative_step_numbers(self):
+        # These strings go INSIDE the canonical bytes, so a lane that spelled them its own way
+        # would produce a payload that could not reproduce however correct its logic was.
+        assert jn.JOIN_STEPS == (
+            "step1_advance_decoded", "step2_credit_event_joined", "step3_calldata_decoded",
+            "step4_receipt_hash_bound", "step5_artifact_hash_bound_via_digest",
+            "step6_calldata_bound_to_logs", "step7_coordinator_signature_verified",
+            "step8_patch_hash_verified")
+
+    def test_the_schema_has_exactly_twenty_three_top_level_keys(self):
+        from coretex_validator import resolver_snapshot as rsn
+
+        assert len(rsn.TOP_LEVEL_KEYS) == 23
+        with pytest.raises(rsn.ReproductionError) as excinfo:
+            rsn.check_shape({"schema": rsn.SCHEMA, "epoch": 1})
+        assert excinfo.value.code == "SCHEMA_SHAPE_MISMATCH"
+
+    def test_a_canonical_classification_is_refused_by_the_shape_check(self):
+        from coretex_validator import resolver_snapshot as rsn
+
+        payload = {k: None for k in rsn.TOP_LEVEL_KEYS}
+        payload["schema"] = rsn.SCHEMA
+        payload["classification"] = "MAINNET_CANONICAL"
+        with pytest.raises(rsn.ReproductionError) as excinfo:
+            rsn.check_shape(payload)
+        assert excinfo.value.code == "CLASSIFICATION_REFUSED"
+
+    def test_schema_constant_keys_are_named_so_they_cannot_pose_as_evidence(self):
+        from coretex_validator import resolver_snapshot as rsn
+
+        # Reproducing spec text proves the transcription, not the chain. The comparison report
+        # keeps the two classes apart for exactly that reason.
+        assert "derivation" in rsn.SCHEMA_CONSTANT_KEYS
+        assert "canonicalization" in rsn.SCHEMA_CONSTANT_KEYS
+        assert "transitions" in rsn.CHAIN_DERIVED_KEYS
+        assert "state" in rsn.CHAIN_DERIVED_KEYS
+        assert not set(rsn.SCHEMA_CONSTANT_KEYS) & set(rsn.CHAIN_DERIVED_KEYS)
+
+    def test_wide_receipt_members_render_as_strings_and_narrow_ones_as_numbers(self):
+        from coretex_validator import resolver_snapshot as rsn
+
+        # The mixture inside ONE object is what a reader has to get right: rigId is a string,
+        # epochId beside it is a number.
+        assert "rigId" in rsn._WIDE_RECEIPT_MEMBERS            # noqa: SLF001
+        assert "worldSeed" in rsn._WIDE_RECEIPT_MEMBERS        # noqa: SLF001
+        assert "difficultyCountSnapshot" in rsn._WIDE_RECEIPT_MEMBERS   # noqa: SLF001
+        assert "epochId" in rsn._NARROW_RECEIPT_MEMBERS        # noqa: SLF001
+        assert not set(rsn._WIDE_RECEIPT_MEMBERS) & set(rsn._NARROW_RECEIPT_MEMBERS)  # noqa: SLF001
+
+    def test_finalized_at_is_wide_because_it_is_a_uint256_timestamp(self):
+        from coretex_validator import resolver_snapshot as rsn
+
+        state = rsn.build_state(
+            epoch=10,
+            context={"active_frontier_root": "0x" + "aa" * 32,
+                     "baseline_manifest_hash": "0x" + "bb" * 32, "configured": True,
+                     "core_version_hash": "0x" + "cc" * 32, "corpus_root": "0x" + "dd" * 32,
+                     "hidden_seed_commit": "0x" + "ee" * 32,
+                     "parent_state_root": "0x" + "ff" * 32},
+            header={"final_state_root": "0x" + "11" * 32},
+            live_state_root="0x" + "11" * 32, transition_count=3, sealed=True, served=True,
+            finalized_at=1785992019)
+        # A decimal STRING, sitting beside transition_count which is a number. The easiest field
+        # in the whole payload to get wrong.
+        assert state["finalized_at"] == "1785992019"
+        assert state["transition_count"] == 3
+
+    def test_the_observation_omits_everything_that_depends_on_WHEN_it_ran(self):
+        from coretex_validator import resolver_snapshot as rsn
+
+        chain = rsn.build_chain(chain_id=31337, block_number=36, block_hash="0x" + "ab" * 32,
+                                parent_hash="0x" + "cd" * 32, block_timestamp=1785992019,
+                                required_confirmations=2)
+        observation = chain["observation"]
+        # Including any of these would make two honest resolutions of one block differ.
+        for absent in ("head_number", "confirmations", "finalized_block_number"):
+            assert absent not in observation
+        assert observation["finality_policy"]["required_confirmations"] == 2
