@@ -518,16 +518,25 @@ def build_artifacts(entries: Sequence[Mapping[str, Any]]) -> List[Dict[str, Any]
     """
     out = []
     for entry in entries:
-        out.append({
+        item: Dict[str, Any] = {
             "chain_binding": str(entry["chain_binding"]),
             "chain_word": cn.word(entry["chain_word"], "chain_word"),
             "hash_rule": str(entry["hash_rule"]),
             "kind": str(entry["kind"]),
             "location": str(entry.get("location", "")),
-            "note": str(entry["note"]),
             "resolved": bool(entry["resolved"]),
             "root": cn.bare_root(entry["root"], "root"),
-        })
+        }
+        # A RESOLVED entry says where the bytes came from and how many there were; an UNRESOLVED
+        # one says why it was not fetched. They carry different fields because they are different
+        # claims — "I have these bytes and rehashed them" versus "the chain commits to this root
+        # and I recorded the commitment". Giving an unfetched object a `size` would be inventing
+        # a measurement, and giving a fetched one an excuse `note` would be pretending it was not.
+        if item["resolved"]:
+            item["size"] = cn.narrow(int(entry["size"]), "size")
+        else:
+            item["note"] = str(entry["note"])
+        out.append(item)
     return sorted(out, key=lambda item: (item["kind"], item["root"]))
 
 
@@ -563,7 +572,7 @@ def build_locks(manifest: Mapping[str, Any], runtime_record: Optional[Mapping[st
     locks: Dict[str, Any] = {}
     findings: List[str] = []
     record = runtime_record or {}
-    record_locks = record.get("locks", record)
+    claimed = record_locks(record) if record else {}
     chain_bound = bool(record_root) and cn.word(record_root, "record_root") == cn.word(
         core_version_hash, "core_version_hash")
 
@@ -574,9 +583,9 @@ def build_locks(manifest: Mapping[str, Any], runtime_record: Optional[Mapping[st
             continue
         entry: Dict[str, Any] = {"binding": "manifest",
                                  "root": cn.bare_root(value, name)}
-        claimed = record_locks.get(name)
-        if claimed is not None:
-            claimed_root = cn.bare_root(claimed, f"{name}.record")
+        claimed_value = claimed.get(name)
+        if claimed_value is not None:
+            claimed_root = cn.bare_root(claimed_value, f"{name}.record")
             if claimed_root != entry["root"]:
                 entry["disputed_by_runtime_record"] = claimed_root
                 disputes.append({"chain_addressed_manifest": entry["root"], "lock": name,
@@ -587,7 +596,7 @@ def build_locks(manifest: Mapping[str, Any], runtime_record: Optional[Mapping[st
 
     disputed = bool(disputes)
     for name in TRANSITIVE_LOCKS:
-        value = record_locks.get(name)
+        value = claimed.get(name)
         if value is None:
             continue
         locks[name] = {"binding": "disputed" if disputed else
@@ -626,3 +635,49 @@ def build_locks(manifest: Mapping[str, Any], runtime_record: Optional[Mapping[st
     if record_root is not None:
         block["runtime_record_root"] = cn.bare_root(record_root, "runtime_record_root")
     return block, findings
+
+
+#: Where each lock lives inside a ``coretex.runtime-integrated-pre-rig/v1`` record.
+#:
+#: The record states several of these more than once — ``abi_root`` appears under
+#: ``identities.abi``, ``evaluation_law.runtime_identity`` and ``runtime_config.runtime_identity``
+#: — so a reader that grabbed the first path it found could pick up a stale copy without noticing.
+#: ``identities`` is the canonical block and is the only one consulted.
+RUNTIME_RECORD_LOCK_PATHS: Dict[str, Tuple[str, ...]] = {
+    "benchmark_law_root": ("identities", "law", "benchmark_law_root"),
+    "counter_resource_law_root": ("identities", "counter", "counter_resource_law_root"),
+    "counter_root": ("identities", "counter", "root"),
+    "evaluation_law_root": ("identities", "law", "evaluation_law_root"),
+    "renderer_root": ("identities", "renderer", "root"),
+    "runtime_abi_root": ("identities", "abi", "root"),
+    "runtime_artifact_root": ("identities", "runtime", "artifact_root"),
+    "scorer_root": ("identities", "scorer", "root"),
+}
+
+
+def record_locks(runtime_record: Mapping[str, Any]) -> Dict[str, str]:
+    """Flatten a runtime-integration record's ``identities`` block into ``lock -> root``."""
+    out: Dict[str, str] = {}
+    for name, path in RUNTIME_RECORD_LOCK_PATHS.items():
+        node: Any = runtime_record
+        for step in path:
+            if not isinstance(node, Mapping) or step not in node:
+                node = None
+                break
+            node = node[step]
+        if isinstance(node, str):
+            out[name] = node
+    return out
+
+
+def record_root_of(runtime_record: Mapping[str, Any]) -> Optional[str]:
+    """The record's SELF-DECLARED root.
+
+    Not recomputed, and that is the point rather than a shortcut: the value is a claim the record
+    makes about itself, and whether it is TRUE is decided by comparing it to the epoch's
+    ``coreVersionHash`` — which is what :func:`build_locks` does through
+    ``runtime_record_chain_bound``. Recomputing a hash over the file's own bytes would answer a
+    different and much less interesting question (whether the file was pretty-printed).
+    """
+    value = runtime_record.get("record_root")
+    return cn.bare_root(value, "record_root") if isinstance(value, str) else None
