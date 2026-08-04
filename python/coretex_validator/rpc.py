@@ -392,6 +392,37 @@ class RigViews:
         raw = self._call(self.deployment.verifier, "mining()")
         return "0x" + raw[-20:].hex()
 
+    def active_rules_version(self, epoch: int) -> int:
+        """``activeCoreTexRulesVersion(epoch)`` — which scoring policy was IN FORCE at an epoch.
+
+        THE AUTHORITATIVE ANSWER, and the reason this exists rather than scanning for a
+        ``CoreTexPolicyScheduled`` event: a policy is scheduled ONCE and stays in force
+        indefinitely, so the announcing event can sit arbitrarily far below any sensible log
+        window. Reconstructing historical law from events alone therefore fails not because the
+        law is unknowable but because the scan started too late — which is a property of the
+        validator's configuration, not of the chain, and must never be reported as "this
+        deployment scheduled no policy".
+        """
+        return int.from_bytes(
+            self._call(self.deployment.verifier, "activeCoreTexRulesVersion(uint64)",
+                       _encode_uint(epoch)), "big")
+
+    def core_tex_policy(self, rules_version: int) -> Optional[Dict[str, Any]]:
+        """``getCoreTexPolicy(version)``. ``None`` when the version was never scheduled."""
+        raw = self._call(self.deployment.verifier, "getCoreTexPolicy(uint32)",
+                         _encode_uint(rules_version))
+        if len(raw) < 6 * 32:
+            raise RpcError(f"getCoreTexPolicy({rules_version}) returned {len(raw)} bytes")
+        exists = bool(int.from_bytes(raw[0:32], "big"))
+        if not exists:
+            return None
+        return {
+            "rules_version": int(rules_version),
+            "effective_epoch": int.from_bytes(raw[32:64], "big"),
+            "policy_hash": raw[64:96].hex(),
+            "screener_work_bps": int.from_bytes(raw[96:128], "big"),
+        }
+
     def difficulty_count(self, epoch: int) -> int:
         return int.from_bytes(
             self._call(self.deployment.verifier, "coreTexDifficultyCount(uint64)",

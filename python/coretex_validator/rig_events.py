@@ -613,7 +613,35 @@ class CompactPatchError(RigEventError):
     that is on chain HAS passed that function: anything this decoder rejects either never landed
     or was not decoded as the contract decodes it. Silently tolerating a malformed patch would
     mean the validator disagreed with the chain about what was accepted.
+
+    ``code`` IS THE CONTRACT, and it exists so a negative control can assert WHICH refusal fired.
+    A test that only checks "something threw" passes just as happily when the decoder rejects for
+    the wrong reason — and a decoder that refuses everything would satisfy it. The message may
+    gain detail; the code is frozen.
     """
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(f"{code}: {message}")
+        self.code = code
+        self.message = message
+
+
+# The refusal codes, one per revert in `_validateCompactPatch` (plus the hash rule it calls).
+PATCH_LENGTH_INVALID = "PATCH_LENGTH_INVALID"
+PATCH_TYPE_UNKNOWN = "PATCH_TYPE_UNKNOWN"
+PATCH_WORD_COUNT_INVALID = "PATCH_WORD_COUNT_INVALID"
+PATCH_SCORE_DELTA_OVERFLOW = "PATCH_SCORE_DELTA_OVERFLOW"
+PATCH_SCORE_DELTA_MISMATCH = "PATCH_SCORE_DELTA_MISMATCH"
+PATCH_PARENT_MISMATCH = "PATCH_PARENT_MISMATCH"
+PATCH_INDEX_TRUNCATED = "PATCH_INDEX_TRUNCATED"
+PATCH_INDEX_OVERLONG = "PATCH_INDEX_OVERLONG"
+PATCH_INDEX_REDUNDANT = "PATCH_INDEX_REDUNDANT"
+PATCH_INDEX_RESERVED = "PATCH_INDEX_RESERVED"
+PATCH_INDEX_OUT_OF_WINDOW = "PATCH_INDEX_OUT_OF_WINDOW"
+PATCH_INDEX_DUPLICATE = "PATCH_INDEX_DUPLICATE"
+PATCH_WORD_TRUNCATED = "PATCH_WORD_TRUNCATED"
+PATCH_TRAILING_BYTES = "PATCH_TRAILING_BYTES"
+PATCH_HASH_MISMATCH = "PATCH_HASH_MISMATCH"
 
 
 @dataclass(frozen=True)
@@ -644,27 +672,30 @@ def _read_leb128_word_index(data: bytes, offset: int) -> Tuple[int, int]:
     with two spellings has two hashes, which would break the ``patchHash`` binding.
     """
     if offset >= len(data):
-        raise CompactPatchError("word index runs past the end of the patch")
+        raise CompactPatchError(PATCH_INDEX_TRUNCATED,
+                                "word index runs past the end of the patch")
     first = data[offset]
     value = first & 0x7F
     nxt = offset + 1
     if not first & 0x80:
         return value, nxt
     if nxt >= len(data):
-        raise CompactPatchError("truncated two-byte word index")
+        raise CompactPatchError(PATCH_INDEX_TRUNCATED, "truncated two-byte word index")
     second = data[nxt]
     if second & 0x80:
-        raise CompactPatchError("word index is longer than two bytes")
+        raise CompactPatchError(PATCH_INDEX_OVERLONG, "word index is longer than two bytes")
     value |= (second & 0x7F) << 7
     if value < 128 or value >= 1024:
         raise CompactPatchError(
+            PATCH_INDEX_REDUNDANT,
             f"two-byte word index decodes to {value}, which is not in [128, 1024): a redundant "
             "encoding would give one index two spellings, and therefore one patch two hashes")
     return value, nxt + 1
 
 
 def decode_compact_patch(raw: bytes, *, parent_state_root: Optional[str] = None,
-                         score_delta_ppm: Optional[int] = None) -> CompactPatch:
+                         score_delta_ppm: Optional[int] = None,
+                         expected_patch_hash: Optional[str] = None) -> CompactPatch:
     """Decode ``compactPatchBytes`` exactly as ``RigCoreTexVerifier._validateCompactPatch`` does.
 
     THIS IS NOT THE MEMORY LANE'S ``transitionBytes``. That field is canonical JSON; this one is a
@@ -678,22 +709,42 @@ def decode_compact_patch(raw: bytes, *, parent_state_root: Optional[str] = None,
     validator confirms the patch belongs to the advance rather than merely being well-formed.
     """
     data = bytes(raw)
+    # THE HASH RULE IS PART OF THE VALIDATION SET, not a separate courtesy. The contract calls
+    # `_validatePatchHash` from inside `_validateCompactPatch`, before it looks at a single field
+    # — so a patch whose bytes do not hash to the SIGNED patchHash is not a malformed patch, it is
+    # a DIFFERENT patch, and reporting a field-level complaint about it would describe the wrong
+    # object entirely.
+    if expected_patch_hash is not None:
+        computed = patch_hash(data)
+        expected = str(expected_patch_hash).lower().replace("0x", "")
+        if computed != expected:
+            superseded = keccak256_hex(SUPERSEDED_PATCH_HASH_LABEL + data)
+            hint = (" (it DOES match the superseded 'coretex-memory-transition-hash-v1' label)"
+                    if superseded == expected else "")
+            raise CompactPatchError(
+                PATCH_HASH_MISMATCH,
+                f"keccak256(label ‖ compactPatchBytes) is {computed}, the signed receipt says "
+                f"{expected}{hint}")
     if len(data) < COMPACT_PATCH_HEADER_BYTES or len(data) > COMPACT_PATCH_MAX_BYTES:
         raise CompactPatchError(
+            PATCH_LENGTH_INVALID,
             f"a compact patch is {COMPACT_PATCH_HEADER_BYTES}..{COMPACT_PATCH_MAX_BYTES} bytes; "
             f"this one is {len(data)}")
     patch_type = data[0]
     word_count = data[1]
     if patch_type not in PATCH_TYPE_WORD_RANGES:
-        raise CompactPatchError(f"unknown patchType 0x{patch_type:02x}")
+        raise CompactPatchError(PATCH_TYPE_UNKNOWN, f"unknown patchType 0x{patch_type:02x}")
     if word_count == 0 or word_count > COMPACT_PATCH_MAX_WORDS:
         raise CompactPatchError(
+            PATCH_WORD_COUNT_INVALID,
             f"wordCount {word_count} is outside 1..{COMPACT_PATCH_MAX_WORDS}")
     score_delta = int.from_bytes(data[2:10], "big")
     if score_delta > MAX_SCORE_DELTA:
-        raise CompactPatchError(f"scoreDelta {score_delta} exceeds int64")
+        raise CompactPatchError(PATCH_SCORE_DELTA_OVERFLOW,
+                                f"scoreDelta {score_delta} exceeds int64")
     if score_delta_ppm is not None and score_delta != int(score_delta_ppm):
         raise CompactPatchError(
+            PATCH_SCORE_DELTA_MISMATCH,
             f"the patch declares scoreDelta {score_delta} but the signed receipt says "
             f"{score_delta_ppm}")
     parent = data[10:42].hex()
@@ -701,6 +752,7 @@ def decode_compact_patch(raw: bytes, *, parent_state_root: Optional[str] = None,
         expected = str(parent_state_root).lower().replace("0x", "")
         if parent != expected:
             raise CompactPatchError(
+                PATCH_PARENT_MISMATCH,
                 f"the patch's parentStateRoot {parent} is not the advance's {expected}")
 
     words: List[Tuple[int, str]] = []
@@ -710,19 +762,24 @@ def decode_compact_patch(raw: bytes, *, parent_state_root: Optional[str] = None,
     for _ in range(word_count):
         index, offset = _read_leb128_word_index(data, offset)
         if index >= RESERVED_WORD_START:
-            raise CompactPatchError(f"word index {index} is reserved (>= {RESERVED_WORD_START})")
+            raise CompactPatchError(
+                PATCH_INDEX_RESERVED,
+                f"word index {index} is reserved (>= {RESERVED_WORD_START})")
         if window is not None and not window[0] <= index <= window[1]:
             raise CompactPatchError(
+                PATCH_INDEX_OUT_OF_WINDOW,
                 f"word index {index} is outside patchType 0x{patch_type:02x}'s window {window}")
         if index in seen:
-            raise CompactPatchError(f"duplicate word index {index}")
+            raise CompactPatchError(PATCH_INDEX_DUPLICATE, f"duplicate word index {index}")
         seen.add(index)
         if offset + 32 > len(data):
-            raise CompactPatchError("word value runs past the end of the patch")
+            raise CompactPatchError(PATCH_WORD_TRUNCATED,
+                                    "word value runs past the end of the patch")
         words.append((index, data[offset:offset + 32].hex()))
         offset += 32
     if offset != len(data):
         raise CompactPatchError(
+            PATCH_TRAILING_BYTES,
             f"{len(data) - offset} trailing byte(s) after {word_count} word(s); the contract "
             "requires the patch to end exactly where its last word does")
     return CompactPatch(patch_type=patch_type, word_count=word_count,

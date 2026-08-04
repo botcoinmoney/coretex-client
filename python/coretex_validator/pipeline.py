@@ -278,7 +278,13 @@ def run(*, release_location: str, rpc_url: str,
 
     # -- 6a. historical law (needed before admission: it supplies the pins) --- #
     try:
-        law = hl.law_for_epoch(decoded, selected.advance.epoch)
+        chain_policy = None
+        try:
+            active = views.active_rules_version(selected.advance.epoch)
+            chain_policy = views.core_tex_policy(active)
+        except Exception:                                  # noqa: BLE001 - fall back to the logs
+            chain_policy = None
+        law = hl.law_for_epoch(decoded, selected.advance.epoch, chain_policy=chain_policy)
     except hl.LawError as exc:
         record("deterministic_admission", "NOT_REACHED")
         record("historical_law", "FAIL", {"code": exc.code}, [exc.message])
@@ -461,7 +467,8 @@ def _admit(selected: jn.JoinedTransition, law: hl.EpochLaw, store: pub.ContentSt
             selected.advance.compact_patch_bytes,
             parent_state_root=selected.advance.parent_state_root,
             score_delta_ppm=(int(selected.receipt["scoreAfterPpm"])
-                             - int(selected.receipt["scoreBeforePpm"])))
+                             - int(selected.receipt["scoreBeforePpm"])),
+            expected_patch_hash=selected.advance.patch_hash)
     except rig.RigEventError as exc:
         return artifact, {"outcome": "FAIL", "code": "RIG_COMPACT_PATCH_INVALID",
                           "reason": str(exc)}

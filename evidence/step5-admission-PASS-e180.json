@@ -1,0 +1,652 @@
+{
+  "export_root": null,
+  "format": "coretex.rig-validator-run/v1",
+  "ok": false,
+  "steps": [
+    {
+      "detail": {
+        "addresses": {
+          "mining": "0x7ce7ba1178f81eb88df89dda1b72b9f75b86cc96",
+          "registry": "0x9ec799e8743c9e5fa364c80576122d84b0e4149e",
+          "verifier": "0x84472e32cc7c17447228887ab60c807510864d8a"
+        },
+        "authorities": {
+          "deployment_authority": "release_artifact",
+          "note": "the deployed rehearsal was built from an EARLIER tree than the pinned source commit. Bytecode is verified against the RELEASE's recorded runtime hashes; the pinned commit is the authority for ABI/event/typehash interfaces ONLY. These are not the same claim and this run does not compile anything",
+          "source_interface_authority": {
+            "commit": "cdb91d211e4620c6ecfd90b68d827d607033e1f1",
+            "publicly_fetchable": false,
+            "repo": "github.com/botcoinmoney/botcoin-mining-rigs"
+          }
+        },
+        "chain_id": 8453,
+        "classification": "MAINNET_REHEARSAL",
+        "network": "base"
+      },
+      "problems": [],
+      "status": "PASS",
+      "step": "discover_release"
+    },
+    {
+      "detail": {
+        "block": 49518473,
+        "block_hash": "0xc58b25d30a88f51195925e05b4db6ece0092c68cd97a7bb7e4e432f25afa7fcf",
+        "contracts": {
+          "mining": {
+            "address": "0x7ce7ba1178f81eb88df89dda1b72b9f75b86cc96",
+            "bytes": 19842,
+            "expected": "93a5f7367cecc35229fbd8a18470cc3f6abc44b7cf66667ce9a022af024e2c11",
+            "match": true,
+            "observed": "93a5f7367cecc35229fbd8a18470cc3f6abc44b7cf66667ce9a022af024e2c11"
+          },
+          "registry": {
+            "address": "0x9ec799e8743c9e5fa364c80576122d84b0e4149e",
+            "bytes": 5768,
+            "expected": "7c3926747655f96de50bfac1c9230df3c8979e9e437c68f2743deab81a3539ef",
+            "match": true,
+            "observed": "7c3926747655f96de50bfac1c9230df3c8979e9e437c68f2743deab81a3539ef"
+          },
+          "verifier": {
+            "address": "0x84472e32cc7c17447228887ab60c807510864d8a",
+            "bytes": 10647,
+            "expected": "9578679ae5e1559018698bc5bcc86f3348ca74207495d4917c0c6029f209c69c",
+            "match": true,
+            "observed": "9578679ae5e1559018698bc5bcc86f3348ca74207495d4917c0c6029f209c69c"
+          }
+        },
+        "failures": [],
+        "ok": true,
+        "wiring": {
+          "consistent": true,
+          "registry.coreTexVerifier": "0x84472e32cc7c17447228887ab60c807510864d8a",
+          "registry_identity": {
+            "address": "0x9ec799e8743c9e5fa364c80576122d84b0e4149e",
+            "code_hash": "7c3926747655f96de50bfac1c9230df3c8979e9e437c68f2743deab81a3539ef",
+            "note": "a successor deployed from the same source shares this code_hash and, once it has inherited the epoch contexts, answers the pin getters identically. `verifier_bound_registry` is the only field that distinguishes the live registry from a retired one",
+            "verifier_bound_registry": "0x9ec799e8743c9e5fa364c80576122d84b0e4149e"
+          },
+          "verifier.coreTexRegistry": "0x9ec799e8743c9e5fa364c80576122d84b0e4149e",
+          "verifier.mining": "0x7ce7ba1178f81eb88df89dda1b72b9f75b86cc96"
+        }
+      },
+      "problems": [],
+      "status": "PASS",
+      "step": "verify_deployment"
+    },
+    {
+      "detail": {
+        "logs_ignored": 4,
+        "logs_seen": 10,
+        "rigs": {
+          "2": {
+            "chain_last_receipt_hash": "a061e7d0ef48f85de99e008906c762109dfb31e09cd49b0bb729968595923eef",
+            "chain_next_index": 2,
+            "complete": true,
+            "coretex_receipts": 2,
+            "ok": true,
+            "problems": [],
+            "receipts": 2,
+            "replayed_last_receipt_hash": "a061e7d0ef48f85de99e008906c762109dfb31e09cd49b0bb729968595923eef",
+            "replayed_next_index": 2,
+            "rig_id": 2,
+            "standard_receipts": 0
+          }
+        },
+        "scanned_blocks": [
+          49516830,
+          49518473
+        ]
+      },
+      "problems": [],
+      "status": "PASS",
+      "step": "receipt_continuity"
+    },
+    {
+      "detail": {
+        "join_key": {
+          "advances": 2,
+          "cycled": false,
+          "distinct_three_part_keys": 2,
+          "note": "this history contains no head cycle, so a two-part key would NOT have been caught here. It is still wrong \u2014 see design \u00a77.4",
+          "two_part_key_collisions": {}
+        },
+        "lineage": [
+          {
+            "epoch": 179,
+            "final_state_root": "",
+            "flagged": false,
+            "note": "skipped: no epoch context was ever set, so this epoch could not have been served and the registry has nothing to report for it",
+            "sealed": false,
+            "served": false,
+            "source": "no_epoch_context"
+          },
+          {
+            "epoch": 178,
+            "final_state_root": "",
+            "flagged": false,
+            "note": "skipped: no epoch context was ever set, so this epoch could not have been served and the registry has nothing to report for it",
+            "sealed": false,
+            "served": false,
+            "source": "no_epoch_context"
+          },
+          {
+            "epoch": 177,
+            "final_state_root": "",
+            "flagged": false,
+            "note": "skipped: no epoch context was ever set, so this epoch could not have been served and the registry has nothing to report for it",
+            "sealed": false,
+            "served": false,
+            "source": "no_epoch_context"
+          },
+          {
+            "epoch": 176,
+            "final_state_root": "",
+            "flagged": false,
+            "note": "skipped: no epoch context was ever set, so this epoch could not have been served and the registry has nothing to report for it",
+            "sealed": false,
+            "served": false,
+            "source": "no_epoch_context"
+          },
+          {
+            "epoch": 175,
+            "final_state_root": "",
+            "flagged": false,
+            "note": "skipped: no epoch context was ever set, so this epoch could not have been served and the registry has nothing to report for it",
+            "sealed": false,
+            "served": false,
+            "source": "no_epoch_context"
+          },
+          {
+            "epoch": 174,
+            "final_state_root": "",
+            "flagged": false,
+            "note": "skipped: no epoch context was ever set, so this epoch could not have been served and the registry has nothing to report for it",
+            "sealed": false,
+            "served": false,
+            "source": "no_epoch_context"
+          },
+          {
+            "epoch": 173,
+            "final_state_root": "",
+            "flagged": false,
+            "note": "skipped: no epoch context was ever set, so this epoch could not have been served and the registry has nothing to report for it",
+            "sealed": false,
+            "served": false,
+            "source": "no_epoch_context"
+          },
+          {
+            "epoch": 172,
+            "final_state_root": "",
+            "flagged": false,
+            "note": "skipped: no epoch context was ever set, so this epoch could not have been served and the registry has nothing to report for it",
+            "sealed": false,
+            "served": false,
+            "source": "no_epoch_context"
+          },
+          {
+            "epoch": 171,
+            "final_state_root": "",
+            "flagged": false,
+            "note": "skipped: no epoch context was ever set, so this epoch could not have been served and the registry has nothing to report for it",
+            "sealed": false,
+            "served": false,
+            "source": "no_epoch_context"
+          },
+          {
+            "epoch": 170,
+            "final_state_root": "",
+            "flagged": false,
+            "note": "skipped: no epoch context was ever set, so this epoch could not have been served and the registry has nothing to report for it",
+            "sealed": false,
+            "served": false,
+            "source": "no_epoch_context"
+          },
+          {
+            "epoch": 169,
+            "final_state_root": "",
+            "flagged": false,
+            "note": "skipped: no epoch context was ever set, so this epoch could not have been served and the registry has nothing to report for it",
+            "sealed": false,
+            "served": false,
+            "source": "no_epoch_context"
+          },
+          {
+            "epoch": 168,
+            "final_state_root": "",
+            "flagged": false,
+            "note": "skipped: no epoch context was ever set, so this epoch could not have been served and the registry has nothing to report for it",
+            "sealed": false,
+            "served": false,
+            "source": "no_epoch_context"
+          },
+          {
+            "epoch": 167,
+            "final_state_root": "",
+            "flagged": false,
+            "note": "skipped: no epoch context was ever set, so this epoch could not have been served and the registry has nothing to report for it",
+            "sealed": false,
+            "served": false,
+            "source": "no_epoch_context"
+          },
+          {
+            "epoch": 166,
+            "final_state_root": "",
+            "flagged": false,
+            "note": "skipped: no epoch context was ever set, so this epoch could not have been served and the registry has nothing to report for it",
+            "sealed": false,
+            "served": false,
+            "source": "no_epoch_context"
+          },
+          {
+            "epoch": 165,
+            "final_state_root": "",
+            "flagged": false,
+            "note": "skipped: no epoch context was ever set, so this epoch could not have been served and the registry has nothing to report for it",
+            "sealed": false,
+            "served": false,
+            "source": "no_epoch_context"
+          },
+          {
+            "epoch": 164,
+            "final_state_root": "",
+            "flagged": false,
+            "note": "skipped: no epoch context was ever set, so this epoch could not have been served and the registry has nothing to report for it",
+            "sealed": false,
+            "served": false,
+            "source": "no_epoch_context"
+          },
+          {
+            "epoch": 163,
+            "final_state_root": "",
+            "flagged": false,
+            "note": "skipped: no epoch context was ever set, so this epoch could not have been served and the registry has nothing to report for it",
+            "sealed": false,
+            "served": false,
+            "source": "no_epoch_context"
+          },
+          {
+            "epoch": 162,
+            "final_state_root": "",
+            "flagged": false,
+            "note": "skipped: no epoch context was ever set, so this epoch could not have been served and the registry has nothing to report for it",
+            "sealed": false,
+            "served": false,
+            "source": "no_epoch_context"
+          },
+          {
+            "epoch": 161,
+            "final_state_root": "",
+            "flagged": false,
+            "note": "skipped: no epoch context was ever set, so this epoch could not have been served and the registry has nothing to report for it",
+            "sealed": false,
+            "served": false,
+            "source": "no_epoch_context"
+          },
+          {
+            "epoch": 160,
+            "final_state_root": "",
+            "flagged": false,
+            "note": "skipped: no epoch context was ever set, so this epoch could not have been served and the registry has nothing to report for it",
+            "sealed": false,
+            "served": false,
+            "source": "no_epoch_context"
+          },
+          {
+            "epoch": 159,
+            "final_state_root": "",
+            "flagged": false,
+            "note": "skipped: no epoch context was ever set, so this epoch could not have been served and the registry has nothing to report for it",
+            "sealed": false,
+            "served": false,
+            "source": "no_epoch_context"
+          },
+          {
+            "epoch": 158,
+            "final_state_root": "",
+            "flagged": false,
+            "note": "skipped: no epoch context was ever set, so this epoch could not have been served and the registry has nothing to report for it",
+            "sealed": false,
+            "served": false,
+            "source": "no_epoch_context"
+          },
+          {
+            "epoch": 157,
+            "final_state_root": "",
+            "flagged": false,
+            "note": "skipped: no epoch context was ever set, so this epoch could not have been served and the registry has nothing to report for it",
+            "sealed": false,
+            "served": false,
+            "source": "no_epoch_context"
+          },
+          {
+            "epoch": 156,
+            "final_state_root": "",
+            "flagged": false,
+            "note": "skipped: no epoch context was ever set, so this epoch could not have been served and the registry has nothing to report for it",
+            "sealed": false,
+            "served": false,
+            "source": "no_epoch_context"
+          },
+          {
+            "epoch": 155,
+            "final_state_root": "",
+            "flagged": false,
+            "note": "skipped: no epoch context was ever set, so this epoch could not have been served and the registry has nothing to report for it",
+            "sealed": false,
+            "served": false,
+            "source": "no_epoch_context"
+          },
+          {
+            "epoch": 154,
+            "final_state_root": "",
+            "flagged": false,
+            "note": "skipped: no epoch context was ever set, so this epoch could not have been served and the registry has nothing to report for it",
+            "sealed": false,
+            "served": false,
+            "source": "no_epoch_context"
+          },
+          {
+            "epoch": 153,
+            "final_state_root": "",
+            "flagged": false,
+            "note": "skipped: no epoch context was ever set, so this epoch could not have been served and the registry has nothing to report for it",
+            "sealed": false,
+            "served": false,
+            "source": "no_epoch_context"
+          },
+          {
+            "epoch": 152,
+            "final_state_root": "",
+            "flagged": false,
+            "note": "skipped: no epoch context was ever set, so this epoch could not have been served and the registry has nothing to report for it",
+            "sealed": false,
+            "served": false,
+            "source": "no_epoch_context"
+          },
+          {
+            "epoch": 151,
+            "final_state_root": "",
+            "flagged": false,
+            "note": "skipped: no epoch context was ever set, so this epoch could not have been served and the registry has nothing to report for it",
+            "sealed": false,
+            "served": false,
+            "source": "no_epoch_context"
+          },
+          {
+            "epoch": 150,
+            "final_state_root": "",
+            "flagged": false,
+            "note": "skipped: no epoch context was ever set, so this epoch could not have been served and the registry has nothing to report for it",
+            "sealed": false,
+            "served": false,
+            "source": "no_epoch_context"
+          },
+          {
+            "epoch": 149,
+            "final_state_root": "",
+            "flagged": false,
+            "note": "skipped: no epoch context was ever set, so this epoch could not have been served and the registry has nothing to report for it",
+            "sealed": false,
+            "served": false,
+            "source": "no_epoch_context"
+          },
+          {
+            "epoch": 148,
+            "final_state_root": "",
+            "flagged": false,
+            "note": "skipped: no epoch context was ever set, so this epoch could not have been served and the registry has nothing to report for it",
+            "sealed": false,
+            "served": false,
+            "source": "no_epoch_context"
+          },
+          {
+            "epoch": 147,
+            "final_state_root": "2170c3dede3b92a7e97887af72c82e81f08aba22dee15021f1f5c9c49f225655",
+            "flagged": false,
+            "note": "no served epoch at or above the registry's floor: this is the genesis of this registry's history, not a fault",
+            "sealed": false,
+            "served": false,
+            "source": "registry_genesis"
+          }
+        ],
+        "screener_passes": [],
+        "selected": {
+          "artifact_hash": "282a009f82d4d6e3be35ffb91f98d94e6025385cf936649b3abfa26f3ca83636",
+          "block_number": 49518473,
+          "challenge_id": "d1628e882069c780596f8959f4eda64b75cf12bc12c2d422cf9bd6d93e972e04",
+          "checks": [
+            "step1_advance_decoded",
+            "step2_credit_event_joined",
+            "step3_calldata_decoded",
+            "step4_receipt_hash_bound",
+            "step5_artifact_hash_bound_via_digest",
+            "step6_calldata_bound_to_logs",
+            "step7_coordinator_signature_verified",
+            "step8_patch_hash_verified"
+          ],
+          "compact_patch_bytes": "ff0100000000000161e817e41e207b9ca4c3c318584d6fbb6cdbb092f7c1b3cb7a2e2f81d7d623ee03f502282a009f82d4d6e3be35ffb91f98d94e6025385cf936649b3abfa26f3ca83636",
+          "credits_earned": 1000,
+          "difficulty_count_snapshot": 0,
+          "epoch": 180,
+          "eval_report_hash": "8d87d421ede662ebd60928df86a6232290724dc4dd4b87b8eb7aaf8c8f5bdcd9",
+          "expires_at": 1785827187,
+          "issued_at": 1785826287,
+          "join_key": {
+            "epoch": 180,
+            "parent_state_root": "17e41e207b9ca4c3c318584d6fbb6cdbb092f7c1b3cb7a2e2f81d7d623ee03f5",
+            "patch_hash": "ffb5587a62caa1b4b438c851cc2af1ba11350cd47cfdef18457b8b47aadfe10b"
+          },
+          "new_state_root": "b631b91ffcc6cc1d42f99a7ae705e017675766e107956ec80429069822948053",
+          "operator": "0x7adc97d106ef8e511f2403b43f9afdc8b262a85d",
+          "parent_state_root": "17e41e207b9ca4c3c318584d6fbb6cdbb092f7c1b3cb7a2e2f81d7d623ee03f5",
+          "patch_hash": "ffb5587a62caa1b4b438c851cc2af1ba11350cd47cfdef18457b8b47aadfe10b",
+          "receipt_hash": "a061e7d0ef48f85de99e008906c762109dfb31e09cd49b0bb729968595923eef",
+          "rig_id": 2,
+          "rules_version": 193,
+          "score_after_ppm": 732800,
+          "score_before_ppm": 642200,
+          "solve_index": 1,
+          "transaction_hash": "0x482bce77ac352caabb899fa099591fc8393eca9562b37fc5314487e97818d726",
+          "transition_index": 1,
+          "work_policy_hash": "e14663ecf01d62ee6d9c5fb087bd61191e7b791bc533012baa9c6509dbb8a0b3",
+          "work_units_bps": 100000,
+          "world_seed": 149120605518918121832186801581052700422
+        },
+        "transitions": [
+          {
+            "artifact_hash": "b3a67b65832ab57efdcb6be6e64631f26684653d2115dd95b1f1ea0c98fc151e",
+            "block_number": 49518472,
+            "challenge_id": "46715728bdca9e5084356bc7807748e51384f0dbc5171e60c3fad7485efc6749",
+            "checks": [
+              "step1_advance_decoded",
+              "step2_credit_event_joined",
+              "step3_calldata_decoded",
+              "step4_receipt_hash_bound",
+              "step5_artifact_hash_bound_via_digest",
+              "step6_calldata_bound_to_logs",
+              "step7_coordinator_signature_verified",
+              "step8_patch_hash_verified"
+            ],
+            "compact_patch_bytes": "ff01000000000000ffdc2170c3dede3b92a7e97887af72c82e81f08aba22dee15021f1f5c9c49f22565502b3a67b65832ab57efdcb6be6e64631f26684653d2115dd95b1f1ea0c98fc151e",
+            "credits_earned": 1000,
+            "difficulty_count_snapshot": 0,
+            "epoch": 180,
+            "eval_report_hash": "0eed80d84278c70206e5a6b5d948e4908d0fcca3f0d8e5a94f3f82e04f1bc68d",
+            "expires_at": 1785827187,
+            "issued_at": 1785826287,
+            "join_key": {
+              "epoch": 180,
+              "parent_state_root": "2170c3dede3b92a7e97887af72c82e81f08aba22dee15021f1f5c9c49f225655",
+              "patch_hash": "1435f8116292dfe60af5c9ba83d1a0c1235e19ea58789b16f714e9ce80290131"
+            },
+            "new_state_root": "17e41e207b9ca4c3c318584d6fbb6cdbb092f7c1b3cb7a2e2f81d7d623ee03f5",
+            "operator": "0x7adc97d106ef8e511f2403b43f9afdc8b262a85d",
+            "parent_state_root": "2170c3dede3b92a7e97887af72c82e81f08aba22dee15021f1f5c9c49f225655",
+            "patch_hash": "1435f8116292dfe60af5c9ba83d1a0c1235e19ea58789b16f714e9ce80290131",
+            "receipt_hash": "260f815f4e7126b7bb123435d95039221377414ccc91377930304c9bff590f66",
+            "rig_id": 2,
+            "rules_version": 193,
+            "score_after_ppm": 730500,
+            "score_before_ppm": 665000,
+            "solve_index": 0,
+            "transaction_hash": "0x81483f978f9e1b016b3a70d8d7344ea36bd7831f4d2e75f43a120d4500176c6f",
+            "transition_index": 0,
+            "work_policy_hash": "e14663ecf01d62ee6d9c5fb087bd61191e7b791bc533012baa9c6509dbb8a0b3",
+            "work_units_bps": 100000,
+            "world_seed": 242057901085984030303379576644228240020
+          },
+          {
+            "artifact_hash": "282a009f82d4d6e3be35ffb91f98d94e6025385cf936649b3abfa26f3ca83636",
+            "block_number": 49518473,
+            "challenge_id": "d1628e882069c780596f8959f4eda64b75cf12bc12c2d422cf9bd6d93e972e04",
+            "checks": [
+              "step1_advance_decoded",
+              "step2_credit_event_joined",
+              "step3_calldata_decoded",
+              "step4_receipt_hash_bound",
+              "step5_artifact_hash_bound_via_digest",
+              "step6_calldata_bound_to_logs",
+              "step7_coordinator_signature_verified",
+              "step8_patch_hash_verified"
+            ],
+            "compact_patch_bytes": "ff0100000000000161e817e41e207b9ca4c3c318584d6fbb6cdbb092f7c1b3cb7a2e2f81d7d623ee03f502282a009f82d4d6e3be35ffb91f98d94e6025385cf936649b3abfa26f3ca83636",
+            "credits_earned": 1000,
+            "difficulty_count_snapshot": 0,
+            "epoch": 180,
+            "eval_report_hash": "8d87d421ede662ebd60928df86a6232290724dc4dd4b87b8eb7aaf8c8f5bdcd9",
+            "expires_at": 1785827187,
+            "issued_at": 1785826287,
+            "join_key": {
+              "epoch": 180,
+              "parent_state_root": "17e41e207b9ca4c3c318584d6fbb6cdbb092f7c1b3cb7a2e2f81d7d623ee03f5",
+              "patch_hash": "ffb5587a62caa1b4b438c851cc2af1ba11350cd47cfdef18457b8b47aadfe10b"
+            },
+            "new_state_root": "b631b91ffcc6cc1d42f99a7ae705e017675766e107956ec80429069822948053",
+            "operator": "0x7adc97d106ef8e511f2403b43f9afdc8b262a85d",
+            "parent_state_root": "17e41e207b9ca4c3c318584d6fbb6cdbb092f7c1b3cb7a2e2f81d7d623ee03f5",
+            "patch_hash": "ffb5587a62caa1b4b438c851cc2af1ba11350cd47cfdef18457b8b47aadfe10b",
+            "receipt_hash": "a061e7d0ef48f85de99e008906c762109dfb31e09cd49b0bb729968595923eef",
+            "rig_id": 2,
+            "rules_version": 193,
+            "score_after_ppm": 732800,
+            "score_before_ppm": 642200,
+            "solve_index": 1,
+            "transaction_hash": "0x482bce77ac352caabb899fa099591fc8393eca9562b37fc5314487e97818d726",
+            "transition_index": 1,
+            "work_policy_hash": "e14663ecf01d62ee6d9c5fb087bd61191e7b791bc533012baa9c6509dbb8a0b3",
+            "work_units_bps": 100000,
+            "world_seed": 149120605518918121832186801581052700422
+          }
+        ],
+        "unresolved": []
+      },
+      "problems": [],
+      "status": "PASS",
+      "step": "join_transition"
+    },
+    {
+      "detail": {
+        "admission_trees": {
+          "benchmark_v2_dir": "/tmp/claude-1000/-home-ubuntu-botcoin-coordinator/4afb76d2-aabb-47cc-9fd8-a58814c934ed/scratchpad/admission/benchmark-v2",
+          "coretex_memory_dir": "/tmp/claude-1000/-home-ubuntu-botcoin-coordinator/4afb76d2-aabb-47cc-9fd8-a58814c934ed/scratchpad/admission/coretex-memory",
+          "sandbox_available": true,
+          "screen_available": true
+        },
+        "checks": [
+          "event",
+          "epoch_pins",
+          "parent_manifest",
+          "frontier_replay",
+          "artifact_rehash",
+          "artifact:chain_roots",
+          "artifact:transition_hashes",
+          "artifact:frontier_replay",
+          "artifact:entropy_commitment",
+          "artifact:selection_walk",
+          "artifact:receipt_bindings",
+          "artifact:measurements",
+          "artifact:counter_resource_law",
+          "artifact:verdict",
+          "artifact:rig_receipt_fields",
+          "bindings",
+          "entropy_expansion",
+          "selection_completeness",
+          "sandbox",
+          "recompute",
+          "incumbent_law"
+        ],
+        "code": null,
+        "compact_patch": {
+          "bytes": 75,
+          "parent_state_root": "17e41e207b9ca4c3c318584d6fbb6cdbb092f7c1b3cb7a2e2f81d7d623ee03f5",
+          "patch_type": 255,
+          "score_delta_ppm": 90600,
+          "word_count": 1,
+          "words": [
+            {
+              "index": 2,
+              "value": "282a009f82d4d6e3be35ffb91f98d94e6025385cf936649b3abfa26f3ca83636"
+            }
+          ]
+        },
+        "outcome": "PASS",
+        "reason": "advance replayed from confirmed chain truth: parent manifest verified, transition applied, new root reproduced, artifact rehashed, every binding checked, selection re-derived AND proven complete, candidate executed in the pinned sandbox whose networkless execution was DEMONSTRATED (not asserted) by a real socket probe, and the frozen law confirms it beat the exact parent incumbent",
+        "stage": "done"
+      },
+      "problems": [],
+      "status": "PASS",
+      "step": "deterministic_admission"
+    },
+    {
+      "detail": {
+        "artifact_verified": true,
+        "law": {
+          "baseline_manifest_hash": "f0d19e4c4fafdb6ee1906639f31ab480c4380f31d2bbc304b885b22a35859b2f",
+          "context_parent_state_root": "2170c3dede3b92a7e97887af72c82e81f08aba22dee15021f1f5c9c49f225655",
+          "enforced_pins": {
+            "active_frontier_root": "a117aa9e8b6553c277e6f3be3475198e213d6754e96dc2b522a764e273522e68",
+            "core_version_hash": "d83638ae0819f49eb447d730978949f66f0e1bc1e4cdacaa3ed8e7029ef9c82a",
+            "corpus_root": "7b4d1c8d72dbd79a874f505457a38b63b18cbefa5d71db4eca6d84c2222748b4"
+          },
+          "entropy": {
+            "commitment": "c8e0fba4a05ef172123800b747c6ad2daba821018d832295cde69697e9fe6f20",
+            "revealed": false
+          },
+          "epoch": 180,
+          "format": "coretex.rig-historical-law/v1",
+          "policy": {
+            "available": false
+          },
+          "sources": {
+            "commit": {
+              "block": 49516929
+            },
+            "context": {
+              "block": 49516901,
+              "tx": "0xfa26a3b3b6231d29227e41dc495568a4aab9f8a0a62f5f013dabc3be640ce4ed"
+            },
+            "policy": "no CoreTexPolicyScheduled observed; the pricing table is UNAVAILABLE and is deliberately NOT substituted from the staged model"
+          }
+        }
+      },
+      "problems": [
+        "the receipt claims rulesVersion 193, but this deployment scheduled no policy that a validator can read, so the claim is UNCHECKED (not accepted)"
+      ],
+      "status": "FAIL",
+      "step": "historical_law"
+    },
+    {
+      "detail": {},
+      "problems": [],
+      "status": "NOT_REACHED",
+      "step": "resolver_snapshot"
+    },
+    {
+      "detail": {},
+      "problems": [],
+      "status": "NOT_REACHED",
+      "step": "export"
+    }
+  ],
+  "unverified": []
+}

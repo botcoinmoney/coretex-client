@@ -730,7 +730,12 @@ class TestResolverSchemaReproduction:
 
 
 class TestCompactPatchIsBinaryNotJson:
-    """The rig's compactPatchBytes is a contract struct; the memory lane's transitionBytes is JSON."""
+    """The full validation set from RigCoreTexVerifier._validateCompactPatch.
+
+    Every negative control asserts its SPECIFIC refusal code. A control that only checked "it
+    threw" would pass just as happily when the decoder rejects for the wrong reason — and a
+    decoder that refused everything would satisfy the whole suite.
+    """
 
     def _patch(self, *, patch_type=0xFF, word_count=1, score_delta=65500,
                parent="21" * 32, words=((2, "b3" * 32),), trailing=b""):
@@ -742,9 +747,13 @@ class TestCompactPatchIsBinaryNotJson:
             raw += bytes.fromhex(value)
         return raw + trailing
 
-    def test_the_real_epoch_180_patch_decodes_to_its_documented_ground_truth(self):
-        # Straight from the published snapshot: 75 bytes, type 0xff, scoreDelta 65500,
-        # parent 2170c3de…, word 2 = the artifactHash.
+    def _refusal(self, raw, **kwargs):
+        with pytest.raises(rig.CompactPatchError) as excinfo:
+            rig.decode_compact_patch(raw, **kwargs)
+        return excinfo.value.code
+
+    # ── POSITIVE FIXTURE: the real 75-byte epoch-180 patch ────────────────────────────────
+    def test_the_real_epoch_180_patches_decode_to_documented_ground_truth(self):
         import pathlib
 
         evidence = pathlib.Path("/home/ubuntu/botcoin-coordinator-v5-p6/v5/resolver/evidence"
@@ -752,68 +761,106 @@ class TestCompactPatchIsBinaryNotJson:
         if not evidence.is_file():
             pytest.skip("the published epoch-180 snapshot is not on this host")
         snapshot = json.loads(evidence.read_text(encoding="utf-8"))
-        first = snapshot["transitions"]["lineage"][0]
-        raw = bytes.fromhex(first["registry_event"]["compact_patch_bytes"][2:])
-        patch = rig.decode_compact_patch(
-            raw, parent_state_root=first["registry_event"]["parent_state_root"])
-        assert len(raw) == 75
-        assert patch.patch_type == 0xFF and patch.word_count == 1
-        assert patch.score_delta_ppm == 65500
-        assert patch.parent_state_root.startswith("2170c3de")
-        assert patch.words[0][0] == 2
-        assert patch.words[0][1] == first["receipt"]["artifactHash"][2:]
+        expected = {0: (65500, "2170c3de"), 1: (90600, "17e41e20")}
+        for entry in snapshot["transitions"]["lineage"]:
+            event = entry["registry_event"]
+            raw = bytes.fromhex(event["compact_patch_bytes"][2:])
+            patch = rig.decode_compact_patch(
+                raw, parent_state_root=event["parent_state_root"],
+                expected_patch_hash=event["patch_hash"],
+                score_delta_ppm=(int(entry["receipt"]["scoreAfterPpm"])
+                                 - int(entry["receipt"]["scoreBeforePpm"])))
+            delta, parent_prefix = expected[entry["transition_index"]]
+            assert len(raw) == 75
+            assert patch.patch_type == 0xFF and patch.word_count == 1
+            assert patch.score_delta_ppm == delta
+            assert patch.parent_state_root.startswith(parent_prefix)
+            # Word 2 is the candidate release root — the signed artifactHash.
+            assert patch.words[0] == (2, entry["receipt"]["artifactHash"][2:])
 
-    def test_a_real_patch_is_not_utf8_so_the_json_parser_can_never_be_right(self):
+    # ── NEGATIVE CONTROLS: each asserts WHICH refusal fired ───────────────────────────────
+    def test_malformed_length(self):
+        assert self._refusal(b"\xff\x01" + b"\x00" * 10) == rig.PATCH_LENGTH_INVALID
+        assert self._refusal(self._patch(words=((2, "aa" * 32),) * 4) + b"\x00" * 200) \
+            == rig.PATCH_LENGTH_INVALID
+
+    def test_truncated_leb128(self):
+        # A continuation bit with nothing after it.
+        raw = bytes([0xFF, 1]) + (65500).to_bytes(8, "big") + bytes.fromhex("21" * 32) + b"\x82"
+        assert self._refusal(raw) == rig.PATCH_INDEX_TRUNCATED
+
+    def test_overlong_leb128(self):
+        raw = (bytes([0xFF, 1]) + (65500).to_bytes(8, "big") + bytes.fromhex("21" * 32)
+               + b"\x82\x81\x01" + bytes.fromhex("aa" * 32))
+        assert self._refusal(raw) == rig.PATCH_INDEX_OVERLONG
+
+    def test_redundant_leb128_encoding(self):
+        # 0x82 0x00 and 0x02 both mean 2: one index with two spellings is one patch with two
+        # hashes, which breaks the patchHash binding outright.
+        raw = (bytes([0xFF, 1]) + (65500).to_bytes(8, "big") + bytes.fromhex("21" * 32)
+               + b"\x82\x00" + bytes.fromhex("aa" * 32))
+        assert self._refusal(raw) == rig.PATCH_INDEX_REDUNDANT
+
+    def test_duplicate_index(self):
+        assert self._refusal(
+            self._patch(word_count=2, words=((2, "aa" * 32), (2, "bb" * 32)))) \
+            == rig.PATCH_INDEX_DUPLICATE
+
+    def test_reserved_index(self):
+        assert self._refusal(self._patch(words=((999, "aa" * 32),))) == rig.PATCH_INDEX_RESERVED
+
+    def test_index_outside_the_patch_type_window(self):
+        assert self._refusal(self._patch(patch_type=0x06, words=((400, "aa" * 32),))) \
+            == rig.PATCH_INDEX_OUT_OF_WINDOW
+
+    def test_wrong_parent(self):
+        assert self._refusal(self._patch(parent="21" * 32), parent_state_root="99" * 32) \
+            == rig.PATCH_PARENT_MISMATCH
+
+    def test_wrong_score_delta(self):
+        assert self._refusal(self._patch(score_delta=65500), score_delta_ppm=90600) \
+            == rig.PATCH_SCORE_DELTA_MISMATCH
+
+    def test_trailing_bytes(self):
+        assert self._refusal(self._patch(trailing=b"\x00")) == rig.PATCH_TRAILING_BYTES
+
+    def test_json_substitution(self):
+        # THE bug K1 was: canonical JSON handed to a decoder expecting the contract's struct.
+        # It must be refused HERE with a structural code, not accepted and not crash elsewhere.
+        payload = json.dumps({"target_profile": "doc.tool.v1",
+                              "expected_prior_release_root": "aa" * 32,
+                              "new_release_root": "bb" * 32,
+                              "resulting_composition_root": "cc" * 32},
+                             sort_keys=True, separators=(",", ":")).encode("utf-8")
+        assert self._refusal(payload) in {rig.PATCH_TYPE_UNKNOWN, rig.PATCH_LENGTH_INVALID,
+                                          rig.PATCH_WORD_COUNT_INVALID}
+        # ...and symmetrically, the real binary patch is not UTF-8, so the JSON parser can never
+        # have been right for it. This is the whole of K1 in two assertions.
         from coretex_validator import frontier as frontier_mod
 
-        raw = self._patch()
-        assert raw[0] == 0xFF                       # not valid UTF-8, by construction
         with pytest.raises(Exception):
-            frontier_mod.parse_transition_bytes(raw)
-        # ...while the contract's own layout decodes it cleanly.
-        assert rig.decode_compact_patch(raw).word_count == 1
+            frontier_mod.parse_transition_bytes(self._patch())
 
-    def test_the_score_delta_must_match_the_signed_receipt(self):
+    def test_unknown_patch_type_and_word_count_bounds(self):
+        assert self._refusal(self._patch(patch_type=0x08)) == rig.PATCH_TYPE_UNKNOWN
+        assert self._refusal(self._patch(word_count=0)) == rig.PATCH_WORD_COUNT_INVALID
+        assert self._refusal(self._patch(word_count=5)) == rig.PATCH_WORD_COUNT_INVALID
+
+    def test_the_keccak_patch_hash_rule_is_part_of_the_validation_set(self):
+        raw = self._patch()
+        # Correct hash passes...
+        rig.decode_compact_patch(raw, expected_patch_hash=rig.patch_hash(raw))
+        # ...a wrong one is refused BEFORE any field complaint, because a patch whose bytes hash
+        # elsewhere is a different patch, not a malformed one.
+        assert self._refusal(raw, expected_patch_hash="00" * 32) == rig.PATCH_HASH_MISMATCH
+
+    def test_a_superseded_label_signature_is_diagnosed_by_name(self):
+        raw = self._patch()
+        stale = rig.keccak256_hex(rig.SUPERSEDED_PATCH_HASH_LABEL + raw)
         with pytest.raises(rig.CompactPatchError) as excinfo:
-            rig.decode_compact_patch(self._patch(score_delta=65500), score_delta_ppm=90600)
-        assert "signed receipt" in str(excinfo.value)
-
-    def test_the_parent_root_must_match_the_advance(self):
-        with pytest.raises(rig.CompactPatchError):
-            rig.decode_compact_patch(self._patch(parent="21" * 32), parent_state_root="99" * 32)
-
-    def test_a_redundant_two_byte_index_is_refused(self):
-        # 0x82 0x00 and 0x02 would both mean 2 — one index with two spellings is one patch with
-        # two hashes, which breaks the patchHash binding outright.
-        raw = self._patch(words=()) + b"\x82\x00" + bytes.fromhex("aa" * 32)
-        raw = bytes([0xFF, 1]) + raw[2:]
-        with pytest.raises(rig.CompactPatchError) as excinfo:
-            rig.decode_compact_patch(raw)
-        assert "two spellings" in str(excinfo.value)
-
-    def test_reserved_and_out_of_window_indices_are_refused(self):
-        with pytest.raises(rig.CompactPatchError):                      # >= RESERVED_WORD_START
-            rig.decode_compact_patch(self._patch(words=((999, "aa" * 32),)))
-        with pytest.raises(rig.CompactPatchError):     # type 0x06 only admits indices 0..31
-            rig.decode_compact_patch(self._patch(patch_type=0x06, words=((400, "aa" * 32),)))
-
-    def test_duplicate_word_indices_are_refused(self):
-        with pytest.raises(rig.CompactPatchError):
-            rig.decode_compact_patch(
-                self._patch(word_count=2, words=((2, "aa" * 32), (2, "bb" * 32))))
-
-    def test_trailing_bytes_are_refused(self):
-        with pytest.raises(rig.CompactPatchError) as excinfo:
-            rig.decode_compact_patch(self._patch(trailing=b"\x00"))
-        assert "trailing" in str(excinfo.value)
-
-    def test_size_and_word_count_bounds_mirror_the_contract(self):
-        with pytest.raises(rig.CompactPatchError):
-            rig.decode_compact_patch(b"\xff\x01" + b"\x00" * 10)        # below header size
-        with pytest.raises(rig.CompactPatchError):
-            rig.decode_compact_patch(self._patch(word_count=0))
-        with pytest.raises(rig.CompactPatchError):
-            rig.decode_compact_patch(self._patch(patch_type=0x08))      # unknown type
+            rig.decode_compact_patch(raw, expected_patch_hash=stale)
+        assert excinfo.value.code == rig.PATCH_HASH_MISMATCH
+        assert "superseded" in excinfo.value.message
 
 
 class TestSandboxChildKeepsItsImportPath:

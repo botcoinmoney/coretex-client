@@ -33,6 +33,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
+from . import dispatch as dp
 from . import rig_events as rig
 
 LAW_FORMAT = "coretex.rig-historical-law/v1"
@@ -115,7 +116,8 @@ def policy_in_force(policies: Sequence[rig.PolicyScheduled],
     return max(eligible, key=lambda p: (p.effective_epoch, p.rules_version))
 
 
-def law_for_epoch(decoded: rig.DecodedLogs, epoch: int) -> EpochLaw:
+def law_for_epoch(decoded: rig.DecodedLogs, epoch: int,
+                  chain_policy: Optional[Mapping[str, Any]] = None) -> EpochLaw:
     """Assemble the epoch's law from confirmed logs. Refuses when the context is missing."""
     epoch = int(epoch)
     context = decoded.context_for(epoch)
@@ -127,7 +129,18 @@ def law_for_epoch(decoded: rig.DecodedLogs, epoch: int) -> EpochLaw:
             "widen the address set rather than falling back to current state")
     commit = next((c for c in decoded.commits if c.epoch == epoch), None)
     reveal = next((r for r in decoded.reveals if r.epoch == epoch), None)
+    # CHAIN STATE BEATS AN EVENT SCAN. A policy is scheduled once and stays in force, so its
+    # announcing event can sit far below any sensible log window; reading it from the verifier at
+    # the pinned block answers the question regardless of how wide the scan was.
     policy = policy_in_force(decoded.policies, epoch)
+    if chain_policy is not None:
+        policy = rig.PolicyScheduled(
+            rules_version=int(chain_policy["rules_version"]),
+            effective_epoch=int(chain_policy["effective_epoch"]),
+            policy_hash=str(chain_policy["policy_hash"]),
+            screener_work_bps=int(chain_policy["screener_work_bps"]),
+            provenance=(policy.provenance if policy is not None
+                        else dp.LogProvenance(None, None, None, False)))
     return EpochLaw(
         epoch=epoch,
         corpus_root=context.corpus_root,
@@ -146,7 +159,8 @@ def law_for_epoch(decoded: rig.DecodedLogs, epoch: int) -> EpochLaw:
                         "tx": context.provenance.transaction_hash},
             "commit": ({"block": commit.provenance.block_number} if commit else None),
             "reveal": ({"block": reveal.provenance.block_number} if reveal else None),
-            "policy": ({"block": policy.provenance.block_number,
+            "policy": ({"source": ("verifier.activeCoreTexRulesVersion + getCoreTexPolicy"
+                                   if chain_policy is not None else "CoreTexPolicyScheduled log"),
                         "effective_epoch": policy.effective_epoch} if policy else
                        "no CoreTexPolicyScheduled observed; the pricing table is UNAVAILABLE and "
                        "is deliberately NOT substituted from the staged model"),
