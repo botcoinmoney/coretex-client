@@ -236,7 +236,17 @@ _CORETEX_MEMORY_TREE = _tree("CORETEX_MEMORY_RUNTIME_DIR") or (
 #: benchmark/product import ever lands in the process that computes frontier roots.
 _SCREEN_CHILD = r'''
 import json, sys
-sys.path[:] = [p for p in sys.path if p not in ({v5!r}, {validator!r})]
+# SCRUB ONLY OUR OWN PACKAGE DIRECTORY. The point is to stop THIS lane's modules resolving as
+# top-level names in the child, so `benchmark-v2`'s same-named `frontier` package wins. Only
+# {validator!r} can do that, and only if it is on sys.path at all.
+#
+# The parent directory is NOT removed, and that is a correctness fix rather than a relaxation: in
+# a pip-installed client the parent IS site-packages, so removing it deleted the entire
+# third-party import path and the runtime tree's own dependencies (`wasmtime`) vanished — the
+# sandbox could then never become available on exactly the installation this package certifies.
+# In a source checkout the parent holds a PACKAGE, not a top-level `frontier` module, so removing
+# it was never doing anything useful there either.
+sys.path[:] = [p for p in sys.path if p != {validator!r}]
 sys.path.insert(0, {coretex!r})
 sys.path.insert(0, {bench!r})
 from scoring.oracle_screen import is_oracle_clean
@@ -512,7 +522,17 @@ class NullSandbox(CandidateSandbox):
 #: networkless execution; V5 does not mint a second scoring path.
 _SANDBOX_CHILD = r'''
 import importlib.util, json, shutil, sys, tempfile
-sys.path[:] = [p for p in sys.path if p not in ({v5!r}, {validator!r})]
+# SCRUB ONLY OUR OWN PACKAGE DIRECTORY. The point is to stop THIS lane's modules resolving as
+# top-level names in the child, so `benchmark-v2`'s same-named `frontier` package wins. Only
+# {validator!r} can do that, and only if it is on sys.path at all.
+#
+# The parent directory is NOT removed, and that is a correctness fix rather than a relaxation: in
+# a pip-installed client the parent IS site-packages, so removing it deleted the entire
+# third-party import path and the runtime tree's own dependencies (`wasmtime`) vanished — the
+# sandbox could then never become available on exactly the installation this package certifies.
+# In a source checkout the parent holds a PACKAGE, not a top-level `frontier` module, so removing
+# it was never doing anything useful there either.
+sys.path[:] = [p for p in sys.path if p != {validator!r}]
 sys.path.insert(0, {coretex!r})
 sys.path.insert(0, {bench!r})
 # NETWORKLESS: enforce, then PROVE, before a single line of candidate code runs (ruling §9 W2).

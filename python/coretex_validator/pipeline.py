@@ -440,14 +440,52 @@ def _admit(selected: jn.JoinedTransition, law: hl.EpochLaw, store: pub.ContentSt
                 "reason": f"the fetched artifact says {name}={artifact_value!r}, the confirmed "
                           f"advance says {event_value!r}"}
 
-    # The edit itself comes from the LOG, not the artifact: compactPatchBytes is verbatim on
-    # chain and patchHash covers it, so there is no reason to trust a fetched copy.
+    # ── THE EDIT: two encodings, and they are not interchangeable ──────────────────────────
+    #
+    # The rig lane's `compactPatchBytes` is a CONTRACT-MANDATED BINARY STRUCT — patchType,
+    # wordCount, a big-endian uint64 score delta, the parent root, then LEB128-indexed words —
+    # which `RigCoreTexVerifier._validateCompactPatch` reverts on if it is anything else. The
+    # memory lane's `transitionBytes` is CANONICAL JSON. This code used to hand the former to the
+    # latter's parser, which fails on the first byte of every real rig patch (`0xff` is not
+    # UTF-8) and reported FAIL — a determination, and therefore a slander on a mine that was
+    # perfectly valid. Canonical JSON in that field would have been rejected on chain, so the JSON
+    # reading could never have been right here.
+    #
+    # So the patch is decoded under the CONTRACT's layout and cross-checked against the confirmed
+    # advance, and the memory-lane transition the deterministic replay needs comes from the
+    # FETCHED ARTIFACT — which is safe precisely because the patch binds it: the patch's word
+    # carries the candidate release root, and `patchHash` over the patch is signed.
     try:
-        transition_bytes = bytes(selected.advance.compact_patch_bytes)
         rig.check_patch_hash(selected.advance)
+        patch = rig.decode_compact_patch(
+            selected.advance.compact_patch_bytes,
+            parent_state_root=selected.advance.parent_state_root,
+            score_delta_ppm=(int(selected.receipt["scoreAfterPpm"])
+                             - int(selected.receipt["scoreBeforePpm"])))
     except rig.RigEventError as exc:
-        return artifact, {"outcome": "FAIL", "code": "RIG_PATCH_HASH_MISMATCH",
+        return artifact, {"outcome": "FAIL", "code": "RIG_COMPACT_PATCH_INVALID",
                           "reason": str(exc)}
+
+    # The patch's words must agree with the signed receipt about what changed. Word 2 is the
+    # candidate release root; a patch that named a different one would be describing an edit the
+    # receipt did not sign.
+    artifact_hash = str(selected.receipt["artifactHash"]).lower().replace("0x", "")
+    patch_words = {index: value for index, value in patch.words}
+    if artifact_hash not in patch_words.values():
+        return artifact, {
+            "outcome": "FAIL", "code": "RIG_PATCH_ARTIFACT_MISMATCH",
+            "reason": (f"the compact patch's words {sorted(patch_words)} do not carry the signed "
+                       f"artifactHash {artifact_hash}; the patch describes a different edit from "
+                       "the one the receipt signed")}
+
+    try:
+        transition_bytes = fr.canonical_bytes(front["transition"])
+    except (KeyError, TypeError, fr.FrontierError) as exc:
+        return artifact, {
+            "outcome": "BACKLOG", "code": "missing_artifact",
+            "reason": (f"the eval artifact carries no usable memory-lane transition ({exc}), so "
+                       "the deterministic replay has nothing to re-derive. The confirmed patch is "
+                       "structurally valid; what is missing is the artifact's JSON transition")}
 
     projected = dp.FrontierAdvanced(
         epoch=selected.advance.epoch,

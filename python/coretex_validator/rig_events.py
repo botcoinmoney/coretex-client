@@ -585,3 +585,146 @@ def transition_from_patch(advance: StateAdvanced) -> Dict[str, Any]:
     """
     check_patch_hash(advance)
     return fr.validate_transition(fr.parse_json(advance.compact_patch_bytes.decode("utf-8")))
+
+
+# --------------------------------------------------------------------------- #
+# The compact patch — a CONTRACT-MANDATED BINARY LAYOUT, not JSON
+# --------------------------------------------------------------------------- #
+#: ``RigCoreTexVerifier`` constants, transcribed from the exact source (``cdb91d2``).
+COMPACT_PATCH_HEADER_BYTES = 42
+COMPACT_PATCH_MAX_BYTES = 178
+COMPACT_PATCH_MAX_WORDS = 4
+#: Word indices at or above this are reserved and refused on chain.
+RESERVED_WORD_START = 992
+#: ``_readUint64BE`` result must fit int64 — the contract refuses anything larger.
+MAX_SCORE_DELTA = 9_223_372_036_854_775_807
+
+#: ``_wordMatchesPatchType``. ``0xff`` is the unrestricted type; the rest are windowed.
+PATCH_TYPE_WORD_RANGES: Dict[int, Optional[Tuple[int, int]]] = {
+    0x01: (384, 671), 0x02: (32, 383), 0x03: (800, 895), 0x04: (672, 799),
+    0x05: (896, 991), 0x06: (0, 31), 0x07: (384, 671), 0xFF: None,
+}
+
+
+class CompactPatchError(RigEventError):
+    """A compact patch that the verifier would have reverted on. Never a soft failure.
+
+    Every refusal here mirrors a specific ``revert`` in ``_validateCompactPatch``, because a patch
+    that is on chain HAS passed that function: anything this decoder rejects either never landed
+    or was not decoded as the contract decodes it. Silently tolerating a malformed patch would
+    mean the validator disagreed with the chain about what was accepted.
+    """
+
+
+@dataclass(frozen=True)
+class CompactPatch:
+    """The decoded rig state patch: a header plus ``wordCount`` (index, value) pairs."""
+
+    patch_type: int
+    word_count: int
+    score_delta_ppm: int
+    parent_state_root: str
+    #: ``index -> 32-byte value``, in the order they appeared. Indices are unique by contract.
+    words: Tuple[Tuple[int, str], ...]
+    raw: bytes
+
+    def as_dict(self) -> Dict[str, Any]:
+        return {"patch_type": self.patch_type, "word_count": self.word_count,
+                "score_delta_ppm": self.score_delta_ppm,
+                "parent_state_root": self.parent_state_root,
+                "words": [{"index": i, "value": v} for i, v in self.words],
+                "bytes": len(self.raw)}
+
+
+def _read_leb128_word_index(data: bytes, offset: int) -> Tuple[int, int]:
+    """``_readLeb128WordIndex``. At most two bytes, and the two-byte form must be non-redundant.
+
+    The ``value < 128`` refusal on a two-byte encoding is the important one: without it, ``0x82
+    0x00`` and ``0x02`` would both decode to 2, giving one word index two spellings — and a patch
+    with two spellings has two hashes, which would break the ``patchHash`` binding.
+    """
+    if offset >= len(data):
+        raise CompactPatchError("word index runs past the end of the patch")
+    first = data[offset]
+    value = first & 0x7F
+    nxt = offset + 1
+    if not first & 0x80:
+        return value, nxt
+    if nxt >= len(data):
+        raise CompactPatchError("truncated two-byte word index")
+    second = data[nxt]
+    if second & 0x80:
+        raise CompactPatchError("word index is longer than two bytes")
+    value |= (second & 0x7F) << 7
+    if value < 128 or value >= 1024:
+        raise CompactPatchError(
+            f"two-byte word index decodes to {value}, which is not in [128, 1024): a redundant "
+            "encoding would give one index two spellings, and therefore one patch two hashes")
+    return value, nxt + 1
+
+
+def decode_compact_patch(raw: bytes, *, parent_state_root: Optional[str] = None,
+                         score_delta_ppm: Optional[int] = None) -> CompactPatch:
+    """Decode ``compactPatchBytes`` exactly as ``RigCoreTexVerifier._validateCompactPatch`` does.
+
+    THIS IS NOT THE MEMORY LANE'S ``transitionBytes``. That field is canonical JSON; this one is a
+    binary struct the verifier reverts on if it is anything else. The two encodings are different
+    formats for different protocols, and feeding one to the other's parser fails with a UTF-8
+    error on the very first byte of a real rig patch (``0xff``). Canonical JSON in this field
+    would have been rejected on chain, so the JSON reading can never be right here.
+
+    ``parent_state_root`` and ``score_delta_ppm`` are checked when supplied — those are the two
+    cross-checks the contract performs against the SIGNED receipt, and re-doing them is how a
+    validator confirms the patch belongs to the advance rather than merely being well-formed.
+    """
+    data = bytes(raw)
+    if len(data) < COMPACT_PATCH_HEADER_BYTES or len(data) > COMPACT_PATCH_MAX_BYTES:
+        raise CompactPatchError(
+            f"a compact patch is {COMPACT_PATCH_HEADER_BYTES}..{COMPACT_PATCH_MAX_BYTES} bytes; "
+            f"this one is {len(data)}")
+    patch_type = data[0]
+    word_count = data[1]
+    if patch_type not in PATCH_TYPE_WORD_RANGES:
+        raise CompactPatchError(f"unknown patchType 0x{patch_type:02x}")
+    if word_count == 0 or word_count > COMPACT_PATCH_MAX_WORDS:
+        raise CompactPatchError(
+            f"wordCount {word_count} is outside 1..{COMPACT_PATCH_MAX_WORDS}")
+    score_delta = int.from_bytes(data[2:10], "big")
+    if score_delta > MAX_SCORE_DELTA:
+        raise CompactPatchError(f"scoreDelta {score_delta} exceeds int64")
+    if score_delta_ppm is not None and score_delta != int(score_delta_ppm):
+        raise CompactPatchError(
+            f"the patch declares scoreDelta {score_delta} but the signed receipt says "
+            f"{score_delta_ppm}")
+    parent = data[10:42].hex()
+    if parent_state_root is not None:
+        expected = str(parent_state_root).lower().replace("0x", "")
+        if parent != expected:
+            raise CompactPatchError(
+                f"the patch's parentStateRoot {parent} is not the advance's {expected}")
+
+    words: List[Tuple[int, str]] = []
+    seen: set = set()
+    offset = COMPACT_PATCH_HEADER_BYTES
+    window = PATCH_TYPE_WORD_RANGES[patch_type]
+    for _ in range(word_count):
+        index, offset = _read_leb128_word_index(data, offset)
+        if index >= RESERVED_WORD_START:
+            raise CompactPatchError(f"word index {index} is reserved (>= {RESERVED_WORD_START})")
+        if window is not None and not window[0] <= index <= window[1]:
+            raise CompactPatchError(
+                f"word index {index} is outside patchType 0x{patch_type:02x}'s window {window}")
+        if index in seen:
+            raise CompactPatchError(f"duplicate word index {index}")
+        seen.add(index)
+        if offset + 32 > len(data):
+            raise CompactPatchError("word value runs past the end of the patch")
+        words.append((index, data[offset:offset + 32].hex()))
+        offset += 32
+    if offset != len(data):
+        raise CompactPatchError(
+            f"{len(data) - offset} trailing byte(s) after {word_count} word(s); the contract "
+            "requires the patch to end exactly where its last word does")
+    return CompactPatch(patch_type=patch_type, word_count=word_count,
+                        score_delta_ppm=score_delta, parent_state_root=parent,
+                        words=tuple(words), raw=data)
