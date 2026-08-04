@@ -115,10 +115,10 @@ def _hex_int(value: Any, field: str) -> int:
 class JsonRpc:
     """One endpoint. Not thread-safe, and not trying to be — a validator run is sequential."""
 
-    def __init__(self, url: str, *, timeout: float = 30.0, retries: int = 5,
+    def __init__(self, url: str, *, timeout: float = 30.0, retries: int = 8,
                  chunk_blocks: int = DEFAULT_CHUNK_BLOCKS,
                  user_agent: str = DEFAULT_USER_AGENT, backoff: float = 0.75,
-                 min_interval: float = 0.15) -> None:
+                 min_interval: float = 0.7) -> None:
         if not isinstance(url, str) or not url:
             raise RpcError("an RPC url is required")
         self.url = url
