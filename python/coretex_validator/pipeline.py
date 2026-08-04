@@ -507,8 +507,25 @@ def _admit(selected: jn.JoinedTransition, law: hl.EpochLaw, store: pub.ContentSt
         counter_resource_law_root=str(artifact.get("counter_resource_law_root")),
         entropy_commitment=law.entropy_commitment,
         revealed_secret=law.revealed_secret)})
+    # WIRE THE REAL ADMISSION WHEN THE TREES ARE THERE, and say so when they are not.
+    #
+    # `replay_advance` defaults both of these to ABSENT, which yields a BACKLOG at their stages —
+    # the honest outcome for a host that cannot run them. Now that the six code trees are
+    # published, a host that has configured them can run the pinned networkless sandbox and the
+    # real G6b screen, and this is where that happens. Neither is defaulted ON: an operator opts
+    # in by pointing at the trees, so "the admission ran" is always traceable to a decision.
+    sandbox = rp.default_sandbox()
+    screen = rp.default_oracle_screen()
+    admission_trees = {"benchmark_v2_dir": sandbox.bench_v2_dir,
+                       "coretex_memory_dir": sandbox.coretex_dir,
+                       "sandbox_available": sandbox.available(),
+                       "screen_available": screen.available()}
     result = rp.replay_advance(projected, store=store, pins=pins,
+                               sandbox=sandbox if sandbox.available() else None,
+                               screen=screen if screen.available() else None,
                                allow_test_doubles=allow_test_doubles)
     return artifact, {"outcome": str(result.outcome), "code": result.code,
                       "reason": result.reason, "checks": list(result.checks),
-                      "stage": getattr(result, "stage", None)}
+                      "stage": getattr(result, "stage", None),
+                      "compact_patch": patch.as_dict(),
+                      "admission_trees": admission_trees}
