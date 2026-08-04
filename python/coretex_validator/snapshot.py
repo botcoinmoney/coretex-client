@@ -278,14 +278,50 @@ def reproduce(reconstructed: Mapping[str, Any],
                               len(reconstructed_bytes))
 
 
-#: The domain the resolver signs over. Prefixed so a resolver signature can never be replayed as
-#: an EIP-712 receipt signature or an ``eth_sign`` message: different prefix, different digest.
-SNAPSHOT_SIGNING_DOMAIN = b"\x19coretex.rig-resolver-snapshot/v1\n"
+#: THE SIGNING DIGEST DOMAIN. ``keccak256(0x19 ‖ tag ‖ 0x0a ‖ canonical_bytes)``.
+#:
+#: The leading ``0x19`` is the byte EIP-191 reserves for "this is signed data, not a transaction",
+#: and the tag that follows is none of the envelopes a contract will accept — not
+#: ``\x19Ethereum Signed Message:\n``, not ``\x19\x01`` (EIP-712). So a resolver attestation is
+#: STRUCTURALLY incapable of being replayed into the rig lane's ``submitCoreTexReceipt`` signature
+#: slot or into a personal-sign flow. A bare ``sha256`` of the payload has no such property: it is
+#: just 32 bytes, and 32 bytes will happily serve as somebody else's digest.
+#:
+#: THE TAG NAMES THE PUBLISHED SCHEMA, WHICH IS NOT THIS PACKAGE'S. This construction was authored
+#: here and its tag originally spelled this package's own schema id
+#: (``coretex.rig-resolver-snapshot/v1``). When the two snapshot schemas were reconciled, the
+#: RESOLVER's per-epoch schema won — see :mod:`.resolver_snapshot` — which left the tag naming a
+#: schema nobody publishes. It was aligned before any real signature existed.
+#:
+#: The timing is the whole argument, because the general rule points the other way: a domain tag
+#: works whatever it says, and changing one unilaterally breaks the agreement it encodes. But the
+#: tag is baked into every signature ever made under it. With zero real snapshots in existence the
+#: correction cost one line on each side; one published rehearsal snapshot later it would have
+#: invalidated verification of that snapshot and every one before the change — a migration, not an
+#: edit. A wart that is free today and expensive tomorrow gets fixed today.
+#:
+#: BOTH LANES MUST SPELL THIS IDENTICALLY. Changing it on one side silently invalidates every
+#: signature the other side can verify.
+SNAPSHOT_SIGNING_DOMAIN = b"\x19coretex.rig-state.resolver-snapshot/v1\n"
+
+#: What the tag used to say. Recorded so a future reader does not have to wonder whether the
+#: mismatch was deliberate, and so a stale signature can be DIAGNOSED rather than merely rejected.
+SUPERSEDED_SIGNING_DOMAIN = b"\x19coretex.rig-resolver-snapshot/v1\n"
 
 
 def signing_digest(payload: Mapping[str, Any]) -> bytes:
     """``keccak256(domain ‖ canonical payload bytes)``."""
     return keccak256(SNAPSHOT_SIGNING_DOMAIN + canonical_bytes(payload))
+
+
+def superseded_signing_digest(payload: Mapping[str, Any]) -> bytes:
+    """The digest under the RETIRED tag. For diagnosis only — never for acceptance.
+
+    A signature made before the tag was aligned recovers a valid address under this digest and a
+    wrong one under the live digest. Being able to say "this was signed under the superseded
+    domain" is the difference between a useful refusal and a mysterious one.
+    """
+    return keccak256(SUPERSEDED_SIGNING_DOMAIN + canonical_bytes(payload))
 
 
 @dataclass
@@ -303,6 +339,50 @@ class SignatureResult:
                             "byte-for-byte reproduction against the chain establishes"),
                 "valid": self.valid, "recovered_signer": self.recovered_signer,
                 "expected_signer": self.expected_signer, "reason": self.reason}
+
+
+#: The two published fields of a detached signature artifact, and why BOTH are checked.
+#:
+#: ``payload_sha256`` is IDENTITY: what a snapshot is addressed by, compared by and reproduced
+#: against. ``signing_digest`` is what the signature actually COVERS. They are different values
+#: over different preimages — the digest includes the domain tag — and treating one as a proxy for
+#: the other is a real hole: an artifact naming a CORRECT ``payload_sha256`` beside a WRONG
+#: ``signing_digest`` would satisfy the identity check and then be verified against a digest
+#: nobody computed. That is precisely the "the hash matched" substitution this design exists to
+#: prevent, so :func:`verify_signature_artifact` recomputes both from the payload and refuses on
+#: either mismatch, BEFORE it recovers a key.
+SIGNATURE_ARTIFACT_FIELDS = ("payload_sha256", "signing_digest")
+
+
+def verify_signature_artifact(payload: Mapping[str, Any], artifact: Mapping[str, Any],
+                              expected_signer: Optional[str]) -> SignatureResult:
+    """Verify a DETACHED signature artifact against a payload. Both published fields are checked.
+
+    The order is deliberate and is the same order the payload itself is verified in: everything
+    that can be recomputed from the bytes is recomputed FIRST, and only then is a key recovered.
+    A caller that skipped straight to :func:`verify_signature` would be authenticating a digest
+    the artifact asserted rather than one the payload produces.
+    """
+    if not isinstance(artifact, Mapping):
+        return SignatureResult(False, None, expected_signer,
+                               "the signature artifact is not an object")
+    computed_identity = payload_hash(payload)
+    claimed_identity = str(artifact.get("payload_sha256") or "")
+    if claimed_identity != computed_identity:
+        return SignatureResult(
+            False, None, expected_signer,
+            f"the artifact claims payload_sha256 {claimed_identity!r}, these bytes hash to "
+            f"{computed_identity}. The artifact is not about this payload")
+    computed_digest = "0x" + signing_digest(payload).hex()
+    claimed_digest = str(artifact.get("signing_digest") or "").lower()
+    if claimed_digest != computed_digest:
+        return SignatureResult(
+            False, None, expected_signer,
+            f"the artifact names signing_digest {claimed_digest!r}, but these bytes sign under "
+            f"{computed_digest}. The payload identity matched, which is exactly why this second "
+            "check exists: without it the signature would be verified against a digest nobody "
+            "computed from the payload")
+    return verify_signature(payload, artifact.get("signature"), expected_signer)
 
 
 def verify_signature(payload: Mapping[str, Any], signature: Optional[str],
@@ -330,6 +410,19 @@ def verify_signature(payload: Mapping[str, Any], signature: Optional[str],
     except (ValueError, ec.SignatureError) as exc:
         return SignatureResult(False, None, expected_signer, str(exc))
     if not abi.addresses_equal(recovered, expected_signer):
+        # Before saying "wrong signer", check whether it is the RIGHT signer under the retired
+        # domain tag. A stale-tag signature and a forged one are different problems and only one
+        # of them is somebody re-signing.
+        try:
+            stale = ec.ecrecover(superseded_signing_digest(payload), bytes.fromhex(raw))
+        except (ValueError, ec.SignatureError):             # pragma: no cover - defensive
+            stale = ""
+        if stale and abi.addresses_equal(stale, expected_signer):
+            return SignatureResult(
+                False, recovered, expected_signer,
+                "the expected signer DID sign these bytes, but under the superseded domain tag "
+                f"{SUPERSEDED_SIGNING_DOMAIN!r}. The payload is unaffected; the signature needs "
+                "re-issuing under the published schema's tag")
         return SignatureResult(False, recovered, expected_signer,
                                "the signature recovers a different address")
     return SignatureResult(True, recovered, expected_signer, "signed by the expected resolver")

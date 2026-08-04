@@ -13,6 +13,7 @@ properties under test are the ones a public validator would be wrong about silen
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 
@@ -490,3 +491,156 @@ class TestLaneSeparationIsEnforced:
         for module in (rig, join_module, pipeline, receipt_module, snapshot_module):
             reached = staged & _referenced_names(module)
             assert not reached, f"{module.__name__} reaches the staged path via {sorted(reached)}"
+
+
+# --------------------------------------------------------------------------- #
+# The four reconciliation decisions
+# --------------------------------------------------------------------------- #
+class TestWideIntegers:
+    """uint256/uint128 render as decimal STRINGS. A correctness fix, not a preference."""
+
+    def test_two_to_the_53_and_one_more_are_distinguishable(self):
+        from coretex_validator import canonical as cn
+
+        # In any IEEE-754 reader these two are the SAME double. The canonical rendering keeps
+        # them apart, which is the entire argument.
+        assert cn.wide(2 ** 53) != cn.wide(2 ** 53 + 1)
+        assert cn.wide(2 ** 53 + 1) == "9007199254740993"
+
+    def test_a_uint256_at_the_top_of_its_range_survives_exactly(self):
+        from coretex_validator import canonical as cn
+
+        assert cn.wide(2 ** 256 - 1) == str(2 ** 256 - 1)
+        with pytest.raises(cn.CanonicalizationError):
+            cn.wide(2 ** 256)
+
+    def test_narrow_refuses_rather_than_rounds_above_the_safe_bound(self):
+        from coretex_validator import canonical as cn
+
+        assert cn.narrow(2 ** 53 - 1) == 2 ** 53 - 1
+        with pytest.raises(cn.CanonicalizationError) as excinfo:
+            cn.narrow(2 ** 53)
+        assert "wide()" in str(excinfo.value)
+
+    def test_a_wide_value_survives_a_canonical_round_trip_as_a_string(self):
+        from coretex_validator import canonical as cn
+
+        document = {"credits_earned": cn.wide(2 ** 53 + 1)}
+        assert cn.canonical_bytes(document) == b'{"credits_earned":"9007199254740993"}'
+
+
+class TestRootSpelling:
+    """0x for chain words, bare for content roots, one sanctioned crossing."""
+
+    def test_chain_words_are_prefixed_and_content_roots_are_not(self):
+        from coretex_validator import canonical as cn
+
+        root = "ab" * 32
+        assert cn.word(root) == "0x" + root
+        assert cn.bare_root(root) == root
+        with pytest.raises(cn.CanonicalizationError):
+            cn.bare_root("0x" + root)          # the two spellings never become interchangeable
+
+    def test_the_boundary_is_crossed_only_through_the_named_converters(self):
+        from coretex_validator import canonical as cn
+
+        root = "cd" * 32
+        assert cn.root_from_word("0x" + root) == root
+        assert cn.word_from_root(root) == "0x" + root
+
+    def test_a_short_hex_string_is_refused_never_padded(self):
+        from coretex_validator import canonical as cn
+
+        # Guessing the padding side is how a root and a left-aligned label get confused.
+        with pytest.raises(cn.CanonicalizationError):
+            cn.word("0xdeadbeef")
+
+
+class TestSupersededDeployment:
+    def test_the_old_rehearsal_set_is_named_and_refused(self):
+        from coretex_validator import rehearsal_deployment as rd
+
+        match = rd.superseded_match({"mining": "0x7302bCaBa9a2f17447AEA5CEB3dC1593681758F6"})
+        assert match is not None and match[0] == "2026-08-03"
+
+    def test_the_live_set_is_not_flagged(self):
+        from coretex_validator import rehearsal_deployment as rd
+
+        assert rd.superseded_match(rd.LIVE_DEPLOYMENT) is None
+
+    def test_the_transcribed_addresses_are_checked_against_the_operator_handoff(self):
+        from coretex_validator import rehearsal_deployment as rd
+
+        report = rd.check_against_handoff()
+        if not report["checked"]:
+            pytest.skip(report["reason"])
+        assert report["chain_id"] == rd.REHEARSAL_CHAIN_ID
+        assert report["deployment_kind"] == "ACCELERATED_DISPOSABLE_MAINNET_REHEARSAL"
+
+    def test_the_operator_signer_coincidence_is_recorded_as_a_trap(self):
+        from coretex_validator import rehearsal_deployment as rd
+
+        record = rd.operator_signer_coincidence()
+        assert record["equal_in_this_deployment"] and record["is_a_coincidence"]
+        assert "coordinatorSigner()" in record["consequence"]
+
+    def test_nothing_in_the_validation_path_imports_a_deployment_constant(self):
+        # rehearsal_deployment is a safety net, not a source. The addresses a run uses come from
+        # the release artifact, which is verified against chain bytecode.
+        from coretex_validator import join as join_module
+        from coretex_validator import pipeline
+        from coretex_validator import snapshot as snapshot_module
+
+        for module in (join_module, pipeline, snapshot_module):
+            assert "LIVE_DEPLOYMENT" not in _referenced_names(module), module.__name__
+
+
+class TestSignatureArtifactHasTwoFields:
+    """payload_sha256 is IDENTITY; signing_digest is what the signature COVERS."""
+
+    def _artifact(self, payload, **overrides):
+        artifact = {"payload_sha256": snap.payload_hash(payload),
+                    "signing_digest": "0x" + snap.signing_digest(payload).hex(),
+                    "signature": "0x" + "11" * 65}
+        artifact.update(overrides)
+        return artifact
+
+    def test_a_wrong_payload_identity_is_refused_before_any_key_is_touched(self):
+        payload = minimal_payload()
+        result = snap.verify_signature_artifact(
+            payload, self._artifact(payload, payload_sha256="00" * 32), "0x" + "aa" * 20)
+        assert not result.valid and "not about this payload" in result.reason
+
+    def test_a_CORRECT_identity_with_a_WRONG_digest_is_still_refused(self):
+        # The hole this second check closes: the identity matches, so an implementation that
+        # checked only payload_sha256 would go on to verify against a digest nobody computed.
+        payload = minimal_payload()
+        artifact = self._artifact(payload, signing_digest="0x" + "22" * 32)
+        assert artifact["payload_sha256"] == snap.payload_hash(payload)
+        result = snap.verify_signature_artifact(payload, artifact, "0x" + "aa" * 20)
+        assert not result.valid
+        assert "digest nobody computed" in result.reason
+
+    def test_the_two_fields_are_different_values_over_different_preimages(self):
+        payload = minimal_payload()
+        assert snap.payload_hash(payload) != snap.signing_digest(payload).hex()
+
+    def test_a_signature_under_the_superseded_tag_is_DIAGNOSED_not_just_rejected(self):
+        # A stale-tag signature and a forged one are different problems, and only one of them is
+        # somebody re-signing. Saying which is the difference between a useful refusal and a
+        # mysterious one.
+        import subprocess
+
+        payload = minimal_payload()
+        key = "0x47e179ec197488593b187f80a00eb0da91f1b9d0b13f8733639f19c30a34926a"
+        signer = "0x15d34AAf54267DB7D7c367839AAf71A00a2C6A65"
+        digest = snap.superseded_signing_digest(payload).hex()
+        env = dict(os.environ)
+        env["PATH"] = "/home/ubuntu/.foundry/bin:" + env.get("PATH", "")
+        proc = subprocess.run(["cast", "wallet", "sign", "--no-hash", "--private-key", key,
+                               "0x" + digest], capture_output=True, text=True, env=env)
+        if proc.returncode != 0:
+            pytest.skip("cast is unavailable on this host")
+        result = snap.verify_signature(payload, proc.stdout.strip(), signer)
+        assert not result.valid
+        assert "superseded domain tag" in result.reason

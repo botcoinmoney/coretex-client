@@ -33,6 +33,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from . import frontier as fr
+from . import rehearsal_deployment as rd
 from . import rig_events as rig
 from .keccak256 import keccak256_hex
 
@@ -252,6 +253,17 @@ def verify_deployment(release: Release, rpc, *, block: int) -> DeploymentVerific
     deployment = release.deployment
     contracts: Dict[str, Dict[str, Any]] = {}
     failures: List[str] = []
+    # Name a known-dead set BEFORE reading bytecode. Pointed at a superseded deployment, the
+    # bytecode check reports "no code at address", which reads like an RPC or block-height
+    # problem; saying "this is the 2026-08-03 set, superseded on 2026-08-04" sends the operator
+    # to the right place.
+    dead = rd.superseded_match(release.addresses)
+    if dead is not None:
+        date, hits = dead
+        failures.append(
+            f"this release names the SUPERSEDED {date} rehearsal deployment ({hits}). That "
+            "deployment is dead; its EIP-712 domain separator moved with it, so every receipt "
+            "digest computed against it would be wrong")
     for role in CONTRACT_ROLES:
         address = release.addresses[role]
         code = rpc.code(address, block=block)
@@ -274,6 +286,20 @@ def verify_deployment(release: Release, rpc, *, block: int) -> DeploymentVerific
         wiring["registry.coreTexVerifier"] = views.core_tex_verifier()
         wiring["verifier.coreTexRegistry"] = views.verifier_registry()
         wiring["verifier.mining"] = views.verifier_mining()
+        # THREE FIELDS IDENTIFY A REGISTRY, NOT TWO. Address and code hash are not sufficient: a
+        # SUCCESSOR registry deployed from the same source has an IDENTICAL code hash, and on
+        # arrival it inherits every epoch's context and answers the pin getters identically. So
+        # neither the code nor the state separates a live registry from a retired one — only the
+        # verifier BINDING does, and it is the third field for exactly that reason.
+        wiring["registry_identity"] = {
+            "address": deployment.registry.lower(),
+            "code_hash": contracts["registry"]["observed"],
+            "verifier_bound_registry": str(wiring["verifier.coreTexRegistry"]).lower(),
+            "note": ("a successor deployed from the same source shares this code_hash and, once "
+                     "it has inherited the epoch contexts, answers the pin getters identically. "
+                     "`verifier_bound_registry` is the only field that distinguishes the live "
+                     "registry from a retired one"),
+        }
     except Exception as exc:                                  # noqa: BLE001 - reported, not raised
         failures.append(f"wiring could not be read: {exc}")
         wiring["error"] = str(exc)
@@ -283,9 +309,15 @@ def verify_deployment(release: Release, rpc, *, block: int) -> DeploymentVerific
                  ("verifier.mining", deployment.mining))
         for name, expected_address in pairs:
             if str(wiring[name]).lower() != expected_address.lower():
+                extra = ""
+                if name == "verifier.coreTexRegistry":
+                    extra = (" This is the RETIREMENT case specifically: the named registry may "
+                             "carry the right code and answer every getter correctly and still "
+                             "not be the one the verifier writes through. Nothing else in this "
+                             "check can catch that")
                 failures.append(
                     f"{name} = {wiring[name]}, the release names {expected_address}. The three "
-                    "contracts do not form one lane")
+                    f"contracts do not form one lane.{extra}")
         wiring["consistent"] = not failures
 
     return DeploymentVerification(ok=not failures, block=block, contracts=contracts,

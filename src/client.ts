@@ -25,6 +25,9 @@ export * from './replay/coretex-registry.js';
 // shares the canonical lane's advance topic0, so both decoders stay live and routing
 // is by emitting address (see replay/rig-dispatch.ts).
 export * from './replay/rig-dispatch.js';
+// Chain-value spelling for canonical documents. Wide integers render as decimal
+// STRINGS because Number(2n**53n) === Number(2n**53n+1n) in this runtime.
+export * from './replay/canonical-chain-values.js';
 export * from './replay/per-patch.js';
 export * from './replay/eval-report-artifact.js';
 export * from './coordinator/base-blockhash.js';
