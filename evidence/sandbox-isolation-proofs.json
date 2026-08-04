@@ -1,0 +1,61 @@
+{
+ "note": "P7 (both epoch-180 receipts complete deterministic replay) is proven by the full replay runs recorded alongside this file, not here: it costs tens of minutes per receipt and belongs with the stage table",
+ "ok": true,
+ "proofs": [
+  {
+   "detail": "coretex_validator imports from /tmp/claude-1000/-home-ubuntu-botcoin-coordinator/4afb76d2-aabb-47cc-9fd8-a58814c934ed/scratchpad/ci5/lib/python3.10/site-packages/coretex_validator/__init__.py",
+   "ok": true,
+   "proof": "P1 clean wheel-only install"
+  },
+  {
+   "child_path": [
+    "/tmp/claude-1000/-home-ubuntu-botcoin-coordinator/4afb76d2-aabb-47cc-9fd8-a58814c934ed/scratchpad/admission/benchmark-v2",
+    "/tmp/claude-1000/-home-ubuntu-botcoin-coordinator/4afb76d2-aabb-47cc-9fd8-a58814c934ed/scratchpad/admission/coretex-memory",
+    "/usr/lib/python3.10",
+    "/usr/lib/python3.10/lib-dynload",
+    "/tmp/claude-1000/-home-ubuntu-botcoin-coordinator/4afb76d2-aabb-47cc-9fd8-a58814c934ed/scratchpad/ci5/lib/python3.10",
+    "/tmp/claude-1000/-home-ubuntu-botcoin-coordinator/4afb76d2-aabb-47cc-9fd8-a58814c934ed/scratchpad/ci5/lib/python3.10/site-packages"
+   ],
+   "detail": "child sys.path has 6 entries, 0 repository-like",
+   "ok": true,
+   "proof": "P2 no source-tree imports"
+  },
+  {
+   "detail": "the verified environment's wheels are importable (this is what K2 broke)",
+   "ok": true,
+   "proof": "P2b site-packages IS admitted"
+  },
+  {
+   "detail": "networkless enforced=True, socket outcomes={'AF_INET': 'PermissionError:1', 'AF_INET6': 'PermissionError:1'}",
+   "ok": true,
+   "proof": "P3 no network"
+  },
+  {
+   "detail": "every IP family refused with EPERM(1): {'AF_INET': 'PermissionError:1', 'AF_INET6': 'PermissionError:1'}",
+   "ok": true,
+   "proof": "P4 socket syscall EPERM"
+  },
+  {
+   "content_digest": "53233226dc44f05c4ea6c1f1e7fc80ad7e9d4cff24c486c3888df9b5856655e1",
+   "detail": "wasmtime 46.0.1 against pin >=46.0.1,<47, content digest 53233226dc44f05c\u2026",
+   "location_is_site_packages": true,
+   "ok": true,
+   "pin": ">=46.0.1,<47",
+   "proof": "P5 dependency matches the publication lock",
+   "version": "46.0.1"
+  },
+  {
+   "detail": "class=SandboxDependencyError, dependency=wasmtime, remedy=pip install 'wasmtime>=46.0.1,<47' into the environment running the validator",
+   "ok": true,
+   "proof": "P6 missing wasmtime -> NAMED dependency error",
+   "raw": {
+    "available": true,
+    "class": "SandboxDependencyError",
+    "dependency": "wasmtime",
+    "error": "MISSING_DEPENDENCY[wasmtime]: the pinned runtime could not import it in the sandbox child (No module named 'wasmtime'). This is an ENVIRONMENT fault, not a missing configuration and not something the validator can check around. Remedy: pip install 'wasmtime>=46.0.1,<47' into the environment running the validator",
+    "remedy": "pip install 'wasmtime>=46.0.1,<47' into the environment running the validator"
+   }
+  }
+ ],
+ "suite": "coretex-validator/sandbox-isolation-proofs/v1"
+}

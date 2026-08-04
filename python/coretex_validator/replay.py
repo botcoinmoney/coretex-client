@@ -236,19 +236,42 @@ _CORETEX_MEMORY_TREE = _tree("CORETEX_MEMORY_RUNTIME_DIR") or (
 #: benchmark/product import ever lands in the process that computes frontier roots.
 _SCREEN_CHILD = r'''
 import json, sys
-# SCRUB ONLY OUR OWN PACKAGE DIRECTORY. The point is to stop THIS lane's modules resolving as
-# top-level names in the child, so `benchmark-v2`'s same-named `frontier` package wins. Only
-# {validator!r} can do that, and only if it is on sys.path at all.
+# ── IMPORT ISOLATION: AN EXPLICIT ALLOW-LIST, NOT A SCRUB ────────────────────────────────
 #
-# The parent directory is NOT removed, and that is a correctness fix rather than a relaxation: in
-# a pip-installed client the parent IS site-packages, so removing it deleted the entire
-# third-party import path and the runtime tree's own dependencies (`wasmtime`) vanished — the
-# sandbox could then never become available on exactly the installation this package certifies.
-# In a source checkout the parent holds a PACKAGE, not a top-level `frontier` module, so removing
-# it was never doing anything useful there either.
-sys.path[:] = [p for p in sys.path if p != {validator!r}]
-sys.path.insert(0, {coretex!r})
-sys.path.insert(0, {bench!r})
+# Two classes of path, separated STRUCTURALLY so a future change cannot silently re-admit a
+# repository import:
+#
+#   ALLOWED   the pinned admission trees, plus the stdlib and site-packages OF THE VERIFIED
+#             INTERPRETER — i.e. what `pip install` put there. That is where `wasmtime` and every
+#             other pinned wheel dependency lives, and the sandbox must be able to import them.
+#   REFUSED   everything else: the source tree, repository-relative entries, the working
+#             directory (`''`), `PYTHONPATH` injections, and the user site directory. All of
+#             those are AMBIENT — they depend on where the command was run from and what the host
+#             happens to have lying around, which is precisely what must not influence a
+#             deterministic replay.
+#
+# Building the list from scratch is the point. The previous version FILTERED the inherited path,
+# which is a blocklist: it can only remove what somebody remembered to name, and it removed the
+# wrong thing (in a wheel install the package's parent IS site-packages, so the filter deleted
+# every third-party dependency and `wasmtime` vanished). An allow-list fails the other way —
+# toward refusing an import — which is the correct direction for a sandbox.
+import os as _os, site as _site, sysconfig as _sysconfig
+_allowed = [{bench!r}, {coretex!r}]
+for _key in ("stdlib", "platstdlib"):
+    _p = _sysconfig.get_path(_key)
+    if _p:
+        _allowed.append(_p)
+        _allowed.append(_os.path.join(_p, "lib-dynload"))
+try:
+    _allowed.extend(_site.getsitepackages())          # the VERIFIED environment's wheels
+except AttributeError:                                # pragma: no cover - virtualenv shim
+    pass
+# The USER site directory is deliberately excluded: ~/.local is ambient host state,
+# present on some machines and absent on others, so it must not influence a replay.
+_seen = set()
+sys.path[:] = [p for p in _allowed
+               if p and p not in _seen and not _seen.add(p) and _os.path.isdir(p)]
+
 from scoring.oracle_screen import is_oracle_clean
 requests = json.loads(sys.stdin.read())
 out = {{}}
@@ -457,6 +480,38 @@ def verify_selection_complete(selection: Mapping[str, Any], *, entropy: Mapping[
 # --------------------------------------------------------------------------- #
 # The pinned networkless candidate sandbox
 # --------------------------------------------------------------------------- #
+class SandboxDependencyError(Exception):
+    """A required dependency of the pinned runtime is MISSING FROM THE VERIFIED ENVIRONMENT.
+
+    DELIBERATELY NOT A SUBCLASS OF :class:`SandboxUnavailable`, because the two mean opposite
+    things to whoever is reading the report:
+
+    * ``SandboxUnavailable`` -> BACKLOG -> "this host is not configured to check that". The reader
+      concludes our instructions were incomplete and goes looking for more of them.
+    * ``SandboxDependencyError`` -> FAIL -> "your environment is wrong, and here is which
+      dependency and how to fix it". The reader concludes the ball is in their court.
+
+    Collapsing the second into the first is the single most misleading thing this module could do
+    to an external agent: they would spend their time re-reading our documentation while the
+    actual fix is one ``pip install`` on their side.
+    """
+
+    def __init__(self, dependency: str, detail: str, *, remedy: str = "") -> None:
+        self.dependency = dependency
+        self.detail = detail
+        self.remedy = remedy or f"install {dependency} into the environment running the validator"
+        super().__init__(
+            f"MISSING_DEPENDENCY[{dependency}]: {detail}. This is an ENVIRONMENT fault, not a "
+            f"missing configuration and not something the validator can check around. Remedy: "
+            f"{self.remedy}")
+
+
+#: What the pinned runtime trees need that is not in the standard library, and the range the
+#: publication lane's closure analysis recorded. The validator itself still declares no runtime
+#: dependencies; this one belongs to the runtime tree it executes.
+PINNED_RUNTIME_DEPENDENCIES = {"wasmtime": ">=46.0.1,<47"}
+
+
 class SandboxUnavailable(Exception):
     """The pinned sandbox cannot run here. Always a BACKLOG entry, never a pass."""
 
@@ -522,19 +577,34 @@ class NullSandbox(CandidateSandbox):
 #: networkless execution; V5 does not mint a second scoring path.
 _SANDBOX_CHILD = r'''
 import importlib.util, json, shutil, sys, tempfile
-# SCRUB ONLY OUR OWN PACKAGE DIRECTORY. The point is to stop THIS lane's modules resolving as
-# top-level names in the child, so `benchmark-v2`'s same-named `frontier` package wins. Only
-# {validator!r} can do that, and only if it is on sys.path at all.
-#
-# The parent directory is NOT removed, and that is a correctness fix rather than a relaxation: in
-# a pip-installed client the parent IS site-packages, so removing it deleted the entire
-# third-party import path and the runtime tree's own dependencies (`wasmtime`) vanished — the
-# sandbox could then never become available on exactly the installation this package certifies.
-# In a source checkout the parent holds a PACKAGE, not a top-level `frontier` module, so removing
-# it was never doing anything useful there either.
-sys.path[:] = [p for p in sys.path if p != {validator!r}]
-sys.path.insert(0, {coretex!r})
-sys.path.insert(0, {bench!r})
+# The same explicit ALLOW-LIST the sandbox child uses — see its comment. Allowed: the pinned
+# trees plus the verified interpreter's stdlib and site-packages. Refused: source tree,
+# repository-relative paths, the working directory and PYTHONPATH injections.
+import os as _os, site as _site, sysconfig as _sysconfig
+_allowed = [{bench!r}, {coretex!r}]
+for _key in ("stdlib", "platstdlib"):
+    _p = _sysconfig.get_path(_key)
+    if _p:
+        _allowed.append(_p)
+        _allowed.append(_os.path.join(_p, "lib-dynload"))
+try:
+    _allowed.extend(_site.getsitepackages())
+except AttributeError:                                # pragma: no cover - virtualenv shim
+    pass
+_seen = set()
+sys.path[:] = [p for p in _allowed
+               if p and p not in _seen and not _seen.add(p) and _os.path.isdir(p)]
+# DEPENDENCY PREFLIGHT — fail CLOSED with a NAMED error, never a backlog. Without this a missing
+# `wasmtime` surfaces as "sandbox unavailable", which reads as "not configured" and sends the
+# reader back to our documentation instead of to their own environment.
+for _dependency in ("wasmtime",):
+    try:
+        __import__(_dependency)
+    except ImportError as _exc:
+        print("<<<MISSING_DEPENDENCY>>>" + json.dumps(
+            {{"dependency": _dependency, "detail": str(_exc),
+              "sys_path": list(sys.path)}}))
+        raise SystemExit(97)
 # NETWORKLESS: enforce, then PROVE, before a single line of candidate code runs (ruling §9 W2).
 # `worker/isolation.py` is loaded by ABSOLUTE PATH so the v5 lane stays off sys.path (the whole
 # reason this is a child interpreter); it imports nothing but the stdlib.
@@ -634,6 +704,16 @@ class BenchmarkV2Sandbox(CandidateSandbox):
                                   env=env, timeout=self.timeout)
         except (OSError, subprocess.SubprocessError) as exc:
             raise SandboxUnavailable(f"sandbox child failed to start: {exc}") from exc
+        if "<<<MISSING_DEPENDENCY>>>" in proc.stdout:
+            payload = json.loads(proc.stdout.split("<<<MISSING_DEPENDENCY>>>", 1)[1]
+                                 .splitlines()[0])
+            name = str(payload.get("dependency", "?"))
+            pin = PINNED_RUNTIME_DEPENDENCIES.get(name, "")
+            raise SandboxDependencyError(
+                name, f"the pinned runtime could not import it in the sandbox child "
+                      f"({payload.get('detail')})",
+                remedy=(f"pip install '{name}{pin}' into the environment running the validator"
+                        if pin else f"pip install {name}"))
         if proc.returncode != 0 or "<<<JSON>>>" not in proc.stdout:
             raise SandboxUnavailable(
                 f"sandbox child exited {proc.returncode}: "
@@ -1133,6 +1213,10 @@ def replay_advance(event: dp.FrontierAdvanced, *, store: pub.ContentStore,
                 + getattr(runner, "unavailable_reason",
                           "reports itself unavailable on this host"))
         execution = runner.execute(receipt_wrapper=receipt_wrapper, artifact=artifact)
+    except SandboxDependencyError as exc:
+        # A DETERMINATION, not a backlog: the environment is wrong and the reader can fix it.
+        return _fail("sandbox", "missing_dependency", str(exc), checks=checks,
+                     new_manifest=new_manifest, **ident)
     except SandboxUnavailable as exc:
         return _backlog("sandbox", bl.sandbox_unavailable(
             str(exc), event=event, subject=getattr(runner, "name", type(runner).__name__),

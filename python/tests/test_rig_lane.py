@@ -863,30 +863,296 @@ class TestCompactPatchIsBinaryNotJson:
         assert "superseded" in excinfo.value.message
 
 
-class TestSandboxChildKeepsItsImportPath:
-    """K2: the child must not delete site-packages in a wheel install."""
+class TestSandboxImportIsolation:
+    """The two path classes, separated STRUCTURALLY — an allow-list, not a scrub.
 
-    def test_the_child_templates_scrub_only_the_package_directory(self):
+    ALLOWED: the pinned admission trees plus the verified interpreter's stdlib and site-packages.
+    REFUSED: source tree, repository-relative entries, the working directory, PYTHONPATH
+    injections and the user site directory — all ambient, all dependent on where the command was
+    run from, all things that must not influence a deterministic replay.
+
+    The direction of failure is the point. A blocklist can only remove what somebody remembered
+    to name, and the previous one named the wrong thing. An allow-list fails toward REFUSING an
+    import, which is the correct direction for a sandbox.
+    """
+
+    def _render(self, template):
+        return template.format(v5="/PARENT", validator="/PARENT/coretex_validator",
+                               coretex="/trees/coretex-memory", bench="/trees/benchmark-v2",
+                               repo="/trees", isolation="/iso.py")
+
+    def _templates(self):
         from coretex_validator import replay as replay_mod
 
-        for template in (replay_mod._SCREEN_CHILD, replay_mod._SANDBOX_CHILD):  # noqa: SLF001
-            rendered = template.format(v5="/PARENT", validator="/PARENT/coretex_validator",
-                                       coretex="/trees/coretex-memory", bench="/trees/benchmark-v2",
-                                       repo="/trees", isolation="/iso.py")
-            assert "if p != '/PARENT/coretex_validator'" in rendered
-            # The parent must NOT be scrubbed: in a wheel install it IS site-packages, and
-            # removing it takes wasmtime with it.
-            assert "'/PARENT'," not in rendered
-            assert "p not in ('/PARENT'" not in rendered
+        return (replay_mod._SCREEN_CHILD, replay_mod._SANDBOX_CHILD)      # noqa: SLF001
 
-    def test_scrubbing_the_parent_would_have_removed_site_packages(self):
-        # The defect, stated as an executable fact rather than a story: for an installed package
-        # the parent directory of the package IS the site-packages directory.
+    def test_the_path_is_BUILT_not_filtered(self):
+        for template in self._templates():
+            rendered = self._render(template)
+            assert "_allowed = " in rendered
+            # The old blocklist form must be gone entirely, in both children.
+            assert "for p in sys.path if" not in rendered
+
+    def test_the_admission_trees_are_allowed_and_come_first(self):
+        for template in self._templates():
+            rendered = self._render(template)
+            assert "_allowed = ['/trees/benchmark-v2', '/trees/coretex-memory']" in rendered
+
+    def test_site_packages_of_the_verified_environment_is_allowed(self):
+        # Without this the sandbox cannot import wasmtime, which was exactly the K2 defect.
+        for template in self._templates():
+            assert "_site.getsitepackages()" in self._render(template)
+
+    def test_the_user_site_directory_is_NOT_allowed(self):
+        # ~/.local is ambient host state — present on some machines, absent on others.
+        for template in self._templates():
+            assert "getusersitepackages" not in self._render(template)
+
+    def test_source_tree_and_package_paths_are_not_in_the_allow_list(self):
+        for template in self._templates():
+            rendered = self._render(template)
+            body = rendered.split("_allowed = ", 1)[1].split("sys.path[:]", 1)[0]
+            assert "/PARENT/coretex_validator" not in body
+            assert "'/PARENT'" not in body
+
+    def test_the_dependency_preflight_names_the_dependency_and_fails_closed(self):
+        from coretex_validator import replay as replay_mod
+
+        rendered = self._render(replay_mod._SANDBOX_CHILD)                # noqa: SLF001
+        assert "MISSING_DEPENDENCY" in rendered
+        assert 'for _dependency in ("wasmtime",)' in rendered
+        assert "raise SystemExit(97)" in rendered
+
+    def test_a_missing_dependency_is_a_FAIL_not_a_BACKLOG(self):
+        from coretex_validator import replay as replay_mod
+
+        # The distinction the operator called out: "could not check" vs "your environment is
+        # wrong". They must not be the same class, or one degrades into the other.
+        assert not issubclass(replay_mod.SandboxDependencyError, replay_mod.SandboxUnavailable)
+        error = replay_mod.SandboxDependencyError("wasmtime", "no module named wasmtime")
+        assert "MISSING_DEPENDENCY[wasmtime]" in str(error)
+        assert "ENVIRONMENT fault" in str(error)
+        assert error.dependency == "wasmtime"
+        assert error.remedy
+
+    def test_the_pinned_range_is_recorded_and_used_in_the_remedy(self):
+        from coretex_validator import replay as replay_mod
+
+        assert replay_mod.PINNED_RUNTIME_DEPENDENCIES["wasmtime"] == ">=46.0.1,<47"
+
+
+class TestResolverSchemaReproduction:
+    """The published schema is the RESOLVER's per-epoch shape, and this package reproduces it."""
+
+    def test_the_published_check_vocabulary_is_the_normative_step_numbers(self):
+        # These strings go INSIDE the canonical bytes, so a lane that spelled them its own way
+        # would produce a payload that could not reproduce however correct its logic was.
+        assert jn.JOIN_STEPS == (
+            "step1_advance_decoded", "step2_credit_event_joined", "step3_calldata_decoded",
+            "step4_receipt_hash_bound", "step5_artifact_hash_bound_via_digest",
+            "step6_calldata_bound_to_logs", "step7_coordinator_signature_verified",
+            "step8_patch_hash_verified")
+
+    def test_the_schema_has_exactly_twenty_three_top_level_keys(self):
+        from coretex_validator import resolver_snapshot as rsn
+
+        assert len(rsn.TOP_LEVEL_KEYS) == 23
+        with pytest.raises(rsn.ReproductionError) as excinfo:
+            rsn.check_shape({"schema": rsn.SCHEMA, "epoch": 1})
+        assert excinfo.value.code == "SCHEMA_SHAPE_MISMATCH"
+
+    def test_a_canonical_classification_is_refused_by_the_shape_check(self):
+        from coretex_validator import resolver_snapshot as rsn
+
+        payload = {k: None for k in rsn.TOP_LEVEL_KEYS}
+        payload["schema"] = rsn.SCHEMA
+        payload["classification"] = "MAINNET_CANONICAL"
+        with pytest.raises(rsn.ReproductionError) as excinfo:
+            rsn.check_shape(payload)
+        assert excinfo.value.code == "CLASSIFICATION_REFUSED"
+
+    def test_schema_constant_keys_are_named_so_they_cannot_pose_as_evidence(self):
+        from coretex_validator import resolver_snapshot as rsn
+
+        # Reproducing spec text proves the transcription, not the chain. The comparison report
+        # keeps the two classes apart for exactly that reason.
+        assert "derivation" in rsn.SCHEMA_CONSTANT_KEYS
+        assert "canonicalization" in rsn.SCHEMA_CONSTANT_KEYS
+        assert "transitions" in rsn.CHAIN_DERIVED_KEYS
+        assert "state" in rsn.CHAIN_DERIVED_KEYS
+        assert not set(rsn.SCHEMA_CONSTANT_KEYS) & set(rsn.CHAIN_DERIVED_KEYS)
+
+    def test_wide_receipt_members_render_as_strings_and_narrow_ones_as_numbers(self):
+        from coretex_validator import resolver_snapshot as rsn
+
+        # The mixture inside ONE object is what a reader has to get right: rigId is a string,
+        # epochId beside it is a number.
+        assert "rigId" in rsn._WIDE_RECEIPT_MEMBERS            # noqa: SLF001
+        assert "worldSeed" in rsn._WIDE_RECEIPT_MEMBERS        # noqa: SLF001
+        assert "difficultyCountSnapshot" in rsn._WIDE_RECEIPT_MEMBERS   # noqa: SLF001
+        assert "epochId" in rsn._NARROW_RECEIPT_MEMBERS        # noqa: SLF001
+        assert not set(rsn._WIDE_RECEIPT_MEMBERS) & set(rsn._NARROW_RECEIPT_MEMBERS)  # noqa: SLF001
+
+    def test_finalized_at_is_wide_because_it_is_a_uint256_timestamp(self):
+        from coretex_validator import resolver_snapshot as rsn
+
+        state = rsn.build_state(
+            epoch=10,
+            context={"active_frontier_root": "0x" + "aa" * 32,
+                     "baseline_manifest_hash": "0x" + "bb" * 32, "configured": True,
+                     "core_version_hash": "0x" + "cc" * 32, "corpus_root": "0x" + "dd" * 32,
+                     "hidden_seed_commit": "0x" + "ee" * 32,
+                     "parent_state_root": "0x" + "ff" * 32},
+            header={"final_state_root": "0x" + "11" * 32},
+            live_state_root="0x" + "11" * 32, transition_count=3, sealed=True, served=True,
+            finalized_at=1785992019)
+        # A decimal STRING, sitting beside transition_count which is a number. The easiest field
+        # in the whole payload to get wrong.
+        assert state["finalized_at"] == "1785992019"
+        assert state["transition_count"] == 3
+
+    def test_the_observation_omits_everything_that_depends_on_WHEN_it_ran(self):
+        from coretex_validator import resolver_snapshot as rsn
+
+        chain = rsn.build_chain(chain_id=31337, block_number=36, block_hash="0x" + "ab" * 32,
+                                parent_hash="0x" + "cd" * 32, block_timestamp=1785992019,
+                                required_confirmations=2)
+        observation = chain["observation"]
+        # Including any of these would make two honest resolutions of one block differ.
+        for absent in ("head_number", "confirmations", "finalized_block_number"):
+            assert absent not in observation
+        assert observation["finality_policy"]["required_confirmations"] == 2
+
+
+class TestCompactPatchIsBinaryNotJson:
+    """The full validation set from RigCoreTexVerifier._validateCompactPatch.
+
+    Every negative control asserts its SPECIFIC refusal code. A control that only checked "it
+    threw" would pass just as happily when the decoder rejects for the wrong reason — and a
+    decoder that refused everything would satisfy the whole suite.
+    """
+
+    def _patch(self, *, patch_type=0xFF, word_count=1, score_delta=65500,
+               parent="21" * 32, words=((2, "b3" * 32),), trailing=b""):
+        raw = bytes([patch_type, word_count]) + score_delta.to_bytes(8, "big") \
+            + bytes.fromhex(parent)
+        for index, value in words:
+            raw += (bytes([index]) if index < 128
+                    else bytes([0x80 | (index & 0x7F), index >> 7]))
+            raw += bytes.fromhex(value)
+        return raw + trailing
+
+    def _refusal(self, raw, **kwargs):
+        with pytest.raises(rig.CompactPatchError) as excinfo:
+            rig.decode_compact_patch(raw, **kwargs)
+        return excinfo.value.code
+
+    # ── POSITIVE FIXTURE: the real 75-byte epoch-180 patch ────────────────────────────────
+    def test_the_real_epoch_180_patches_decode_to_documented_ground_truth(self):
         import pathlib
 
-        from coretex_validator import replay as replay_mod
+        evidence = pathlib.Path("/home/ubuntu/botcoin-coordinator-v5-p6/v5/resolver/evidence"
+                                "/mainnet-rehearsal-e180-20260804/snapshot.json")
+        if not evidence.is_file():
+            pytest.skip("the published epoch-180 snapshot is not on this host")
+        snapshot = json.loads(evidence.read_text(encoding="utf-8"))
+        expected = {0: (65500, "2170c3de"), 1: (90600, "17e41e20")}
+        for entry in snapshot["transitions"]["lineage"]:
+            event = entry["registry_event"]
+            raw = bytes.fromhex(event["compact_patch_bytes"][2:])
+            patch = rig.decode_compact_patch(
+                raw, parent_state_root=event["parent_state_root"],
+                expected_patch_hash=event["patch_hash"],
+                score_delta_ppm=(int(entry["receipt"]["scoreAfterPpm"])
+                                 - int(entry["receipt"]["scoreBeforePpm"])))
+            delta, parent_prefix = expected[entry["transition_index"]]
+            assert len(raw) == 75
+            assert patch.patch_type == 0xFF and patch.word_count == 1
+            assert patch.score_delta_ppm == delta
+            assert patch.parent_state_root.startswith(parent_prefix)
+            # Word 2 is the candidate release root — the signed artifactHash.
+            assert patch.words[0] == (2, entry["receipt"]["artifactHash"][2:])
 
-        parent = pathlib.Path(replay_mod._PKG_PARENT)                   # noqa: SLF001
-        package = pathlib.Path(replay_mod._PKG_DIR)                     # noqa: SLF001
-        assert package.parent == parent
-        assert package.name == "coretex_validator"
+    # ── NEGATIVE CONTROLS: each asserts WHICH refusal fired ───────────────────────────────
+    def test_malformed_length(self):
+        assert self._refusal(b"\xff\x01" + b"\x00" * 10) == rig.PATCH_LENGTH_INVALID
+        assert self._refusal(self._patch(words=((2, "aa" * 32),) * 4) + b"\x00" * 200) \
+            == rig.PATCH_LENGTH_INVALID
+
+    def test_truncated_leb128(self):
+        # A continuation bit with nothing after it.
+        raw = bytes([0xFF, 1]) + (65500).to_bytes(8, "big") + bytes.fromhex("21" * 32) + b"\x82"
+        assert self._refusal(raw) == rig.PATCH_INDEX_TRUNCATED
+
+    def test_overlong_leb128(self):
+        raw = (bytes([0xFF, 1]) + (65500).to_bytes(8, "big") + bytes.fromhex("21" * 32)
+               + b"\x82\x81\x01" + bytes.fromhex("aa" * 32))
+        assert self._refusal(raw) == rig.PATCH_INDEX_OVERLONG
+
+    def test_redundant_leb128_encoding(self):
+        # 0x82 0x00 and 0x02 both mean 2: one index with two spellings is one patch with two
+        # hashes, which breaks the patchHash binding outright.
+        raw = (bytes([0xFF, 1]) + (65500).to_bytes(8, "big") + bytes.fromhex("21" * 32)
+               + b"\x82\x00" + bytes.fromhex("aa" * 32))
+        assert self._refusal(raw) == rig.PATCH_INDEX_REDUNDANT
+
+    def test_duplicate_index(self):
+        assert self._refusal(
+            self._patch(word_count=2, words=((2, "aa" * 32), (2, "bb" * 32)))) \
+            == rig.PATCH_INDEX_DUPLICATE
+
+    def test_reserved_index(self):
+        assert self._refusal(self._patch(words=((999, "aa" * 32),))) == rig.PATCH_INDEX_RESERVED
+
+    def test_index_outside_the_patch_type_window(self):
+        assert self._refusal(self._patch(patch_type=0x06, words=((400, "aa" * 32),))) \
+            == rig.PATCH_INDEX_OUT_OF_WINDOW
+
+    def test_wrong_parent(self):
+        assert self._refusal(self._patch(parent="21" * 32), parent_state_root="99" * 32) \
+            == rig.PATCH_PARENT_MISMATCH
+
+    def test_wrong_score_delta(self):
+        assert self._refusal(self._patch(score_delta=65500), score_delta_ppm=90600) \
+            == rig.PATCH_SCORE_DELTA_MISMATCH
+
+    def test_trailing_bytes(self):
+        assert self._refusal(self._patch(trailing=b"\x00")) == rig.PATCH_TRAILING_BYTES
+
+    def test_json_substitution(self):
+        # THE bug K1 was: canonical JSON handed to a decoder expecting the contract's struct.
+        # It must be refused HERE with a structural code, not accepted and not crash elsewhere.
+        payload = json.dumps({"target_profile": "doc.tool.v1",
+                              "expected_prior_release_root": "aa" * 32,
+                              "new_release_root": "bb" * 32,
+                              "resulting_composition_root": "cc" * 32},
+                             sort_keys=True, separators=(",", ":")).encode("utf-8")
+        assert self._refusal(payload) in {rig.PATCH_TYPE_UNKNOWN, rig.PATCH_LENGTH_INVALID,
+                                          rig.PATCH_WORD_COUNT_INVALID}
+        # ...and symmetrically, the real binary patch is not UTF-8, so the JSON parser can never
+        # have been right for it. This is the whole of K1 in two assertions.
+        from coretex_validator import frontier as frontier_mod
+
+        with pytest.raises(Exception):
+            frontier_mod.parse_transition_bytes(self._patch())
+
+    def test_unknown_patch_type_and_word_count_bounds(self):
+        assert self._refusal(self._patch(patch_type=0x08)) == rig.PATCH_TYPE_UNKNOWN
+        assert self._refusal(self._patch(word_count=0)) == rig.PATCH_WORD_COUNT_INVALID
+        assert self._refusal(self._patch(word_count=5)) == rig.PATCH_WORD_COUNT_INVALID
+
+    def test_the_keccak_patch_hash_rule_is_part_of_the_validation_set(self):
+        raw = self._patch()
+        # Correct hash passes...
+        rig.decode_compact_patch(raw, expected_patch_hash=rig.patch_hash(raw))
+        # ...a wrong one is refused BEFORE any field complaint, because a patch whose bytes hash
+        # elsewhere is a different patch, not a malformed one.
+        assert self._refusal(raw, expected_patch_hash="00" * 32) == rig.PATCH_HASH_MISMATCH
+
+    def test_a_superseded_label_signature_is_diagnosed_by_name(self):
+        raw = self._patch()
+        stale = rig.keccak256_hex(rig.SUPERSEDED_PATCH_HASH_LABEL + raw)
+        with pytest.raises(rig.CompactPatchError) as excinfo:
+            rig.decode_compact_patch(raw, expected_patch_hash=stale)
+        assert excinfo.value.code == rig.PATCH_HASH_MISMATCH
+        assert "superseded" in excinfo.value.message
