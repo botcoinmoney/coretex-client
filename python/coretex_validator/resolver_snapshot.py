@@ -44,31 +44,62 @@ from . import canonical as cn
 from . import join as jn
 from . import rig_events as rig
 
-SCHEMA = "coretex.rig-state.resolver-snapshot/v1"
+#: THE SIGNED ERA. Its payload carries a ``resolver`` key-identity block, because a snapshot of
+#: that era named who signed it. Epoch 180's published snapshot is this schema and STAYS VALID:
+#: it is historical evidence, and reproducing it remains a true statement about it. Reproduction
+#: does not require checking the signature that happens to exist alongside it.
+SCHEMA_V1 = "coretex.rig-state.resolver-snapshot/v1"
+#: THE UNSIGNED ERA. Removing the signature changed the payload SHAPE — ``resolver`` became
+#: ``authority`` — so the resolver bumped the version rather than reusing the id.
+#:
+#: That is the F8 defect this package raised when the two schemas first diverged, applied to
+#: itself, and it is the right call: two documents with different shapes must not answer to one
+#: name, or a validator cannot tell from the id alone what it is about to parse.
+SCHEMA_V2 = "coretex.rig-state.resolver-snapshot/v2"
+
+#: Both are accepted, and the set is widened DELIBERATELY. An unknown schema is refused rather
+#: than guessed at — a validator that guesses is one that will eventually parse a v3 as a v2 and
+#: report a confident, wrong answer.
+SUPPORTED_SCHEMAS: Tuple[str, ...] = (SCHEMA_V1, SCHEMA_V2)
+
+#: Retained for callers that predate the v2 cut. New code should name a version explicitly.
+SCHEMA = SCHEMA_V1
 SCHEMA_VERSION = 1
 PROTOCOL_ID = "coretex.rig-state.v1"
 SUPERSEDED_PROTOCOLS = ("coretex.memory-frontier.v1", "coretex.state.v4")
 CLASSIFICATION_REHEARSAL = "MAINNET_REHEARSAL"
 CLASSIFICATION_CANONICAL_FORBIDDEN = "MAINNET_CANONICAL"
 
-#: The 23 top-level keys. Fixed: a payload with 22 or 24 is not this schema.
-TOP_LEVEL_KEYS: Tuple[str, ...] = (
+#: 23 top-level keys in BOTH versions. A payload with 22 or 24 is neither.
+#:
+#: The versions differ in exactly one key, and it is the one the signature removal touched:
+#: v1's ``resolver`` (who signed this) becomes v2's ``authority`` (why you should believe it at
+#: all — the cache-vs-authority statement, carried inside the canonical bytes rather than in a
+#: README where it could be separated from the document it describes).
+_COMMON_KEYS: Tuple[str, ...] = (
     "artifacts", "canonicalization", "chain", "classification", "composition", "contracts",
     "derivation", "disclosure", "epoch", "epoch_lineage", "findings", "locks", "migration",
-    "prior", "production_authority", "profiles", "protocol", "resolver", "schema", "state",
+    "prior", "production_authority", "profiles", "protocol", "schema", "state",
     "transitions", "version", "wiring")
+TOP_LEVEL_KEYS_V1: Tuple[str, ...] = tuple(sorted(_COMMON_KEYS + ("resolver",)))
+TOP_LEVEL_KEYS_V2: Tuple[str, ...] = tuple(sorted(_COMMON_KEYS + ("authority",)))
+KEYS_BY_SCHEMA: Dict[str, Tuple[str, ...]] = {SCHEMA_V1: TOP_LEVEL_KEYS_V1,
+                                              SCHEMA_V2: TOP_LEVEL_KEYS_V2}
+
+#: Retained for callers that predate the v2 cut.
+TOP_LEVEL_KEYS: Tuple[str, ...] = TOP_LEVEL_KEYS_V1
 
 #: Keys whose content is SPEC TEXT, identical in every snapshot of this schema.
 #:
 #: Named explicitly so a comparison report can never present "the constant blocks matched" as
 #: evidence about a chain. Reproducing these proves the transcription is right and nothing else.
 SCHEMA_CONSTANT_KEYS: Tuple[str, ...] = (
-    "canonicalization", "classification", "derivation", "disclosure", "prior",
+    "authority", "canonicalization", "classification", "derivation", "disclosure", "prior",
     "production_authority", "protocol", "resolver", "schema", "version")
 
 #: Keys that are read back from the chain. These are what a reproduction actually proves.
 CHAIN_DERIVED_KEYS: Tuple[str, ...] = tuple(
-    k for k in TOP_LEVEL_KEYS if k not in SCHEMA_CONSTANT_KEYS)
+    k for k in _COMMON_KEYS if k not in SCHEMA_CONSTANT_KEYS)
 
 
 class ReproductionError(Exception):
@@ -304,6 +335,9 @@ class ComparisonResult:
     keys: List[KeyComparison] = field(default_factory=list)
     missing_keys: List[str] = field(default_factory=list)
     unexpected_keys: List[str] = field(default_factory=list)
+    #: Blocks taken from the published payload rather than derived. They match by construction,
+    #: so a report that did not name them would be counting them as evidence.
+    adopted_blocks: List[str] = field(default_factory=list)
 
     @property
     def chain_derived_equal(self) -> List[str]:
@@ -335,9 +369,12 @@ class ComparisonResult:
                       "reproduced_bytes": k.reproduced_bytes,
                       "published_bytes": k.published_bytes,
                       "detail": k.detail} for k in self.keys],
+            "adopted_blocks": list(self.adopted_blocks),
             "note": ("schema-constant keys are SPEC TEXT and identical in every snapshot of this "
                      "schema; reproducing them proves the transcription is right and says nothing "
-                     "about any chain. The chain-derived keys are what a reproduction proves"),
+                     "about any chain. The chain-derived keys are what a reproduction proves. "
+                     "`adopted_blocks` were taken from the published payload and therefore match "
+                     "by construction — they are not evidence of anything"),
         }
 
 
@@ -370,22 +407,38 @@ def compare(reproduced: Mapping[str, Any], published: Mapping[str, Any]) -> Comp
     return result
 
 
+def schema_of(payload: Mapping[str, Any]) -> str:
+    """The declared schema id, refused unless this package actually implements it.
+
+    Discriminating on the DECLARED id — rather than sniffing for a ``resolver`` or ``authority``
+    key — is the whole point. A document that says what it is can be refused cleanly when it is
+    something we do not implement; a document we guess at will eventually be guessed wrong, and a
+    confident wrong answer is worse than a refusal.
+    """
+    declared = payload.get("schema")
+    if declared not in SUPPORTED_SCHEMAS:
+        raise ReproductionError(
+            "SCHEMA_UNSUPPORTED",
+            f"this package implements {list(SUPPORTED_SCHEMAS)}; the payload declares "
+            f"{declared!r}. Refusing to guess which of them it resembles")
+    return str(declared)
+
+
 def check_shape(payload: Mapping[str, Any]) -> None:
-    """Refuse a document that is not this schema before comparing anything."""
-    if payload.get("schema") != SCHEMA:
-        raise ReproductionError("SCHEMA_MISMATCH",
-                                f"expected {SCHEMA!r}, got {payload.get('schema')!r}")
+    """Refuse a document that is not a schema this package implements, before comparing anything."""
+    declared = schema_of(payload)
     if payload.get("classification") == CLASSIFICATION_CANONICAL_FORBIDDEN:
         raise ReproductionError(
             "CLASSIFICATION_REFUSED",
             "MAINNET_CANONICAL is not a classification this package will process")
+    expected = KEYS_BY_SCHEMA[declared]
     observed = tuple(sorted(payload))
-    if observed != TOP_LEVEL_KEYS:
-        missing = sorted(set(TOP_LEVEL_KEYS) - set(observed))
-        extra = sorted(set(observed) - set(TOP_LEVEL_KEYS))
+    if observed != expected:
+        missing = sorted(set(expected) - set(observed))
+        extra = sorted(set(observed) - set(expected))
         raise ReproductionError(
             "SCHEMA_SHAPE_MISMATCH",
-            f"this schema has exactly {len(TOP_LEVEL_KEYS)} top-level keys; missing={missing}, "
+            f"{declared} has exactly {len(expected)} top-level keys; missing={missing}, "
             f"unexpected={extra}")
 
 
@@ -711,6 +764,7 @@ def reproduce_from_chain(published: Mapping[str, Any], *, rpc_url: str,
     from .rpc import JsonRpc, RigViews, selector as _sel, _encode_uint as _enc
 
     check_shape(published)
+    declared_schema = schema_of(published)
     chain_id = int(published["chain"]["chain_id"])
     block = int(published["chain"]["observation"]["block_number"])
     epoch = int(published["epoch"])
@@ -739,15 +793,31 @@ def reproduce_from_chain(published: Mapping[str, Any], *, rpc_url: str,
         return "0x" + rpc.eth_call(to=to, data=data, block=block)[:32].hex()
 
     built: Dict[str, Any] = {
-        "schema": SCHEMA, "version": SCHEMA_VERSION, "protocol": PROTOCOL_ID,
+        "schema": declared_schema,
+        "version": cn.narrow(int(published["version"]), "version"),
+        "protocol": PROTOCOL_ID,
         "classification": CLASSIFICATION_REHEARSAL, "production_authority": False,
         "disclosure": constants.DISCLOSURE, "canonicalization": constants.CANONICALIZATION,
         "derivation": constants.DERIVATION, "prior": constants.PRIOR,
-        # Adopted, because a key id names WHO claimed the resolution and no chain can say that.
-        # It lives inside the bytes precisely so a substituted signer changes them.
-        "resolver": published["resolver"],
         "epoch": cn.narrow(epoch, "epoch"),
     }
+    # THE ONE KEY THAT DIFFERS BETWEEN THE VERSIONS, and both are ADOPTED from the published
+    # payload rather than generated here.
+    #
+    # For v1's `resolver`, adoption is forced: a key id names WHO claimed the resolution, and no
+    # chain can say that. It lives inside the bytes precisely so that substituting a signer
+    # changes them.
+    #
+    # For v2's `authority`, adoption is a STATED LIMITATION rather than a necessity. It is a
+    # schema constant — the same cache-vs-authority statement in every v2 snapshot — so it
+    # belongs in `resolver_schema_constants` alongside `derivation` and `canonicalization`,
+    # transcribed from a real published artifact. No v2 artifact exists yet to transcribe from,
+    # and inventing prose that has to match byte-for-byte is how this package already lost a run
+    # (the `checks` vocabulary). So it is adopted until a v2 snapshot is published, and
+    # `adopted_blocks` in the comparison says so rather than letting a reader assume it was
+    # independently derived.
+    identity_key = "resolver" if declared_schema == SCHEMA_V1 else "authority"
+    built[identity_key] = published[identity_key]
 
     header_block = rpc.call("eth_getBlockByNumber", [hex(block), False])
     built["chain"] = build_chain(
@@ -890,4 +960,6 @@ def reproduce_from_chain(published: Mapping[str, Any], *, rpc_url: str,
                      "note": "supplied out of band; see locks.runtime_record_chain_bound",
                      "root": record_root})
     built["artifacts"] = build_artifacts(refs)
-    return built, compare(built, published)
+    comparison = compare(built, published)
+    comparison.adopted_blocks = [identity_key]
+    return built, comparison

@@ -1188,3 +1188,81 @@ class TestNoNullReachesCanonicalBytes:
             deployment_verification={}, receipt_chains={}, admission={"outcome": "PASS"},
             unverified=[])
         cn.canonical_bytes(export.document)
+
+
+class TestSchemaV1AndV2:
+    """Both eras are supported; an unknown schema is REFUSED rather than guessed at."""
+
+    def _payload(self, schema, identity_key):
+        from coretex_validator import resolver_snapshot as rsn
+
+        keys = (rsn.TOP_LEVEL_KEYS_V1 if identity_key == "resolver" else rsn.TOP_LEVEL_KEYS_V2)
+        payload = {k: {} for k in keys}
+        payload["schema"] = schema
+        payload["classification"] = rsn.CLASSIFICATION_REHEARSAL
+        return payload
+
+    def test_both_schemas_are_supported(self):
+        from coretex_validator import resolver_snapshot as rsn
+
+        assert rsn.SUPPORTED_SCHEMAS == (rsn.SCHEMA_V1, rsn.SCHEMA_V2)
+        rsn.check_shape(self._payload(rsn.SCHEMA_V1, "resolver"))
+        rsn.check_shape(self._payload(rsn.SCHEMA_V2, "authority"))
+
+    def test_the_versions_differ_in_exactly_one_key(self):
+        from coretex_validator import resolver_snapshot as rsn
+
+        assert len(rsn.TOP_LEVEL_KEYS_V1) == len(rsn.TOP_LEVEL_KEYS_V2) == 23
+        assert set(rsn.TOP_LEVEL_KEYS_V1) ^ set(rsn.TOP_LEVEL_KEYS_V2) == {"resolver", "authority"}
+
+    def test_a_v2_payload_wearing_the_v1_id_is_refused_on_SHAPE(self):
+        # The bump exists because the shape changed. A document that claims v1 but carries v2's
+        # shape is exactly what a reused id would have produced, and it must not parse.
+        from coretex_validator import resolver_snapshot as rsn
+
+        with pytest.raises(rsn.ReproductionError) as excinfo:
+            rsn.check_shape(self._payload(rsn.SCHEMA_V1, "authority"))
+        assert excinfo.value.code == "SCHEMA_SHAPE_MISMATCH"
+
+    def test_an_unknown_schema_is_refused_not_guessed(self):
+        from coretex_validator import resolver_snapshot as rsn
+
+        with pytest.raises(rsn.ReproductionError) as excinfo:
+            rsn.schema_of({"schema": "coretex.rig-state.resolver-snapshot/v3"})
+        assert excinfo.value.code == "SCHEMA_UNSUPPORTED"
+        assert "Refusing to guess" in excinfo.value.message
+
+    def test_the_identity_block_is_a_schema_constant_in_both_versions(self):
+        from coretex_validator import resolver_snapshot as rsn
+
+        # Neither `resolver` nor `authority` is chain-derived, so neither may be counted as
+        # evidence about a deployment.
+        assert "resolver" in rsn.SCHEMA_CONSTANT_KEYS
+        assert "authority" in rsn.SCHEMA_CONSTANT_KEYS
+        assert "resolver" not in rsn.CHAIN_DERIVED_KEYS
+        assert "authority" not in rsn.CHAIN_DERIVED_KEYS
+
+    def test_adopted_blocks_are_reported_so_they_cannot_pose_as_evidence(self):
+        from coretex_validator import resolver_snapshot as rsn
+
+        result = rsn.compare({"a": 1}, {"a": 1})
+        result.adopted_blocks = ["authority"]
+        report = result.as_dict()
+        assert report["adopted_blocks"] == ["authority"]
+        assert "match by construction" in report["note"]
+
+    def test_epoch_180_is_v1_and_stays_v1(self):
+        import pathlib
+
+        from coretex_validator import resolver_snapshot as rsn
+
+        evidence = pathlib.Path("/home/ubuntu/botcoin-coordinator-v5-p6/v5/resolver/evidence"
+                                "/mainnet-rehearsal-e180-20260804/snapshot.json")
+        if not evidence.is_file():
+            pytest.skip("the published epoch-180 snapshot is not on this host")
+        payload = json.loads(evidence.read_text(encoding="utf-8"))
+        # Historical evidence. The reproduction of 7087b32d… remains a true statement about it,
+        # and chasing the new schema on this data would be a category error.
+        assert payload["schema"] == rsn.SCHEMA_V1
+        assert "resolver" in payload and "authority" not in payload
+        rsn.check_shape(payload)
