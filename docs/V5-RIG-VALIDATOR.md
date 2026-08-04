@@ -90,33 +90,29 @@ the whole rig chain-first envelope fails closed on correct data. Fixed in
 `rig_events.PATCH_HASH_LABEL`; the superseded label is kept beside it so a mismatch can *report*
 which rule produced the digest rather than leaving an operator to guess.
 
-### F4 — Deterministic Benchmark-v2 admission depends on non-public trees
+### F4 — CLOSED: the admission code trees are published
 
-**This is the finding that decides whether a public validator can fully exist, and the answer
-today is "not for step 5".**
+**This finding is resolved.** The six trees deterministic admission needs —
+`benchmark-v2/{generators,scoring,miner_abi,validator,frontier}` and
+`coretex-memory/coretex_memory` — are published as content-addressed objects under publication
+root `d90f469cf8f737e100f8cd13f06c56559e315c04f974d4e3c987c40a7c4f7399`, addressed by the SAME
+tree-hash rule the signed receipt's `code_roots` binds. So the address is the chain-bound identity,
+not a new scheme, and a consumer verifies by extracting and recomputing rather than trusting the
+container.
 
-`replay.py`'s consensus-grade admission needs two trees:
-
-* `benchmark-v2/` — the frozen receipt replay (`validator/replay.py::replay_receipt`) and the
-  G6b oracle screen;
-* `coretex-memory/` — the pinned runtime.
-
-Both live **inside the private `botcoin-coordinator` repository**. Verified anonymously:
-
-```
-$ env -i GIT_TERMINAL_PROMPT=0 git ls-remote https://github.com/botcoinmoney/botcoin-coordinator.git
-fatal: could not read Username for 'https://github.com': terminal prompts disabled
+```bash
+CORETEX_ADMISSION_REPO_ROOT=<dest>
+CORETEX_BENCHMARK_V2_DIR=<dest>/benchmark-v2
+CORETEX_MEMORY_RUNTIME_DIR=<dest>/coretex-memory
 ```
 
-A clean machine therefore **cannot** rerun deterministic admission. This is surfaced honestly
-rather than papered over: with no trees configured the sandbox and screen report themselves
-UNAVAILABLE, the replay records a **BACKLOG**, and the export carries the gap in its `unverified`
-list. A BACKLOG is the correct outcome for "this host cannot check that" — a PASS would be a lie
-and a FAIL would be a slander. Five of the ported tests skip for exactly this reason, and the
-skip reasons name the missing trees.
+With those set, `BenchmarkV2Sandbox.available()` and `ChildInterpreterOracleScreen.available()`
+both report `True` from a clean wheel install, and `sandbox_unavailable` /
+`oracle_screen_unavailable` are no longer reachable. One public PyPI dependency (`wasmtime`) is
+needed by the runtime tree; the validator itself still declares zero runtime dependencies.
 
-An operator who holds the trees points at them with `CORETEX_BENCHMARK_V2_DIR` and
-`CORETEX_MEMORY_RUNTIME_DIR`, and the same code path runs the real pinned admission.
+Publishing the trees did not, on its own, make step 5 pass — two defects in THIS package sat in
+front of them. See K1 and K2 below.
 
 ### F5 — The rig contract source repository is also private
 
@@ -333,13 +329,45 @@ reproduction failures:
   was damaged. Silently resolving the dispute would have produced a snapshot that reproduced
   cleanly and asserted something no chain attests.
 
-### F11 — the runtime-integration record is not in the publication set
+### F11 — CLOSED: the runtime-integration record is published
 
-`RUNTIME-INTEGRATION.pre-rig.json` is required to rebuild `locks`, and it lives in the **private**
-`botcoin-coordinator` repository — it is not among the 14 content-addressed objects published
-alongside the snapshot. A clean public install therefore cannot rebuild that one block. Everything
-else reproduces from the publication set and the chain alone. Same class as F4/F5, reported rather
-than worked around.
+**Resolved.** `RUNTIME-INTEGRATION.pre-rig.json` is required to rebuild `locks`, and it was not
+among the objects published alongside the snapshot. It is now published as root `309cf988…` in the
+companion set (commit `df3c2ae`), so a clean public install can rebuild that block too.
+
+### K1 and K2 — two defects publication exposed in this package
+
+Both were found by running the clean public client end to end against the published set. Neither
+was a publication problem.
+
+**K1 — the rig's `compactPatchBytes` was fed to a canonical-JSON parser.** `pipeline._admit`
+handed the patch to `frontier.parse_transition_bytes`, which decodes UTF-8 and requires canonical
+JSON. On real rig data that fails on the first byte (`0xff`), and it reported **FAIL** — a
+determination, not a backlog, so it slandered a perfectly valid mine over a decoder mismatch.
+
+This is structural. `compactPatchBytes` is a contract-mandated binary layout that
+`RigCoreTexVerifier._validateCompactPatch` reverts on if it is anything else: `patchType`,
+`wordCount`, a big-endian `uint64` score delta, `parentStateRoot`, then LEB128-indexed word pairs.
+Canonical JSON in that field would have been rejected on chain, so the JSON reading could never
+have been right — the memory lane's `transitionBytes` and the rig lane's `compactPatchBytes` are
+two different formats and this package was treating one as the other.
+
+`rig_events.decode_compact_patch` implements the verifier's own validation, refusal for refusal.
+The LEB128 redundancy rule is the subtle one: `0x82 0x00` and `0x02` both decode to index 2, and
+one index with two spellings is one patch with two hashes — which breaks the `patchHash` binding
+outright. `_admit` now decodes under the contract's layout, cross-checks the patch against the
+signed receipt (parent root, score delta, and that a word carries the `artifactHash`), and takes
+the memory-lane JSON transition from the fetched artifact — safe precisely because the patch binds
+it.
+
+**K2 — the sandbox child deleted `site-packages` in a wheel install.** The child templates scrubbed
+`_PKG_PARENT` from `sys.path` to keep this lane's `frontier` from shadowing `benchmark-v2`'s. In a
+source checkout that removes the repo; in a **pip-installed** client `_PKG_PARENT` *is*
+`site-packages`, so the child deleted the entire third-party import path and the runtime tree lost
+`wasmtime` — meaning the pinned sandbox could never become available on exactly the installation
+this package certifies. They now scrub only the package directory, which is the sole path that
+could make this lane's modules resolve as top-level names. In a source checkout the parent holds a
+package rather than a top-level `frontier`, so removing it was never useful there either.
 
 ### What real data taught that a local harness could not
 
