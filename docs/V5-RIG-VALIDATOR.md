@@ -245,25 +245,47 @@ would make an ordinary screener-only epoch look like a break. A served-but-unsea
 compared against `liveStateRoot`, which is frozen once the epoch has ended, and is **flagged**
 because the operator has not committed to that root on chain.
 
-### Reproduction before signature, and no curve code on that path
+### Reconstruction equality IS the authority
 
-A snapshot that reproduces byte-for-byte is true whether or not it was signed. A snapshot that is
-signed but does not reproduce is a correctly-transmitted false statement, and the signature makes
-it worse rather than better. So `build_unsigned` reconstructs from chain state, logs, calldata and
-artifacts **without reading the published payload**; `reproduce` compares canonical bytes; and
-only then does `verify_signature` run, labelled TRANSPORT AUTHENTICATION. `build_export` refuses
-an unreproduced snapshot and there is no parameter that lets a caller override it.
+**A downloaded snapshot is a CACHE.** What makes it true is that a clean installation
+independently reconstructs identical canonical bytes from the pinned chain, contracts,
+finalized block, events, calldata and content-addressed artifacts. Not that somebody
+signed it.
 
-`keccak256.py` exists so a validator needs no third-party crypto. `secp256k1.py` was added for one
-purpose — recovering a signer — and is imported **lazily, inside the functions that recover a
-key**. Reproduction runs with no key material and no curve arithmetic;
-`test_reproduction_never_loads_curve_code` asserts it in a fresh interpreter, and
-`test_the_curve_module_is_only_reachable_from_a_signature_check` walks every module's AST to keep
-it that way. `join_advance(verify_signature=False)` exists for the same reason: for a *confirmed*
-advance the chain already rejected anything the coordinator did not sign, so step 7 is defence in
-depth rather than load-bearing. The load-bearing step is 4 — recomputing `receiptHash` — which
-also proves `workPolicyHash` and, via the EIP-712 digest, the `artifactHash` that no event and no
-registry parameter carries.
+So there is no off-chain signature ceremony in the verification path: no resolver
+public-key pin, no signing-digest check, no `snapshot.sig.json` requirement, and no
+`transport_signature` verdict in the export. That field was deleted rather than repaired,
+because carrying it beside the reproduction invited exactly the wrong reading — that a
+valid signature was a second, alternative reason to believe the payload. It was never
+that, and a signature that could be *offered* as an alternative eventually gets accepted
+as one.
+
+The property that used to be a discipline is now structural: `build_export` has no
+signature parameter, so nothing can be handed to it in place of a reproduction.
+
+**One signature is still verified, because a deployed contract enforces it:** the
+coordinator's EIP-712 mining receipt, checked against `mining.coordinatorSigner()` in the
+§7.2 join (step 7). That is a fact about the chain rather than about a publisher, and it
+is load-bearing — the `receiptHash` preimage that binds calldata to the confirmed credit
+contains the digest.
+
+`keccak256.py` exists so a validator needs no third-party crypto. `secp256k1.py` remains
+for that one contract-enforced recovery, is imported lazily, and
+`test_the_curve_module_is_only_reachable_from_a_signature_check` walks every module's AST
+to keep it off the reconstruction path — which now needs no key material of any kind.
+
+The signature functions in `snapshot.py` are kept but marked HISTORICAL and are
+unreachable from the path. The epoch-180 rehearsal artifacts were published signed, those
+runs are historical records, and somebody re-examining that evidence should be able to
+re-check what they checked. Those artifacts are preserved unmodified. **Future artifacts
+are unsigned and content-addressed.**
+
+### Portable sync
+
+Never activate a snapshot on the strength of HTTP delivery or its own self-declared chain
+fields. A consumer either invokes `coretex-validator` reconstruction, or performs the
+minimal finalized-chain and root verification itself, before activation. Delivery is not
+provenance.
 
 ---
 
