@@ -107,6 +107,27 @@ admission a public machine structurally *cannot* run — are in
 Snapshots are classified `MAINNET_REHEARSAL`. The mainnet-rehearsal leg is
 **unproven** until real transitions land on Base.
 
+### Registry rotation: a convention, not a chain guarantee
+
+If a release declares that its registry arrived by **rotation** from an earlier
+one, the validator refuses the run unless all six continuity conditions hold —
+the successor's `PREDECESSOR_REGISTRY()` is the registry *you* replayed, its
+`MIN_ACCEPTED_EPOCH()` is contiguous with the incumbent's sealed ceiling, its
+`GENESIS_STATE_ROOT()` is the head the incumbent actually sealed, its bytecode
+matches the approved release's pin, it is bound to the same verifier and epoch
+clock, and the rotation landed at an unlocked epoch boundary.
+
+**That is a convention, not something the chain enforces.**
+`RigCoreTexVerifier.setCoreTexRegistry` is gated on the access-manager role
+**`MINING_POLICY_ADMIN`** and checks only that the current epoch is unlocked. A
+holder of that role retains the theoretical ability to point the verifier at any
+registry it likes, and the rig contracts — which are **frozen** — will accept
+it. Complete on-chain prevention would require a **separately audited change to
+`RigCoreTexVerifier`**, which does not exist. Treat an accepted rotation as "the
+parties running this check agree", never as "the chain enforced it". Details and
+the per-condition error codes: [docs/V5-RIG-VALIDATOR.md](docs/V5-RIG-VALIDATOR.md)
+§F12.
+
 ## Score honesty is fail-closed
 
 The client rescore path refuses anything but the bundle-pinned qwen3

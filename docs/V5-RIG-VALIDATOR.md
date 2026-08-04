@@ -189,6 +189,60 @@ output — the natural reading — shifts every subsequent byte by 32, and on ch
 for an off-by-32 offset bug. Left as-is so the port stays verbatim; recorded here because the next
 person will hit it.
 
+### F12 — Registry-rotation continuity is a CONVENTION, not a chain guarantee (STEP F)
+
+> **READ THIS BEFORE YOU TRUST ANY "rotation verified" LINE THIS VALIDATOR PRINTS.**
+>
+> `RigCoreTexVerifier.setCoreTexRegistry` is gated on the access-manager role
+> **`MINING_POLICY_ADMIN`**, and the **only** thing it checks is that the current epoch is unlocked
+> (`!_coreTexEpochLocked(mining.currentEpoch())`, `RigCoreTexVerifier.sol:465-468`). It does **not**
+> read `PREDECESSOR_REGISTRY()`, `MIN_ACCEPTED_EPOCH()` or `GENESIS_STATE_ROOT()`, and it does not
+> look at bytecode. **A holder of `MINING_POLICY_ADMIN` therefore retains the theoretical ability
+> to point the verifier at any registry it likes — including one that violates every condition
+> below — and the chain will accept it.** The rig contracts are **FROZEN** and are not being
+> modified.
+>
+> **Complete on-chain prevention would require a separately audited change to
+> `RigCoreTexVerifier`** (a lineage assertion inside `setCoreTexRegistry`) and a deployment of that
+> verifier. No such change exists and none is proposed. What exists is a **refusal by the parties
+> that choose to honour it** — this validator and the coordinator. A party that does not run the
+> check is not prevented from following an unapproved rotation.
+
+This is F12 rather than a note because it is the same *shape* as F5 and F6: a real limit on what a
+public validator can establish, recorded rather than papered over.
+
+**Why the three-field registry identity is not enough.** `release.verify_deployment` already
+identifies a registry by address **+ code hash + verifier binding**, the third field existing
+precisely because a successor deployed from the same source has an **identical code hash** and, on
+arrival, answers every pin getter identically. Those three fields tell you *which registry is
+live*. They cannot tell you whether the live one has any legitimate relationship to the one whose
+history you already replayed. `coretex_validator/rotation.py` is that fourth question, and when a
+release declares a rotation it is folded into `verify_deployment`'s report and failures.
+
+The six conditions, each with its own typed code:
+
+| # | condition | code |
+| --- | --- | --- |
+| 1 | successor `PREDECESSOR_REGISTRY()` == the incumbent **we** replayed | `ROTATION_PREDECESSOR_NOT_INCUMBENT` |
+| 2 | `MIN_ACCEPTED_EPOCH()` == `incumbent.serviceCeilingEpoch() + 1` | `ROTATION_EPOCH_FLOOR_NOT_CONTIGUOUS` |
+| 3 | `GENESIS_STATE_ROOT()` == the head the incumbent **sealed** | `ROTATION_GENESIS_ROOT_NOT_SEALED_HEAD` |
+| 4 | deployed `keccak256(code)` == the approved release's pin | `ROTATION_BYTECODE_NOT_APPROVED` |
+| 5 | same `coreTexVerifier()` **and** same `epochClock()` | `ROTATION_VERIFIER_OR_CLOCK_REBOUND` |
+| 6 | `_coreTexEpochLocked(e)` false at `rotationBlock - 1` | `ROTATION_EPOCH_LOCKED` |
+
+**Conditions 1–3 are not a duplicate of the M-11 constructor.** `RigCoreTexStateRegistry`'s
+constructor already proves on chain that a successor is well formed *with respect to the
+predecessor address it was handed* — retired, ceiling `== floor - 1`, handover finalized, sealed
+head inherited. It cannot prove that address is the registry *this* validator replayed, because it
+has no idea whose history anyone replayed. Checks 1–3 are that binding; a well-formed successor of
+a **sibling or forked** lineage passes the constructor and fails check 1. Checks 4–6 are about
+facts the constructor never sees. Condition 6 is the one the chain really does enforce
+(`ActiveEpochHasCredits`); it is restated so a reader can see which five it does not.
+
+A release that declares no rotation reports `checked: false` with an explicit "THIS IS NOT A PASS"
+— absence of a check and a passed check must never render the same way, the same rule the
+`NOT_REACHED` step status follows.
+
 ---
 
 ## 2. What the client does

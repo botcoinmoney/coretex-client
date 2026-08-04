@@ -26,6 +26,7 @@ fail for boring reasons and train operators to ignore it.
 """
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import urllib.request
@@ -35,6 +36,7 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 from . import frontier as fr
 from . import rehearsal_deployment as rd
 from . import rig_events as rig
+from . import rotation as rot
 from .keccak256 import keccak256_hex
 
 RELEASE_FORMAT = "coretex.rig-rehearsal-release/v1"
@@ -101,6 +103,14 @@ class Release:
     #: The resolver's signing address. TRANSPORT authentication only — see :mod:`.snapshot`.
     resolver_signer: Optional[str]
     raw: Mapping[str, Any]
+    #: STEP F — the release's declaration that its ``registry`` arrived by ROTATION from an earlier
+    #: one, or ``None`` when it claims no rotation. ``None`` means the continuity check has nothing
+    #: to check; it is NEVER a pass, and :func:`verify_deployment` says so in the report.
+    registry_rotation: Optional["rot.RotationDeclaration"] = None
+    #: Where this release was loaded from, when it was loaded by :func:`discover`. Quoted in the
+    #: rotation refusal so an operator is told WHICH file states the pin that did not match, rather
+    #: than being left to guess which of several artifacts is in play.
+    location: str = ""
 
     @property
     def deployment(self) -> rig.RigDeployment:
@@ -201,7 +211,11 @@ def parse_release(document: Mapping[str, Any]) -> Release:
         observation_block=document.get("observation_block"), source=source,
         artifact_base_url=document.get("artifact_base_url"),
         runtime_packet_sha256=document.get("runtime_packet_sha256"),
-        resolver_signer=document.get("resolver_signer"), raw=dict(document))
+        resolver_signer=document.get("resolver_signer"), raw=dict(document),
+        # STEP F. A malformed declaration RAISES rather than degrading to "no rotation declared" —
+        # an operator who wrote the block believes it is doing something.
+        registry_rotation=rot.parse_rotation_declaration(
+            document, registry_address=addresses["registry"]))
 
 
 def discover(location: str, *, timeout: float = 30.0) -> Release:
@@ -221,7 +235,7 @@ def discover(location: str, *, timeout: float = 30.0) -> Release:
         document = json.loads(raw)
     except ValueError as exc:
         raise ReleaseError("RELEASE_MALFORMED", f"{location} is not JSON: {exc}") from exc
-    return parse_release(document)
+    return dataclasses.replace(parse_release(document), location=location)
 
 
 @dataclass
@@ -247,6 +261,17 @@ def verify_deployment(release: Release, rpc, *, block: int) -> DeploymentVerific
     verifier it names, so a validator reading pins from a verifier the registry does not bind is
     reading a stranger's numbers. It is read back from the chain, in both directions, and a
     disagreement is a failure rather than a note.
+
+    STEP F — AND THE FOURTH QUESTION, WHICH THE THREE-FIELD IDENTITY BELOW CANNOT ASK. Address,
+    code hash and verifier binding together tell you WHICH registry is live. They do not tell you
+    whether the live one has any legitimate relationship to the one whose history this validator
+    already replayed: a successor deployed from the same source has an identical code hash and, on
+    arrival, answers every pin getter identically. When the release DECLARES a rotation,
+    :mod:`.rotation` evaluates the six continuity conditions and a failure is a hard failure here.
+
+    That check is a CONVENTION, NOT A CHAIN GUARANTEE — ``MINING_POLICY_ADMIN`` can repoint the
+    FROZEN verifier at any registry it likes. See :data:`.rotation.ROTATION_CONVENTION_LIMITATION`,
+    which travels in the report on both the accept and the refuse path.
     """
     from .rpc import RigViews
 
@@ -299,6 +324,13 @@ def verify_deployment(release: Release, rpc, *, block: int) -> DeploymentVerific
                      "it has inherited the epoch contexts, answers the pin getters identically. "
                      "`verifier_bound_registry` is the only field that distinguishes the live "
                      "registry from a retired one"),
+            # STEP F. The three fields answer WHICH registry is live. They cannot answer whether
+            # the live one is a legitimate successor of the one whose history was replayed —
+            # exactly because a same-source successor is indistinguishable by code and state. That
+            # is `wiring["rotation"]`, below, and it is a CONVENTION rather than a chain rule.
+            "continuity": ("identity is not lineage: see wiring['rotation'] for the six "
+                           "registry-rotation continuity conditions, which are enforced OFF CHAIN "
+                           "by refusal. " + rot.ROTATION_LIMITATION_LINE),
         }
     except Exception as exc:                                  # noqa: BLE001 - reported, not raised
         failures.append(f"wiring could not be read: {exc}")
@@ -320,5 +352,59 @@ def verify_deployment(release: Release, rpc, *, block: int) -> DeploymentVerific
                     f"contracts do not form one lane.{extra}")
         wiring["consistent"] = not failures
 
+    # STEP F — registry-ROTATION continuity, when the release declares one.
+    #
+    # THREE SHAPES, ALL STATED PLAINLY. No declaration -> ``checked: False``, which is reported as
+    # NOT CHECKED and never rendered as a pass. Declared and unreadable -> a failure, because "we
+    # could not check" and "we checked and it is fine" must not be the same outcome. Declared and
+    # evaluated -> the verdict, carrying the limitation on BOTH branches.
+    wiring["rotation"] = _verify_rotation(release, rpc, block=block, failures=failures)
+
     return DeploymentVerification(ok=not failures, block=block, contracts=contracts,
                                   wiring=wiring, failures=failures)
+
+
+def _verify_rotation(release: Release, rpc, *, block: int,
+                     failures: List[str]) -> Dict[str, Any]:
+    declaration = release.registry_rotation
+    if declaration is None:
+        return {
+            "checked": False,
+            "reason": ("the release declares no registry_rotation, so there was nothing to check. "
+                       "THIS IS NOT A PASS — no continuity condition was evaluated"),
+            "limitation": dict(rot.ROTATION_CONVENTION_LIMITATION),
+        }
+    try:
+        observation = rot.read_rotation_observation(
+            rpc,
+            incumbent_registry=declaration.predecessor_registry,
+            successor_registry=release.addresses["registry"],
+            mining=release.addresses["mining"],
+            verifier=release.addresses["verifier"],
+            rotation_block=declaration.rotation_block,
+            observation_block=block,
+            approved_registry_code_hash=release.runtime_code_hashes.get("registry"),
+            approved_release_path=release.location or "the release artifact")
+    except Exception as exc:                                  # noqa: BLE001 - reported, not raised
+        failures.append(
+            f"the release DECLARES that registry {release.addresses['registry']} arrived by "
+            f"rotation from {declaration.predecessor_registry} at block "
+            f"{declaration.rotation_block}, and that rotation could not be read from the chain: "
+            f"{exc}. An unverifiable rotation is refused rather than assumed continuous. "
+            f"{rot.ROTATION_LIMITATION_LINE}")
+        return {"checked": False, "error": str(exc),
+                "limitation": dict(rot.ROTATION_CONVENTION_LIMITATION)}
+
+    verdict = rot.evaluate_rotation_continuity(observation)
+    if not verdict.accepted:
+        for refusal in verdict.refusals:
+            failures.append(
+                f"registry rotation {declaration.predecessor_registry} -> "
+                f"{release.addresses['registry']}: {refusal.code}: {refusal.checked} — expected "
+                f"{refusal.expected}, observed {refusal.observed}. {refusal.reason}")
+    report = verdict.as_dict()
+    report["checked"] = True
+    report["predecessor_registry"] = declaration.predecessor_registry
+    report["rotation_block"] = declaration.rotation_block
+    report["summary"] = rot.format_rotation_verdict(observation, verdict)
+    return report
