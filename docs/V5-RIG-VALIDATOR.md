@@ -267,7 +267,36 @@ registry parameter carries.
 
 ---
 
-## 3. Running it
+## 3. Running it, and what it costs
+
+There are **two commands with very different cost classes**, and conflating them will mislead
+anyone budgeting for a replay.
+
+| command | what it proves | cost |
+| --- | --- | --- |
+| `reproduce-snapshot` | the published snapshot's unsigned payload rebuilds byte-for-byte from chain truth | **~153 s wall**, ~46 RPC calls, negligible CPU |
+| `reproduce` (admission wired) | the above *plus* deterministic Benchmark-v2 admission re-executed | **tens of minutes of CPU**, three-deep process nesting with parallel scoring workers |
+
+`reproduce-snapshot` is **network-bound, not CPU-bound**: most of its wall time is deliberate
+pacing (`--min-interval`, default 0.7 s) against a rate-limiting public endpoint, plus round-trip
+latency. A private or higher-limit endpoint will be substantially faster; that is a property of
+the endpoint, not of the work.
+
+`reproduce` with `CORETEX_BENCHMARK_V2_DIR` / `CORETEX_MEMORY_RUNTIME_DIR` set is the expensive
+one. It re-derives the selections, regenerates instances and re-runs scoring against the pinned
+runtime — real computation, not verification of a hash. It spawns a sandbox child which spawns
+three nested children which spawn three scoring workers, and on a small box those workers saturate
+it.
+
+**Measured on:** 4-core Intel Xeon Platinum 8259CL @ 2.50 GHz, 15 GiB RAM, Linux 6.8 (AWS),
+CPython 3.10.12, `wasmtime` 46.0.1. That is a *modest* machine and the admission path is
+CPU-bound, so a larger box should do materially better — an external agent budgeting from these
+numbers needs to know which end of the range they came from. The three scoring workers alone
+oversubscribe four cores.
+
+**Pin `wasmtime>=46.0.1,<47`.** That is the single external dependency the six admission trees
+need, and it is the range the publication lane's closure analysis recorded. The validator itself
+still declares zero runtime dependencies; this one belongs to the runtime tree, not to the client.
 
 ```bash
 cd python && ./reproduce.sh                                   # offline clean-machine proof
