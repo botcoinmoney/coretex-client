@@ -147,6 +147,47 @@ value or absent, and encoding "I do not have this" as a present `null` makes a *
 secret and a **missing** field the same bytes. Absence is now encoded by absence, with explicit
 `revealed` / `available` booleans carrying the "known absent" meaning.
 
+### F8 — The resolver publishes a different snapshot schema
+
+The Phase 6 resolver lane emits `coretex.rig-state.resolver-snapshot/v1`: a richer document than
+this package assembles, carrying profiles, composition, locks, migration, prior-snapshot linkage,
+a resolver key identity, and embedded join-recipe / receipt-layout records. This client builds
+`coretex.rig-resolver-snapshot/v1` from the chain-derivable subset.
+
+**The canonicalisation rule is already shared** — both sides serialise with
+`frontier.canonical_bytes` (key-sorted, separator-tight, floats refused, `null` refused) and
+address the result with `sha256`. That is the part that must not diverge, and it does not. Landing
+support for the resolver's schema is therefore a *builder*, not a re-think.
+
+Until then, `reproduce()` **refuses** a schema it cannot build, with a precise reason. It does not
+emit a field-level diff between two different document shapes: that reads like a finding, is
+entirely noise, and is exactly the sort of output that gets explained away.
+
+### F9 — Only `getHeader` returns a zero-filled struct; the other reads revert
+
+Found by running against a real deployment, not by reading the source. Design §7.5's fall-through
+rule is written about `getHeader(N)`, and it is correct: an unsealed epoch yields a zero-filled
+struct rather than a revert. **The other registry reads do not share that behaviour.** The
+registry delegates every epoch read to the bound verifier's context, and `liveStateRoot(N)` /
+`epochParentStateRoot(N)` revert with `EpochContextNotSet()` (`0xae3a262a`) for an epoch that was
+never given one.
+
+A backwards lineage walk that only handled the `getHeader` case therefore dies on the first epoch
+below the registry's first served one — which, for any young deployment, is immediately. The walk
+now asks the verifier's `coreTexEpochContextSet(N)` **first**. That is deliberately a question
+with an answer rather than an exception to catch: a `try/except` around the revert would have to
+distinguish "this epoch has no context" from "the endpoint is broken", and a revert selector alone
+does not reliably tell you which.
+
+### F10 — `abi.pad_bytes` is misleadingly named
+
+Ported verbatim from the staged lane. It returns the **entire** dynamic-`bytes` ABI tail (length
+word + payload + padding), not just the padding its name implies. Prepending a length word to its
+output — the natural reading — shifts every subsequent byte by 32, and on chain that surfaces as
+`ECDSAInvalidSignatureS(...)` from OpenZeppelin rather than as a decode error. A misleading symptom
+for an off-by-32 offset bug. Left as-is so the port stays verbatim; recorded here because the next
+person will hit it.
+
 ---
 
 ## 2. What the client does
@@ -243,7 +284,53 @@ never silently becomes "X is broken".
 
 ---
 
-## 4. What is still unproven
+## 4. What has been proven, and how
+
+### Local Anvil, all eight steps
+
+A stand-in chain was deployed with the **exact** contracts — real `BotcoinMiningRigsV1`, real
+`RigCoreTexVerifier`, our `RigCoreTexStateRegistry`, against exact-ABI peripheral doubles — and
+mined:
+
+* an **advance** (outcome 2): `CoreTexStateAdvanced` from the registry and `RigCoreTexCreditAccepted`
+  from mining, in one transaction, broadcast by the OPERATOR key over a digest the COORDINATOR key
+  signed;
+* a **screener pass** (outcome 1): a credit with no advance — the case with no event of its own.
+
+| step | result |
+| --- | --- |
+| 1 discover release | PASS |
+| 2 bytecode + wiring | PASS — all three runtime hashes matched, wiring consistent both directions |
+| 3 receipt continuity | PASS |
+| 4 join (§7.2) | PASS — `receiptHash` recomputed from calldata equals the mining event's |
+| 5 deterministic admission | **UNVERIFIED** — no artifact store, and `benchmark-v2` is unavailable (F4) |
+| 6 historical law | PASS — law read from the verifier's context + scheduled policy |
+| 7 resolver snapshot | PASS — **reproduced byte-for-byte**, 4877 bytes, `sha256 a383c77f…`, zero differences |
+| 8 export | PASS — `MAINNET_REHEARSAL`, gaps carried in `unverified` |
+
+Step 7's reproduction is between two **independent runs** against the same chain state, one of
+them from a clean venv outside the source tree. It is a determinism-and-reproduction proof, not a
+reproduction of a resolver's published payload — no resolver has published one. The signature over
+it was made with a **local Anvil test key**, purely to exercise the transport-authentication path;
+it is not a resolver signature and not a mainnet one.
+
+Two guards fired for real during this work and are worth recording, because a guard that has never
+refused anything is a guard nobody has tested:
+
+* the finality guard refused an observation block only 39 blocks deep against a default
+  confirmation depth of 15, and the remaining steps reported `NOT_REACHED` rather than passing;
+* the transport-signature check caught a wrong expected signer and reported the recovered address,
+  while the reproduction verdict beside it stayed `true` — which is the ordering working.
+
+### Clean-machine install
+
+`reproduce.sh` end to end: wheel built, installed into a fresh venv with `pip install --no-deps`,
+then **534 passed / 6 skipped** plus the full eight-step chain replay, all with the working
+directory outside the source tree. The 6 skips are F4's non-public trees.
+
+---
+
+## 5. What is still unproven
 
 * **The mainnet-rehearsal leg.** No rehearsal transition exists on Base. Everything here has been
   exercised against a local Anvil deployment of the same exact contracts. Until Phase 4/5 land,

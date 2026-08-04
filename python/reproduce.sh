@@ -14,6 +14,9 @@
 #   --snapshot FILE     a published resolver snapshot to reproduce BYTE FOR BYTE
 #   --artifact-dir DIR  a local content-addressed artifact store
 #   --export FILE       write the MAINNET_REHEARSAL activation export here
+#   --confirmation-depth N   how deep a block must be to count as settled (default 15).
+#                            Lower it only for a local test chain; on a real chain this is the
+#                            difference between reading confirmed state and reading a guess.
 #
 # EXIT CODES mirror the CLI: 0 = nothing was contradicted, 1 = a check ran and disagreed,
 # 2 = the run could not start. A 0 with a non-empty "unverified" list is the NORMAL clean-machine
@@ -27,7 +30,7 @@ WORK="$(mktemp -d "${TMPDIR:-/tmp}/coretex-validator-clean.XXXXXX")"
 OUTSIDE="$(mktemp -d "${TMPDIR:-/tmp}/coretex-validator-outside.XXXXXX")"
 trap 'rm -rf "$WORK" "$OUTSIDE"' EXIT
 
-RPC=""; RELEASE=""; SNAPSHOT=""; ARTIFACT_DIR=""; EXPORT_TO=""
+RPC=""; RELEASE=""; SNAPSHOT=""; ARTIFACT_DIR=""; EXPORT_TO=""; DEPTH=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --rpc) RPC="$2"; shift 2 ;;
@@ -35,6 +38,7 @@ while [ $# -gt 0 ]; do
     --snapshot) SNAPSHOT="$2"; shift 2 ;;
     --artifact-dir) ARTIFACT_DIR="$2"; shift 2 ;;
     --export) EXPORT_TO="$2"; shift 2 ;;
+    --confirmation-depth) DEPTH="$2"; shift 2 ;;
     -h|--help) sed -n '2,26p' "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
@@ -73,6 +77,7 @@ if [ -n "$RPC" ] && [ -n "$RELEASE" ]; then
   [ -n "$SNAPSHOT" ] && ARGS+=(--snapshot "$SNAPSHOT")
   [ -n "$ARTIFACT_DIR" ] && ARGS+=(--artifact-dir "$ARTIFACT_DIR")
   [ -n "$EXPORT_TO" ] && ARGS+=(--export "$EXPORT_TO")
+  [ -n "$DEPTH" ] && ARGS+=(--confirmation-depth "$DEPTH")
   ( cd "$OUTSIDE" && "$WORK/clean/bin/coretex-validator" "${ARGS[@]}" )
 else
   echo "== 6. chain replay SKIPPED =============================================="
