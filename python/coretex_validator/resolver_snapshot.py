@@ -393,7 +393,8 @@ def check_shape(payload: Mapping[str, Any]) -> None:
 # The remaining chain-derived blocks
 # --------------------------------------------------------------------------- #
 def build_epoch_lineage(*, epoch: int, steps: Sequence[Mapping[str, Any]],
-                        continuous: bool) -> Dict[str, Any]:
+                        continuous: bool, terminates_at: int,
+                        findings: Sequence[str] = ()) -> Dict[str, Any]:
     """The §7.5 backwards walk, including the epochs it fell THROUGH.
 
     Header-less epochs are in the record, not omitted from it. An epoch that was never armed
@@ -420,9 +421,34 @@ def build_epoch_lineage(*, epoch: int, steps: Sequence[Mapping[str, Any]],
         if step.get("final_root") is not None:
             entry["final_root"] = cn.word(step["final_root"], "final_root")
         out.append(entry)
-    return {"continuous": bool(continuous),
-            "epoch": cn.narrow(int(epoch), "epoch_lineage.epoch"),
-            "epochs": out}
+    return {
+        "continuous": bool(continuous),
+        "epoch": cn.narrow(int(epoch), "epoch_lineage.epoch"),
+        "epochs": out,
+        "findings": sorted(str(f) for f in findings),
+        # THE WALK PUBLISHES THE RULE IT APPLIED. A lineage record that showed only its
+        # conclusions would be unauditable: a reader could not tell a fall-through from a missed
+        # epoch, nor learn that continuity is asserted OFF chain and that this walk is the
+        # mitigation rather than an on-chain guarantee.
+        "rule": LINEAGE_RULE,
+        "terminates_at": cn.narrow(int(terminates_at), "terminates_at"),
+    }
+
+
+#: The §7.5 walk, stated inside the payload so a reader need not fetch the design document.
+LINEAGE_RULE: Dict[str, str] = {
+    "fall_through": ("unserved epochs are SKIPPED, not treated as breaks: a screener-only epoch "
+                     "can never be sealed (D3) and is a permanent, ordinary gap in the header "
+                     "chain"),
+    "final_root": ("sealed ? getHeader(N).finalStateRoot : served ? liveStateRoot(N) : "
+                   "epochParentStateRoot(N)"),
+    "on_chain_enforcement": ("NONE — epoch-to-epoch continuity is asserted by the "
+                             "CORETEX_CONTEXT_OPERATOR, not derived on chain (design §11 gap 1). "
+                             "This walk is the off-chain mitigation the design names"),
+    "sealed": "epochFinalized(N)",
+    "served": "transitionCount(N) > 0",
+    "specification": "RIG-CORETEX-REGISTRY-DESIGN.md §7.5 (normative)",
+}
 
 
 def build_migration(*, registry: str, registry_code_hash: str, verifier_bound_registry: str,
@@ -471,9 +497,12 @@ def build_composition(manifest: Mapping[str, Any]) -> Dict[str, Any]:
         "default_composition_root": cn.bare_root(manifest["default_composition_root"],
                                                  "default_composition_root"),
         "manifest_epoch": cn.narrow(int(manifest["epoch"]), "manifest_epoch"),
-        "manifest_parent_frontier_root": cn.word(
-            cn.word_from_root(manifest["parent_frontier_root"], "parent_frontier_root"),
-            "manifest_parent_frontier_root"),
+        # BARE, not 0x. It is a content-addressed frontier root read out of a fetched manifest,
+        # never a chain word — nothing put it in a bytes32. Rendering it as a word was this
+        # package's own slip while adopting the two-spelling rule, and it is exactly the confusion
+        # `root_from_word` exists to make impossible at the one place the boundary is real.
+        "manifest_parent_frontier_root": cn.bare_root(manifest["parent_frontier_root"],
+                                                      "manifest_parent_frontier_root"),
     }
 
 
@@ -500,3 +529,100 @@ def build_artifacts(entries: Sequence[Mapping[str, Any]]) -> List[Dict[str, Any]
             "root": cn.bare_root(entry["root"], "root"),
         })
     return sorted(out, key=lambda item: (item["kind"], item["root"]))
+
+
+# --------------------------------------------------------------------------- #
+# Locks: what the runtime record binds, and what it only claims
+# --------------------------------------------------------------------------- #
+#: Locks the frontier manifest itself carries. These are addressed by ``newStateRoot``, which the
+#: registry event carries and the EIP-712 digest signs — so they are CHAIN-BOUND.
+MANIFEST_LOCKS = ("benchmark_law_root", "runtime_abi_root")
+
+#: Locks that exist only inside the runtime-integration record. They are chain-bound only when
+#: that record is itself addressed by the epoch's ``coreVersionHash``.
+TRANSITIVE_LOCKS = ("counter_resource_law_root", "counter_root", "evaluation_law_root",
+                    "renderer_root", "runtime_artifact_root", "scorer_root")
+
+
+def build_locks(manifest: Mapping[str, Any], runtime_record: Optional[Mapping[str, Any]], *,
+                core_version_hash: str,
+                record_root: Optional[str] = None) -> Tuple[Dict[str, Any], List[str]]:
+    """The law locks, and the DISPUTE when two committed artifacts disagree.
+
+    A dispute is not an error to resolve — it is a fact to publish. Two artifacts that a chain has
+    committed to can disagree, and when they do the honest output says so, names both values, and
+    DOWNGRADES everything that rests on the losing one. Silently preferring either would produce a
+    snapshot that reproduces cleanly and asserts something no chain attests.
+
+    The rule: the chain-addressed frontier manifest WINS, because it is addressed by a root the
+    registry event carries and the receipt digest signs. The runtime-integration record is
+    supplied out of band and is chain-bound only if ``coreVersionHash`` addresses it. When they
+    disagree on a lock they share, every lock bound ONLY through that record becomes ``disputed``
+    — not merely the one that differs, because the record's credibility is what was damaged.
+    """
+    locks: Dict[str, Any] = {}
+    findings: List[str] = []
+    record = runtime_record or {}
+    record_locks = record.get("locks", record)
+    chain_bound = bool(record_root) and cn.word(record_root, "record_root") == cn.word(
+        core_version_hash, "core_version_hash")
+
+    disputes: List[Dict[str, str]] = []
+    for name in MANIFEST_LOCKS:
+        value = manifest.get(name)
+        if value is None:
+            continue
+        entry: Dict[str, Any] = {"binding": "manifest",
+                                 "root": cn.bare_root(value, name)}
+        claimed = record_locks.get(name)
+        if claimed is not None:
+            claimed_root = cn.bare_root(claimed, f"{name}.record")
+            if claimed_root != entry["root"]:
+                entry["disputed_by_runtime_record"] = claimed_root
+                disputes.append({"chain_addressed_manifest": entry["root"], "lock": name,
+                                 "runtime_integration_record": claimed_root})
+            else:
+                entry["also_in_runtime_record"] = True
+        locks[name] = entry
+
+    disputed = bool(disputes)
+    for name in TRANSITIVE_LOCKS:
+        value = record_locks.get(name)
+        if value is None:
+            continue
+        locks[name] = {"binding": "disputed" if disputed else
+                                  ("transitive" if not chain_bound else "chain-bound"),
+                       "root": cn.bare_root(value, name)}
+
+    for dispute in disputes:
+        findings.append(
+            f"LOCK DISPUTE on {dispute['lock']}: the chain-addressed frontier manifest says "
+            f"{dispute['chain_addressed_manifest']} and the supplied runtime-integration record "
+            f"says {dispute['runtime_integration_record']}. The manifest wins and is what is "
+            "published; every lock bound only through that record is downgraded to `disputed` and "
+            "must not be relied on for this chain")
+    if not chain_bound:
+        findings.append(
+            "the runtime-integration record is NOT chain-bound for this epoch, so every lock "
+            "marked `transitive` or `disputed` — the scorer, counter, counter-resource-law and "
+            "renderer roots — is not attested by this chain")
+
+    block: Dict[str, Any] = {
+        "binding_note": (
+            "`manifest` locks are addressed by newStateRoot, which the registry event carries and "
+            "the EIP-712 digest signs. `transitive` locks live only in the runtime-integration "
+            "record; they are chain-bound ONLY when runtime_record_chain_bound is true. "
+            "`disputed` means the record disagrees with the chain-addressed manifest on a lock "
+            "they share, so NOTHING bound only through that record may be relied on. The rig "
+            "registry pins six values and the counter-resource law is not among them"),
+        "locks": locks,
+        "runtime_record_chain_bound": chain_bound,
+    }
+    if disputes:
+        block["dispute_resolution"] = (
+            "the chain-addressed frontier manifest WINS and is what is published; the "
+            "runtime-integration record's value is recorded as disputed_by_runtime_record")
+        block["disputes"] = sorted(disputes, key=lambda d: d["lock"])
+    if record_root is not None:
+        block["runtime_record_root"] = cn.bare_root(record_root, "runtime_record_root")
+    return block, findings
