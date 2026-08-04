@@ -1,13 +1,18 @@
 {
  "caveats": [
-  "`--runtime-record` is NOT in the publication set. RUNTIME-INTEGRATION.pre-rig.json lives in the private botcoin-coordinator repository, so a clean PUBLIC install cannot obtain it and the `locks` block cannot be rebuilt without it. Everything else reproduces from the publication set and the chain alone",
-  "deterministic Benchmark-v2 admission (validator step 5) needs the private benchmark-v2 and coretex-memory trees and BACKLOGs on a clean machine; that gap is carried in the validator's export rather than worked around"
+  "`--runtime-record` (RUNTIME-INTEGRATION.pre-rig.json) is REQUIRED to rebuild the `locks` block. It was not in the epoch-180 publication set when this record was first written; it is now published as root 309cf988c8d2ae79872662de6c04529fa22d12755bb5b86e3fb42290fd023d42 in the companion set (commit df3c2ae), so a clean PUBLIC install can obtain it. The client-lane finding F11 is CLOSED.",
+  "deterministic Benchmark-v2 admission (validator step 5) needs the six admission code trees. Those are now published too, under root d90f469cf8f737e100f8cd13f06c56559e315c04f974d4e3c987c40a7c4f7399, addressed by the same tree-hash rule the signed receipt's code_roots binds. Client-lane finding F4 is CLOSED. Set CORETEX_ADMISSION_REPO_ROOT / CORETEX_BENCHMARK_V2_DIR / CORETEX_MEMORY_RUNTIME_DIR, and install the one public PyPI dependency the runtime tree needs (wasmtime). An UNCONFIGURED host still BACKLOGs at step 5, which remains the honest outcome."
  ],
  "client_branch": "v5-rig-rehearsal-20260804",
  "client_commit": "6f1014d30ff60148f9b97b6036d32b17359cf7fb",
  "client_package": "coretex-validator",
  "client_repository": "https://github.com/botcoinmoney/coretex-client",
  "client_version": "0.1.0",
+ "closed_since_first_written": {
+  "F11": "runtime-integration record published (root 309cf988\u2026, commit df3c2ae)",
+  "F4": "admission code trees published (root d90f469c\u2026)",
+  "note": "this record's `result` block is the snapshot REPRODUCTION, which does not depend on either. Both closures were verified after the K1/K2 fixes and the reproduction is unchanged at 7087b32d\u2026672c7"
+ },
  "command": "coretex-validator reproduce-snapshot --snapshot snapshot.json --rpc https://mainnet.base.org --artifacts ./artifacts --runtime-record RUNTIME-INTEGRATION.pre-rig.json --signature snapshot.sig.json --public-key resolver-public-key.json --out rebuilt.bin",
  "dependencies": {
   "note": "zero runtime dependencies. keccak256, secp256k1 recovery, ABI encoding, canonical JSON and JSON-RPC are implemented on the standard library",
