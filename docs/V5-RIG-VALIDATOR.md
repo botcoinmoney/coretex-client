@@ -275,7 +275,12 @@ anyone budgeting for a replay.
 | command | what it proves | cost |
 | --- | --- | --- |
 | `reproduce-snapshot` | the published snapshot's unsigned payload rebuilds byte-for-byte from chain truth | **~153 s wall**, ~46 RPC calls, negligible CPU |
-| `reproduce` (admission wired) | the above *plus* deterministic Benchmark-v2 admission re-executed | **tens of minutes of CPU**, three-deep process nesting with parallel scoring workers |
+| `reproduce` (admission wired) | the above *plus* deterministic Benchmark-v2 admission re-executed | **754–1150 s wall**, three-deep process nesting with parallel scoring workers |
+
+Quote the admission figure as a **range, not a number**. Three measured runs of the
+same work on the same box came in at 754 s, 1093 s and 1150 s — a ~45 % spread driven
+by nothing but contention. A single figure would imply a precision this workload does
+not have.
 
 `reproduce-snapshot` is **network-bound, not CPU-bound**: most of its wall time is deliberate
 pacing (`--min-interval`, default 0.7 s) against a rate-limiting public endpoint, plus round-trip
@@ -340,6 +345,55 @@ coretex-validator reproduce-snapshot --snapshot snapshot.json \
 ```
 
 Full record: `evidence/reproduction-e180-client.json`.
+
+### The full replay, every stage
+
+Both epoch-180 receipts, clean wheel-only install, Base mainnet at block 49518473:
+
+| stage | T0 | T1 |
+| --- | --- | --- |
+| `discover_release` | PASS | PASS |
+| `verify_deployment` | PASS | PASS |
+| `receipt_continuity` | PASS | PASS |
+| `join_transition` | PASS | PASS |
+| `deterministic_admission` | PASS | PASS |
+| `historical_law` | PASS | PASS |
+| `resolver_snapshot` | PASS | PASS |
+| wall clock | 1150 s | 1093 s |
+
+`export` reads UNVERIFIED when no snapshot is supplied to reproduce against — withheld
+by design rather than failed, because an export attests to byte-for-byte reproduction
+and there is nothing to attest to.
+
+Admission's own summary, verbatim: *"advance replayed from confirmed chain truth: parent
+manifest verified, transition applied, new root reproduced, artifact rehashed, every
+binding checked, selection re-derived AND proven complete, candidate executed in the
+pinned sandbox whose networkless execution was DEMONSTRATED (not asserted) by a real
+socket probe, and the frozen law confirms it beat the exact parent incumbent."*
+
+### Sandbox import isolation
+
+The child's `sys.path` is **built, not filtered** — an allow-list, so the failure
+direction is toward refusing an import:
+
+* **allowed** — the pinned admission trees, plus the stdlib and site-packages of the
+  verified interpreter (where `pip` put `wasmtime` and every other pinned wheel);
+* **refused** — source tree, repository-relative entries, the working directory,
+  `PYTHONPATH` injections, the user site directory. All ambient; all dependent on where
+  the command was run from.
+
+A blocklist can only remove what somebody remembered to name, and the previous one named
+the wrong thing. Proven as a suite by `python/tools/sandbox_isolation_proofs.py` (7/7,
+`evidence/sandbox-isolation-proofs.json`): wheel-only install, no source-tree imports,
+site-packages admitted, networkless enforced, `socket(2)` → EPERM on both IP families,
+`wasmtime` 46.0.1 matching the lock, and removal producing a named error.
+
+**A missing dependency is a FAIL, never a BACKLOG.** `SandboxDependencyError` is
+deliberately not a subclass of `SandboxUnavailable`: "this host is not configured" sends
+a reader back to our documentation, while "your environment is wrong, here is which
+dependency and the remedy" puts the fix where it belongs. Collapsing the second into the
+first would have an external agent re-reading our instructions while the actual fix is
+one `pip install` on their side.
 
 ### Preserved, not tidied
 
