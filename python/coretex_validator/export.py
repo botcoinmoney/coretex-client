@@ -30,6 +30,32 @@ CLASSIFICATION_REHEARSAL = "MAINNET_REHEARSAL"
 CLASSIFICATION_CANONICAL = "MAINNET_CANONICAL"
 
 
+def drop_nulls(value: Any) -> Any:
+    """Recursively remove ``None`` values. A BOUNDARY GUARD, not a licence to be sloppy.
+
+    WHY THIS EXISTS, STATED PLAINLY BECAUSE IT IS A CONCESSION. The canonical grammar refuses
+    ``null`` by design — absence is expressed by absence, so that "I do not have this" and "this
+    field does not exist" cannot become the same bytes. Every report dict in this package is
+    supposed to be built with that in mind.
+
+    Three times now one was not, and each time the failure landed at SERIALISATION: after the
+    chain reads, after a twenty-minute deterministic admission, after everything expensive had
+    already succeeded. A dict assembled across a dozen call sites will eventually carry a ``None``
+    somebody defaulted, and discovering that at the end of the most costly operation in the
+    package is the worst possible trade.
+
+    So the report is swept HERE, at the one boundary where a report becomes canonical bytes. This
+    does not make the rule optional upstream — a value that should have been present and is
+    ``None`` is still a bug, and dropping it hides that. It makes the failure mode proportionate:
+    a missing optional field is omitted, rather than costing a run.
+    """
+    if isinstance(value, Mapping):
+        return {k: drop_nulls(v) for k, v in value.items() if v is not None}
+    if isinstance(value, (list, tuple)):
+        return [drop_nulls(v) for v in value if v is not None]
+    return value
+
+
 class ExportError(Exception):
     def __init__(self, code: str, message: str) -> None:
         super().__init__(f"{code}: {message}")
@@ -122,5 +148,9 @@ def build_export(*, snapshot_payload: Mapping[str, Any],
                     if release_document.get(key) is not None},
         "unverified": [dict(item) for item in unverified],
     }
-    fr.canonical_bytes(document)                     # fail fast on anything uncanonicalisable
+    # Sweep, THEN canonicalise. The sweep is the boundary guard above; the canonicalisation is
+    # still a hard check, so anything the grammar refuses for a reason OTHER than nullity — a
+    # float, a non-string key — fails here exactly as before.
+    document = drop_nulls(document)
+    fr.canonical_bytes(document)
     return Export(document)

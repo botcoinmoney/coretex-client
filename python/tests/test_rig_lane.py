@@ -1178,6 +1178,32 @@ class TestNoNullReachesCanonicalBytes:
         result = snap.reproduce(minimal_payload(), None)
         cn.canonical_bytes(result.as_dict())
 
+    def test_ARBITRARY_nested_nulls_cannot_kill_an_export(self):
+        """The CLASS, not another instance.
+
+        The previous two tests here pinned the two shapes that had already failed. That is how
+        this bug reached its third occurrence: each fix addressed the instance in front of it
+        while the class — "a report dict assembled across a dozen call sites carries a None
+        somebody defaulted" — went untested. This throws nulls at every level of the structures
+        an export is built from.
+        """
+        from coretex_validator import canonical as cn
+
+        payload = minimal_payload()
+        export = ex.build_export(
+            snapshot_payload=payload, reproduction=snap.reproduce(payload, dict(payload)),
+            release_document=release_document(),
+            source_divergence={"a": None, "b": {"c": None, "d": 1}},
+            deployment_verification={"contracts": {"registry": {"match": True, "err": None}}},
+            receipt_chains={1: {"ok": True, "chain_next_index": None}},
+            admission={"outcome": "PASS", "code": None, "stage": None,
+                       "checks": ["a", None], "nested": {"deep": {"deeper": None}}},
+            unverified=[{"step": "x", "reason": None}])
+        cn.canonical_bytes(export.document)           # must not raise
+        # And the surviving values are untouched — the sweep drops nulls, not content.
+        assert export.document["verification"]["deterministic_admission"]["outcome"] == "PASS"
+        assert "code" not in export.document["verification"]["deterministic_admission"]
+
     def test_a_full_export_is_canonicalisable(self):
         from coretex_validator import canonical as cn
 

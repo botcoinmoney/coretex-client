@@ -539,8 +539,15 @@ def _admit(selected: jn.JoinedTransition, law: hl.EpochLaw, store: pub.ContentSt
                                sandbox=sandbox if sandbox.available() else None,
                                screen=screen if screen.available() else None,
                                allow_test_doubles=allow_test_doubles)
-    return artifact, {"outcome": str(result.outcome), "code": result.code,
-                      "reason": result.reason, "checks": list(result.checks),
-                      "stage": getattr(result, "stage", None),
-                      "compact_patch": patch.as_dict(),
-                      "admission_trees": admission_trees}
+    # OMIT, NEVER null: `code` is None on a PASS and `stage` may be absent. Fixed at source as
+    # well as swept at the export boundary — the guard exists so a miss is cheap, not so misses
+    # are acceptable.
+    report: Dict[str, Any] = {"outcome": str(result.outcome), "reason": result.reason,
+                              "checks": list(result.checks),
+                              "compact_patch": patch.as_dict(),
+                              "admission_trees": admission_trees}
+    if result.code is not None:
+        report["code"] = result.code
+    if getattr(result, "stage", None) is not None:
+        report["stage"] = result.stage
+    return artifact, report
