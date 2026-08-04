@@ -38,8 +38,58 @@ class RpcError(RuntimeError):
     """The endpoint refused, errored, or answered something that is not JSON-RPC."""
 
 
+class TransportError(RpcError):
+    """The request never got a usable answer: HTTP status, timeout, DNS, connection reset.
+
+    SPLIT FROM :class:`ResponseError` BECAUSE REAL DATA PROVED IT MATTERS. A 429 rate-limit from a
+    public endpoint arrived and was classified as ``CONTRACT_READ_REVERTED`` — a transport failure
+    wearing a contract-revert label. The two demand opposite responses: a transport failure means
+    "back off and retry", a revert means "the contract said no and retrying will say no again".
+    Conflating them turns a rate limit into a fabricated claim about chain state.
+
+    The over-correction is a bug too: a GENUINE revert must never be classified as transport, or a
+    contract refusing an operation would look like a network blip and get retried forever.
+    """
+
+    def __init__(self, message: str, *, status: Optional[int] = None) -> None:
+        super().__init__(message)
+        self.status = status
+
+
+class ResponseError(RpcError):
+    """The endpoint answered, and the answer was an error — including a contract revert."""
+
+    def __init__(self, message: str, *, returndata: bytes = b"") -> None:
+        super().__init__(message)
+        #: The raw revert returndata, when the endpoint supplied it. The FIRST FOUR BYTES are the
+        #: custom-error selector, and that is the only reliable way to identify a revert: message
+        #: text is endpoint-specific prose that changes between providers and versions.
+        self.returndata = bytes(returndata)
+
+    @property
+    def selector(self) -> str:
+        return "0x" + self.returndata[:4].hex() if len(self.returndata) >= 4 else ""
+
+
 class ChainMismatchError(RpcError):
     """The endpoint is serving a different chain than the caller asked for. Never a warning."""
+
+
+#: ``RigCoreTexStateRegistry.EpochContextNotSet()``. Matched by SELECTOR, never by message text.
+#:
+#: The registry delegates epoch reads to the verifier's context and reverts with this for an epoch
+#: that was never armed. On the real chain this is not hypothetical: below epoch 180 — that
+#: registry's genesis — ``liveStateRoot`` and ``epochParentStateRoot`` revert while
+#: ``epochFinalized`` and ``transitionCount`` answer normally.
+EPOCH_CONTEXT_NOT_SET_SELECTOR = "0xae3a262a"
+
+#: A browser-ish User-Agent, because the default one is refused.
+#:
+#: ``https://mainnet.base.org`` answers urllib's default ``Python-urllib/3.x`` with a bare HTTP
+#: 403 and no body — which reads exactly like an auth failure and sends you looking for an API key
+#: that was never required. Setting a UA fixes it. Recorded here rather than in a comment on a
+#: header dict because the next person to debug a 403 needs to find this.
+DEFAULT_USER_AGENT = "coretex-validator/0.1 (+https://github.com/botcoinmoney/coretex-client)"
 
 
 @dataclass(frozen=True)
@@ -65,14 +115,17 @@ def _hex_int(value: Any, field: str) -> int:
 class JsonRpc:
     """One endpoint. Not thread-safe, and not trying to be — a validator run is sequential."""
 
-    def __init__(self, url: str, *, timeout: float = 30.0, retries: int = 3,
-                 chunk_blocks: int = DEFAULT_CHUNK_BLOCKS) -> None:
+    def __init__(self, url: str, *, timeout: float = 30.0, retries: int = 5,
+                 chunk_blocks: int = DEFAULT_CHUNK_BLOCKS,
+                 user_agent: str = DEFAULT_USER_AGENT, backoff: float = 0.5) -> None:
         if not isinstance(url, str) or not url:
             raise RpcError("an RPC url is required")
         self.url = url
         self.timeout = timeout
         self.retries = max(1, int(retries))
         self.chunk_blocks = max(1, int(chunk_blocks))
+        self.user_agent = user_agent
+        self.backoff = float(backoff)
         self.calls = 0
 
     # -- transport --------------------------------------------------------- #
@@ -81,27 +134,60 @@ class JsonRpc:
                               "params": list(params)}).encode("utf-8")
         request = urllib.request.Request(
             self.url, data=payload,
-            headers={"content-type": "application/json", "accept": "application/json"})
+            headers={"content-type": "application/json", "accept": "application/json",
+                     "user-agent": self.user_agent})
         last: Optional[Exception] = None
         for attempt in range(self.retries):
             try:
                 with urllib.request.urlopen(request, timeout=self.timeout) as response:
                     body = json.loads(response.read().decode("utf-8"))
                 break
-            except (urllib.error.URLError, OSError, ValueError) as exc:
-                last = exc
+            except urllib.error.HTTPError as exc:
+                # An HTTP status is TRANSPORT, always — including 429 and 403. The endpoint never
+                # got as far as executing anything, so nothing it says is about the chain.
+                last = TransportError(
+                    f"{method}: HTTP {exc.code} from {self.url}"
+                    + (" (rate limited — back off; this is NOT a contract revert)"
+                       if exc.code == 429 else "")
+                    + (" (403 with the default User-Agent usually means the endpoint refused the "
+                       "agent string, not that a key is missing)"
+                       if exc.code == 403 else ""),
+                    status=exc.code)
                 if attempt + 1 == self.retries:
-                    raise RpcError(f"{method} failed after {self.retries} attempts: {exc}") from exc
-                time.sleep(0.4 * (attempt + 1))
+                    raise last from exc
+                time.sleep(self.backoff * (2 ** attempt) if exc.code == 429
+                           else self.backoff * (attempt + 1))
+            except (urllib.error.URLError, OSError) as exc:
+                last = TransportError(f"{method}: {exc}")
+                if attempt + 1 == self.retries:
+                    raise last from exc
+                time.sleep(self.backoff * (attempt + 1))
+            except ValueError as exc:
+                # A body that is not JSON came from something that is not a JSON-RPC endpoint.
+                last = TransportError(f"{method}: response was not JSON ({exc})")
+                if attempt + 1 == self.retries:
+                    raise last from exc
+                time.sleep(self.backoff * (attempt + 1))
         else:                                                # pragma: no cover - unreachable
-            raise RpcError(f"{method}: {last}")
+            raise TransportError(f"{method}: {last}")
         self.calls += 1
         if not isinstance(body, Mapping):
-            raise RpcError(f"{method}: response is not a JSON object")
+            raise TransportError(f"{method}: response is not a JSON object")
         if "error" in body:
-            raise RpcError(f"{method}: endpoint returned {body['error']}")
+            error = body["error"] if isinstance(body["error"], Mapping) else {}
+            raw = str(error.get("data") or "")
+            returndata = b""
+            if raw.startswith("0x"):
+                try:
+                    returndata = bytes.fromhex(raw[2:])
+                except ValueError:                            # pragma: no cover - defensive
+                    returndata = b""
+            # A JSON-RPC error IS a response: the endpoint executed and said no. Classified here,
+            # never as transport, so a genuine revert is not retried forever as a network blip.
+            raise ResponseError(f"{method}: endpoint returned {body['error']}",
+                                returndata=returndata)
         if "result" not in body:
-            raise RpcError(f"{method}: response carries no result")
+            raise TransportError(f"{method}: response carries no result")
         return body["result"]
 
     # -- chain identity / heads -------------------------------------------- #

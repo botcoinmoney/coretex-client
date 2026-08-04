@@ -375,3 +375,116 @@ def check_shape(payload: Mapping[str, Any]) -> None:
             "SCHEMA_SHAPE_MISMATCH",
             f"this schema has exactly {len(TOP_LEVEL_KEYS)} top-level keys; missing={missing}, "
             f"unexpected={extra}")
+
+
+# --------------------------------------------------------------------------- #
+# The remaining chain-derived blocks
+# --------------------------------------------------------------------------- #
+def build_epoch_lineage(*, epoch: int, steps: Sequence[Mapping[str, Any]],
+                        continuous: bool) -> Dict[str, Any]:
+    """The §7.5 backwards walk, including the epochs it fell THROUGH.
+
+    Header-less epochs are in the record, not omitted from it. An epoch that was never armed
+    reports ``context_set: false`` and ``final_root_source: "none (EpochContextNotSet)"`` — and
+    that string is load-bearing: it says the walk ASKED and got a refusal, as distinct from a walk
+    that never looked. On the real chain every epoch below 180 is like this, because 180 is that
+    registry's genesis.
+    """
+    out: List[Dict[str, Any]] = []
+    for step in steps:
+        entry: Dict[str, Any] = {
+            "context_set": bool(step["context_set"]),
+            "epoch": cn.narrow(int(step["epoch"]), "lineage.epoch"),
+            "final_root_source": str(step["final_root_source"]),
+            "sealed": bool(step["sealed"]),
+            "served": bool(step["served"]),
+            "transition_count": cn.narrow(int(step["transition_count"]), "transition_count"),
+            "uncommitted": bool(step["uncommitted"]),
+        }
+        # Present only when the epoch actually has one. An unarmed epoch has no roots, and
+        # emitting a zero would be inventing a value the chain refused to give.
+        if step.get("context_parent") is not None:
+            entry["context_parent"] = cn.word(step["context_parent"], "context_parent")
+        if step.get("final_root") is not None:
+            entry["final_root"] = cn.word(step["final_root"], "final_root")
+        out.append(entry)
+    return {"continuous": bool(continuous),
+            "epoch": cn.narrow(int(epoch), "epoch_lineage.epoch"),
+            "epochs": out}
+
+
+def build_migration(*, registry: str, registry_code_hash: str, verifier_bound_registry: str,
+                    epoch_clock: str, cutover_epoch: int, lineage_floor_epoch: int,
+                    log_window_from_block: int) -> Dict[str, Any]:
+    """Which generation of the lane this is, and the collision a reader must know about."""
+    return {
+        "cutover_epoch": cn.narrow(int(cutover_epoch), "cutover_epoch"),
+        "lineage_floor_epoch": cn.narrow(int(lineage_floor_epoch), "lineage_floor_epoch"),
+        "log_window_from_block": cn.narrow(int(log_window_from_block), "log_window_from_block"),
+        "protocol": PROTOCOL_ID,
+        "registry_generation": {
+            "epoch_clock": cn.address(epoch_clock, "epoch_clock"),
+            "registry": cn.address(registry, "registry"),
+            "registry_code_hash": cn.word(registry_code_hash, "registry_code_hash"),
+            # The field that separates a live registry from a retired one. Address and code hash
+            # cannot: a successor from the same source shares the hash and, once it has inherited
+            # the contexts, answers every pin getter identically.
+            "verifier_bound_registry": cn.address(verifier_bound_registry,
+                                                  "verifier_bound_registry"),
+        },
+        "supersedes": list(SUPERSEDED_PROTOCOLS),
+        "topic0_collision": {
+            "note": ("this event shares topic0 with the retired coretex.state.v4 advance, by "
+                     "design (ABI compatibility with the shipped reference). Logs MUST be "
+                     "filtered by emitting address; a topic0 filter splices the two lanes' "
+                     "histories"),
+            "registry_state_advanced": cn.word(rig.STATE_ADVANCED_TOPIC0,
+                                               "registry_state_advanced"),
+        },
+    }
+
+
+def build_profiles(manifest: Mapping[str, Any]) -> Dict[str, str]:
+    """Per-profile release roots from the head frontier manifest — the activation payload."""
+    return {pid: cn.bare_root(root, f"profiles[{pid}]")
+            for pid, root in sorted(manifest["profiles"].items())}
+
+
+def build_composition(manifest: Mapping[str, Any]) -> Dict[str, Any]:
+    return {
+        "artifact_format": str(manifest["format"]),
+        "composed_manifest_root": cn.bare_root(manifest["default_composition_root"],
+                                               "composed_manifest_root"),
+        "composition_artifact_format": "benchmark-v2/g8-deployment-signed/v1",
+        "default_composition_root": cn.bare_root(manifest["default_composition_root"],
+                                                 "default_composition_root"),
+        "manifest_epoch": cn.narrow(int(manifest["epoch"]), "manifest_epoch"),
+        "manifest_parent_frontier_root": cn.word(
+            cn.word_from_root(manifest["parent_frontier_root"], "parent_frontier_root"),
+            "manifest_parent_frontier_root"),
+    }
+
+
+def build_artifacts(entries: Sequence[Mapping[str, Any]]) -> List[Dict[str, Any]]:
+    """The content-addressed index, sorted by root.
+
+    ``hash_rule`` is per-object and is NOT a formality. Candidate bundles and composition
+    manifests use ``sha256-signed-manifest-body`` — the hash covers the manifest body with its own
+    attestation fields removed — while frontier manifests use ``sha256-frontier-canonical-json``.
+    Rehashing a signed manifest under the frontier rule produces a mismatch and reports a TAMPER
+    THAT IS NOT THERE, which is worse than not checking: it burns an operator's trust in the
+    check. Found on real data.
+    """
+    out = []
+    for entry in entries:
+        out.append({
+            "chain_binding": str(entry["chain_binding"]),
+            "chain_word": cn.word(entry["chain_word"], "chain_word"),
+            "hash_rule": str(entry["hash_rule"]),
+            "kind": str(entry["kind"]),
+            "location": str(entry.get("location", "")),
+            "note": str(entry["note"]),
+            "resolved": bool(entry["resolved"]),
+            "root": cn.bare_root(entry["root"], "root"),
+        })
+    return sorted(out, key=lambda item: (item["kind"], item["root"]))
