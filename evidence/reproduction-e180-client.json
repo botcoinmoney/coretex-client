@@ -1,0 +1,34 @@
+{
+ "caveats": [
+  "`--runtime-record` is NOT in the publication set. RUNTIME-INTEGRATION.pre-rig.json lives in the private botcoin-coordinator repository, so a clean PUBLIC install cannot obtain it and the `locks` block cannot be rebuilt without it. Everything else reproduces from the publication set and the chain alone",
+  "deterministic Benchmark-v2 admission (validator step 5) needs the private benchmark-v2 and coretex-memory trees and BACKLOGs on a clean machine; that gap is carried in the validator's export rather than worked around"
+ ],
+ "client_branch": "v5-rig-rehearsal-20260804",
+ "client_commit": "6f1014d30ff60148f9b97b6036d32b17359cf7fb",
+ "client_package": "coretex-validator",
+ "client_repository": "https://github.com/botcoinmoney/coretex-client",
+ "client_version": "0.1.0",
+ "command": "coretex-validator reproduce-snapshot --snapshot snapshot.json --rpc https://mainnet.base.org --artifacts ./artifacts --runtime-record RUNTIME-INTEGRATION.pre-rig.json --signature snapshot.sig.json --public-key resolver-public-key.json --out rebuilt.bin",
+ "dependencies": {
+  "note": "zero runtime dependencies. keccak256, secp256k1 recovery, ABI encoding, canonical JSON and JSON-RPC are implemented on the standard library",
+  "runtime": []
+ },
+ "format": "coretex.rig-state.reproduction/v1",
+ "install": "python3 -m venv venv && venv/bin/pip install --no-deps coretex_validator-0.1.0-py3-none-any.whl",
+ "owner": "coretex-client lane (Phase 7)",
+ "result": {
+  "chain_derived_keys_reproduced": 13,
+  "identical": true,
+  "recovered_signer": "0xd1446157f70d1b4a19ae224b7bad098c873b84cd",
+  "reproduced_payload_bytes": 28964,
+  "reproduced_payload_sha256": "7087b32d3199c352336c3d7faa2126b3a1ce139a0f16b2ecc62d292fc9c672c7",
+  "run_conditions": "clean venv, `pip install --no-deps` from a built wheel, working directory OUTSIDE the source tree; reproduction completed and was compared BEFORE the signature was consulted",
+  "schema_constant_keys_reproduced": 10,
+  "signing_digest": "0x15636ac13d8ed786a0da76e26bdd0b17a6d0e9127f0d32df87679bd8f453c41e",
+  "transport_signature_valid": true
+ },
+ "supplied": true,
+ "target_payload_bytes": 28964,
+ "target_payload_sha256": "7087b32d3199c352336c3d7faa2126b3a1ce139a0f16b2ecc62d292fc9c672c7",
+ "verify": "sha256sum rebuilt.bin  # 7087b32d3199c352336c3d7faa2126b3a1ce139a0f16b2ecc62d292fc9c672c7"
+}

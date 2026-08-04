@@ -289,7 +289,82 @@ never silently becomes "X is broken".
 
 ---
 
-## 4. What has been proven, and how
+## 4. REPRODUCED: the real MAINNET_REHEARSAL snapshot
+
+A clean installation rebuilt the published epoch-180 snapshot **byte for byte from Base mainnet**,
+before any signature was consulted.
+
+```
+client   sha256 7087b32d3199c352336c3d7faa2126b3a1ce139a0f16b2ecc62d292fc9c672c7  28964 bytes
+target   sha256 7087b32d3199c352336c3d7faa2126b3a1ce139a0f16b2ecc62d292fc9c672c7  28964 bytes
+signing digest  0x15636ac13d8ed786a0da76e26bdd0b17a6d0e9127f0d32df87679bd8f453c41e   (matches)
+publication set a51544ecf69d59b29791bd7a83d82abd739c6a422d231a543ff0a13ea3718d51
+```
+
+All 23 keys: 13 chain-derived, 10 schema-constant. Run conditions: a wheel built from source,
+`pip install --no-deps` into a fresh venv, working directory **outside** the source tree, Base
+8453 at observation block 49518473 under the finalized-tag policy. The transport signature was
+then verified separately over the CLIENT'S OWN reconstruction — not over the published file —
+and recovers `0xd1446157…`, the `REHEARSAL_TEST_ONLY` resolver key.
+
+```bash
+coretex-validator reproduce-snapshot --snapshot snapshot.json \
+  --rpc https://mainnet.base.org --artifacts ./artifacts \
+  --runtime-record RUNTIME-INTEGRATION.pre-rig.json \
+  --signature snapshot.sig.json --public-key resolver-public-key.json --out rebuilt.bin
+```
+
+Full record: `evidence/reproduction-e180-client.json`.
+
+### Preserved, not tidied
+
+Two things a "helpful" implementation would have smoothed away, and both would have been
+reproduction failures:
+
+* **Epoch 180 is UNSEALED.** It was still current, so `sealed: false` and its final root comes
+  from `liveStateRoot`. No header block is emitted at all — `getHeader` returns a zero-filled
+  struct rather than reverting, so emitting it unconditionally would put eight zero roots in the
+  payload and make "never sealed" indistinguishable from "sealed at the zero root", a state D2
+  forbids.
+* **Four locks are `disputed`** — scorer, counter, counter-resource-law, renderer — because two
+  committed artifacts disagree on `runtime_abi_root` (`d83638ae…` vs `8f17abc4…`). The
+  chain-addressed manifest wins, both values are published, and every lock resting only on the
+  loser is downgraded — not merely the differing one, because it is the record's credibility that
+  was damaged. Silently resolving the dispute would have produced a snapshot that reproduced
+  cleanly and asserted something no chain attests.
+
+### F11 — the runtime-integration record is not in the publication set
+
+`RUNTIME-INTEGRATION.pre-rig.json` is required to rebuild `locks`, and it lives in the **private**
+`botcoin-coordinator` repository — it is not among the 14 content-addressed objects published
+alongside the snapshot. A clean public install therefore cannot rebuild that one block. Everything
+else reproduces from the publication set and the chain alone. Same class as F4/F5, reported rather
+than worked around.
+
+### What real data taught that a local harness could not
+
+1. **A 429 is transport, not a revert.** The first mainnet attempt hit HTTP 429 and it surfaced as
+   `TransportError` — "rate limited — back off; this is NOT a contract revert". The two demand
+   opposite responses, and conflating them turns a rate limit into a fabricated claim about chain
+   state. The over-correction is equally a bug, so a JSON-RPC `error` object stays a
+   `ResponseError` and is never retried as a network blip. Requests are also now PACED: a
+   validator's read pattern is a burst of small `eth_call`s, the worst possible shape for a token
+   bucket.
+2. **F9 is live.** Below epoch 180 — that registry's genesis — `liveStateRoot` and
+   `epochParentStateRoot` really do revert while `epochFinalized` and `transitionCount` answer
+   normally. The walk asks `coreTexEpochContextSet` first, and reverts are matched by RETURNDATA
+   SELECTOR (`0xae3a262a`), never by message text.
+3. **Candidate bundles use `sha256-signed-manifest-body`.** Rehashing them under the frontier-JSON
+   rule reports a tamper that is not there — worse than not checking, because it burns an
+   operator's trust in the check.
+4. **The endpoint 403s urllib's default User-Agent** with a bare 403 that reads like an auth
+   failure and sends you hunting for a key that was never required. Infura was unusable at the
+   time (403 unauthenticated, 401 under Basic and Bearer); `https://mainnet.base.org` is
+   archive-capable at these heights.
+
+---
+
+## 5. What has been proven, and how
 
 ### Local Anvil, all eight steps
 
@@ -335,7 +410,7 @@ directory outside the source tree. The 6 skips are F4's non-public trees.
 
 ---
 
-## 5. What is still unproven
+## 6. What is still unproven
 
 * **The mainnet-rehearsal leg.** No rehearsal transition exists on Base. Everything here has been
   exercised against a local Anvil deployment of the same exact contracts. Until Phase 4/5 land,
