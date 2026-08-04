@@ -76,6 +76,37 @@ npx coretex-client-sync verify-patch --hash 0x<evalReportHash> \
 `coretex-client-sync --help` / `coretex-client-setup --help` list every
 override flag (epoch, from-block, parent state, corpus, artifact URLs, ...).
 
+## V5 rig lane (Python validator)
+
+The rig lane is a second on-chain protocol, not a variant of the one above: a
+rig id instead of a miner address, a 27-member signed receipt, and an epoch
+context that lives on the **verifier** rather than the registry. It ships as a
+separate, dependency-free Python package under `python/`, beside — never instead
+of — the TypeScript replay paths, which are unchanged.
+
+```bash
+cd python && ./reproduce.sh                                    # clean-machine proof, offline
+cd python && ./reproduce.sh --rpc "$RPC" --release release.json --export export.json
+```
+
+`reproduce.sh` builds a wheel, installs it into a throwaway venv with
+`pip install --no-deps`, and runs everything from **outside** the source tree.
+The validator declares zero runtime dependencies: keccak256, secp256k1 recovery,
+ABI encoding, canonical JSON and JSON-RPC are all implemented on the standard
+library, because a validator whose verdict depends on a downloaded wheel has a
+supply-chain root it did not choose.
+
+One thing to know before reading any output: **topic0 is not an identity in this
+protocol.** The rig registry emits an advance event whose topic0 is
+byte-identical to the canonical registry lane's, so logs can only be attributed
+by emitting address. `coretex-validator topics` prints both tables and the
+collision. That and six other findings — including which parts of deterministic
+admission a public machine structurally *cannot* run — are in
+[docs/V5-RIG-VALIDATOR.md](docs/V5-RIG-VALIDATOR.md).
+
+Snapshots are classified `MAINNET_REHEARSAL`. The mainnet-rehearsal leg is
+**unproven** until real transitions land on Base.
+
 ## Score honesty is fail-closed
 
 The client rescore path refuses anything but the bundle-pinned qwen3
