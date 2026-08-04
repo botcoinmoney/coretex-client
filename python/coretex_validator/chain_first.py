@@ -382,7 +382,7 @@ def _keccak_patch(transition_bytes: bytes) -> str:
     never benign; this is the reading the coordinator lane signs and the fixture records.
     """
     # Imported lazily so `chain_first` keeps its stdlib-plus-v5-law dependency profile.
-    from keccak256 import keccak256_hex                                     # noqa: WPS433
+    from .keccak256 import keccak256_hex                                    # noqa: WPS433
     return keccak256_hex(RIG_PATCH_HASH_LABEL + bytes(transition_bytes))
 
 
