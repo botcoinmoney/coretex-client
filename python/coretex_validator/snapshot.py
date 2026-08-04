@@ -214,9 +214,10 @@ class ReproductionResult:
     def as_dict(self) -> Dict[str, Any]:
         return {"reproduced": self.reproduced,
                 "reconstructed_sha256": self.reconstructed_hash,
-                "published_sha256": self.published_hash,
                 "byte_length": self.byte_length,
-                "differences": list(self.differences)}
+                "differences": list(self.differences),
+                # Absent when nothing was published to compare against — see the note above.
+                **({"published_sha256": self.published_hash} if self.published_hash else {})}
 
 
 def _diff(a: Any, b: Any, path: str, out: List[str]) -> None:
@@ -337,8 +338,15 @@ class SignatureResult:
         return {"meaning": ("transport authentication: whether the resolver sent this payload. "
                             "It says NOTHING about whether the payload is true — that is what "
                             "byte-for-byte reproduction against the chain establishes"),
-                "valid": self.valid, "recovered_signer": self.recovered_signer,
-                "expected_signer": self.expected_signer, "reason": self.reason}
+                "valid": self.valid, "reason": self.reason,
+                # OMIT, NEVER null. These two are absent whenever no key was recovered or none
+                # was configured, and the canonical grammar refuses `null` — so emitting one
+                # blows up at SERIALISATION time, after the expensive work is already done. This
+                # exact class of bug (F7) has now cost two multi-minute runs; the rule is that a
+                # value which may legitimately be absent is built conditionally, not defaulted.
+                **({"recovered_signer": self.recovered_signer}
+                   if self.recovered_signer else {}),
+                **({"expected_signer": self.expected_signer} if self.expected_signer else {})}
 
 
 #: The two published fields of a detached signature artifact, and why BOTH are checked.

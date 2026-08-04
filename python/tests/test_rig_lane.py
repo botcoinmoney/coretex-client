@@ -1156,3 +1156,37 @@ class TestCompactPatchIsBinaryNotJson:
             rig.decode_compact_patch(raw, expected_patch_hash=stale)
         assert excinfo.value.code == rig.PATCH_HASH_MISMATCH
         assert "superseded" in excinfo.value.message
+
+
+class TestNoNullReachesCanonicalBytes:
+    """F7, enforced: every report dict must survive canonicalisation.
+
+    This bug class has now cost two multi-minute chain runs — the expensive work completed and
+    then the RESULT failed to serialise, which is the worst possible place to discover it. The
+    canonical grammar refuses `null` by design, so any `as_dict()` that defaults an absent value
+    to None is a landmine that only goes off at the end.
+    """
+
+    def test_signature_result_with_nothing_recovered_is_canonicalisable(self):
+        from coretex_validator import canonical as cn
+
+        result = snap.SignatureResult(False, None, None, "no signature was supplied")
+        cn.canonical_bytes(result.as_dict())          # must not raise
+
+    def test_reproduction_result_without_a_published_payload_is_canonicalisable(self):
+        from coretex_validator import canonical as cn
+
+        result = snap.reproduce(minimal_payload(), None)
+        cn.canonical_bytes(result.as_dict())
+
+    def test_a_full_export_with_no_signature_checked_is_canonicalisable(self):
+        from coretex_validator import canonical as cn
+
+        payload = minimal_payload()
+        export = ex.build_export(
+            snapshot_payload=payload, reproduction=snap.reproduce(payload, dict(payload)),
+            signature=snap.SignatureResult(False, None, None, "none checked"),
+            release_document=release_document(), source_divergence={},
+            deployment_verification={}, receipt_chains={}, admission={"outcome": "PASS"},
+            unverified=[])
+        cn.canonical_bytes(export.document)
