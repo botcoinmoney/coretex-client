@@ -237,6 +237,25 @@ class RigViews:
             self._call(self.deployment.registry, "epochFinalized(uint64)",
                        _encode_uint(epoch)), "big"))
 
+    def epoch_has_context(self, epoch: int) -> bool:
+        """Ask the VERIFIER whether epoch N was ever given a context, BEFORE reading the registry.
+
+        This is not an optimisation, it is the precondition. The registry delegates every epoch
+        read to the bound verifier's context and REVERTS with ``EpochContextNotSet()`` for an
+        epoch that never had one — including ``liveStateRoot`` and ``epochParentStateRoot``.
+        Design §7.5's fall-through rule is written about ``getHeader``, which returns a
+        zero-filled struct rather than reverting; the other reads do NOT share that behaviour, so
+        a backwards walk that only handled the ``getHeader`` case dies on the first epoch below
+        the registry's first served one.
+
+        Probing the flag turns that into a question with an answer instead of an exception to
+        catch — and an exception-driven version would have to distinguish "no context" from "the
+        endpoint is broken", which a revert selector alone does not reliably tell you.
+        """
+        raw = self._call(self.deployment.verifier, "coreTexEpochContextSet(uint64)",
+                         _encode_uint(epoch))
+        return bool(int.from_bytes(raw, "big"))
+
     def epoch_parent_state_root(self, epoch: int) -> str:
         return self._call(self.deployment.registry, "epochParentStateRoot(uint64)",
                           _encode_uint(epoch)).hex()

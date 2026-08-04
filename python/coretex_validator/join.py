@@ -568,6 +568,19 @@ def walk_lineage(views, *, from_epoch: int, back_to: int) -> Tuple[List[LineageS
     expected = views.epoch_parent_state_root(int(from_epoch))
     epoch = int(from_epoch) - 1
     while epoch >= int(back_to):
+        # An epoch that never had a context cannot have been served, and the registry REVERTS
+        # rather than answering for it (EpochContextNotSet). §7.5's zero-filled-struct rule is
+        # about `getHeader` only; `liveStateRoot` and `epochParentStateRoot` do not share it. So
+        # the walk asks first. Below the registry's first served epoch every epoch is like this,
+        # which is the ordinary case, not an edge one.
+        if not views.epoch_has_context(epoch):
+            steps.append(LineageStep(epoch=epoch, sealed=False, served=False, final_root="",
+                                     source="no_epoch_context",
+                                     note="skipped: no epoch context was ever set, so this epoch "
+                                          "could not have been served and the registry has "
+                                          "nothing to report for it"))
+            epoch -= 1
+            continue
         served = views.transition_count(epoch) > 0
         sealed = views.epoch_finalized(epoch)
         if not served:

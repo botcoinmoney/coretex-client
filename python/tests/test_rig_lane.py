@@ -30,6 +30,28 @@ from coretex_validator import rig_events as rig
 from coretex_validator import snapshot as snap
 from coretex_validator.keccak256 import keccak256, keccak256_hex
 
+def _referenced_names(module) -> set:
+    """Every identifier a module's CODE references — attributes and bare names, not prose.
+
+    Substring searches over source cannot answer "does this module call X?", because a module
+    that documents why it must never call X contains the string X. The AST can.
+    """
+    import ast
+    import inspect
+
+    tree = ast.parse(inspect.getsource(module))
+    names = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute):
+            names.add(node.attr)
+        elif isinstance(node, ast.Name):
+            names.add(node.id)
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                names.add(alias.asname or alias.name.split(".")[0])
+    return names
+
+
 REGISTRY = "0x1111111111111111111111111111111111111111"
 MINING = "0x2222222222222222222222222222222222222222"
 VERIFIER = "0x3333333333333333333333333333333333333333"
@@ -378,3 +400,93 @@ class TestClassification:
         assert export.document["classification"] == "MAINNET_REHEARSAL"
         assert export.unverified[0]["step"] == "deterministic_admission"
         assert len(export.root()) == 64
+
+
+# --------------------------------------------------------------------------- #
+# Lane separation: the collision, enforced in CODE and not only in the README
+# --------------------------------------------------------------------------- #
+V4_REGISTRY = "0x4444444444444444444444444444444444444444"
+
+
+class TestLaneSeparationIsEnforced:
+    """A V4 log must never enter the V5 stream, and a V5 log must never enter the V4 stream.
+
+    The two lanes share topic0 AND wire format, so neither a topic filter nor a decode failure
+    will ever separate them. Only the emitting address can, and these tests exist because that is
+    the kind of property that is easy to state in a README and easy to lose in code.
+    """
+
+    def test_a_v4_log_at_a_v4_address_is_not_ingested_by_the_rig_lane(self):
+        # Byte-identical to a rig advance except for who emitted it.
+        decoded = rig.scan([advance_log(address=V4_REGISTRY)], DEPLOYMENT)
+        assert decoded.advances == []
+        assert decoded.ignored == 1              # counted, never silently dropped
+
+    def test_a_rig_log_at_the_rig_address_is_ingested(self):
+        decoded = rig.scan([advance_log(address=REGISTRY)], DEPLOYMENT)
+        assert len(decoded.advances) == 1
+        assert decoded.ignored == 0
+
+    def test_the_same_log_bytes_route_differently_for_two_deployments(self):
+        # The clinching demonstration: ONE log, TWO deployments, opposite verdicts. Nothing about
+        # the log itself decides this.
+        other = rig.RigDeployment(chain_id=8453, registry=V4_REGISTRY, mining=MINING,
+                                  verifier=VERIFIER)
+        log = advance_log(address=V4_REGISTRY)
+        assert rig.route_rig_log(log, DEPLOYMENT).event is None
+        assert rig.route_rig_log(log, other).event == "CoreTexStateAdvanced"
+
+    def test_the_v5_scan_filters_by_address_at_the_rpc_layer_too(self):
+        # Defence in depth: `route_rig_log` refuses a foreign log, but the scan should never have
+        # retrieved one in the first place.
+        import ast
+        import inspect
+
+        from coretex_validator import pipeline
+
+        tree = ast.parse(inspect.getsource(pipeline.run))
+        scoped = [
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute) and node.func.attr == "get_logs"
+            and any(kw.arg == "addresses" for kw in node.keywords)
+        ]
+        assert scoped, (
+            "the log scan must be address-scoped at the RPC layer; a topic-only filter would "
+            "retrieve the other lane's history and rely entirely on the router to notice")
+
+    def test_the_v4_decoder_is_not_reachable_from_the_rig_path(self):
+        # dispatch.decode_v4_state_advanced still exists and still works — V4 replay is preserved.
+        # What must not happen is the rig path CALLING it, because a rig advance decoded as a V4
+        # one would carry V4's protocol meaning with rig field values.
+        from coretex_validator import join as join_module
+        from coretex_validator import pipeline
+
+        for module in (rig, join_module, pipeline):
+            assert "decode_v4_state_advanced" not in _referenced_names(module), module.__name__
+
+    def test_the_staged_never_deployed_decoders_are_unreachable_from_the_client_path(self):
+        """The ported staged rig decoders stay as history; nothing live may call them.
+
+        `dispatch.decode_rig_state_advanced` and `chain_first.validate_rig_chain_first` decode the
+        SUPERSEDED shape (rig-keyed, inline artifactHash, trailing bool) that no deployed contract
+        emits, and `chain_first` hashes the patch under the RETIRED label. They are kept so the
+        change is evidenced rather than erased — but a live path that reached them would refuse
+        every real advance.
+
+        Checked over the AST, not the source text: these names appear in PROSE all over this
+        package (that is the point of documenting the finding), and a substring search would
+        flag the documentation for describing the thing it is warning about.
+        """
+        from coretex_validator import join as join_module
+        from coretex_validator import pipeline
+        from coretex_validator import receipt_chain as receipt_module
+        from coretex_validator import snapshot as snapshot_module
+
+        staged = {"decode_rig_state_advanced", "decode_rig_screener_pass",
+                  "decode_rig_epoch_context_set", "decode_rig_epoch_inherited",
+                  "decode_rig_epoch_finalized", "validate_rig_chain_first",
+                  "build_rig_pins_from_logs", "RIG_PATCH_HASH_LABEL"}
+        for module in (rig, join_module, pipeline, receipt_module, snapshot_module):
+            reached = staged & _referenced_names(module)
+            assert not reached, f"{module.__name__} reaches the staged path via {sorted(reached)}"

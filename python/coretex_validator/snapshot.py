@@ -47,6 +47,30 @@ SNAPSHOT_FORMAT = "coretex.rig-resolver-snapshot/v1"
 #: The classification every snapshot this package produces carries. See :mod:`.export`.
 CLASSIFICATION_REHEARSAL = "MAINNET_REHEARSAL"
 
+#: THE CANONICALISATION RULE, WHICH IS THE PART THAT MUST NOT DIVERGE.
+#:
+#: "Byte-for-byte" only means anything if both sides spell bytes the same way. Both this package
+#: and the resolver lane serialise with :func:`frontier.canonical_bytes` and address the result
+#: with ``sha256`` — key-sorted, separator-tight, floats refused, ``null`` refused. A schema can be
+#: extended; this rule cannot be changed without invalidating every prior comparison.
+CANONICALIZATION_RULE = "frontier-canonical-json/sha256"
+
+#: Schemas whose payloads this package can BUILD, and therefore reproduce.
+SUPPORTED_SCHEMAS = (SNAPSHOT_FORMAT,)
+
+#: The resolver lane's own schema. KNOWN, and deliberately NOT claimed as supported.
+#:
+#: The Phase 6 resolver publishes ``coretex.rig-state.resolver-snapshot/v1``, a richer document
+#: (profiles, composition, locks, migration, prior-snapshot linkage, a resolver key identity, and
+#: embedded join-recipe / receipt-layout records). This package derives most of those parts but
+#: does not yet assemble that shape, and guessing at a field set that is still in flight is the
+#: fastest way to produce a "reproduction" that fails for schema reasons and gets explained away.
+#:
+#: So a payload in this schema is REFUSED with a precise reason rather than diffed into noise.
+#: The canonicalisation rule above is already shared, so landing support is a builder, not a
+#: re-think. Tracked as F8 in docs/V5-RIG-VALIDATOR.md.
+RESOLVER_SCHEMA = "coretex.rig-state.resolver-snapshot/v1"
+
 
 class SnapshotError(Exception):
     def __init__(self, code: str, message: str) -> None:
@@ -220,6 +244,23 @@ def reproduce(reconstructed: Mapping[str, Any],
     """Compare BEFORE any signature check. A mismatch is never excused by a valid signature."""
     reconstructed_bytes = canonical_bytes(reconstructed)
     reconstructed_hash = fr.sha256_hex(reconstructed_bytes)
+    if published is not None:
+        # A schema this package cannot BUILD cannot be reproduced by it, and a field-by-field diff
+        # between two different document shapes is noise that reads like a finding. Say the true
+        # thing instead.
+        published_schema = published.get("schema") or published.get("format")
+        if published_schema is not None and published_schema not in SUPPORTED_SCHEMAS:
+            known = (" This is the resolver lane's own schema; this package derives the parts but "
+                     "does not yet assemble that shape (F8)."
+                     if published_schema == RESOLVER_SCHEMA else "")
+            return ReproductionResult(
+                reproduced=False, reconstructed_hash=reconstructed_hash,
+                published_hash=fr.sha256_hex(canonical_bytes(published)),
+                differences=[f"SCHEMA_UNSUPPORTED: the published payload is "
+                             f"{published_schema!r}; this package builds "
+                             f"{list(SUPPORTED_SCHEMAS)!r}.{known} Refusing to report a "
+                             f"field-level diff between two different document shapes"],
+                byte_length=len(reconstructed_bytes))
     if published is None:
         return ReproductionResult(
             reproduced=False, reconstructed_hash=reconstructed_hash, published_hash=None,

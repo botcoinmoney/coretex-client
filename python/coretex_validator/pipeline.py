@@ -349,6 +349,14 @@ def run(*, release_location: str, rpc_url: str,
                                                "resolver signer"}),
             "unsigned_payload": reconstructed},
            reproduction.differences if published_payload is not None else [])
+    if signature_result is not None and not signature_result.valid:
+        # A failed TRANSPORT check never invalidates a payload that reproduced — that is the whole
+        # ordering this module exists to enforce. But it must not be invisible either: "the bytes
+        # are right and nobody vouched for them" is a real state an operator should see.
+        unverified.append({"step": "resolver_snapshot", "code": "TRANSPORT_SIGNATURE_UNVERIFIED",
+                           "reason": f"transport authentication did not verify: "
+                                     f"{signature_result.reason}. The payload's agreement with "
+                                     f"the chain is unaffected"})
     if published_payload is None:
         unverified.append({
             "step": "resolver_snapshot", "code": "NO_PUBLISHED_SNAPSHOT",
