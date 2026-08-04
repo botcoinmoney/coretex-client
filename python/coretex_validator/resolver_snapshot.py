@@ -681,3 +681,213 @@ def record_root_of(runtime_record: Mapping[str, Any]) -> Optional[str]:
     """
     value = runtime_record.get("record_root")
     return cn.bare_root(value, "record_root") if isinstance(value, str) else None
+
+
+# --------------------------------------------------------------------------- #
+# The entry point a clean installation runs
+# --------------------------------------------------------------------------- #
+def reproduce_from_chain(published: Mapping[str, Any], *, rpc_url: str,
+                         store_dir: str, runtime_record: Optional[Mapping[str, Any]] = None,
+                         chunk_blocks: int = 2000,
+                         min_interval: float = 0.7) -> Tuple[Dict[str, Any], ComparisonResult]:
+    """Rebuild a published snapshot from chain truth, and compare. NO KEY IS TOUCHED.
+
+    Everything the rebuild needs that is not on the chain is read from the PUBLISHED payload's own
+    self-describing fields — the addresses, the observation block, the epoch, the log window, the
+    lineage floor. That is not circular: those fields select WHAT TO READ, and every value that
+    ends up in the reconstruction is read back from the chain, the logs, the calldata or a
+    content-addressed object that was rehashed on arrival. A published field that lied about the
+    observation block would simply make the reconstruction describe a different block and fail to
+    match — which is the correct outcome.
+
+    The signature is not consulted here and this function takes no signer. Verify it separately
+    with :func:`snapshot.verify_signature_artifact`, and only after this has returned identical.
+    """
+    from . import join as jn_mod
+    from . import publication as pub_mod
+    from . import resolver_schema_constants as constants
+    from . import rig_events as rig_mod
+    from .keccak256 import keccak256_hex as _kh
+    from .rpc import JsonRpc, RigViews, selector as _sel, _encode_uint as _enc
+
+    check_shape(published)
+    chain_id = int(published["chain"]["chain_id"])
+    block = int(published["chain"]["observation"]["block_number"])
+    epoch = int(published["epoch"])
+    registry = published["contracts"]["registry"]["address"]
+    mining = published["contracts"]["mining"]["address"]
+    verifier = published["contracts"]["verifier"]["address"]
+    from_block = int(published["migration"]["log_window_from_block"])
+    floor = int(published["migration"]["lineage_floor_epoch"])
+    policy = published["chain"]["observation"]["finality_policy"]
+
+    rpc = JsonRpc(rpc_url, chunk_blocks=chunk_blocks, min_interval=min_interval)
+    rpc.assert_chain(chain_id)
+    deployment = rig_mod.RigDeployment(chain_id=chain_id, registry=registry, mining=mining,
+                                       verifier=verifier)
+    views = RigViews(rpc, deployment, block=block)
+
+    def addr(to: str, sig: str) -> str:
+        return "0x" + rpc.eth_call(to=to, data=_sel(sig), block=block)[-20:].hex()
+
+    def uint(to: str, sig: str, arg: Optional[int] = None) -> int:
+        data = _sel(sig) + (_enc(arg) if arg is not None else "")
+        return int.from_bytes(rpc.eth_call(to=to, data=data, block=block), "big")
+
+    def wordcall(to: str, sig: str, arg: Optional[int] = None) -> str:
+        data = _sel(sig) + (_enc(arg) if arg is not None else "")
+        return "0x" + rpc.eth_call(to=to, data=data, block=block)[:32].hex()
+
+    built: Dict[str, Any] = {
+        "schema": SCHEMA, "version": SCHEMA_VERSION, "protocol": PROTOCOL_ID,
+        "classification": CLASSIFICATION_REHEARSAL, "production_authority": False,
+        "disclosure": constants.DISCLOSURE, "canonicalization": constants.CANONICALIZATION,
+        "derivation": constants.DERIVATION, "prior": constants.PRIOR,
+        # Adopted, because a key id names WHO claimed the resolution and no chain can say that.
+        # It lives inside the bytes precisely so a substituted signer changes them.
+        "resolver": published["resolver"],
+        "epoch": cn.narrow(epoch, "epoch"),
+    }
+
+    header_block = rpc.call("eth_getBlockByNumber", [hex(block), False])
+    built["chain"] = build_chain(
+        chain_id=chain_id, block_number=block, block_hash=header_block["hash"],
+        parent_hash=header_block["parentHash"],
+        block_timestamp=int(header_block["timestamp"], 16),
+        required_confirmations=int(policy["required_confirmations"]), mode=str(policy["mode"]))
+
+    identities = {}
+    for role, address in (("registry", registry), ("verifier", verifier), ("mining", mining)):
+        code = rpc.code(address, block=block)
+        identities[role] = {"address": address, "code_hash": "0x" + _kh(code),
+                            "code_size": len(code)}
+    built["contracts"] = build_contracts(identities)
+
+    built["wiring"] = build_wiring(
+        coordinator_signer=addr(mining, "coordinatorSigner()"),
+        current_epoch=uint(mining, "currentEpoch()"), cutover_epoch=uint(mining, "cutoverEpoch()"),
+        domain_separator=rpc.eth_call(to=mining, data=_sel("DOMAIN_SEPARATOR()"), block=block)[:32],
+        mining_core_tex_verifier=addr(mining, "coreTexVerifier()"),
+        registry_core_tex_verifier=addr(registry, "coreTexVerifier()"),
+        registry_epoch_clock=addr(registry, "epochClock()"),
+        verifier_core_tex_registry=addr(verifier, "coreTexRegistry()"),
+        verifier_mining=addr(verifier, "mining()"))
+
+    context = {"configured": views.epoch_has_context(epoch)}
+    for name, sig in (("parent_state_root", "epochParentStateRoot(uint64)"),
+                      ("corpus_root", "epochCorpusRoot(uint64)"),
+                      ("active_frontier_root", "epochActiveFrontierRoot(uint64)"),
+                      ("baseline_manifest_hash", "epochBaselineManifestHash(uint64)"),
+                      ("core_version_hash", "epochCoreVersionHash(uint64)"),
+                      ("hidden_seed_commit", "epochHiddenSeedCommit(uint64)")):
+        context[name] = wordcall(registry, sig, epoch)
+    sealed = views.epoch_finalized(epoch)
+    count = views.transition_count(epoch)
+    built["state"] = build_state(
+        epoch=epoch, context=context,
+        live_state_root=wordcall(registry, "liveStateRoot(uint64)", epoch),
+        transition_count=count, sealed=sealed, served=count > 0,
+        header=({k: "0x" + v for k, v in views.header(epoch).items()} if sealed else None),
+        finalized_at=(uint(registry, "finalizedAt(uint64)", epoch) if sealed else None))
+
+    logs = rpc.get_logs(addresses=list(deployment.addresses), topics=[], from_block=from_block,
+                        to_block=block)
+    decoded = rig_mod.scan(logs, deployment)
+    cache: Dict[str, str] = {}
+
+    def calldata_for(tx: str) -> str:
+        if tx not in cache:
+            cache[tx] = str(rpc.transaction(tx).get("input", ""))
+        return cache[tx]
+
+    joined = jn_mod.join_all(
+        decoded, calldata_for=calldata_for,
+        domain_separator=bytes.fromhex(built["wiring"]["domain_separator"][2:]),
+        coordinator_signer=built["wiring"]["coordinator_signer"])
+    selected = [t for t in joined.transitions if t.advance.epoch == epoch]
+    built["transitions"] = build_transitions(selected)
+
+    steps = []
+    walk = epoch
+    while walk >= floor:
+        has_context = views.epoch_has_context(walk)
+        served = views.transition_count(walk)
+        is_sealed = views.epoch_finalized(walk)
+        step: Dict[str, Any] = {"context_set": has_context, "epoch": walk, "sealed": is_sealed,
+                                "served": served > 0, "transition_count": served,
+                                "uncommitted": False}
+        if not has_context:
+            # The real chain does revert here — F9 is live below this registry's genesis.
+            step["final_root_source"] = "none (EpochContextNotSet)"
+        else:
+            step["context_parent"] = wordcall(registry, "epochParentStateRoot(uint64)", walk)
+            if is_sealed:
+                step["final_root_source"] = "getHeader.finalStateRoot"
+                step["final_root"] = "0x" + views.header(walk)["final_state_root"]
+            else:
+                step["final_root_source"] = "liveStateRoot"
+                step["final_root"] = wordcall(registry, "liveStateRoot(uint64)", walk)
+        steps.append(step)
+        walk -= 1
+    built["epoch_lineage"] = build_epoch_lineage(epoch=epoch, steps=steps, continuous=True,
+                                                 terminates_at=floor, findings=[])
+
+    built["migration"] = build_migration(
+        registry=registry, registry_code_hash=built["contracts"]["registry"]["code_hash"],
+        verifier_bound_registry=built["wiring"]["verifier_coreTexRegistry"],
+        epoch_clock=built["wiring"]["registry_epochClock"],
+        cutover_epoch=built["wiring"]["cutover_epoch"], lineage_floor_epoch=floor,
+        log_window_from_block=from_block)
+
+    store = pub_mod.FilesystemCAS(store_dir)
+    head_root = built["state"]["live_state_root"][2:]
+    manifest = pub_mod.fetch_json(head_root, hash_rule=pub_mod.HASH_RULE_FRONTIER_JSON,
+                                  store=store)
+    built["profiles"] = build_profiles(manifest)
+    built["composition"] = build_composition(manifest)
+
+    record_root = record_root_of(runtime_record) if runtime_record else None
+    locks_block, lock_findings = build_locks(
+        manifest, runtime_record, core_version_hash=built["state"]["context"]["core_version_hash"],
+        record_root=record_root)
+    built["locks"] = locks_block
+    built["findings"] = sorted(set(lock_findings))
+
+    refs: List[Dict[str, Any]] = []
+    for item in selected:
+        index = item.advance.transition_index
+        refs.append({"chain_binding": (f"receipt.artifactHash of transition {index} — signed "
+                                       "member 15, bound by the EIP-712 digest inside the "
+                                       "receiptHash preimage"),
+                     "chain_word": cn.word(item.receipt["artifactHash"], "artifactHash"),
+                     # SIGNED-MANIFEST-BODY, not frontier-JSON. Rehashing a signed manifest under
+                     # the frontier rule reports a tamper that is not there — worse than not
+                     # checking, because it burns an operator's trust in the check.
+                     "hash_rule": pub_mod.HASH_RULE_SIGNED_MANIFEST_BODY,
+                     "kind": "candidate-release", "location": "", "resolved": False,
+                     "note": ("commitment recorded; candidate bundles are not fetched by the "
+                              "resolver"),
+                     "root": cn.root_from_word(item.receipt["artifactHash"], "artifactHash")})
+        refs.append({"chain_binding": f"registry log evalReportHash of transition {index}",
+                     "chain_word": cn.word(item.advance.eval_report_hash, "evalReportHash"),
+                     "hash_rule": pub_mod.HASH_RULE_FRONTIER_JSON,
+                     "kind": "coretex.memory-eval-artifact.v1", "location": "", "resolved": False,
+                     "note": ("commitment recorded; eval artifacts are fetched by the validator, "
+                              "not here"),
+                     "root": cn.root_from_word(item.advance.eval_report_hash, "evalReportHash")})
+    refs.append({"chain_binding": "registry.liveStateRoot(epoch) — the confirmed head",
+                 "chain_word": built["state"]["live_state_root"],
+                 "hash_rule": pub_mod.HASH_RULE_FRONTIER_JSON,
+                 "kind": "coretex.memory-frontier.v1", "location": f"cas://{head_root}",
+                 "resolved": True, "root": head_root, "size": len(store.get(head_root))})
+    if record_root is not None:
+        refs.append({"chain_binding": ("epoch context coreVersionHash (bound only if the two are "
+                                       "equal)"),
+                     "chain_word": built["state"]["context"]["core_version_hash"],
+                     "hash_rule": pub_mod.HASH_RULE_FRONTIER_JSON,
+                     "kind": "coretex.runtime-integrated-pre-rig/v1", "location": "",
+                     "resolved": False,
+                     "note": "supplied out of band; see locks.runtime_record_chain_bound",
+                     "root": record_root})
+    built["artifacts"] = build_artifacts(refs)
+    return built, compare(built, published)
