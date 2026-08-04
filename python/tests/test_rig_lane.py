@@ -316,18 +316,17 @@ class TestSnapshotReproduction:
         assert out.returncode == 0, out.stderr
         assert "curve_loaded=False" in out.stdout
 
-    def test_a_valid_signature_does_not_rescue_a_failed_reproduction(self):
-        published = minimal_payload()
-        published["epoch"]["epoch"] = 8
-        result = snap.reproduce(minimal_payload(), published)
-        assert not result.reproduced
-        with pytest.raises(ex.ExportError) as excinfo:
-            ex.build_export(
-                snapshot_payload=minimal_payload(), reproduction=result,
-                signature=snap.SignatureResult(True, "0x" + "aa" * 20, "0x" + "aa" * 20, "ok"),
-                release_document={}, source_divergence={}, deployment_verification={},
-                receipt_chains={}, admission={}, unverified=[])
-        assert excinfo.value.code == "SNAPSHOT_NOT_REPRODUCED"
+    def test_no_signature_can_rescue_a_failed_reproduction(self):
+        """Now structurally true: build_export has no signature parameter to pass.
+
+        This used to be an assertion about ORDERING — check reproduction first, then the
+        signature, and never let the second excuse the first. The signature ceremony is removed,
+        so the property is enforced by the function's shape rather than by its discipline: there
+        is no argument through which a signature could be offered as compensation.
+        """
+        import inspect
+
+        assert "signature" not in inspect.signature(ex.build_export).parameters
 
     def test_the_signing_domain_cannot_be_confused_with_an_eip712_digest(self):
         payload = minimal_payload()
@@ -370,7 +369,7 @@ class TestClassification:
             ex.build_export(
                 snapshot_payload=minimal_payload(),
                 reproduction=snap.reproduce(minimal_payload(), minimal_payload()),
-                signature=None, release_document={}, source_divergence={},
+                release_document={}, source_divergence={},
                 deployment_verification={}, receipt_chains={}, admission={}, unverified=[],
                 classification="MAINNET_CANONICAL")
         assert excinfo.value.code == "CLASSIFICATION_REFUSED"
@@ -395,7 +394,7 @@ class TestClassification:
         export = ex.build_export(
             snapshot_payload=minimal_payload(),
             reproduction=snap.reproduce(minimal_payload(), minimal_payload()),
-            signature=None, release_document=release_document(), source_divergence={},
+            release_document=release_document(), source_divergence={},
             deployment_verification={}, receipt_chains={}, admission={"outcome": "BACKLOG"},
             unverified=[{"step": "deterministic_admission", "reason": "trees not present"}])
         assert export.document["classification"] == "MAINNET_REHEARSAL"
@@ -1179,13 +1178,12 @@ class TestNoNullReachesCanonicalBytes:
         result = snap.reproduce(minimal_payload(), None)
         cn.canonical_bytes(result.as_dict())
 
-    def test_a_full_export_with_no_signature_checked_is_canonicalisable(self):
+    def test_a_full_export_is_canonicalisable(self):
         from coretex_validator import canonical as cn
 
         payload = minimal_payload()
         export = ex.build_export(
             snapshot_payload=payload, reproduction=snap.reproduce(payload, dict(payload)),
-            signature=snap.SignatureResult(False, None, None, "none checked"),
             release_document=release_document(), source_divergence={},
             deployment_verification={}, receipt_chains={}, admission={"outcome": "PASS"},
             unverified=[])

@@ -61,7 +61,6 @@ class Export:
 
 def build_export(*, snapshot_payload: Mapping[str, Any],
                  reproduction: snap.ReproductionResult,
-                 signature: Optional[snap.SignatureResult],
                  release_document: Mapping[str, Any],
                  source_divergence: Mapping[str, Any],
                  deployment_verification: Mapping[str, Any],
@@ -90,11 +89,25 @@ def build_export(*, snapshot_payload: Mapping[str, Any],
         "snapshot": dict(snapshot_payload),
         "snapshot_sha256": reproduction.reconstructed_hash,
         "verification": {
+            # NO SIGNATURE FIELD, and its absence is the design rather than an omission.
+            #
+            # A downloaded snapshot is a CACHE. What makes it true is that this package
+            # independently reconstructs identical canonical bytes from the pinned chain,
+            # contracts, finalized block, events, calldata and content-addressed artifacts — not
+            # that somebody signed it. Carrying a `transport_signature` verdict beside the
+            # reproduction invited exactly the wrong reading: that a valid signature was a second,
+            # alternative reason to believe the payload. It was never that, and now it is not
+            # there to be misread.
+            #
+            # The ONE signature this package still verifies is the coordinator's EIP-712 mining
+            # receipt, checked against `mining.coordinatorSigner()` in the §7.2 join. That one is
+            # enforced by a deployed contract, so it is a fact about the chain rather than about
+            # a publisher.
             "reproduction": reproduction.as_dict(),
-            "transport_signature": (signature.as_dict() if signature is not None else
-                                    {"meaning": "transport authentication only",
-                                     "valid": False,
-                                     "reason": "no resolver signature was checked in this run"}),
+            "authority": (
+                "reconstruction equality from chain truth. This export attests that the canonical "
+                "bytes were rebuilt independently and matched; it makes no claim about who "
+                "transmitted them and requires no key to check"),
             "deployment": dict(deployment_verification),
             "receipt_chains": {str(k): dict(v) for k, v in sorted(receipt_chains.items())},
             "deterministic_admission": dict(admission),

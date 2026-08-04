@@ -335,10 +335,8 @@ def run(*, release_location: str, rpc_url: str,
     artifact_roots = {"eval_artifact": selected.advance.eval_report_hash,
                       "candidate_release": selected.receipt["artifactHash"]}
     published_payload = None
-    published_signature = None
     if published_snapshot is not None:
         published_payload = published_snapshot.get("payload", published_snapshot)
-        published_signature = published_snapshot.get("signature")
 
     # WHICH SCHEMA IS BEING REPRODUCED IS DECIDED BY THE PUBLISHED PAYLOAD, not by this module.
     #
@@ -367,29 +365,12 @@ def run(*, release_location: str, rpc_url: str,
         reconstructed = snap.build_unsigned(transition=selected, law=law, observation=observation,
                                             artifact_roots=artifact_roots, lineage=lineage)
         reproduction = snap.reproduce(reconstructed, published_payload)
-    # The signature is checked SEPARATELY and AFTER, and its verdict never changes the one above.
-    signature_result = None
-    if published_signature is not None or release.resolver_signer:
-        signature_result = snap.verify_signature(
-            published_payload if published_payload is not None else reconstructed,
-            published_signature, release.resolver_signer)
+    # NO SIGNATURE CHECK. A downloaded snapshot is a cache; what makes it true is that the bytes
+    # reconstruct from chain truth. See export.build_export for the full reasoning.
     record("resolver_snapshot",
            "PASS" if (reproduction.reproduced or published_payload is None) else "FAIL",
-           {"reproduction": reproduction.as_dict(),
-            "transport_signature": (signature_result.as_dict() if signature_result else
-                                    {"checked": False,
-                                     "reason": "no published signature and no configured "
-                                               "resolver signer"}),
-            "unsigned_payload": reconstructed},
+           {"reproduction": reproduction.as_dict(), "unsigned_payload": reconstructed},
            reproduction.differences if published_payload is not None else [])
-    if signature_result is not None and not signature_result.valid:
-        # A failed TRANSPORT check never invalidates a payload that reproduced — that is the whole
-        # ordering this module exists to enforce. But it must not be invisible either: "the bytes
-        # are right and nobody vouched for them" is a real state an operator should see.
-        unverified.append({"step": "resolver_snapshot", "code": "TRANSPORT_SIGNATURE_UNVERIFIED",
-                           "reason": f"transport authentication did not verify: "
-                                     f"{signature_result.reason}. The payload's agreement with "
-                                     f"the chain is unaffected"})
     if published_payload is None:
         unverified.append({
             "step": "resolver_snapshot", "code": "NO_PUBLISHED_SNAPSHOT",
@@ -410,7 +391,7 @@ def run(*, release_location: str, rpc_url: str,
     try:
         exported = ex.build_export(
             snapshot_payload=reconstructed, reproduction=reproduction,
-            signature=signature_result, release_document=release.raw,
+            release_document=release.raw,
             source_divergence=release.source_divergence(),
             deployment_verification=verification.as_dict(),
             receipt_chains={k: v.as_dict() for k, v in chains.items()},

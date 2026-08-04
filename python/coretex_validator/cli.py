@@ -90,7 +90,6 @@ def _cmd_reproduce_snapshot(args: argparse.Namespace) -> int:
     afterwards and its verdict never changes the reproduction's.
     """
     from . import resolver_snapshot as rsn
-    from . import snapshot as snap
 
     published = _load_json(args.snapshot)
     runtime_record = _load_json(args.runtime_record) if args.runtime_record else None
@@ -98,30 +97,17 @@ def _cmd_reproduce_snapshot(args: argparse.Namespace) -> int:
         published, rpc_url=args.rpc, store_dir=args.artifacts,
         runtime_record=runtime_record, min_interval=args.min_interval)
 
-    result: Dict[str, Any] = {"reproduction": comparison.as_dict()}
+    result: Dict[str, Any] = {
+        "reproduction": comparison.as_dict(),
+        "authority": ("reconstruction equality from chain truth — the downloaded snapshot is a "
+                      "CACHE and no signature is consulted"),
+    }
     if args.out:
         with open(os.path.expanduser(args.out), "wb") as fh:
             fh.write(rsn.cn.canonical_bytes(built))
         result["written_to"] = args.out
-
-    # SEPARATELY, and only now.
-    if args.signature:
-        artifact = _load_json(args.signature)
-        expected = args.signer
-        if not expected and args.public_key:
-            expected = (_load_json(args.public_key) or {}).get("address")
-        if not expected:
-            expected = (artifact.get("resolver_key") or {}).get("address")
-        verdict = snap.verify_signature_artifact(built, artifact, expected)
-        result["transport_signature"] = verdict.as_dict()
     _emit(result, pretty=not args.compact)
-    if not comparison.identical:
-        return 1
-    if args.signature and not result["transport_signature"]["valid"]:
-        # The payload is still true — it reproduced. But an expected signature that does not
-        # verify is a transport failure a caller must be able to act on.
-        return 1
-    return 0
+    return 0 if comparison.identical else 1
 
 
 def _cmd_topics(args: argparse.Namespace) -> int:
@@ -250,9 +236,6 @@ def build_parser() -> argparse.ArgumentParser:
     rsnap.add_argument("--runtime-record", default=None,
                        help="runtime-integration record; without it the transitive law locks are "
                             "absent from the rebuild rather than guessed")
-    rsnap.add_argument("--signature", default=None, help="snapshot.sig.json, checked SEPARATELY")
-    rsnap.add_argument("--public-key", default=None, help="resolver-public-key.json")
-    rsnap.add_argument("--signer", default=None, help="expected resolver address")
     rsnap.add_argument("--out", default=None, help="write the reconstructed canonical bytes here")
     rsnap.add_argument("--min-interval", type=float, default=0.7,
                        help="seconds between RPC requests; public endpoints rate-limit a burst")

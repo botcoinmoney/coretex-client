@@ -349,6 +349,25 @@ class SignatureResult:
                 **({"expected_signer": self.expected_signer} if self.expected_signer else {})}
 
 
+# --------------------------------------------------------------------------- #
+# HISTORICAL: off-chain signature verification. NOT part of the acceptance path.
+# --------------------------------------------------------------------------- #
+# Everything below this line was written when resolver snapshots carried a detached signature and
+# a validator was expected to check it. That ceremony is REMOVED: a downloaded snapshot is a
+# CACHE, and what makes it true is that this package independently reconstructs identical
+# canonical bytes from the pinned chain. Nothing in the verification path calls any of it.
+#
+# It is KEPT rather than deleted for one specific reason: the epoch-180 rehearsal artifacts were
+# published with a signature and the runs that verified it are historical records. Somebody
+# re-examining that evidence should be able to re-check what those runs checked. New artifacts are
+# unsigned and content-addressed, and a caller reaching for these functions to decide whether to
+# TRUST a payload has misread the model — reconstruction is the only thing that decides that.
+#
+# The one signature this package still verifies as a matter of course is the coordinator's EIP-712
+# mining receipt, checked against `mining.coordinatorSigner()` in the join. That one is enforced
+# by a deployed contract, so it is a fact about the chain rather than about a publisher, and it
+# lives in `join.py` where the rest of the §7.2 recipe is.
+
 #: The two published fields of a detached signature artifact, and why BOTH are checked.
 #:
 #: ``payload_sha256`` is IDENTITY: what a snapshot is addressed by, compared by and reproduced
