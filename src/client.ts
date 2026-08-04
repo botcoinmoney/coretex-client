@@ -21,6 +21,10 @@ export * from './event-topics.js';
 export * from './bundle/index.js';
 export * from './replay/v4.js';
 export * from './replay/coretex-registry.js';
+// V5 rig lane. Added BESIDE the two above, never in place of them: the rig registry
+// shares the canonical lane's advance topic0, so both decoders stay live and routing
+// is by emitting address (see replay/rig-dispatch.ts).
+export * from './replay/rig-dispatch.js';
 export * from './replay/per-patch.js';
 export * from './replay/eval-report-artifact.js';
 export * from './coordinator/base-blockhash.js';

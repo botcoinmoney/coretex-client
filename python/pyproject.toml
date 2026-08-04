@@ -43,6 +43,12 @@ dev = ["pytest==8.3.3"]
 packages = ["coretex_validator"]
 include-package-data = false
 
+# The counter-resource law is DATA a validator cannot re-derive and must not be asked to supply:
+# it is the resource half of the Pareto rule, and a validator that had to be handed it could be
+# handed a different one. It ships inside the wheel so a clean install has it.
+[tool.setuptools.package-data]
+coretex_validator = ["COUNTER_RESOURCE_LAW.v1.json"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 # Fail on an unraised-warning surprise rather than scrolling past it.
