@@ -117,7 +117,8 @@ class JsonRpc:
 
     def __init__(self, url: str, *, timeout: float = 30.0, retries: int = 5,
                  chunk_blocks: int = DEFAULT_CHUNK_BLOCKS,
-                 user_agent: str = DEFAULT_USER_AGENT, backoff: float = 0.5) -> None:
+                 user_agent: str = DEFAULT_USER_AGENT, backoff: float = 0.75,
+                 min_interval: float = 0.15) -> None:
         if not isinstance(url, str) or not url:
             raise RpcError("an RPC url is required")
         self.url = url
@@ -126,7 +127,16 @@ class JsonRpc:
         self.chunk_blocks = max(1, int(chunk_blocks))
         self.user_agent = user_agent
         self.backoff = float(backoff)
+        #: MINIMUM SPACING BETWEEN REQUESTS. Public endpoints rate-limit, and a validator's read
+        #: pattern is a burst of small `eth_call`s — the worst possible shape for a token bucket.
+        #: Retrying into a 429 storm is slower than not causing one, so requests are paced.
+        #: `https://mainnet.base.org` refuses an unpaced burst within a few dozen calls.
+        self.min_interval = float(min_interval)
+        self._last_request = 0.0
         self.calls = 0
+        #: Observed rate limits, surfaced in a report. A run that quietly absorbed fifty 429s took
+        #: fifty times longer than it should have and nobody was told why.
+        self.rate_limited = 0
 
     # -- transport --------------------------------------------------------- #
     def call(self, method: str, params: Sequence[Any]) -> Any:
@@ -138,11 +148,17 @@ class JsonRpc:
                      "user-agent": self.user_agent})
         last: Optional[Exception] = None
         for attempt in range(self.retries):
+            gap = time.monotonic() - self._last_request
+            if gap < self.min_interval:
+                time.sleep(self.min_interval - gap)
+            self._last_request = time.monotonic()
             try:
                 with urllib.request.urlopen(request, timeout=self.timeout) as response:
                     body = json.loads(response.read().decode("utf-8"))
                 break
             except urllib.error.HTTPError as exc:
+                if exc.code == 429:
+                    self.rate_limited += 1
                 # An HTTP status is TRANSPORT, always — including 429 and 403. The endpoint never
                 # got as far as executing anything, so nothing it says is about the chain.
                 last = TransportError(

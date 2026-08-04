@@ -147,16 +147,17 @@ def build_wiring(*, coordinator_signer: str, current_epoch: int, cutover_epoch: 
     }
 
 
-def build_state(*, epoch: int, context: Mapping[str, Any], header: Mapping[str, Any],
+def build_state(*, epoch: int, context: Mapping[str, Any],
                 live_state_root: str, transition_count: int, sealed: bool, served: bool,
-                finalized_at: int) -> Dict[str, Any]:
+                header: Optional[Mapping[str, Any]] = None,
+                finalized_at: Optional[int] = None) -> Dict[str, Any]:
     """The epoch's registry state and its delegated context.
 
     ``finalized_at`` is a ``uint256`` block timestamp and therefore renders as a DECIMAL STRING.
     It is the easiest field in the whole payload to get wrong, because every neighbouring integer
     is a JSON number.
     """
-    return {
+    block: Dict[str, Any] = {
         "context": {
             "active_frontier_root": cn.word(context["active_frontier_root"],
                                             "active_frontier_root"),
@@ -170,13 +171,24 @@ def build_state(*, epoch: int, context: Mapping[str, Any], header: Mapping[str, 
             "parent_state_root": cn.word(context["parent_state_root"], "parent_state_root"),
         },
         "epoch": cn.narrow(int(epoch), "epoch"),
-        "finalized_at": cn.wide(int(finalized_at), "finalized_at"),
-        "header": {name: cn.word(header[name], name) for name in sorted(header)},
         "live_state_root": cn.word(live_state_root, "live_state_root"),
         "sealed": bool(sealed),
         "served": bool(served),
         "transition_count": cn.narrow(int(transition_count), "transition_count"),
     }
+    # A HEADER EXISTS ONLY FOR A SEALED EPOCH, and an unsealed one must not carry a zero-filled
+    # stand-in. `getHeader` returns zeros rather than reverting (§7.5), so emitting the struct
+    # unconditionally would put eight zero roots into the payload and make "never sealed"
+    # indistinguishable from "sealed at the zero root" — which D2 forbids and which is therefore a
+    # state that cannot exist. Epoch 180 is the live case: still current, so unsealed, and its
+    # final root comes from liveStateRoot.
+    if sealed:
+        if header is None or finalized_at is None:
+            raise ReproductionError("SEALED_WITHOUT_HEADER",
+                                    "a sealed epoch must carry its header and finalizedAt")
+        block["finalized_at"] = cn.wide(int(finalized_at), "finalized_at")
+        block["header"] = {name: cn.word(header[name], name) for name in sorted(header)}
+    return block
 
 
 def build_transition(transition: jn.JoinedTransition) -> Dict[str, Any]:
