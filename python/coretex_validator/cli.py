@@ -50,6 +50,7 @@ def _cmd_reproduce(args: argparse.Namespace) -> int:
         release_location=args.release, rpc_url=args.rpc, epoch=args.epoch,
         transition_index=args.transition_index, artifact_dir=args.artifact_dir,
         published_snapshot=_load_json(args.snapshot),
+        runtime_record=_load_json(args.runtime_record) if args.runtime_record else None,
         confirmation_depth=args.confirmation_depth, from_block=args.from_block,
         to_block=args.to_block, verify_signatures=not args.no_signature_checks,
         allow_test_doubles=args.allow_test_doubles, export_path=args.export)
@@ -217,6 +218,9 @@ def build_parser() -> argparse.ArgumentParser:
                            help="local content-addressed artifact directory")
     reproduce.add_argument("--snapshot", default=None,
                            help="published resolver snapshot to reproduce byte-for-byte")
+    reproduce.add_argument("--runtime-record", default=None,
+                           help="runtime-integration record, needed to rebuild the law locks when "
+                                "reproducing the resolver's per-epoch schema")
     reproduce.add_argument("--export", default=None, help="write the activation export here")
     reproduce.add_argument("--from-block", type=int, default=None)
     reproduce.add_argument("--to-block", type=int, default=None)

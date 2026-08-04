@@ -46,6 +46,7 @@ from . import publication as pub
 from . import receipt_chain as rc
 from . import release as rel
 from . import replay as rp
+from . import resolver_snapshot as rsn
 from . import rig_events as rig
 from . import snapshot as snap
 from .rpc import JsonRpc, RigViews, DEFAULT_CONFIRMATION_DEPTH
@@ -153,6 +154,7 @@ class RunReport:
 # The run
 # --------------------------------------------------------------------------- #
 def run(*, release_location: str, rpc_url: str,
+        runtime_record: Optional[Mapping[str, Any]] = None,
         epoch: Optional[int] = None,
         transition_index: Optional[int] = None,
         artifact_dir: Optional[str] = None,
@@ -332,14 +334,39 @@ def run(*, release_location: str, rpc_url: str,
         coordinator_signer=coordinator_signer)
     artifact_roots = {"eval_artifact": selected.advance.eval_report_hash,
                       "candidate_release": selected.receipt["artifactHash"]}
-    reconstructed = snap.build_unsigned(transition=selected, law=law, observation=observation,
-                                        artifact_roots=artifact_roots, lineage=lineage)
     published_payload = None
     published_signature = None
     if published_snapshot is not None:
         published_payload = published_snapshot.get("payload", published_snapshot)
         published_signature = published_snapshot.get("signature")
-    reproduction = snap.reproduce(reconstructed, published_payload)
+
+    # WHICH SCHEMA IS BEING REPRODUCED IS DECIDED BY THE PUBLISHED PAYLOAD, not by this module.
+    #
+    # The RESOLVER's per-epoch schema is the published one; this package's own per-transition
+    # shape lost the scope decision and survives only as an internal projection for a run with
+    # nothing to compare against. So when a caller supplies a real published snapshot, the
+    # reproduction is delegated to `resolver_snapshot`, which speaks that schema. Building this
+    # lane's retired shape and then reporting SCHEMA_UNSUPPORTED against the published one would
+    # be this module refusing to do the job it was asked to do.
+    if published_payload is not None and published_payload.get("schema") == rsn.SCHEMA:
+        try:
+            reconstructed, comparison = rsn.reproduce_from_chain(
+                published_payload, rpc_url=rpc_url, store_dir=artifact_dir or "",
+                runtime_record=runtime_record)
+        except Exception as exc:                           # noqa: BLE001 - reported, not raised
+            record("resolver_snapshot", "FAIL", {"code": "RESOLVER_SCHEMA_REBUILD_FAILED"},
+                   [str(exc)])
+            return stop()
+        reproduction = snap.ReproductionResult(
+            reproduced=comparison.identical,
+            reconstructed_hash=comparison.reproduced_sha256,
+            published_hash=comparison.published_sha256,
+            differences=[k.key for k in comparison.keys if not k.equal],
+            byte_length=comparison.reproduced_length)
+    else:
+        reconstructed = snap.build_unsigned(transition=selected, law=law, observation=observation,
+                                            artifact_roots=artifact_roots, lineage=lineage)
+        reproduction = snap.reproduce(reconstructed, published_payload)
     # The signature is checked SEPARATELY and AFTER, and its verdict never changes the one above.
     signature_result = None
     if published_signature is not None or release.resolver_signer:
