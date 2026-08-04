@@ -1,0 +1,49 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# ZERO RUNTIME DEPENDENCIES. That is the headline property of this package and it is asserted by
+# `tests/test_clean_install.py`, not just declared here: keccak256, secp256k1 recovery, ABI
+# encoding, canonical JSON and JSON-RPC are all implemented on the standard library. A validator
+# whose verdict depends on a wheel it downloaded has a supply-chain root it did not choose, and
+# for a package whose entire job is "trust nobody in the protocol" that would be self-defeating.
+#
+# The dev extras are pinned to exact versions because they gate a proof: an unpinned test runner
+# makes "the clean-machine replay passed" a claim about whatever pip resolved that morning.
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "coretex-validator"
+version = "0.1.0"
+description = "Public CoreTex validator: legacy V4 replay plus V5 rig-lane dispatch, chain-first."
+readme = "README.md"
+license = { text = "Apache-2.0" }
+requires-python = ">=3.9"
+dependencies = []
+keywords = ["coretex", "botcoin", "base", "validator", "replay"]
+classifiers = [
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: Apache Software License",
+  "Programming Language :: Python :: 3",
+  "Topic :: Security :: Cryptography",
+]
+
+[project.urls]
+Homepage = "https://github.com/botcoinmoney/coretex-client"
+Source = "https://github.com/botcoinmoney/coretex-client"
+
+[project.scripts]
+coretex-validator = "coretex_validator.cli:main"
+
+[project.optional-dependencies]
+# Test-only. Never imported by the package itself — see tests/test_clean_install.py.
+dev = ["pytest==8.3.3"]
+
+[tool.setuptools]
+packages = ["coretex_validator"]
+include-package-data = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Fail on an unraised-warning surprise rather than scrolling past it.
+filterwarnings = ["error::DeprecationWarning"]
