@@ -545,14 +545,39 @@ directory outside the source tree. The 6 skips are F4's non-public trees.
 
 ## 6. What is still unproven
 
-* **The mainnet-rehearsal leg.** No rehearsal transition exists on Base. Everything here has been
-  exercised against a local Anvil deployment of the same exact contracts. Until Phase 4/5 land,
-  the client has never seen a real rehearsal advance, a real resolver snapshot, or a real
-  resolver signature.
-* **Step 5 on a clean machine** (F4) — structurally blocked, not merely untested.
+§4 and §5 supersede the two bullets this section used to open with: two real rehearsal
+transitions on Base mainnet (T0 and T1, epoch 180) have now been replayed end to end, all
+eight steps, from a clean wheel-only install (F4 closed at `8ca6015`, both K1 and K2 fixed;
+full stage table at `356f2ee`). What is listed below is what that work did **not** establish.
+
+* **Production authority.** Nothing reproduced here has `production_authority: true`, and
+  nothing ever will by accident: `release.py` refuses a release that declares
+  `MAINNET_CANONICAL` by name, and `export.build_export` cannot emit that classification
+  either. Every address, every deployment and the one signature that was ever checked
+  (`0xd1446157…`, labelled `REHEARSAL_TEST_ONLY` in the release document) belong to the
+  rehearsal deployment. A production genesis, production contract addresses and a production
+  signing key do not exist yet, so there is nothing to run any of this against beyond what
+  §4/§5 already cover.
+* **Independent review of the rig contract source** (F5, unchanged by any of the above).
+  `github.com/botcoinmoney/botcoin-mining-rigs` at `cdb91d21…` is still not publicly
+  fetchable. The *deployment* is verifiable without it — bytecode is checked against the
+  release artifact's recorded runtime hashes — but the event signatures, tuple layouts and
+  typehashes this package transcribes from that source remain uncheckable by an outside
+  reviewer against the original.
 * **Bytecode reproduction from source** — deliberately out of scope; the release is the
-  deployment authority.
-* **The resolver's published payload shape.** Phase 6 is in flight; `snapshot.py` defines
-  `coretex.rig-resolver-snapshot/v1` from the chain-derivable facts. If the resolver publishes a
-  different field set, the format must be reconciled — the *ordering* property (reproduce, then
-  authenticate) is what matters and does not change.
+  deployment authority, and reproducing a build would need a pinned solc, settings and
+  dependency tree this package does not carry.
+* **The /v2 resolver-snapshot `authority` block, independently.** `/v1` and `/v2` are both
+  implemented and discriminated on the declared schema id, never guessed (`70a2055`); epoch
+  180 is `/v1` and its reproduction (§4) is unaffected by any of this. But no real `/v2`
+  artifact has ever been published, so `/v2`'s `authority` block is currently **adopted**
+  from whatever payload is handed in — a schema constant that matches by construction,
+  reported under `adopted_blocks` rather than counted as reproduced evidence — instead of
+  independently re-derived the way every chain-derived key is. That stays open until a real
+  `/v2` snapshot exists to test the block against.
+
+One thing that is explicitly **no longer** on this list: a resolver signature over the
+payload. That check was removed from the acceptance path by operator directive (`72c03b7`)
+— reconstruction equality against chain truth is the whole of what a clean install now
+verifies, so "no real resolver signature" describes a ceremony this package no longer
+performs, not a gap in what it proves.
