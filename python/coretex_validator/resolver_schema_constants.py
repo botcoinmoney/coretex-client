@@ -19,6 +19,16 @@ resolution that chains onto a previous snapshot carries a different, derived pri
 
 Transcribed from the published mainnet-rehearsal snapshot for epoch 180
 (payload_sha256 7087b32d3199c352336c3d7faa2126b3a1ce139a0f16b2ecc62d292fc9c672c7).
+
+MIGRATION NOTE (transition-descriptor v2, epoch-180 is LEGACY-ERA). Epoch 180's real snapshot —
+and therefore ``payload_sha256`` and every value that is a verbatim fact ABOUT that snapshot
+(``DISCLOSURE``, ``PRIOR``) — is retained UNCHANGED: it is legacy-era history, replayable only
+under the retired ``coretex-patch-hash-v1`` / ``stateWordCount`` rules it was actually produced
+under (spec §9.5), and MUST NOT be re-read as if it were a v2 snapshot. Nothing here is armed for
+a new epoch yet (no v2 mainnet advance has been produced to transcribe), so ``DERIVATION`` below —
+which describes the CURRENT schema's join recipe and receipt ABI, not a fact about any one chain
+event — is updated to the v2 values a future real snapshot MUST match: the ``stateWordCount``
+join-recipe entry and the ``receipt_layout`` typehash/hash-rule are the ones this note flags.
 """
 from __future__ import annotations
 
@@ -143,8 +153,11 @@ DERIVATION: Dict[str, Any] = {'join_recipe': {'fields': {'activeFrontierRoot': {
                             'solveIndex': {'how': 'mining log data word 0; in the step-4 '
                                                   'preimage',
                                            'source': 'B, C'},
-                            'stateWordCount': {'how': 'registry log `wordCount` (uint16) == '
-                                                      'calldata',
+                            'transitionFormatVersion': {'how': 'registry log '
+                                                      '`transitionFormatVersion` (uint16, '
+                                                      'renamed from `wordCount` by '
+                                                      'transition-descriptor/v2 §9.1; same slot, '
+                                                      'same topic0) == calldata',
                                                'source': 'A, C'},
                             'transitionCount': {'how': 'registry.transitionCount(epoch)',
                                                 'source': 'state'},
@@ -192,8 +205,9 @@ DERIVATION: Dict[str, Any] = {'join_recipe': {'fields': {'activeFrontierRoot': {
                            'byte-for-byte',
                            '7. verify the signature: ecrecover(digest, signature) == '
                            'mining.coordinatorSigner()',
-                           "8. verify the patch: keccak256('coretex-patch-hash-v1' || "
-                           'compactPatchBytes) == patchHash'],
+                           "8. verify the descriptor: keccak256("
+                           "'coretex-transition-descriptor-v2' || compactPatchBytes) == "
+                           'patchHash'],
                  'unrecoverable_without_calldata': ['artifactHash',
                                                     'workPolicyHash',
                                                     'signature',
@@ -206,8 +220,15 @@ DERIVATION: Dict[str, Any] = {'join_recipe': {'fields': {'activeFrontierRoot': {
                                                     'prevReceiptHash',
                                                     'difficultyCountSnapshot']},
  'receipt_layout': {'artifact_hash_member_ordinal': 15,
-                    'compact_patch_hash_rule': "keccak256(utf8('coretex-patch-hash-v1') || "
-                                               'compactPatchBytes)',
+                    'transition_descriptor_hash_rule':
+                        "keccak256(utf8('coretex-transition-descriptor-v2') || "
+                        'compactPatchBytes)',
+                    'transition_descriptor_bytes': 105,
+                    'transition_descriptor_version': '0x20',
+                    'retired_compact_patch_hash_rule':
+                        "keccak256(utf8('coretex-patch-hash-v1') || compactPatchBytes) "
+                        '(LEGACY-ERA history only; refused on v2 as '
+                        'TransitionDescriptorHashMismatch)',
                     'eip712_domain': {'name': 'BotcoinMiningRigs', 'version': '2'},
                     'receipt_hash_preimage_members': ['rigId',
                                                       'operator',
@@ -224,12 +245,12 @@ DERIVATION: Dict[str, Any] = {'join_recipe': {'fields': {'activeFrontierRoot': {
                                                       'difficultyCountSnapshot',
                                                       'eip712Digest'],
                     'signed_members': 25,
-                    'source_commit': 'cdb91d211e4620c6ecfd90b68d827d607033e1f1',
+                    'source_commit': 'ba4d5acfa7aa3042f39eb6e8e4d8e4007400090c',
                     'source_repo': 'github.com/botcoinmoney/botcoin-mining-rigs',
                     'submit_selector': '0xcc45427e',
                     'submit_signature': 'submitCoreTexReceipt((uint256,address,uint64,uint64,bytes32,uint8,bytes32,bytes32,bytes32,bytes32,bytes32,bytes32,bytes32,bytes32,bytes32,uint128,uint32,bytes32,uint256,uint256,uint16,uint32,uint32,uint64,uint64,bytes,bytes))',
                     'tuple_members': 27,
-                    'typehash': '0x1cb41d15e03f32744933332c24f5fe35eb76fdc99cbdc02c432aad682c67973b',
+                    'typehash': '0x70419dc57753cec023e5ca1563c9eb5858d96ddb82144f3c9e6d40e8f334b2cf',
                     'typehash_string': 'RigCoreTexReceipt(uint256 rigId,address operator,uint64 '
                                        'epochId,uint64 solveIndex,bytes32 prevReceiptHash,uint8 '
                                        'outcome,bytes32 challengeId,bytes32 '
@@ -239,8 +260,10 @@ DERIVATION: Dict[str, Any] = {'join_recipe': {'fields': {'activeFrontierRoot': {
                                        'patchHash,bytes32 artifactHash,uint128 worldSeed,uint32 '
                                        'rulesVersion,bytes32 workPolicyHash,uint256 '
                                        'workUnitsBps,uint256 difficultyCountSnapshot,uint16 '
-                                       'stateWordCount,uint32 scoreBeforePpm,uint32 '
-                                       'scoreAfterPpm,uint64 issuedAt,uint64 expiresAt)'},
+                                       'transitionFormatVersion,uint32 scoreBeforePpm,uint32 '
+                                       'scoreAfterPpm,uint64 issuedAt,uint64 expiresAt)',
+                    'retired_typehash':
+                        '0x1cb41d15e03f32744933332c24f5fe35eb76fdc99cbdc02c432aad682c67973b'},
  'reproduction': 'Re-run the resolver against the same chain_id at the same observation block '
                  "with the same content store. The payload's sha256 must match. No resolver key, "
                  'no signature and no private input is required',

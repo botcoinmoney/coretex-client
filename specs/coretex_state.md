@@ -337,4 +337,5 @@ flow rotates cleanly without lost in-flight patches.
 - `coretex_schema.json` — machine-readable field registry
 - `packing_spec.md` — byte-level pack/unpack rules
 - `merkleization_spec.md` — Merkle tree shape and leaf encoding
-- `patch_format.md` — wire format for patches
+- `patch_format.md` — the live transition-descriptor commitment + canonical patch artifact, and
+  (as history) the retired compact-patch wire format

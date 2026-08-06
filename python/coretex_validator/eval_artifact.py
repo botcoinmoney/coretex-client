@@ -84,6 +84,7 @@ from typing import Any, Dict, Mapping, Optional, Tuple
 
 from . import frontier as fr
 from . import publication as pub
+from . import rig_events as rig_ev
 from .keccak256 import keccak256_hex
 # Identity constants
 # --------------------------------------------------------------------------- #
@@ -185,10 +186,13 @@ RESOURCE_AXIS_FIELDS = ("id", "integer_axis", "source", "unit", "weight_ppm")
 #: These nine are the remainder: values only the EVALUATOR can know. They live here, inside the
 #: bytes ``evalReportHash`` addresses, so they are hashed and signed rather than merely asserted
 #: by whichever process happened to build the calldata — the ruling
-#: ``RIG-CORETEX-REGISTRY-DESIGN.md`` §5.1 makes for ``stateWordCount`` and which applies equally
-#: to the other eight.
+#: ``RIG-CORETEX-REGISTRY-DESIGN.md`` §5.1 made for ``stateWordCount`` and which applies equally to
+#: the other eight. ``transition_format_version`` is its transition-descriptor/v2 successor
+#: (§9.1): unlike the retired counter it is not evaluator-observed data, it is the descriptor's
+#: version byte zero-extended to ``uint16`` — but it stays in this tuple because it is still a
+#: signed field only the evaluator (never the coordinator) supplies at the moment of signing.
 RIG_RECEIPT_FIELDS = ("active_frontier_root", "challenge_id", "core_version_hash", "corpus_root",
-                      "outcome", "rules_version", "state_word_count", "work_policy_hash",
+                      "outcome", "rules_version", "transition_format_version", "work_policy_hash",
                       "world_seed")
 
 #: ``outcome`` values the rig verifier prices. 0 and anything above 2 revert for EVERY epoch, so
@@ -199,17 +203,23 @@ RIG_SIGNABLE_OUTCOMES: Tuple[int, ...] = (RIG_OUTCOME_SCREENER_PASS, RIG_OUTCOME
 
 #: ``uint128`` — ``worldSeed``'s signed width.
 MAX_UINT128 = 2 ** 128 - 1
-#: ``uint16`` — ``stateWordCount``'s signed width.
+#: ``uint16`` — ``transitionFormatVersion``'s signed width (was ``stateWordCount``'s).
 MAX_UINT16 = 2 ** 16 - 1
 
-#: ``stateWordCount`` is a PATCH-WIDTH counter, never a state size
-#: (``RIG-CORETEX-REGISTRY-DESIGN.md`` §5.1). The live substrate hard-bounds a patch's own
-#: ``wordCount`` to 1..4 at both ``encodePatch`` and ``decodePatch``.
+#: RETIRED (coretex.transition-descriptor/v2 §9.1). ``stateWordCount`` was a PATCH-WIDTH counter
+#: bounded 1..4 (``RIG-CORETEX-REGISTRY-DESIGN.md`` §5.1); there is no word count under v2 — a
+#: single descriptor now expresses breadth the retired 4-word ceiling could never reach (spec §1.1,
+#: §8 T-3). Kept, unused, so a reader who remembers the old bound can find where it went.
 RIG_STATE_WORD_COUNT_MAX = 4
-#: In the MEMORY-FRONTIER vocabulary the substrate does not exist: a transition edits EXACTLY ONE
-#: profile entry (``MEMORY-FRONTIER-V1.md`` §6.1), so a state advance on this lane is always 1.
-#: Never 0 (that is the screener-pass invariant "zero iff the root did not move") and never > 1.
-RIG_MEMORY_FRONTIER_STATE_WORD_COUNT = 1
+#: ``transitionFormatVersion`` on a STATE ADVANCE is always the descriptor version byte,
+#: zero-extended — never a count of anything. ``0`` remains the SCREENER-PASS invariant ("zero iff
+#: the root did not move"), which survives unchanged from the retired model.
+#:
+#: ``RIG_MEMORY_FRONTIER_STATE_WORD_COUNT`` (the retired ``== 1`` narrowing this constant used to
+#: hold, and every assertion built on it) is DELETED rather than repointed at the new value: spec
+#: §9.3 is explicit that a pin the retired model produced must be RE-MINTED, not adjusted, and a
+#: constant named "word count" holding a version byte would misname what it is.
+RIG_TRANSITION_FORMAT_VERSION_ADVANCE = rig_ev.TRANSITION_DESCRIPTOR_VERSION
 
 #: The camelCase spelling of each field, for the TypeScript coordinator.
 #: ``coretex-memory-v5-worker-client.ts::decodeEvaluation`` reads every rig field through
@@ -223,7 +233,7 @@ RIG_RECEIPT_CAMEL_CASE: Dict[str, str] = {
     "corpus_root": "corpusRoot",
     "outcome": "outcome",
     "rules_version": "rulesVersion",
-    "state_word_count": "stateWordCount",
+    "transition_format_version": "transitionFormatVersion",
     "work_policy_hash": "workPolicyHash",
     "world_seed": "worldSeed",
 }
@@ -234,7 +244,7 @@ RIG_RECEIPT_ROOT_FIELDS = ("active_frontier_root", "challenge_id", "core_version
 #: Fields too WIDE to survive JSON as numbers, rendered as decimal strings by
 #: :func:`rig_receipt_projection`. ``world_seed`` is a ``uint128``: JSON numbers are IEEE-754
 #: doubles, so a 39-digit integer decodes as a float and ``BigInt()`` refuses it. ``outcome``
-#: (uint8), ``rules_version`` (uint32) and ``state_word_count`` (uint16) all fit a JS number
+#: (uint8), ``rules_version`` (uint32) and ``transition_format_version`` (uint16) all fit a JS number
 #: exactly and stay numbers.
 RIG_RECEIPT_WIDE_UINT_FIELDS = ("world_seed",)
 
@@ -981,15 +991,17 @@ def validate_rig_receipt_block(block: Any) -> Dict[str, Any]:
     artifact is still addressable — not at calldata-encoding time, where an over-wide value is an
     ``AbiError`` on a document a validator has already accepted.
 
-    Two semantic rules are enforced beyond the widths, both from
-    ``RIG-CORETEX-REGISTRY-DESIGN.md`` §5.1:
+    Two semantic rules are enforced beyond the widths, from
+    ``RIG-CORETEX-REGISTRY-DESIGN.md`` §5.1 and ``coretex.transition-descriptor/v2`` §6.2/§9.1:
 
       * ``outcome`` must be 1 or 2. 0 and >2 revert for every epoch, so an artifact may not claim
         one even as an intention.
-      * ``state_word_count`` is ZERO for a screener pass (the live invariant "zero iff the root
-        did not move") and 1..4 for a state advance. It is a patch-width counter and never a state
-        size; the memory-frontier lane narrows it further to exactly 1, which
-        :func:`verify_artifact` checks against the transition the artifact actually carries.
+      * ``transition_format_version`` is ZERO for a screener pass (outcome 1 advances no state, so
+        it MUST carry an empty descriptor and zero scores — spec §6.2, stricter than the retired
+        verifier's tolerance, see :mod:`.rig_events`' ``DESCRIPTOR_UNEXPECTED``) and exactly
+        :data:`RIG_TRANSITION_FORMAT_VERSION_ADVANCE` (the descriptor's version byte,
+        zero-extended) for a state advance. It is no longer a counter of anything the artifact
+        chooses; it is the fixed value every real v2 advance signs.
     """
     rig = _check_closed(block, RIG_RECEIPT_FIELDS, "rig_receipt")
     for field in RIG_RECEIPT_ROOT_FIELDS:
@@ -1001,16 +1013,20 @@ def validate_rig_receipt_block(block: Any) -> Dict[str, Any]:
             f"{list(RIG_SIGNABLE_OUTCOMES)} and every other value reverts for every epoch")
     _check_int(rig["world_seed"], "rig_receipt.world_seed", maximum=MAX_UINT128)
     _check_int(rig["rules_version"], "rig_receipt.rules_version", maximum=MAX_UINT32)
-    words = _check_int(rig["state_word_count"], "rig_receipt.state_word_count",
-                       maximum=MAX_UINT16)
-    if outcome == RIG_OUTCOME_SCREENER_PASS and words != 0:
+    version = _check_int(rig["transition_format_version"],
+                         "rig_receipt.transition_format_version", maximum=MAX_UINT16)
+    if outcome == RIG_OUTCOME_SCREENER_PASS and version != 0:
         raise RigReceiptFieldError(
-            f"rig_receipt.state_word_count={words} but outcome={outcome} is a SCREENER PASS: "
-            "priced work that did not move the root writes zero words")
-    if outcome == RIG_OUTCOME_STATE_ADVANCE and not 1 <= words <= RIG_STATE_WORD_COUNT_MAX:
+            f"rig_receipt.transition_format_version={version} but outcome={outcome} is a "
+            "SCREENER PASS: outcome 1 advances no state, so it MUST sign "
+            "transitionFormatVersion=0 alongside an empty descriptor")
+    if outcome == RIG_OUTCOME_STATE_ADVANCE and version != RIG_TRANSITION_FORMAT_VERSION_ADVANCE:
         raise RigReceiptFieldError(
-            f"rig_receipt.state_word_count={words} is outside 1..{RIG_STATE_WORD_COUNT_MAX} for a "
-            "state advance; it counts the words the PATCH writes, not the size of the state")
+            f"rig_receipt.transition_format_version={version} is not "
+            f"{RIG_TRANSITION_FORMAT_VERSION_ADVANCE} (0x"
+            f"{RIG_TRANSITION_FORMAT_VERSION_ADVANCE:02x}) for a state advance; it must be the "
+            "zero-extension of the descriptor's version byte, and the descriptor byte is the "
+            "authority")
     return rig
 
 
@@ -1142,10 +1158,10 @@ def build_artifact(*, epoch: int, parent_manifest: Mapping[str, Any],
     ``rig_receipt`` carries the nine :data:`RIG_RECEIPT_FIELDS`. They are the ONLY inputs here
     that cannot be derived: ``challenge_id``, the epoch-context roots and the world/rules
     parameters are facts about the evaluation the evaluator was handed, and ``outcome`` /
-    ``state_word_count`` describe what its result DID. Deriving any of them from the artifact
-    would mean inventing a signed field, so they are accepted and then RANGE-CHECKED at their
-    on-chain widths by :func:`validate_rig_receipt_block`. Omitting the block leaves the artifact
-    byte-identical to a pre-rig one.
+    ``transition_format_version`` describe what its result DID. Deriving any of them from the
+    artifact would mean inventing a signed field, so they are accepted and then RANGE-CHECKED at
+    their on-chain widths by :func:`validate_rig_receipt_block`. Omitting the block leaves the
+    artifact byte-identical to a pre-rig one.
     """
     fr.validate_manifest(parent_manifest)
     fr.validate_transition(transition)
@@ -1691,14 +1707,12 @@ def verify_artifact(artifact: Mapping[str, Any], *, expected_parent_root: str,
                      EpochPinMismatchError,
                      f"rig_receipt.{field} {rig[field]} != the epoch pin {expected}; the registry "
                      "would revert on the mismatched context")
-        # A state advance on THIS lane edits exactly one profile entry
-        # (MEMORY-FRONTIER-V1.md §6.1), so its patch width is exactly 1 — the §5.1 narrowing.
+        # transition_format_version's fixed value is already enforced protocol-wide by
+        # `validate_rig_receipt_block` (it is the descriptor's version byte, not a per-lane
+        # narrowing — the retired model's "memory-frontier lane is always exactly 1 word" rule has
+        # no v2 counterpart because there is no word count to narrow). What remains lane-specific
+        # is the frontier-root movement a state advance/screener pass each require.
         if rig["outcome"] == RIG_OUTCOME_STATE_ADVANCE:
-            _require(rig["state_word_count"] == RIG_MEMORY_FRONTIER_STATE_WORD_COUNT,
-                     RigReceiptFieldError,
-                     f"rig_receipt.state_word_count is {rig['state_word_count']}; a "
-                     "memory-frontier transition edits exactly one profile entry, so a state "
-                     f"advance on this lane is always {RIG_MEMORY_FRONTIER_STATE_WORD_COUNT}")
             _require(front["new_frontier_root"] != front["parent_frontier_root"],
                      RigReceiptFieldError,
                      "rig_receipt.outcome=2 claims a state advance but the artifact's new root "

@@ -356,7 +356,7 @@ def _rig_receipt(**overrides):
         "patchHash": f"0x{PATCH}",
         "artifactHash": f"0x{ARTIFACT}",
         "outcome": 2,
-        "stateWordCount": 1,
+        "transitionFormatVersion": 0x20,
         "issuedAt": 1_800_000_000,
         "expiresAt": 1_800_000_600,
     }
@@ -383,6 +383,19 @@ def test_a_genuinely_substituted_root_still_fails_whichever_spelling_it_uses():
                 _rig_receipt(newStateRoot=spelling), event=_event(),
                 now=1_800_000_100, max_ttl=3600)
         assert caught.value.code == "RIG_NEWSTATEROOT_SUBSTITUTION"
+
+
+def test_transition_format_version_must_equal_the_descriptor_version_exactly():
+    # coretex.transition-descriptor/v2 §9.1: transitionFormatVersion is no longer a count with a
+    # lower bound (the retired stateWordCount was "at least 1"); it is the FIXED zero-extension of
+    # the descriptor's version byte, so anything else — including a plausible-looking small
+    # integer — is refused.
+    for bad in (0, 1, 4, 0x21, 0xff):
+        with pytest.raises(cf.ChainFirstError) as caught:
+            cf.verify_rig_receipt_bindings(
+                _rig_receipt(transitionFormatVersion=bad), event=_event(),
+                now=1_800_000_100, max_ttl=3600)
+        assert caught.value.code == "RIG_TRANSITION_FORMAT_VERSION_INVALID"
 
 
 def test_normalisation_only_touches_values_that_are_roots_on_BOTH_sides():

@@ -454,53 +454,58 @@ def _admit(selected: jn.JoinedTransition, law: hl.EpochLaw, store: pub.ContentSt
                 "reason": f"the fetched artifact says {name}={artifact_value!r}, the confirmed "
                           f"advance says {event_value!r}"}
 
-    # ── THE EDIT: two encodings, and they are not interchangeable ──────────────────────────
+    # ── THE EDIT: coretex.transition-descriptor/v2 — a commitment, not the edit ────────────────
     #
-    # The rig lane's `compactPatchBytes` is a CONTRACT-MANDATED BINARY STRUCT — patchType,
-    # wordCount, a big-endian uint64 score delta, the parent root, then LEB128-indexed words —
-    # which `RigCoreTexVerifier._validateCompactPatch` reverts on if it is anything else. The
-    # memory lane's `transitionBytes` is CANONICAL JSON. This code used to hand the former to the
-    # latter's parser, which fails on the first byte of every real rig patch (`0xff` is not
-    # UTF-8) and reported FAIL — a determination, and therefore a slander on a mine that was
-    # perfectly valid. Canonical JSON in that field would have been rejected on chain, so the JSON
-    # reading could never have been right here.
-    #
-    # So the patch is decoded under the CONTRACT's layout and cross-checked against the confirmed
-    # advance, and the memory-lane transition the deterministic replay needs comes from the
-    # FETCHED ARTIFACT — which is safe precisely because the patch binds it: the patch's word
-    # carries the candidate release root, and `patchHash` over the patch is signed.
+    # The rig lane's `compactPatchBytes` is now a FIXED 105-byte commitment (version,
+    # patchArtifactHash, parentStateRoot, newStateRoot, scoreDeltaPpm), never JSON, never a
+    # variable-length word-diff struct. It does not carry the edit; it addresses it. So step 5 is
+    # now three steps: decode the descriptor and cross-check it against the confirmed receipt,
+    # FETCH the canonical patch artifact it addresses (by `patchArtifactHash`, sha256, separate
+    # from the eval artifact above), and only then take the memory-lane transition the
+    # deterministic replay needs from what was fetched. This is the §6.3 fail-closed availability
+    # rule applied off chain: an artifact nobody can fetch and rehash never reaches replay.
     try:
-        rig.check_patch_hash(selected.advance)
-        patch = rig.decode_compact_patch(
+        descriptor = rig.decode_transition_descriptor(
             selected.advance.compact_patch_bytes,
             parent_state_root=selected.advance.parent_state_root,
+            new_state_root=selected.advance.new_state_root,
             score_delta_ppm=(int(selected.receipt["scoreAfterPpm"])
                              - int(selected.receipt["scoreBeforePpm"])),
-            expected_patch_hash=selected.advance.patch_hash)
-    except rig.RigEventError as exc:
-        return artifact, {"outcome": "FAIL", "code": "RIG_COMPACT_PATCH_INVALID",
-                          "reason": str(exc)}
-
-    # The patch's words must agree with the signed receipt about what changed. Word 2 is the
-    # candidate release root; a patch that named a different one would be describing an edit the
-    # receipt did not sign.
-    artifact_hash = str(selected.receipt["artifactHash"]).lower().replace("0x", "")
-    patch_words = {index: value for index, value in patch.words}
-    if artifact_hash not in patch_words.values():
-        return artifact, {
-            "outcome": "FAIL", "code": "RIG_PATCH_ARTIFACT_MISMATCH",
-            "reason": (f"the compact patch's words {sorted(patch_words)} do not carry the signed "
-                       f"artifactHash {artifact_hash}; the patch describes a different edit from "
-                       "the one the receipt signed")}
+            expected_patch_hash=selected.advance.patch_hash,
+            transition_format_version=selected.advance.transition_format_version)
+    except rig.TransitionDescriptorError as exc:
+        return artifact, {"outcome": "FAIL", "code": exc.code, "reason": str(exc)}
 
     try:
-        transition_bytes = fr.canonical_bytes(front["transition"])
-    except (KeyError, TypeError, fr.FrontierError) as exc:
+        patch_artifact_raw = pub.fetch_json(descriptor.patch_artifact_hash,
+                                            hash_rule=pub.HASH_RULE_FRONTIER_JSON, store=store)
+    except pub.PublicationError as exc:
         return artifact, {
             "outcome": "BACKLOG", "code": "missing_artifact",
-            "reason": (f"the eval artifact carries no usable memory-lane transition ({exc}), so "
-                       "the deterministic replay has nothing to re-derive. The confirmed patch is "
-                       "structurally valid; what is missing is the artifact's JSON transition")}
+            "reason": (f"the canonical patch artifact {descriptor.patch_artifact_hash} could not "
+                       f"be fetched and re-hashed: {exc}. The descriptor is structurally valid; "
+                       "what is missing is the off-chain edit it addresses")}
+
+    try:
+        patch_artifact = rig.check_transition_artifact_binds_descriptor(
+            patch_artifact_raw, descriptor=descriptor)
+    except rig.TransitionArtifactError as exc:
+        return artifact, {"outcome": "FAIL", "code": exc.code, "reason": str(exc)}
+
+    # The artifact's transition must agree with the signed receipt about what changed. A patch
+    # artifact that names a different candidate release would be describing an edit the receipt
+    # did not sign.
+    artifact_hash = str(selected.receipt["artifactHash"]).lower().replace("0x", "")
+    candidate_release = str(patch_artifact["transition"]["new_release_root"]).lower()
+    if candidate_release != artifact_hash:
+        return artifact, {
+            "outcome": "FAIL", "code": "RIG_PATCH_ARTIFACT_MISMATCH",
+            "reason": (f"the canonical patch artifact's transition names candidate release "
+                       f"{candidate_release}, not the signed artifactHash {artifact_hash}; the "
+                       "patch artifact describes a different edit from the one the receipt "
+                       "signed")}
+
+    transition_bytes = fr.canonical_bytes(patch_artifact["transition"])
 
     projected = dp.FrontierAdvanced(
         epoch=selected.advance.epoch,
@@ -544,7 +549,7 @@ def _admit(selected: jn.JoinedTransition, law: hl.EpochLaw, store: pub.ContentSt
     # are acceptable.
     report: Dict[str, Any] = {"outcome": str(result.outcome), "reason": result.reason,
                               "checks": list(result.checks),
-                              "compact_patch": patch.as_dict(),
+                              "transition_descriptor": descriptor.as_dict(),
                               "admission_trees": admission_trees}
     if result.code is not None:
         report["code"] = result.code

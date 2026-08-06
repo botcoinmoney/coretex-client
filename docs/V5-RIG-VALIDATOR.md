@@ -90,6 +90,13 @@ the whole rig chain-first envelope fails closed on correct data. Fixed in
 `rig_events.PATCH_HASH_LABEL`; the superseded label is kept beside it so a mismatch can *report*
 which rule produced the digest rather than leaving an operator to guess.
 
+**SUPERSEDED (2026-08-06, §7).** `coretex-patch-hash-v1` — the label this finding names as
+*correct* — is itself now the RETIRED rule: transition-descriptor v2 replaces it with
+`coretex-transition-descriptor-v2`. `chain_first.RIG_PATCH_HASH_LABEL` now carries the live v2
+label (it previously carried the memory lane's, which this finding correctly identified as
+wrong); the two-labels-give-different-digests property this finding relies on still holds, just
+with a third label added to the refused set. See §7 for the full correction.
+
 ### F4 — CLOSED: the admission code trees are published
 
 **This finding is resolved.** The six trees deterministic admission needs —
@@ -581,3 +588,87 @@ payload. That check was removed from the acceptance path by operator directive (
 — reconstruction equality against chain truth is the whole of what a clean install now
 verifies, so "no real resolver signature" describes a ceremony this package no longer
 performs, not a gap in what it proves.
+
+---
+
+## 7. Protocol correction: `coretex.transition-descriptor/v2` (2026-08-06)
+
+**The word-diff era is retired, pre-production.** Nothing in §§1-6 above describes a live
+deployment — the rehearsal legs proven there were, and remain, run against the retired 4-word
+compact patch (`patchType`/`wordCount`/LEB128 word indices, `coretex-patch-hash-v1`). That model
+never reached a production deployment: it is superseded in full, before any production key or
+production address existed, by `coretex.transition-descriptor/v2`
+(`botcoin-mining-rigs docs/CORETEX-TRANSITION-DESCRIPTOR-V2.md` @
+`ba4d5acfa7aa3042f39eb6e8e4d8e4007400090c`, mirrored from the migrated coordinator
+`botcoin-coordinator-v5` @ `167444f`). This section is the operator-facing record of what changed
+in this repo and why, alongside `specs/patch_format.md`'s technical rewrite.
+
+**What moved.**
+
+* `compactPatchBytes` is now a **fixed 105-byte commitment** — `version (1) ‖ patchArtifactHash
+  (32) ‖ parentStateRoot (32) ‖ newStateRoot (32) ‖ scoreDeltaPpm (8)` — not a variable-length
+  parsed word-diff struct. The edit itself is a separately fetched, sha256-addressed **canonical
+  patch artifact**; the chain commits and orders, it never stores or interprets.
+* **New typehash**: signed member 20 renames `uint16 stateWordCount` → `uint16
+  transitionFormatVersion` (same slot, same width — the zero-extension of the descriptor's version
+  byte, not a count of anything). `RigCoreTexReceipt`'s typehash moves from
+  `0x1cb41d15e03f32744933332c24f5fe35eb76fdc99cbdc02c432aad682c67973b` to
+  `0x70419dc57753cec023e5ca1563c9eb5858d96ddb82144f3c9e6d40e8f334b2cf`. Re-derived independently
+  from the member list with this repo's own `keccak256` implementation and pinned in
+  `python/tests/test_rig_lane.py::TestRigReceiptTypehashV2`, not merely transcribed.
+* **New hash label**: `patchHash = keccak256("coretex-transition-descriptor-v2" ‖
+  compactPatchBytes)`. Both prior labels — `coretex-patch-hash-v1` (this lane's own retired
+  4-word rule) and `coretex-memory-transition-hash-v1` (the V5 memory lane's, and F3's finding
+  above) — are REFUSED, never silently accepted; `rig_events.py` names which dead label a
+  mismatched hash actually matches, the same "superseded label" idiom the retired decoder used.
+* **New bundle hash**: `rig_receipt_binding.py`'s `BUNDLE_SHA256` moves to
+  `307df364b165023b20ec1ea9ac699b8b39a5f340040be9a418b1a7d1d50b2c5a`. The real generation tool
+  (`scripts/generate-rig-receipt-bindings.mjs`) and a v2 ABI bundle are not vendored in this repo,
+  so this file's values were hand-transcribed from the migrated coordinator's mirrored binding and
+  independently re-derivation-checked (see the file's own header note); it should be regenerated
+  for real once a v2 bundle is available.
+* The registry event/mutator field renames the same way: `wordCount` → `transitionFormatVersion`
+  in `CoreTexStateAdvanced` and `submitStateAdvance`. Neither the event topic0
+  (`2f0a8989…`) nor the mutator selector (`0xa2d87e1d`) changes — Solidity signatures are built
+  from types, not names, so a positional/ABI-type decoder is unaffected; a name-keyed reader is
+  the thing this rename is meant to break loudly.
+* Off-chain, fail-closed availability is now load-bearing for the rig lane specifically:
+  `pipeline.py`'s step-5 admission and `chain_first.py`'s rig join both fetch the canonical patch
+  artifact by `patchArtifactHash`, re-hash it (`pub.fetch_json(..., hash_rule=
+  pub.HASH_RULE_FRONTIER_JSON, ...)` — the same sha256-canonical-JSON rule every other
+  content-addressed object in this repo uses), and only then feed its `transition` into the
+  existing deterministic replay (`replay.replay_advance`, unchanged). An unpublished or
+  substituted patch artifact is refused before replay is ever reached.
+
+**Epoch-180 evidence remains valid, as legacy-era history, under the old rules only.** The two
+real epoch-180 mainnet-rehearsal advances documented in §4 above are NOT re-read under v2 — their
+first byte (`0xff`) is a permanently-burned version, and the whole point of keeping
+`rig_events.py::decode_compact_patch` (renamed nowhere, deleted nowhere) is that this repo can
+still decode them exactly as it always could. `resolver_schema_constants.py` keeps its
+`payload_sha256`/`DISCLOSURE`/`PRIOR` transcription of that real epoch-180 snapshot byte-for-byte;
+only the module's *schema description* (the typehash, the hash rule, the `stateWordCount` →
+`transitionFormatVersion` join-recipe entry) moves to the v2 values a future real snapshot would
+need to match, because there is no v2 mainnet snapshot to transcribe yet. Nothing described in
+this section is armed for a live epoch — see the normative spec's own "OFFLINE, PRE-ARM" status
+line.
+
+**Test suite**: 600 passed / 8 skipped before this migration → 634 passed / 8 skipped after
+(34 new: `TestTransitionDescriptorV2`, `TestTransitionArtifactV2`, `TestRigReceiptTypehashV2`, plus
+adversarial additions to the existing rig-lane and chain-first suites). `decode_compact_patch`'s
+own adversarial suite (`TestCompactPatchIsBinaryNotJson`) is unchanged in shape and still green —
+it tests HISTORY, which does not move.
+
+**Known gap, not silently narrowed.** The normative spec's §8 allows one transition to move an
+unbounded number of profile releases and/or the composition root at once (T-3/T-4/T-5). This
+repo's `frontier.py` still enforces one profile-release move per transition and is **out of
+scope** for this migration (it is not one of the files this pass touches). The canonical-patch-
+artifact envelope this repo implements is therefore scoped to the T-1/T-2 shape — depth within one
+profile, not breadth across profiles — which is also the only shape any real mainnet rehearsal has
+ever produced. Widening `frontier.py` to the full multi-profile artifact is a frontier-law change
+for a future pass, tracked here rather than left to be discovered.
+
+**Also out of scope for this pass, flagged rather than silently left stale**:
+`src/coordinator/coretex-coordinator-core.ts`, `src/coordinator/retrieval-data-source.ts` and
+`test/unit/chain-mirror-solidity-parity.test.mjs` still reference `stateWordCount` and the
+word-diff `compactPatchBytes` model. They are TypeScript coordinator-side code, outside this
+migration's given scope (the Python validator client), and were not touched.

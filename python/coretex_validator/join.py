@@ -346,12 +346,14 @@ class JoinedTransition:
 
 
 #: Every field C must agree with A on (§7.2 step 6). ``compactPatchBytes`` is compared as bytes.
+#: ``transitionFormatVersion`` was ``stateWordCount`` under the retired word-diff model
+#: (coretex.transition-descriptor/v2 §9.1) — same ABI slot, same topic0, renamed field.
 _C_TO_A_FIELDS = (
     ("epochId", "epoch"), ("parentStateRoot", "parent_state_root"),
     ("newStateRoot", "new_state_root"), ("patchHash", "patch_hash"),
     ("evalReportHash", "eval_report_hash"), ("coreVersionHash", "core_version_hash"),
     ("corpusRoot", "corpus_root"), ("activeFrontierRoot", "active_frontier_root"),
-    ("stateWordCount", "word_count"),
+    ("transitionFormatVersion", "transition_format_version"),
 )
 
 

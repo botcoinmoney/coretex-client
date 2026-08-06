@@ -270,7 +270,8 @@ def build_transition(transition: jn.JoinedTransition) -> Dict[str, Any]:
             "parent_state_root": cn.word(advance.parent_state_root, "parent_state_root"),
             "patch_hash": cn.word(advance.patch_hash, "patch_hash"),
             "transition_index": cn.narrow(advance.transition_index, "transition_index"),
-            "word_count": cn.narrow(advance.word_count, "word_count"),
+            "transition_format_version": cn.narrow(advance.transition_format_version,
+                                                    "transition_format_version"),
         },
         "transaction_hash": cn.word(advance.provenance.transaction_hash or "",
                                     "transaction_hash"),
@@ -280,8 +281,9 @@ def build_transition(transition: jn.JoinedTransition) -> Dict[str, Any]:
 
 #: Which receipt members are wide (decimal strings) and which are narrow (JSON numbers).
 _WIDE_RECEIPT_MEMBERS = ("rigId", "workUnitsBps", "difficultyCountSnapshot", "worldSeed")
-_NARROW_RECEIPT_MEMBERS = ("epochId", "solveIndex", "outcome", "rulesVersion", "stateWordCount",
-                           "scoreBeforePpm", "scoreAfterPpm", "issuedAt", "expiresAt")
+_NARROW_RECEIPT_MEMBERS = ("epochId", "solveIndex", "outcome", "rulesVersion",
+                           "transitionFormatVersion", "scoreBeforePpm", "scoreAfterPpm",
+                           "issuedAt", "expiresAt")
 _WORD_RECEIPT_MEMBERS = ("prevReceiptHash", "challengeId", "parentStateRoot", "newStateRoot",
                          "corpusRoot", "activeFrontierRoot", "coreVersionHash", "evalReportHash",
                          "patchHash", "artifactHash", "workPolicyHash")

@@ -285,7 +285,10 @@ class StateAdvanced:
     corpus_root: str
     active_frontier_root: str
     improvement_credits: int
-    word_count: int
+    #: ``uint16 transitionFormatVersion`` — renamed from ``wordCount`` by
+    #: ``coretex.transition-descriptor/v2`` §6.4 (same ABI slot, same topic0, different meaning:
+    #: it is the zero-extension of the 105-byte descriptor's version byte, not a word count).
+    transition_format_version: int
     compact_patch_bytes: bytes
     provenance: dp.LogProvenance
 
@@ -315,7 +318,8 @@ def decode_state_advanced(log: Mapping[str, Any]) -> StateAdvanced:
         corpus_root=dp._word(data, 5, "corpusRoot"),                            # noqa: SLF001
         active_frontier_root=dp._word(data, 6, "activeFrontierRoot"),           # noqa: SLF001
         improvement_credits=dp._word_uint(data, 7, "improvementCredits"),       # noqa: SLF001
-        word_count=dp._word_uint(data, 8, "wordCount", bits=16),                # noqa: SLF001
+        transition_format_version=dp._word_uint(data, 8, "transitionFormatVersion",  # noqa: SLF001
+                                                 bits=16),
         compact_patch_bytes=patch,
         provenance=dp._provenance(log))                                         # noqa: SLF001
 
@@ -541,83 +545,157 @@ def scan(logs: Iterable[Mapping[str, Any]], deployment: RigDeployment) -> Decode
 
 
 # --------------------------------------------------------------------------- #
-# The patch-hash rule
+# The transition descriptor — coretex.transition-descriptor/v2
 # --------------------------------------------------------------------------- #
-#: ``RigCoreTexVerifier.sol:411-415``. THIS label, not the memory lane's.
-#:
-#: ``chain_first.RIG_PATCH_HASH_LABEL`` in the staged validator is
-#: ``b"coretex-memory-transition-hash-v1"`` — the V5 MEMORY lane's transition-hash domain, which
-#: the rig generated binding explicitly records as SUPERSEDED ("receipts signed under that label
-#: revert ``CompactPatchHashMismatch`` on chain"). The two labels give different digests for every
-#: input, so the staged check does not merely differ in style: it refuses every real advance.
-#: Recorded as a finding in ``docs/V5-RIG-VALIDATOR.md``.
-PATCH_HASH_LABEL = b"coretex-patch-hash-v1"
-#: What the staged validator used. Kept so the two can be compared in a report rather than argued.
-SUPERSEDED_PATCH_HASH_LABEL = b"coretex-memory-transition-hash-v1"
+# SUPERSEDES the 4-changed-word compact patch below in full. Normative reference:
+# ``botcoin-mining-rigs`` @ ``ba4d5acfa7aa3042f39eb6e8e4d8e4007400090c``,
+# ``docs/CORETEX-TRANSITION-DESCRIPTOR-V2.md`` (+ its companion AUDIT). Mirrored here from the
+# migrated coordinator's ``v5/validator/dispatch.py`` (``encode_transition_descriptor`` /
+# ``decode_transition_descriptor``) and ``v5/resolver/receipt.py`` (the typehash transcription),
+# with this repo's own typed-refusal-code and file-generation discipline kept intact.
+#
+# WHAT WAS DELETED, AND WHY EACH DELETION IS A DELETION AND NOT A RETIREMENT. Everything below
+# this section (``COMPACT_PATCH_*``, ``PATCH_TYPE_WORD_RANGES``, ``CompactPatchError`` and its 14
+# codes, ``CompactPatch``, ``_read_leb128_word_index``, ``decode_compact_patch``) was PRODUCTION
+# machinery — an encoder a coordinator signed against and a decoder a validator ran — retired
+# pre-production by the operator directive that produced the v2 descriptor. It is removed, not
+# archived: the retired label it hashed under (``coretex-patch-hash-v1``) is kept, below, because a
+# signer that was never migrated produces bytes that look right and hash wrong, and "signed under
+# the retired 4-word rule" is a cheaper answer than "these bytes are wrong". ``transition_from_patch``
+# — which asserted the RETIRED word-diff model over these same log bytes and was never called from
+# anywhere in this package — is deleted outright rather than migrated: it was dead code built on a
+# premise (verbatim canonical-JSON transition bytes in the log) the v2 descriptor does not have.
+#
+# THE FORMAT. 105 bytes, no padding, no optional field, no length prefix — the length IS the
+# format:
+#
+#     [0]        uint8   version             == 0x20
+#     [1..33)    bytes32 patchArtifactHash   != 0, sha256 of the complete canonical patch artifact
+#     [33..65)   bytes32 parentStateRoot     == the receipt's signed parentStateRoot
+#     [65..97)   bytes32 newStateRoot        == the receipt's signed newStateRoot
+#     [97..105)  uint64  scoreDeltaPpm BE    == scoreAfterPpm - scoreBeforePpm
+#
+# THE CHAIN COMMITS AND ORDERS THE TRANSITION; IT NEVER STORES IT AND NEVER INTERPRETS IT. The
+# complete canonical patch artifact lives OFF CHAIN, addressed by ``patchArtifactHash``, and is
+# replayed deterministically by anyone (spec §5.4). That is why ``patchHash`` is now a content
+# address of the whole EDGE — ``(version, artifact, parent, new, delta)`` — and not, as under the
+# retired model, of the input side only: the old header carried ``parentStateRoot`` and never the
+# resulting root, so one ``patchHash`` was compatible with any ``newStateRoot`` a receipt named
+# (audit L-6). :func:`decode_transition_descriptor` therefore checks the descriptor's
+# ``newStateRoot`` against the receipt — a check that did not and could not exist before.
+#
+# CHECK ORDER IS INVERTED FROM THE RETIRED DECODER, deliberately (spec §6.1). The old patch had a
+# RANGE of legal lengths (42..178), so a length outside it was ambiguous between "malformed" and "a
+# different patch" and the hash was checked first to resolve that. One legal length makes a length
+# mismatch unambiguously a format error, so LENGTH IS CHECKED FIRST here and the hash second.
+
+#: ``RigCoreTexVerifier.TRANSITION_DESCRIPTOR_BYTES``. The length IS the format.
+TRANSITION_DESCRIPTOR_BYTES = 105
+#: ``RigCoreTexVerifier.TRANSITION_DESCRIPTOR_VERSION``. An OPAQUE enumerated tag compared for
+#: EQUALITY — never arithmetic, never a range (spec §7.2). The mnemonic is "2.0"; it is not a
+#: packed major/minor pair.
+TRANSITION_DESCRIPTOR_VERSION = 0x20
+
+#: Field offsets, stated once.
+TRANSITION_DESCRIPTOR_VERSION_OFFSET = 0
+TRANSITION_DESCRIPTOR_ARTIFACT_OFFSET = 1
+TRANSITION_DESCRIPTOR_PARENT_OFFSET = 33
+TRANSITION_DESCRIPTOR_NEW_ROOT_OFFSET = 65
+TRANSITION_DESCRIPTOR_SCORE_DELTA_OFFSET = 97
+TRANSITION_DESCRIPTOR_SCORE_DELTA_BYTES = 8
+
+#: PERMANENTLY BURNED version bytes (spec §7.1). ``0x01``-``0x07`` were the retired compact patch's
+#: ``patchType`` values and ``0xff`` was ``COMPACT_PATCH_TYPE_UNRESTRICTED`` — the value every real
+#: epoch-180 advance actually used. ``0x00`` was never legal anywhere and is burned with the low run
+#: so the whole range is ONE rule rather than two.
+TRANSITION_DESCRIPTOR_BURNED_VERSIONS: Tuple[int, ...] = tuple(range(0x00, 0x08)) + (0xFF,)
+#: UNASSIGNED and refused. Left deliberately EMPTY so the first descriptor version is not ADJACENT
+#: to the burned range: an off-by-one in a hand-written encoder lands in a hole, not on a version.
+TRANSITION_DESCRIPTOR_UNASSIGNED_VERSIONS: Tuple[int, ...] = tuple(range(0x08, 0x20))
+
+#: ``_validatedScoreDelta`` bounds both score members to ``[0, 1e6]`` and requires a STRICT
+#: improvement, so a legal delta is ``1..1_000_000``.
+TRANSITION_DESCRIPTOR_MIN_SCORE_DELTA_PPM = 1
+TRANSITION_DESCRIPTOR_MAX_SCORE_DELTA_PPM = 1_000_000
+
+# ── The domain-separation table. Three labels, three lengths, prefix-free (spec §4.2) ──────────
+#: THE LIVE RULE — ``RigCoreTexVerifier._validateDescriptorHash``.
+TRANSITION_DESCRIPTOR_HASH_LABEL = b"coretex-transition-descriptor-v2"
+#: THIS LANE'S OWN RETIRED LABEL (the 4-word compact patch's — was ``PATCH_HASH_LABEL``), and the
+#: most dangerous of the three precisely because it is this lane's own history: a signer that was
+#: never migrated produces bytes that look right and hash wrong.
+TRANSITION_DESCRIPTOR_RETIRED_LABEL = b"coretex-patch-hash-v1"
+#: The V5 MEMORY lane's transition-hash domain (was ``SUPERSEDED_PATCH_HASH_LABEL``) — never this
+#: lane's rule, and already the cause of one production incident here.
+TRANSITION_DESCRIPTOR_SUPERSEDED_MEMORY_LABEL = b"coretex-memory-transition-hash-v1"
+#: Every DEAD label, in the order spec §4.2 tables them. Both are REFUSED, never "unsupported".
+TRANSITION_DESCRIPTOR_DEAD_LABELS: Tuple[bytes, ...] = (
+    TRANSITION_DESCRIPTOR_RETIRED_LABEL, TRANSITION_DESCRIPTOR_SUPERSEDED_MEMORY_LABEL)
+
+if TRANSITION_DESCRIPTOR_HASH_LABEL in TRANSITION_DESCRIPTOR_DEAD_LABELS:  # pragma: no cover
+    raise RuntimeError("the live descriptor label is one of the dead ones")
+for _dead in TRANSITION_DESCRIPTOR_DEAD_LABELS:                            # pragma: no cover
+    if (TRANSITION_DESCRIPTOR_HASH_LABEL.startswith(_dead)
+            or _dead.startswith(TRANSITION_DESCRIPTOR_HASH_LABEL)):
+        raise RuntimeError(
+            f"{_dead!r} is a prefix of the live label (or vice versa); abi.encodePacked would "
+            "admit a (label, payload) re-split")
+if len({len(TRANSITION_DESCRIPTOR_HASH_LABEL), *[len(l) for l in TRANSITION_DESCRIPTOR_DEAD_LABELS]}
+       ) != 3:                                                             # pragma: no cover
+    raise RuntimeError("the three descriptor labels must have three DISTINCT lengths")
+
+TRANSITION_DESCRIPTOR_HASH_RULE = (
+    'keccak256(abi.encodePacked("coretex-transition-descriptor-v2", compactPatchBytes))')
 
 
-def patch_hash(compact_patch_bytes: bytes) -> str:
-    """``keccak256(utf8("coretex-patch-hash-v1") ‖ compactPatchBytes)``, bare lowercase hex."""
-    return keccak256_hex(PATCH_HASH_LABEL + bytes(compact_patch_bytes))
+def transition_descriptor_hash(descriptor_bytes: bytes) -> str:
+    """The LABELLED rule the verifier enforces, as bare lowercase hex.
+
+    Plain ``keccak256(descriptorBytes)`` is a third value and the one a naive reimplementation
+    reaches for first (spec §4.2). It is never a substitute.
+    """
+    return keccak256_hex(TRANSITION_DESCRIPTOR_HASH_LABEL + bytes(descriptor_bytes))
+
+
+#: Back-compatible alias: every call site in this package that reasoned about "the patch hash"
+#: before v2 reasons about the descriptor hash now. Kept as one name, one rule, one label.
+patch_hash = transition_descriptor_hash
+
+
+def _dead_label_hint(data: bytes, expected: str) -> str:
+    """Name the dead label a mismatched ``patchHash`` DOES correspond to, if it is one.
+
+    An operator chasing "these bytes are wrong" when the answer is "this signer was never
+    migrated" is an expensive detour, so both dead labels are tried and named — the "superseded
+    label" idiom this decoder used before v2, carried forward with the second label added.
+    """
+    for label in TRANSITION_DESCRIPTOR_DEAD_LABELS:
+        if keccak256_hex(label + data) == expected:
+            return (f" (it DOES match the DEAD label {label.decode('utf-8')!r}, so this advance "
+                    "was produced by a signer still on that rule — that label is REFUSED here, "
+                    "not unsupported: it is a different value for every input)")
+    if keccak256_hex(data) == expected:
+        return (" (it matches PLAIN undomained keccak256 of the same bytes, which is a third "
+                "value and belongs to nothing)")
+    return ""
 
 
 def check_patch_hash(advance: StateAdvanced) -> None:
-    """Design §7.2 step 8. Self-verifying: the log carries both the bytes and their hash."""
-    computed = patch_hash(advance.compact_patch_bytes)
+    """Design §7.2 step 8, under the v2 rule. Self-verifying: the log carries both the bytes and
+    their hash."""
+    computed = transition_descriptor_hash(advance.compact_patch_bytes)
     if computed != advance.patch_hash:
-        superseded = keccak256_hex(SUPERSEDED_PATCH_HASH_LABEL + advance.compact_patch_bytes)
-        hint = (" (it DOES match the superseded 'coretex-memory-transition-hash-v1' label, so "
-                "this advance was produced by a signer still on the memory lane's rule)"
-                if superseded == advance.patch_hash else "")
         raise RigEventError(
-            f"patchHash mismatch: keccak256(label ‖ compactPatchBytes) = {computed}, the "
-            f"confirmed advance says {advance.patch_hash}{hint}")
+            f"patchHash mismatch: {TRANSITION_DESCRIPTOR_HASH_RULE} = {computed}, the confirmed "
+            f"advance says {advance.patch_hash}"
+            f"{_dead_label_hint(advance.compact_patch_bytes, advance.patch_hash)}")
 
 
-def transition_from_patch(advance: StateAdvanced) -> Dict[str, Any]:
-    """The frontier transition the patch bytes ARE, parsed and validated.
+class TransitionDescriptorError(RigEventError):
+    """A transition descriptor the deployed verifier would have reverted on. Never a soft failure.
 
-    The rig lane's ``compactPatchBytes`` is the canonical JSON of the transition document (that is
-    what the coordinator hashes into ``patchHash``), so a validator recovers the edit from the log
-    alone — no artifact fetch, no archive node. Raises through :mod:`.frontier` if the bytes are
-    not a valid transition, which is the honest outcome: an advance whose patch does not parse is
-    not an advance anyone can replay.
-    """
-    check_patch_hash(advance)
-    return fr.validate_transition(fr.parse_json(advance.compact_patch_bytes.decode("utf-8")))
-
-
-# --------------------------------------------------------------------------- #
-# The compact patch — a CONTRACT-MANDATED BINARY LAYOUT, not JSON
-# --------------------------------------------------------------------------- #
-#: ``RigCoreTexVerifier`` constants, transcribed from the exact source (``cdb91d2``).
-COMPACT_PATCH_HEADER_BYTES = 42
-COMPACT_PATCH_MAX_BYTES = 178
-COMPACT_PATCH_MAX_WORDS = 4
-#: Word indices at or above this are reserved and refused on chain.
-RESERVED_WORD_START = 992
-#: ``_readUint64BE`` result must fit int64 — the contract refuses anything larger.
-MAX_SCORE_DELTA = 9_223_372_036_854_775_807
-
-#: ``_wordMatchesPatchType``. ``0xff`` is the unrestricted type; the rest are windowed.
-PATCH_TYPE_WORD_RANGES: Dict[int, Optional[Tuple[int, int]]] = {
-    0x01: (384, 671), 0x02: (32, 383), 0x03: (800, 895), 0x04: (672, 799),
-    0x05: (896, 991), 0x06: (0, 31), 0x07: (384, 671), 0xFF: None,
-}
-
-
-class CompactPatchError(RigEventError):
-    """A compact patch that the verifier would have reverted on. Never a soft failure.
-
-    Every refusal here mirrors a specific ``revert`` in ``_validateCompactPatch``, because a patch
-    that is on chain HAS passed that function: anything this decoder rejects either never landed
-    or was not decoded as the contract decodes it. Silently tolerating a malformed patch would
-    mean the validator disagreed with the chain about what was accepted.
-
-    ``code`` IS THE CONTRACT, and it exists so a negative control can assert WHICH refusal fired.
-    A test that only checks "something threw" passes just as happily when the decoder rejects for
-    the wrong reason — and a decoder that refuses everything would satisfy it. The message may
-    gain detail; the code is frozen.
+    ``code`` IS THE CONTRACT and is frozen: a negative control that only asserts "something threw"
+    passes just as happily when the decoder refuses for the wrong reason.
     """
 
     def __init__(self, code: str, message: str) -> None:
@@ -626,7 +704,412 @@ class CompactPatchError(RigEventError):
         self.message = message
 
 
-# The refusal codes, one per revert in `_validateCompactPatch` (plus the hash rule it calls).
+# ── Descriptor refusal codes — one per RigCoreTexVerifier revert, in the contract's check order ─
+#: ``InvalidTransitionDescriptor`` — the length is not exactly 105. Checked FIRST.
+DESCRIPTOR_LENGTH_INVALID = "DESCRIPTOR_LENGTH_INVALID"
+#: ``TransitionDescriptorHashMismatch`` — these bytes are not a malformed descriptor, they are a
+#: DIFFERENT descriptor.
+DESCRIPTOR_HASH_MISMATCH = "DESCRIPTOR_HASH_MISMATCH"
+#: ``UnsupportedTransitionDescriptorVersion(uint8)`` — carries the offending byte, so a legacy
+#: ``0x01``/``0xff`` names itself.
+DESCRIPTOR_VERSION_UNSUPPORTED = "DESCRIPTOR_VERSION_UNSUPPORTED"
+#: ``InvalidTransitionDescriptor`` — ``patchArtifactHash == 0``: committed to nothing.
+DESCRIPTOR_ARTIFACT_HASH_ZERO = "DESCRIPTOR_ARTIFACT_HASH_ZERO"
+#: ``TransitionDescriptorParentMismatch``.
+DESCRIPTOR_PARENT_MISMATCH = "DESCRIPTOR_PARENT_MISMATCH"
+#: ``TransitionDescriptorNewRootMismatch`` — the transition's OUTPUT side, committed for the first
+#: time. The retired patch had no such field and therefore no such check.
+DESCRIPTOR_NEW_ROOT_MISMATCH = "DESCRIPTOR_NEW_ROOT_MISMATCH"
+#: ``TransitionDescriptorScoreMismatch``.
+DESCRIPTOR_SCORE_DELTA_MISMATCH = "DESCRIPTOR_SCORE_DELTA_MISMATCH"
+#: ``TransitionDescriptorVersionMismatch`` — the SIGNED ``transitionFormatVersion`` (a ``uint16``
+#: whose upper byte MUST be zero) is not the descriptor's version byte. The descriptor byte is the
+#: authority; the signed member is the binding.
+DESCRIPTOR_FORMAT_VERSION_MISMATCH = "DESCRIPTOR_FORMAT_VERSION_MISMATCH"
+#: ``UnexpectedTransitionDescriptor`` — a screener pass (outcome 1) advances no state, so it MUST
+#: carry an EMPTY descriptor and zero scores. STRICTER than the retired verifier, which tolerated a
+#: well-formed patch on a screener and let it pre-burn the advance's dedupe key (audit L-4).
+DESCRIPTOR_UNEXPECTED = "DESCRIPTOR_UNEXPECTED"
+
+DESCRIPTOR_REFUSALS: Tuple[str, ...] = (
+    DESCRIPTOR_LENGTH_INVALID, DESCRIPTOR_HASH_MISMATCH, DESCRIPTOR_VERSION_UNSUPPORTED,
+    DESCRIPTOR_ARTIFACT_HASH_ZERO, DESCRIPTOR_PARENT_MISMATCH, DESCRIPTOR_NEW_ROOT_MISMATCH,
+    DESCRIPTOR_SCORE_DELTA_MISMATCH, DESCRIPTOR_FORMAT_VERSION_MISMATCH, DESCRIPTOR_UNEXPECTED)
+
+
+@dataclass(frozen=True)
+class TransitionDescriptor:
+    """A decoded 105-byte transition descriptor. Roots are bare lowercase hex."""
+
+    version: int
+    #: sha256 content address of the COMPLETE canonical patch artifact. Never the eval artifact:
+    #: ``artifactHash`` addresses what proves the SCORE, this addresses what defines the STATE
+    #: CHANGE (spec §3.3).
+    patch_artifact_hash: str
+    parent_state_root: str
+    new_state_root: str
+    score_delta_ppm: int
+    raw: bytes
+
+    def as_dict(self) -> Dict[str, Any]:
+        return {"version": self.version, "patch_artifact_hash": self.patch_artifact_hash,
+                "parent_state_root": self.parent_state_root,
+                "new_state_root": self.new_state_root, "score_delta_ppm": self.score_delta_ppm,
+                "bytes": len(self.raw)}
+
+
+def encode_transition_descriptor(*, patch_artifact_hash: str, parent_state_root: str,
+                                  new_state_root: str, score_delta_ppm: int) -> bytes:
+    """Build ``compactPatchBytes`` exactly as ``_validateTransitionDescriptor`` reads them back.
+
+    Everything written here is re-read by :func:`decode_transition_descriptor` before it is
+    returned, so the encoder cannot emit a descriptor this module would refuse. There is
+    deliberately NO ``version`` parameter — one deployed verifier accepts exactly one version
+    (spec §7.2); adversarial fixtures build a wrong version by MUTATING byte 0.
+    """
+    artifact = fr.check_root(patch_artifact_hash, "patch_artifact_hash")
+    parent = fr.check_root(parent_state_root, "parent_state_root")
+    new_root = fr.check_root(new_state_root, "new_state_root")
+    if artifact == "0" * 64:
+        raise TransitionDescriptorError(
+            DESCRIPTOR_ARTIFACT_HASH_ZERO,
+            "patchArtifactHash is zero. A descriptor committing to nothing would be structurally "
+            "valid and would advance the head to a root with no addressable derivation")
+    delta = int(score_delta_ppm)
+    if not (TRANSITION_DESCRIPTOR_MIN_SCORE_DELTA_PPM <= delta
+            <= TRANSITION_DESCRIPTOR_MAX_SCORE_DELTA_PPM):
+        raise TransitionDescriptorError(
+            DESCRIPTOR_SCORE_DELTA_MISMATCH,
+            f"scoreDeltaPpm {delta} is outside {TRANSITION_DESCRIPTOR_MIN_SCORE_DELTA_PPM}.."
+            f"{TRANSITION_DESCRIPTOR_MAX_SCORE_DELTA_PPM}")
+    raw = (bytes([TRANSITION_DESCRIPTOR_VERSION]) + bytes.fromhex(artifact)
+           + bytes.fromhex(parent) + bytes.fromhex(new_root)
+           + delta.to_bytes(TRANSITION_DESCRIPTOR_SCORE_DELTA_BYTES, "big"))
+    decode_transition_descriptor(raw, parent_state_root=parent, new_state_root=new_root,
+                                 score_delta_ppm=delta)
+    return raw
+
+
+def decode_transition_descriptor(raw: bytes, *, parent_state_root: Optional[str] = None,
+                                  new_state_root: Optional[str] = None,
+                                  score_delta_ppm: Optional[int] = None,
+                                  expected_patch_hash: Optional[str] = None,
+                                  transition_format_version: Optional[int] = None
+                                  ) -> TransitionDescriptor:
+    """Decode ``compactPatchBytes`` exactly as ``RigCoreTexVerifier`` validates them (spec §6.1
+    rows 4-11, checked in that order — each failure the earliest true statement about what is
+    wrong).
+
+    The optional arguments are the cross-checks the contract performs against the SIGNED receipt.
+    Re-doing them is how a validator confirms the descriptor belongs to THIS advance rather than
+    merely being well-formed — and under v2 that now includes the transition's OUTPUT side, which
+    the retired patch never carried.
+    """
+    data = bytes(raw)
+    # 4. LENGTH FIRST (see the section note above on why this order is inverted from the retired
+    #    decoder).
+    if len(data) != TRANSITION_DESCRIPTOR_BYTES:
+        raise TransitionDescriptorError(
+            DESCRIPTOR_LENGTH_INVALID,
+            f"a transition descriptor is EXACTLY {TRANSITION_DESCRIPTOR_BYTES} bytes; this one is "
+            f"{len(data)}. The length is the format: there is no padding, no optional field and "
+            "no length prefix")
+    # 5. the hash rule.
+    if expected_patch_hash is not None:
+        computed = transition_descriptor_hash(data)
+        expected = str(expected_patch_hash).lower().replace("0x", "")
+        if computed != expected:
+            raise TransitionDescriptorError(
+                DESCRIPTOR_HASH_MISMATCH,
+                f"{TRANSITION_DESCRIPTOR_HASH_RULE} is {computed}, the confirmed advance says "
+                f"{expected}{_dead_label_hint(data, expected)}")
+    # 6. the version byte, compared for EQUALITY against one constant.
+    version = data[TRANSITION_DESCRIPTOR_VERSION_OFFSET]
+    if version != TRANSITION_DESCRIPTOR_VERSION:
+        if version in TRANSITION_DESCRIPTOR_BURNED_VERSIONS:
+            why = ("PERMANENTLY BURNED: 0x01-0x07 were the retired compact patch's patchType "
+                   "values, 0xff was COMPACT_PATCH_TYPE_UNRESTRICTED (the value every real "
+                   "epoch-180 advance used), and 0x00 is burned with the low run so the whole "
+                   "range is one rule")
+        elif version in TRANSITION_DESCRIPTOR_UNASSIGNED_VERSIONS:
+            why = ("UNASSIGNED. 0x08-0x1f is left deliberately empty so this first version is not "
+                   "ADJACENT to the burned range")
+        else:
+            why = ("reserved for a successor, which takes a new version byte AND a new domain "
+                   "label; one deployed verifier accepts exactly one version")
+        raise TransitionDescriptorError(
+            DESCRIPTOR_VERSION_UNSUPPORTED,
+            f"descriptor version 0x{version:02x} is not 0x{TRANSITION_DESCRIPTOR_VERSION:02x} — "
+            f"{why}")
+    # 7. the artifact address must be non-zero.
+    artifact_hash = data[TRANSITION_DESCRIPTOR_ARTIFACT_OFFSET:
+                         TRANSITION_DESCRIPTOR_PARENT_OFFSET].hex()
+    if artifact_hash == "0" * 64:
+        raise TransitionDescriptorError(
+            DESCRIPTOR_ARTIFACT_HASH_ZERO,
+            "patchArtifactHash is zero: the descriptor commits to no artifact, so the head would "
+            "advance to a root with no addressable derivation")
+    parent = data[TRANSITION_DESCRIPTOR_PARENT_OFFSET:TRANSITION_DESCRIPTOR_NEW_ROOT_OFFSET].hex()
+    new_root = data[TRANSITION_DESCRIPTOR_NEW_ROOT_OFFSET:
+                    TRANSITION_DESCRIPTOR_SCORE_DELTA_OFFSET].hex()
+    delta = int.from_bytes(data[TRANSITION_DESCRIPTOR_SCORE_DELTA_OFFSET:], "big")
+    # 8. parent, 9. new root, 10. delta — one at a time, each with its own revert.
+    if parent_state_root is not None:
+        expected_parent = str(parent_state_root).lower().replace("0x", "")
+        if parent != expected_parent:
+            raise TransitionDescriptorError(
+                DESCRIPTOR_PARENT_MISMATCH,
+                f"the descriptor's parentStateRoot {parent} is not the receipt's {expected_parent}")
+    if new_state_root is not None:
+        expected_new = str(new_state_root).lower().replace("0x", "")
+        if new_root != expected_new:
+            raise TransitionDescriptorError(
+                DESCRIPTOR_NEW_ROOT_MISMATCH,
+                f"the descriptor's newStateRoot {new_root} is not the receipt's {expected_new}. "
+                "This check did not exist under the retired model because the patch carried no "
+                "resulting root at all")
+    if score_delta_ppm is not None and delta != int(score_delta_ppm):
+        raise TransitionDescriptorError(
+            DESCRIPTOR_SCORE_DELTA_MISMATCH,
+            f"the descriptor declares scoreDeltaPpm {delta} but the signed receipt says "
+            f"{int(score_delta_ppm)}")
+    # 11. the SIGNED uint16 must be the zero-extension of the version byte.
+    if transition_format_version is not None and int(transition_format_version) != version:
+        raise TransitionDescriptorError(
+            DESCRIPTOR_FORMAT_VERSION_MISMATCH,
+            f"the receipt signs transitionFormatVersion={int(transition_format_version)} but the "
+            f"descriptor's version byte is 0x{version:02x}. The descriptor byte is the AUTHORITY; "
+            "the signed member is the binding, and its upper byte MUST be zero")
+    return TransitionDescriptor(version=version, patch_artifact_hash=artifact_hash,
+                                parent_state_root=parent, new_state_root=new_root,
+                                score_delta_ppm=delta, raw=data)
+
+
+def check_screener_descriptor(raw: bytes, *, transition_format_version: Optional[int] = None,
+                              score_before_ppm: Optional[int] = None,
+                              score_after_ppm: Optional[int] = None) -> None:
+    """Outcome 1 carries NO descriptor and zero scores. Anything else is refused.
+
+    A TIGHTENING THE FRAME DID NOT ASK FOR (audit L-4), recorded rather than buried: the retired
+    verifier tolerated a non-empty patch on a screener and validated only its hash, which let a
+    screener pre-burn the advance's ``coreTexPatchCredited`` dedupe key. Under v2 the only receipt
+    that can mint a descriptor-derived ``patchHash`` is the advance that uses it.
+    """
+    data = bytes(raw or b"")
+    if data:
+        raise TransitionDescriptorError(
+            DESCRIPTOR_UNEXPECTED,
+            f"a screener pass carries {len(data)} descriptor byte(s); outcome 1 advances no "
+            "state, so it MUST carry an EMPTY compactPatchBytes")
+    for name, value in (("transitionFormatVersion", transition_format_version),
+                        ("scoreBeforePpm", score_before_ppm), ("scoreAfterPpm", score_after_ppm)):
+        if value is not None and int(value) != 0:
+            raise TransitionDescriptorError(
+                DESCRIPTOR_UNEXPECTED,
+                f"a screener pass signs {name}={int(value)}; outcome 1 requires "
+                "transitionFormatVersion, scoreBeforePpm and scoreAfterPpm to all be zero")
+
+
+# --------------------------------------------------------------------------- #
+# The canonical patch artifact (spec §5) — SCOPED to the T-1/T-2 shape
+# --------------------------------------------------------------------------- #
+# The full spec allows one artifact to move an arbitrary number of profile releases and/or the
+# composition root in a single transition (spec §8, T-3/T-4/T-5), because the chain no longer
+# bounds breadth. Expressing that here would mean widening :mod:`.frontier`'s transition/manifest
+# model past its documented one-profile-per-transition law
+# (``frontier.apply_transition``'s single ``target_profile``), and :mod:`.frontier` is
+# DELIBERATELY OUT OF SCOPE for this migration (it is not one of the files the migration touches;
+# widening it is a frontier-law change, not a rig-lane wire-format change). So the artifact
+# envelope below is the STRICT SUPERSET FLOOR: it gives every real advance this repo can produce
+# today (T-1/T-2 — the only shapes the mainnet rehearsal ever used, per spec §8) the v2
+# commitment discipline — a patchArtifactHash-addressed, fetched, rehashed and replayed edit — and
+# leaves T-3/T-4/T-5 breadth as a documented gap rather than a silent one. See
+# ``docs/V5-RIG-VALIDATOR.md`` for the operator-facing note.
+TRANSITION_ARTIFACT_FORMAT = "coretex.transition-artifact/v2"
+#: CLOSED schema, scoped to one :mod:`.frontier` transition per artifact (see the note above).
+TRANSITION_ARTIFACT_FIELDS: Tuple[str, ...] = (
+    "format", "parent_state_root", "new_state_root", "score_delta_ppm", "transition")
+
+# ── Off-chain refusals (spec §6.3), spelled exactly as the spec tables them, plus one structural
+#    code the spec's table does not name ──────────────────────────────────────────────────────
+TRANSITION_ARTIFACT_UNAVAILABLE = "TRANSITION_ARTIFACT_UNAVAILABLE"
+TRANSITION_ARTIFACT_ADDRESS_MISMATCH = "TRANSITION_ARTIFACT_ADDRESS_MISMATCH"
+TRANSITION_ARTIFACT_NOT_CANONICAL = "TRANSITION_ARTIFACT_NOT_CANONICAL"
+TRANSITION_PARENT_MISMATCH = "TRANSITION_PARENT_MISMATCH"
+TRANSITION_REPLAY_ROOT_MISMATCH = "TRANSITION_REPLAY_ROOT_MISMATCH"
+TRANSITION_SCORE_DELTA_MISMATCH = "TRANSITION_SCORE_DELTA_MISMATCH"
+TRANSITION_DESCRIPTOR_VERSION_UNSUPPORTED = "TRANSITION_DESCRIPTOR_VERSION_UNSUPPORTED"
+#: The artifact document is not a well-formed member of its family. Distinct from NOT_CANONICAL,
+#: which is about the SERIALIZATION of a document that does parse.
+TRANSITION_ARTIFACT_MALFORMED = "TRANSITION_ARTIFACT_MALFORMED"
+
+OFFCHAIN_TRANSITION_REFUSALS: Tuple[str, ...] = (
+    TRANSITION_ARTIFACT_UNAVAILABLE, TRANSITION_ARTIFACT_ADDRESS_MISMATCH,
+    TRANSITION_ARTIFACT_NOT_CANONICAL, TRANSITION_PARENT_MISMATCH,
+    TRANSITION_REPLAY_ROOT_MISMATCH, TRANSITION_SCORE_DELTA_MISMATCH,
+    TRANSITION_DESCRIPTOR_VERSION_UNSUPPORTED)
+TRANSITION_ARTIFACT_REFUSALS: Tuple[str, ...] = OFFCHAIN_TRANSITION_REFUSALS + (
+    TRANSITION_ARTIFACT_MALFORMED,)
+
+
+class TransitionArtifactError(RigEventError):
+    """An OFF-CHAIN refusal about the canonical patch artifact the descriptor addresses.
+
+    Distinct from :class:`TransitionDescriptorError`: a descriptor refusal says "the chain would
+    not have accepted these bytes"; an artifact refusal says "the chain accepted the commitment
+    and the thing it commits to is unavailable, substituted, non-canonical or does not replay".
+    REFUSE, NEVER DEGRADE (spec §6.3): "the artifact did not mention it" MUST NOT become a way to
+    avoid publishing it, and "we could not fetch it" MUST NOT become a way to accept it.
+    """
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(f"{code}: {message}")
+        self.code = code
+        self.message = message
+
+
+def transition_artifact_bytes(artifact: Mapping[str, Any]) -> bytes:
+    """The canonical bytes a ``patchArtifactHash`` addresses — the repo's ONE canonical-JSON law,
+    imported from :mod:`.frontier`, never restated."""
+    try:
+        return fr.canonical_bytes(artifact)
+    except fr.FrontierError as exc:
+        raise TransitionArtifactError(
+            TRANSITION_ARTIFACT_NOT_CANONICAL,
+            f"the artifact does not canonicalize under the repo's canonical-JSON law: {exc}"
+        ) from exc
+
+
+def transition_artifact_root(artifact: Mapping[str, Any]) -> str:
+    """``sha256(canonical_bytes(artifact))`` — the content address, as bare lowercase hex.
+
+    sha256, not keccak (spec §4.3): ``patchHash`` is keccak because it is a ``bytes32`` a Solidity
+    verifier compares; ``patchArtifactHash`` is sha256 because it is how the object is FETCHED, and
+    every content-addressed object in this system is addressed by sha256.
+    """
+    return fr.sha256_hex(transition_artifact_bytes(artifact))
+
+
+def validate_transition_artifact(artifact: Any) -> Dict[str, Any]:
+    """Structural validation of one ``coretex.transition-artifact/v2`` document. CLOSED schema.
+
+    Scoped to the single-:mod:`.frontier`-transition shape (see the section note above): T-1 (one
+    profile, one hook) and T-2 (one profile, all six hooks) are both expressible here because
+    :mod:`.frontier` already treats "which hooks moved" as internal to the release manifest a
+    transition names, not as a field of the transition itself.
+    """
+    if not isinstance(artifact, Mapping):
+        raise TransitionArtifactError(
+            TRANSITION_ARTIFACT_MALFORMED,
+            f"a transition artifact must be an object, got {type(artifact).__name__}")
+    if artifact.get("format") != TRANSITION_ARTIFACT_FORMAT:
+        raise TransitionArtifactError(
+            TRANSITION_ARTIFACT_MALFORMED,
+            f"format {artifact.get('format')!r} is not {TRANSITION_ARTIFACT_FORMAT!r}")
+    unknown = sorted(set(artifact) - set(TRANSITION_ARTIFACT_FIELDS))
+    if unknown:
+        raise TransitionArtifactError(TRANSITION_ARTIFACT_MALFORMED,
+                                      f"unknown field(s) {unknown} — the schema is CLOSED")
+    missing = sorted(set(TRANSITION_ARTIFACT_FIELDS) - set(artifact))
+    if missing:
+        raise TransitionArtifactError(TRANSITION_ARTIFACT_MALFORMED,
+                                      f"required field(s) {missing} are absent")
+    try:
+        parent_root = fr.check_root(artifact["parent_state_root"], "artifact.parent_state_root")
+        new_root = fr.check_root(artifact["new_state_root"], "artifact.new_state_root")
+    except fr.FrontierError as exc:
+        raise TransitionArtifactError(TRANSITION_ARTIFACT_MALFORMED, str(exc)) from exc
+    delta = artifact["score_delta_ppm"]
+    if (not isinstance(delta, int) or isinstance(delta, bool)
+            or not (TRANSITION_DESCRIPTOR_MIN_SCORE_DELTA_PPM <= delta
+                    <= TRANSITION_DESCRIPTOR_MAX_SCORE_DELTA_PPM)):
+        raise TransitionArtifactError(
+            TRANSITION_ARTIFACT_MALFORMED,
+            f"score_delta_ppm {delta!r} must be an int in "
+            f"{TRANSITION_DESCRIPTOR_MIN_SCORE_DELTA_PPM}.."
+            f"{TRANSITION_DESCRIPTOR_MAX_SCORE_DELTA_PPM}")
+    try:
+        fr.validate_transition(artifact["transition"])
+    except fr.FrontierError as exc:
+        raise TransitionArtifactError(TRANSITION_ARTIFACT_MALFORMED,
+                                      f"transition is not a valid frontier transition: {exc}"
+                                      ) from exc
+    transition_artifact_bytes(artifact)      # fail closed before anyone addresses it
+    return {"format": artifact["format"], "parent_state_root": parent_root,
+            "new_state_root": new_root, "score_delta_ppm": delta,
+            "transition": dict(artifact["transition"])}
+
+
+def check_transition_artifact_binds_descriptor(artifact: Mapping[str, Any], *,
+                                               descriptor: "TransitionDescriptor") -> Dict[str, Any]:
+    """Validate + check the two off-chain bindings the artifact can prove WITHOUT the parent state.
+
+    Everything else — does the artifact re-hash to ``descriptor.patch_artifact_hash``, and does
+    replaying ``transition`` from the real parent manifest actually reach ``newStateRoot`` — needs
+    the fetch and the parent manifest, which the pipeline/chain-first callers already own; this
+    function is the pure part.
+    """
+    document = validate_transition_artifact(artifact)
+    if document["parent_state_root"] != descriptor.parent_state_root:
+        raise TransitionArtifactError(
+            TRANSITION_PARENT_MISMATCH,
+            f"artifact.parent_state_root {document['parent_state_root']} != descriptor's "
+            f"{descriptor.parent_state_root}")
+    if document["new_state_root"] != descriptor.new_state_root:
+        raise TransitionArtifactError(
+            TRANSITION_REPLAY_ROOT_MISMATCH,
+            f"artifact.new_state_root {document['new_state_root']} != descriptor's "
+            f"{descriptor.new_state_root}")
+    if document["score_delta_ppm"] != descriptor.score_delta_ppm:
+        raise TransitionArtifactError(
+            TRANSITION_SCORE_DELTA_MISMATCH,
+            f"artifact.score_delta_ppm {document['score_delta_ppm']} != descriptor's "
+            f"{descriptor.score_delta_ppm}")
+    return document
+
+
+# --------------------------------------------------------------------------- #
+# HISTORY — the retired 4-changed-word compact patch (coretex-patch-hash-v1 era)
+# --------------------------------------------------------------------------- #
+# KEPT, not deleted: epoch-180 mainnet-rehearsal advances (two 75-byte patches, patchType 0xff,
+# wordCount 1) are LEGACY-ERA history. They remain valid against the deployed LEGACY verifier and
+# MUST NOT be re-read under v2 — their first byte, 0xff, is a permanently-burned version
+# (spec §9.5). This decoder is the only thing that can still parse them; deleting it would erase
+# the evidence of what changed, not just the machinery for changing it.
+#
+# ``decode_compact_patch`` MUST NOT be called on anything decoded from a live v2 deployment: a v2
+# descriptor is fixed at 105 bytes, and 105 falls inside the retired ``42..178`` window, so this
+# decoder would not even refuse it outright — it would misread a v2 descriptor as a same-length
+# compact patch. Callers are responsible for routing by deployment/epoch, exactly as they already
+# must for the V4 topic0 collision this package documents elsewhere.
+
+#: ``RigCoreTexVerifier`` constants, transcribed from the exact RETIRED source (``cdb91d2``).
+COMPACT_PATCH_HEADER_BYTES = 42
+COMPACT_PATCH_MAX_BYTES = 178
+COMPACT_PATCH_MAX_WORDS = 4
+#: Word indices at or above this were reserved and refused on chain.
+RESERVED_WORD_START = 992
+#: ``_readUint64BE`` result had to fit int64 — the RETIRED contract refused anything larger.
+MAX_SCORE_DELTA = 9_223_372_036_854_775_807
+
+#: ``_wordMatchesPatchType``. ``0xff`` was the unrestricted type; the rest were windowed.
+PATCH_TYPE_WORD_RANGES: Dict[int, Optional[Tuple[int, int]]] = {
+    0x01: (384, 671), 0x02: (32, 383), 0x03: (800, 895), 0x04: (672, 799),
+    0x05: (896, 991), 0x06: (0, 31), 0x07: (384, 671), 0xFF: None,
+}
+
+
+class CompactPatchError(RigEventError):
+    """A compact patch that the RETIRED verifier would have reverted on. History only — see the
+    section note above. ``code`` IS THE CONTRACT and is frozen."""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(f"{code}: {message}")
+        self.code = code
+        self.message = message
+
+
+# The refusal codes, one per revert in the RETIRED `_validateCompactPatch` (plus its hash rule).
 PATCH_LENGTH_INVALID = "PATCH_LENGTH_INVALID"
 PATCH_TYPE_UNKNOWN = "PATCH_TYPE_UNKNOWN"
 PATCH_WORD_COUNT_INVALID = "PATCH_WORD_COUNT_INVALID"
@@ -646,7 +1129,7 @@ PATCH_HASH_MISMATCH = "PATCH_HASH_MISMATCH"
 
 @dataclass(frozen=True)
 class CompactPatch:
-    """The decoded rig state patch: a header plus ``wordCount`` (index, value) pairs."""
+    """The decoded RETIRED rig state patch: a header plus ``wordCount`` (index, value) pairs."""
 
     patch_type: int
     word_count: int
@@ -665,12 +1148,8 @@ class CompactPatch:
 
 
 def _read_leb128_word_index(data: bytes, offset: int) -> Tuple[int, int]:
-    """``_readLeb128WordIndex``. At most two bytes, and the two-byte form must be non-redundant.
-
-    The ``value < 128`` refusal on a two-byte encoding is the important one: without it, ``0x82
-    0x00`` and ``0x02`` would both decode to 2, giving one word index two spellings — and a patch
-    with two spellings has two hashes, which would break the ``patchHash`` binding.
-    """
+    """``_readLeb128WordIndex``, RETIRED. At most two bytes; the two-byte form must be
+    non-redundant."""
     if offset >= len(data):
         raise CompactPatchError(PATCH_INDEX_TRUNCATED,
                                 "word index runs past the end of the patch")
@@ -696,34 +1175,24 @@ def _read_leb128_word_index(data: bytes, offset: int) -> Tuple[int, int]:
 def decode_compact_patch(raw: bytes, *, parent_state_root: Optional[str] = None,
                          score_delta_ppm: Optional[int] = None,
                          expected_patch_hash: Optional[str] = None) -> CompactPatch:
-    """Decode ``compactPatchBytes`` exactly as ``RigCoreTexVerifier._validateCompactPatch`` does.
+    """Decode ``compactPatchBytes`` exactly as the RETIRED ``_validateCompactPatch`` did.
 
-    THIS IS NOT THE MEMORY LANE'S ``transitionBytes``. That field is canonical JSON; this one is a
-    binary struct the verifier reverts on if it is anything else. The two encodings are different
-    formats for different protocols, and feeding one to the other's parser fails with a UTF-8
-    error on the very first byte of a real rig patch (``0xff``). Canonical JSON in this field
-    would have been rejected on chain, so the JSON reading can never be right here.
-
-    ``parent_state_root`` and ``score_delta_ppm`` are checked when supplied — those are the two
-    cross-checks the contract performs against the SIGNED receipt, and re-doing them is how a
-    validator confirms the patch belongs to the advance rather than merely being well-formed.
+    HISTORY ONLY (see the section note above) — a decoder for the ``coretex-patch-hash-v1`` era,
+    kept so epoch-180-and-earlier legacy-format advances stay replayable. ``expected_patch_hash``
+    is checked against :data:`TRANSITION_DESCRIPTOR_RETIRED_LABEL`, the RETIRED label, not the live
+    v2 rule.
     """
     data = bytes(raw)
-    # THE HASH RULE IS PART OF THE VALIDATION SET, not a separate courtesy. The contract calls
-    # `_validatePatchHash` from inside `_validateCompactPatch`, before it looks at a single field
-    # — so a patch whose bytes do not hash to the SIGNED patchHash is not a malformed patch, it is
-    # a DIFFERENT patch, and reporting a field-level complaint about it would describe the wrong
-    # object entirely.
     if expected_patch_hash is not None:
-        computed = patch_hash(data)
+        computed = keccak256_hex(TRANSITION_DESCRIPTOR_RETIRED_LABEL + data)
         expected = str(expected_patch_hash).lower().replace("0x", "")
         if computed != expected:
-            superseded = keccak256_hex(SUPERSEDED_PATCH_HASH_LABEL + data)
+            superseded = keccak256_hex(TRANSITION_DESCRIPTOR_SUPERSEDED_MEMORY_LABEL + data)
             hint = (" (it DOES match the superseded 'coretex-memory-transition-hash-v1' label)"
                     if superseded == expected else "")
             raise CompactPatchError(
                 PATCH_HASH_MISMATCH,
-                f"keccak256(label ‖ compactPatchBytes) is {computed}, the signed receipt says "
+                f"keccak256(label \u2016 compactPatchBytes) is {computed}, the signed receipt says "
                 f"{expected}{hint}")
     if len(data) < COMPACT_PATCH_HEADER_BYTES or len(data) > COMPACT_PATCH_MAX_BYTES:
         raise CompactPatchError(
@@ -780,8 +1249,8 @@ def decode_compact_patch(raw: bytes, *, parent_state_root: Optional[str] = None,
     if offset != len(data):
         raise CompactPatchError(
             PATCH_TRAILING_BYTES,
-            f"{len(data) - offset} trailing byte(s) after {word_count} word(s); the contract "
-            "requires the patch to end exactly where its last word does")
+            f"{len(data) - offset} trailing byte(s) after {word_count} word(s); the RETIRED "
+            "contract required the patch to end exactly where its last word does")
     return CompactPatch(patch_type=patch_type, word_count=word_count,
                         score_delta_ppm=score_delta, parent_state_root=parent,
                         words=tuple(words), raw=data)

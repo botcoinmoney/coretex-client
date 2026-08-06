@@ -18,6 +18,7 @@ from . import publication as pub
 
 from . import dispatch as dp
 from . import replay as rp
+from . import rig_events as rig
 
 CHAIN_FIRST_FORMAT = "coretex.memory-frontier.v5/chain-first-validator/v1"
 
@@ -271,12 +272,17 @@ def verify_rig_receipt_bindings(receipt: Mapping[str, Any], *, event: dp.RigStat
     if event.new_state_root == event.parent_state_root:
         raise ChainFirstError("RIG_NO_OP_ADVANCE",
                               "the confirmed advance does not move the state root")
-    words = _required(receipt, "stateWordCount")
-    if not isinstance(words, int) or isinstance(words, bool) or words < 1:
+    # ``transitionFormatVersion`` (was ``stateWordCount`` — coretex.transition-descriptor/v2
+    # §9.1). On a state advance it is no longer a count with a lower bound; it is the FIXED
+    # zero-extension of the 105-byte descriptor's version byte, so it must equal that constant
+    # exactly, not merely be non-zero.
+    version = _required(receipt, "transitionFormatVersion")
+    if (not isinstance(version, int) or isinstance(version, bool)
+            or version != rig.TRANSITION_DESCRIPTOR_VERSION):
         raise ChainFirstError(
-            "RIG_STATE_WORD_COUNT_INVALID",
-            f"stateWordCount={words!r}; a state advance writes at least one word, and zero is "
-            "reserved for the screener-pass invariant 'zero iff the root did not move'")
+            "RIG_TRANSITION_FORMAT_VERSION_INVALID",
+            f"transitionFormatVersion={version!r}; a state advance signs the zero-extension of "
+            f"the descriptor version byte, 0x{rig.TRANSITION_DESCRIPTOR_VERSION:02x}")
     checks.append("rig_outcome")
 
     issued_at = _required(receipt, "issuedAt")
@@ -328,7 +334,23 @@ RIG_ENFORCED_PIN_FIELDS: Tuple[str, ...] = (
 #: The labelled ``patchHash`` rule the coordinator lane signs (Q-10, still open). Duplicated here
 #: as a LITERAL rather than imported from ``e2e`` on purpose: a validator must not depend on the
 #: proof harness (see :data:`RigReceiptHasher`). The two are asserted equal by the rig scenario.
-RIG_PATCH_HASH_LABEL = b"coretex-memory-transition-hash-v1"
+#:
+#: MIGRATION NOTE (transition-descriptor v2). This used to be
+#: ``b"coretex-memory-transition-hash-v1"`` — the V5 MEMORY lane's domain, which
+#: :mod:`.rig_events` independently flags as wrong for this lane ("the staged check does not
+#: merely differ in style: it refuses every real advance"). It is now the LIVE v2 label. Note the
+#: scope limit this envelope inherited from :class:`dispatch.RigStateAdvanced` (the STAGED,
+#: never-deployed rig-registry design this function's ``event`` parameter is typed against, per
+#: :mod:`.rig_events`'s module docstring): that event carries no ``compactPatchBytes`` at all, so
+#: this function can apply the v2 HASH LABEL to whatever bytes it is given, but it cannot decode or
+#: enforce the 105-byte descriptor layout the way :mod:`.pipeline`'s join does against the real
+#: deployed :class:`rig_events.StateAdvanced`. Unifying the two event shapes is a bigger change
+#: than this migration and is out of scope here.
+RIG_PATCH_HASH_LABEL = b"coretex-transition-descriptor-v2"
+#: The label this constant WAS (kept nameable, never accepted).
+RIG_PATCH_HASH_LABEL_SUPERSEDED = b"coretex-memory-transition-hash-v1"
+#: This lane's own retired 4-word compact-patch label (kept nameable, never accepted).
+RIG_PATCH_HASH_LABEL_RETIRED = b"coretex-patch-hash-v1"
 
 
 @dataclass(frozen=True)
@@ -378,12 +400,22 @@ class RigCanonicalChainSource:
 def _keccak_patch(transition_bytes: bytes) -> str:
     """``keccak256(utf8(LABEL) ++ transitionBytes)`` — the LABELLED rule, never plain keccak.
 
-    The two candidate readings of Q-10 differ for every input, so substituting one for the other is
-    never benign; this is the reading the coordinator lane signs and the fixture records.
+    The candidate readings of Q-10 differ for every input, so substituting one for another is
+    never benign; this is the v2 reading the coordinator lane signs.
     """
     # Imported lazily so `chain_first` keeps its stdlib-plus-v5-law dependency profile.
     from .keccak256 import keccak256_hex                                    # noqa: WPS433
     return keccak256_hex(RIG_PATCH_HASH_LABEL + bytes(transition_bytes))
+
+
+def _keccak_patch_dead_label_hint(transition_bytes: bytes, expected: str) -> str:
+    """Name the dead label a mismatched patch hash DOES correspond to, if it is one — the
+    "superseded label" idiom :mod:`.rig_events` uses, mirrored here for the same reason."""
+    from .keccak256 import keccak256_hex                                    # noqa: WPS433
+    for label in (RIG_PATCH_HASH_LABEL_RETIRED, RIG_PATCH_HASH_LABEL_SUPERSEDED):
+        if keccak256_hex(label + bytes(transition_bytes)) == expected:
+            return f" (it DOES match the DEAD label {label.decode('utf-8')!r})"
+    return ""
 
 
 def validate_rig_chain_first(
@@ -566,8 +598,9 @@ def validate_rig_chain_first(
             raise ChainFirstError(
                 "RIG_PATCH_HASH_MISMATCH",
                 f"keccak256(LABEL ++ transitionBytes) over the fetched artifact's transition is "
-                f"{computed_patch}, the confirmed advance asserts {event.patch_hash}. THIS is the "
-                "check that makes fetching the edit by hash safe; without it the rig lane's "
+                f"{computed_patch}, the confirmed advance asserts {event.patch_hash}"
+                f"{_keccak_patch_dead_label_hint(transition_bytes, event.patch_hash)}. THIS is "
+                "the check that makes fetching the edit by hash safe; without it the rig lane's "
                 "log carries no edit at all")
         if artifact.get("counter_resource_law_root") != snapshot.counter_resource_law_root:
             raise ChainFirstError(

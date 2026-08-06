@@ -25,9 +25,11 @@ from coretex_validator import export as ex
 from coretex_validator import frontier as fr
 from coretex_validator import historical_law as hl
 from coretex_validator import join as jn
+from coretex_validator import publication as pub
 from coretex_validator import receipt_chain as rc
 from coretex_validator import release as rel
 from coretex_validator import rig_events as rig
+from coretex_validator import rig_receipt_binding as binding
 from coretex_validator import snapshot as snap
 from coretex_validator.keccak256 import keccak256, keccak256_hex
 
@@ -131,14 +133,22 @@ class TestEventSurface:
         assert rig.route_rig_log(log, DEPLOYMENT).event is None
 
     def test_the_patch_hash_label_is_the_verifier_s_not_the_memory_lane_s(self):
-        # The staged chain_first uses the SUPERSEDED memory-lane label. The two digests differ
-        # for every input, so the staged check refuses every real advance rather than differing
-        # in style.
+        # coretex.transition-descriptor/v2: the LIVE label is "coretex-transition-descriptor-v2".
+        # Both the RETIRED 4-word-patch label (this lane's own history) and the SUPERSEDED
+        # memory-lane label give a DIFFERENT digest for every input, so a signer still on either
+        # one is refused, never silently accepted.
         patch = b'{"x":1}'
-        assert rig.PATCH_HASH_LABEL == b"coretex-patch-hash-v1"
-        assert rig.patch_hash(patch) != keccak256_hex(rig.SUPERSEDED_PATCH_HASH_LABEL + patch)
+        assert rig.TRANSITION_DESCRIPTOR_HASH_LABEL == b"coretex-transition-descriptor-v2"
+        assert rig.patch_hash(patch) != keccak256_hex(
+            rig.TRANSITION_DESCRIPTOR_SUPERSEDED_MEMORY_LABEL + patch)
+        assert rig.patch_hash(patch) != keccak256_hex(
+            rig.TRANSITION_DESCRIPTOR_RETIRED_LABEL + patch)
+        # chain_first's own Q-10 label now matches the live v2 rule (it used to be pinned to the
+        # SUPERSEDED memory-lane label, which the finding above documents as always wrong).
         from coretex_validator import chain_first as cf
-        assert cf.RIG_PATCH_HASH_LABEL == rig.SUPERSEDED_PATCH_HASH_LABEL
+        assert cf.RIG_PATCH_HASH_LABEL == rig.TRANSITION_DESCRIPTOR_HASH_LABEL
+        assert cf.RIG_PATCH_HASH_LABEL_SUPERSEDED == rig.TRANSITION_DESCRIPTOR_SUPERSEDED_MEMORY_LABEL
+        assert cf.RIG_PATCH_HASH_LABEL_RETIRED == rig.TRANSITION_DESCRIPTOR_RETIRED_LABEL
 
     def test_decoding_recovers_the_verbatim_patch(self):
         decoded = rig.decode_state_advanced(advance_log(patch=b'{"hello":"world"}'))
@@ -645,223 +655,6 @@ class TestSignatureArtifactHasTwoFields:
         assert "superseded domain tag" in result.reason
 
 
-class TestResolverSchemaReproduction:
-    """The published schema is the RESOLVER's per-epoch shape, and this package reproduces it."""
-
-    def test_the_published_check_vocabulary_is_the_normative_step_numbers(self):
-        # These strings go INSIDE the canonical bytes, so a lane that spelled them its own way
-        # would produce a payload that could not reproduce however correct its logic was.
-        assert jn.JOIN_STEPS == (
-            "step1_advance_decoded", "step2_credit_event_joined", "step3_calldata_decoded",
-            "step4_receipt_hash_bound", "step5_artifact_hash_bound_via_digest",
-            "step6_calldata_bound_to_logs", "step7_coordinator_signature_verified",
-            "step8_patch_hash_verified")
-
-    def test_the_schema_has_exactly_twenty_three_top_level_keys(self):
-        from coretex_validator import resolver_snapshot as rsn
-
-        assert len(rsn.TOP_LEVEL_KEYS) == 23
-        with pytest.raises(rsn.ReproductionError) as excinfo:
-            rsn.check_shape({"schema": rsn.SCHEMA, "epoch": 1})
-        assert excinfo.value.code == "SCHEMA_SHAPE_MISMATCH"
-
-    def test_a_canonical_classification_is_refused_by_the_shape_check(self):
-        from coretex_validator import resolver_snapshot as rsn
-
-        payload = {k: None for k in rsn.TOP_LEVEL_KEYS}
-        payload["schema"] = rsn.SCHEMA
-        payload["classification"] = "MAINNET_CANONICAL"
-        with pytest.raises(rsn.ReproductionError) as excinfo:
-            rsn.check_shape(payload)
-        assert excinfo.value.code == "CLASSIFICATION_REFUSED"
-
-    def test_schema_constant_keys_are_named_so_they_cannot_pose_as_evidence(self):
-        from coretex_validator import resolver_snapshot as rsn
-
-        # Reproducing spec text proves the transcription, not the chain. The comparison report
-        # keeps the two classes apart for exactly that reason.
-        assert "derivation" in rsn.SCHEMA_CONSTANT_KEYS
-        assert "canonicalization" in rsn.SCHEMA_CONSTANT_KEYS
-        assert "transitions" in rsn.CHAIN_DERIVED_KEYS
-        assert "state" in rsn.CHAIN_DERIVED_KEYS
-        assert not set(rsn.SCHEMA_CONSTANT_KEYS) & set(rsn.CHAIN_DERIVED_KEYS)
-
-    def test_wide_receipt_members_render_as_strings_and_narrow_ones_as_numbers(self):
-        from coretex_validator import resolver_snapshot as rsn
-
-        # The mixture inside ONE object is what a reader has to get right: rigId is a string,
-        # epochId beside it is a number.
-        assert "rigId" in rsn._WIDE_RECEIPT_MEMBERS            # noqa: SLF001
-        assert "worldSeed" in rsn._WIDE_RECEIPT_MEMBERS        # noqa: SLF001
-        assert "difficultyCountSnapshot" in rsn._WIDE_RECEIPT_MEMBERS   # noqa: SLF001
-        assert "epochId" in rsn._NARROW_RECEIPT_MEMBERS        # noqa: SLF001
-        assert not set(rsn._WIDE_RECEIPT_MEMBERS) & set(rsn._NARROW_RECEIPT_MEMBERS)  # noqa: SLF001
-
-    def test_finalized_at_is_wide_because_it_is_a_uint256_timestamp(self):
-        from coretex_validator import resolver_snapshot as rsn
-
-        state = rsn.build_state(
-            epoch=10,
-            context={"active_frontier_root": "0x" + "aa" * 32,
-                     "baseline_manifest_hash": "0x" + "bb" * 32, "configured": True,
-                     "core_version_hash": "0x" + "cc" * 32, "corpus_root": "0x" + "dd" * 32,
-                     "hidden_seed_commit": "0x" + "ee" * 32,
-                     "parent_state_root": "0x" + "ff" * 32},
-            header={"final_state_root": "0x" + "11" * 32},
-            live_state_root="0x" + "11" * 32, transition_count=3, sealed=True, served=True,
-            finalized_at=1785992019)
-        # A decimal STRING, sitting beside transition_count which is a number. The easiest field
-        # in the whole payload to get wrong.
-        assert state["finalized_at"] == "1785992019"
-        assert state["transition_count"] == 3
-
-    def test_the_observation_omits_everything_that_depends_on_WHEN_it_ran(self):
-        from coretex_validator import resolver_snapshot as rsn
-
-        chain = rsn.build_chain(chain_id=31337, block_number=36, block_hash="0x" + "ab" * 32,
-                                parent_hash="0x" + "cd" * 32, block_timestamp=1785992019,
-                                required_confirmations=2)
-        observation = chain["observation"]
-        # Including any of these would make two honest resolutions of one block differ.
-        for absent in ("head_number", "confirmations", "finalized_block_number"):
-            assert absent not in observation
-        assert observation["finality_policy"]["required_confirmations"] == 2
-
-
-class TestCompactPatchIsBinaryNotJson:
-    """The full validation set from RigCoreTexVerifier._validateCompactPatch.
-
-    Every negative control asserts its SPECIFIC refusal code. A control that only checked "it
-    threw" would pass just as happily when the decoder rejects for the wrong reason — and a
-    decoder that refused everything would satisfy the whole suite.
-    """
-
-    def _patch(self, *, patch_type=0xFF, word_count=1, score_delta=65500,
-               parent="21" * 32, words=((2, "b3" * 32),), trailing=b""):
-        raw = bytes([patch_type, word_count]) + score_delta.to_bytes(8, "big") \
-            + bytes.fromhex(parent)
-        for index, value in words:
-            raw += (bytes([index]) if index < 128
-                    else bytes([0x80 | (index & 0x7F), index >> 7]))
-            raw += bytes.fromhex(value)
-        return raw + trailing
-
-    def _refusal(self, raw, **kwargs):
-        with pytest.raises(rig.CompactPatchError) as excinfo:
-            rig.decode_compact_patch(raw, **kwargs)
-        return excinfo.value.code
-
-    # ── POSITIVE FIXTURE: the real 75-byte epoch-180 patch ────────────────────────────────
-    def test_the_real_epoch_180_patches_decode_to_documented_ground_truth(self):
-        import pathlib
-
-        evidence = pathlib.Path("/home/ubuntu/botcoin-coordinator-v5-p6/v5/resolver/evidence"
-                                "/mainnet-rehearsal-e180-20260804/snapshot.json")
-        if not evidence.is_file():
-            pytest.skip("the published epoch-180 snapshot is not on this host")
-        snapshot = json.loads(evidence.read_text(encoding="utf-8"))
-        expected = {0: (65500, "2170c3de"), 1: (90600, "17e41e20")}
-        for entry in snapshot["transitions"]["lineage"]:
-            event = entry["registry_event"]
-            raw = bytes.fromhex(event["compact_patch_bytes"][2:])
-            patch = rig.decode_compact_patch(
-                raw, parent_state_root=event["parent_state_root"],
-                expected_patch_hash=event["patch_hash"],
-                score_delta_ppm=(int(entry["receipt"]["scoreAfterPpm"])
-                                 - int(entry["receipt"]["scoreBeforePpm"])))
-            delta, parent_prefix = expected[entry["transition_index"]]
-            assert len(raw) == 75
-            assert patch.patch_type == 0xFF and patch.word_count == 1
-            assert patch.score_delta_ppm == delta
-            assert patch.parent_state_root.startswith(parent_prefix)
-            # Word 2 is the candidate release root — the signed artifactHash.
-            assert patch.words[0] == (2, entry["receipt"]["artifactHash"][2:])
-
-    # ── NEGATIVE CONTROLS: each asserts WHICH refusal fired ───────────────────────────────
-    def test_malformed_length(self):
-        assert self._refusal(b"\xff\x01" + b"\x00" * 10) == rig.PATCH_LENGTH_INVALID
-        assert self._refusal(self._patch(words=((2, "aa" * 32),) * 4) + b"\x00" * 200) \
-            == rig.PATCH_LENGTH_INVALID
-
-    def test_truncated_leb128(self):
-        # A continuation bit with nothing after it.
-        raw = bytes([0xFF, 1]) + (65500).to_bytes(8, "big") + bytes.fromhex("21" * 32) + b"\x82"
-        assert self._refusal(raw) == rig.PATCH_INDEX_TRUNCATED
-
-    def test_overlong_leb128(self):
-        raw = (bytes([0xFF, 1]) + (65500).to_bytes(8, "big") + bytes.fromhex("21" * 32)
-               + b"\x82\x81\x01" + bytes.fromhex("aa" * 32))
-        assert self._refusal(raw) == rig.PATCH_INDEX_OVERLONG
-
-    def test_redundant_leb128_encoding(self):
-        # 0x82 0x00 and 0x02 both mean 2: one index with two spellings is one patch with two
-        # hashes, which breaks the patchHash binding outright.
-        raw = (bytes([0xFF, 1]) + (65500).to_bytes(8, "big") + bytes.fromhex("21" * 32)
-               + b"\x82\x00" + bytes.fromhex("aa" * 32))
-        assert self._refusal(raw) == rig.PATCH_INDEX_REDUNDANT
-
-    def test_duplicate_index(self):
-        assert self._refusal(
-            self._patch(word_count=2, words=((2, "aa" * 32), (2, "bb" * 32)))) \
-            == rig.PATCH_INDEX_DUPLICATE
-
-    def test_reserved_index(self):
-        assert self._refusal(self._patch(words=((999, "aa" * 32),))) == rig.PATCH_INDEX_RESERVED
-
-    def test_index_outside_the_patch_type_window(self):
-        assert self._refusal(self._patch(patch_type=0x06, words=((400, "aa" * 32),))) \
-            == rig.PATCH_INDEX_OUT_OF_WINDOW
-
-    def test_wrong_parent(self):
-        assert self._refusal(self._patch(parent="21" * 32), parent_state_root="99" * 32) \
-            == rig.PATCH_PARENT_MISMATCH
-
-    def test_wrong_score_delta(self):
-        assert self._refusal(self._patch(score_delta=65500), score_delta_ppm=90600) \
-            == rig.PATCH_SCORE_DELTA_MISMATCH
-
-    def test_trailing_bytes(self):
-        assert self._refusal(self._patch(trailing=b"\x00")) == rig.PATCH_TRAILING_BYTES
-
-    def test_json_substitution(self):
-        # THE bug K1 was: canonical JSON handed to a decoder expecting the contract's struct.
-        # It must be refused HERE with a structural code, not accepted and not crash elsewhere.
-        payload = json.dumps({"target_profile": "doc.tool.v1",
-                              "expected_prior_release_root": "aa" * 32,
-                              "new_release_root": "bb" * 32,
-                              "resulting_composition_root": "cc" * 32},
-                             sort_keys=True, separators=(",", ":")).encode("utf-8")
-        assert self._refusal(payload) in {rig.PATCH_TYPE_UNKNOWN, rig.PATCH_LENGTH_INVALID,
-                                          rig.PATCH_WORD_COUNT_INVALID}
-        # ...and symmetrically, the real binary patch is not UTF-8, so the JSON parser can never
-        # have been right for it. This is the whole of K1 in two assertions.
-        from coretex_validator import frontier as frontier_mod
-
-        with pytest.raises(Exception):
-            frontier_mod.parse_transition_bytes(self._patch())
-
-    def test_unknown_patch_type_and_word_count_bounds(self):
-        assert self._refusal(self._patch(patch_type=0x08)) == rig.PATCH_TYPE_UNKNOWN
-        assert self._refusal(self._patch(word_count=0)) == rig.PATCH_WORD_COUNT_INVALID
-        assert self._refusal(self._patch(word_count=5)) == rig.PATCH_WORD_COUNT_INVALID
-
-    def test_the_keccak_patch_hash_rule_is_part_of_the_validation_set(self):
-        raw = self._patch()
-        # Correct hash passes...
-        rig.decode_compact_patch(raw, expected_patch_hash=rig.patch_hash(raw))
-        # ...a wrong one is refused BEFORE any field complaint, because a patch whose bytes hash
-        # elsewhere is a different patch, not a malformed one.
-        assert self._refusal(raw, expected_patch_hash="00" * 32) == rig.PATCH_HASH_MISMATCH
-
-    def test_a_superseded_label_signature_is_diagnosed_by_name(self):
-        raw = self._patch()
-        stale = rig.keccak256_hex(rig.SUPERSEDED_PATCH_HASH_LABEL + raw)
-        with pytest.raises(rig.CompactPatchError) as excinfo:
-            rig.decode_compact_patch(raw, expected_patch_hash=stale)
-        assert excinfo.value.code == rig.PATCH_HASH_MISMATCH
-        assert "superseded" in excinfo.value.message
-
-
 class TestSandboxImportIsolation:
     """The two path classes, separated STRUCTURALLY — an allow-list, not a scrub.
 
@@ -1024,7 +817,11 @@ class TestResolverSchemaReproduction:
 
 
 class TestCompactPatchIsBinaryNotJson:
-    """The full validation set from RigCoreTexVerifier._validateCompactPatch.
+    """HISTORY. The full validation set from the RETIRED RigCoreTexVerifier._validateCompactPatch
+    (coretex-patch-hash-v1 era), kept because epoch-180-and-earlier advances are legacy-era
+    history that must stay decodable (transition-descriptor/v2 spec §9.5) — never re-migrated,
+    because ``decode_compact_patch`` is explicitly preserved as-is. See
+    ``TestTransitionDescriptorV2`` below for the LIVE v2 model's equivalent adversarial breadth.
 
     Every negative control asserts its SPECIFIC refusal code. A control that only checked "it
     threw" would pass just as happily when the decoder rejects for the wrong reason — and a
@@ -1142,19 +939,365 @@ class TestCompactPatchIsBinaryNotJson:
 
     def test_the_keccak_patch_hash_rule_is_part_of_the_validation_set(self):
         raw = self._patch()
-        # Correct hash passes...
-        rig.decode_compact_patch(raw, expected_patch_hash=rig.patch_hash(raw))
+        # Correct hash (the RETIRED label — this decoder is history) passes...
+        retired_hash = rig.keccak256_hex(rig.TRANSITION_DESCRIPTOR_RETIRED_LABEL + raw)
+        rig.decode_compact_patch(raw, expected_patch_hash=retired_hash)
         # ...a wrong one is refused BEFORE any field complaint, because a patch whose bytes hash
         # elsewhere is a different patch, not a malformed one.
         assert self._refusal(raw, expected_patch_hash="00" * 32) == rig.PATCH_HASH_MISMATCH
 
     def test_a_superseded_label_signature_is_diagnosed_by_name(self):
         raw = self._patch()
-        stale = rig.keccak256_hex(rig.SUPERSEDED_PATCH_HASH_LABEL + raw)
+        stale = rig.keccak256_hex(rig.TRANSITION_DESCRIPTOR_SUPERSEDED_MEMORY_LABEL + raw)
         with pytest.raises(rig.CompactPatchError) as excinfo:
             rig.decode_compact_patch(raw, expected_patch_hash=stale)
         assert excinfo.value.code == rig.PATCH_HASH_MISMATCH
         assert "superseded" in excinfo.value.message
+
+    def test_the_live_v2_label_is_also_diagnosed_as_a_dead_label_here(self):
+        # The RETIRED decoder's own hint only names the TWO labels it always checked
+        # (coretex-patch-hash-v1's own family and the memory lane's). A receipt signed under the
+        # LIVE v2 label and mistakenly fed to this HISTORY decoder is still just "wrong hash" —
+        # recorded here so nobody mistakes silence for a promise the hint covers every label.
+        raw = self._patch()
+        live = rig.transition_descriptor_hash(raw)
+        with pytest.raises(rig.CompactPatchError) as excinfo:
+            rig.decode_compact_patch(raw, expected_patch_hash=live)
+        assert excinfo.value.code == rig.PATCH_HASH_MISMATCH
+
+
+class TestTransitionDescriptorV2:
+    """coretex.transition-descriptor/v2 — the descriptor's own adversarial suite.
+
+    Mirrors ``TestCompactPatchIsBinaryNotJson`` in shape (one method per refusal, each asserting
+    the SPECIFIC code) but tests the LIVE model: a fixed 105-byte commitment plus a separately
+    fetched, rehashed and replayed canonical patch artifact. See
+    ``docs/CORETEX-TRANSITION-DESCRIPTOR-V2.md`` (botcoin-mining-rigs @
+    ba4d5acfa7aa3042f39eb6e8e4d8e4007400090c) for the normative spec this decodes against.
+    """
+
+    PARENT = "aa" * 32
+    NEW = "bb" * 32
+    ARTIFACT_HASH = "cc" * 32
+    DELTA = 5000
+
+    def _raw(self, **overrides):
+        kwargs = dict(patch_artifact_hash=self.ARTIFACT_HASH, parent_state_root=self.PARENT,
+                     new_state_root=self.NEW, score_delta_ppm=self.DELTA)
+        kwargs.update(overrides)
+        return rig.encode_transition_descriptor(**kwargs)
+
+    # ── THE FORMAT ──────────────────────────────────────────────────────────────────────────
+    def test_encode_decode_round_trips_at_exactly_105_bytes(self):
+        raw = self._raw()
+        assert len(raw) == rig.TRANSITION_DESCRIPTOR_BYTES == 105
+        assert raw[0] == rig.TRANSITION_DESCRIPTOR_VERSION == 0x20
+        decoded = rig.decode_transition_descriptor(raw)
+        assert decoded.version == 0x20
+        assert decoded.patch_artifact_hash == self.ARTIFACT_HASH
+        assert decoded.parent_state_root == self.PARENT
+        assert decoded.new_state_root == self.NEW
+        assert decoded.score_delta_ppm == self.DELTA
+        # Cross-checks against the "signed receipt" all pass together.
+        digest = rig.transition_descriptor_hash(raw)
+        again = rig.decode_transition_descriptor(
+            raw, parent_state_root=self.PARENT, new_state_root=self.NEW,
+            score_delta_ppm=self.DELTA, expected_patch_hash=digest,
+            transition_format_version=0x20)
+        assert again == decoded
+
+    def test_length_is_the_format(self):
+        raw = self._raw()
+        with pytest.raises(rig.TransitionDescriptorError) as excinfo:
+            rig.decode_transition_descriptor(raw + b"\x00")
+        assert excinfo.value.code == rig.DESCRIPTOR_LENGTH_INVALID
+        with pytest.raises(rig.TransitionDescriptorError) as excinfo:
+            rig.decode_transition_descriptor(raw[:-1])
+        assert excinfo.value.code == rig.DESCRIPTOR_LENGTH_INVALID
+        with pytest.raises(rig.TransitionDescriptorError) as excinfo:
+            rig.decode_transition_descriptor(b"")
+        assert excinfo.value.code == rig.DESCRIPTOR_LENGTH_INVALID
+
+    # ── THE HASH RULE — checked SECOND (length is checked first, unlike the retired decoder) ──
+    def test_hash_mismatch_is_refused_before_any_field_is_read(self):
+        raw = self._raw()
+        with pytest.raises(rig.TransitionDescriptorError) as excinfo:
+            rig.decode_transition_descriptor(raw, expected_patch_hash="00" * 32)
+        assert excinfo.value.code == rig.DESCRIPTOR_HASH_MISMATCH
+
+    def test_legacy_first_bytes_are_refused_even_at_the_v2_length(self):
+        # A LEGACY compact patch's first byte (patchType) is always in {0x01..0x07, 0xff}. All are
+        # PERMANENTLY BURNED version values, so a coincidentally-105-byte legacy-shaped blob is
+        # refused on the version byte, not silently misread as a v2 descriptor of some other kind.
+        raw = self._raw()
+        for burned_first_byte in (0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0xFF):
+            legacy_shaped = bytes([burned_first_byte]) + raw[1:]
+            with pytest.raises(rig.TransitionDescriptorError) as excinfo:
+                rig.decode_transition_descriptor(legacy_shaped)
+            assert excinfo.value.code == rig.DESCRIPTOR_VERSION_UNSUPPORTED
+
+    def test_every_burned_and_unassigned_version_byte_is_refused(self):
+        raw = self._raw()
+        for version in rig.TRANSITION_DESCRIPTOR_BURNED_VERSIONS:
+            mutated = bytes([version]) + raw[1:]
+            with pytest.raises(rig.TransitionDescriptorError) as excinfo:
+                rig.decode_transition_descriptor(mutated)
+            assert excinfo.value.code == rig.DESCRIPTOR_VERSION_UNSUPPORTED
+        for version in (0x08, 0x1f, 0x15):
+            assert version in rig.TRANSITION_DESCRIPTOR_UNASSIGNED_VERSIONS
+            mutated = bytes([version]) + raw[1:]
+            with pytest.raises(rig.TransitionDescriptorError) as excinfo:
+                rig.decode_transition_descriptor(mutated)
+            assert excinfo.value.code == rig.DESCRIPTOR_VERSION_UNSUPPORTED
+        # A hypothetical successor version (reserved, not burned/unassigned) is ALSO refused: one
+        # deployed verifier accepts exactly one version, compared for equality, never a range.
+        mutated = bytes([0x21]) + raw[1:]
+        with pytest.raises(rig.TransitionDescriptorError) as excinfo:
+            rig.decode_transition_descriptor(mutated)
+        assert excinfo.value.code == rig.DESCRIPTOR_VERSION_UNSUPPORTED
+
+    def test_zero_artifact_hash_is_refused_both_at_encode_and_decode(self):
+        with pytest.raises(rig.TransitionDescriptorError) as excinfo:
+            self._raw(patch_artifact_hash="0" * 64)
+        assert excinfo.value.code == rig.DESCRIPTOR_ARTIFACT_HASH_ZERO
+        raw = self._raw()
+        zeroed = raw[:1] + bytes(32) + raw[33:]
+        with pytest.raises(rig.TransitionDescriptorError) as excinfo:
+            rig.decode_transition_descriptor(zeroed)
+        assert excinfo.value.code == rig.DESCRIPTOR_ARTIFACT_HASH_ZERO
+
+    def test_parent_root_mismatch(self):
+        raw = self._raw()
+        with pytest.raises(rig.TransitionDescriptorError) as excinfo:
+            rig.decode_transition_descriptor(raw, parent_state_root="99" * 32)
+        assert excinfo.value.code == rig.DESCRIPTOR_PARENT_MISMATCH
+
+    def test_new_root_mismatch_did_not_exist_under_the_retired_model(self):
+        # The retired compact patch carried no resulting root at all, so this check is NEW.
+        raw = self._raw()
+        with pytest.raises(rig.TransitionDescriptorError) as excinfo:
+            rig.decode_transition_descriptor(raw, new_state_root="99" * 32)
+        assert excinfo.value.code == rig.DESCRIPTOR_NEW_ROOT_MISMATCH
+
+    def test_score_delta_mismatch(self):
+        raw = self._raw()
+        with pytest.raises(rig.TransitionDescriptorError) as excinfo:
+            rig.decode_transition_descriptor(raw, score_delta_ppm=self.DELTA + 1)
+        assert excinfo.value.code == rig.DESCRIPTOR_SCORE_DELTA_MISMATCH
+
+    def test_score_delta_bounds_at_encode_time(self):
+        with pytest.raises(rig.TransitionDescriptorError) as excinfo:
+            self._raw(score_delta_ppm=0)
+        assert excinfo.value.code == rig.DESCRIPTOR_SCORE_DELTA_MISMATCH
+        with pytest.raises(rig.TransitionDescriptorError) as excinfo:
+            self._raw(score_delta_ppm=1_000_001)
+        assert excinfo.value.code == rig.DESCRIPTOR_SCORE_DELTA_MISMATCH
+
+    def test_signed_transition_format_version_must_be_the_descriptor_byte_zero_extended(self):
+        raw = self._raw()
+        with pytest.raises(rig.TransitionDescriptorError) as excinfo:
+            rig.decode_transition_descriptor(raw, transition_format_version=1)
+        assert excinfo.value.code == rig.DESCRIPTOR_FORMAT_VERSION_MISMATCH
+        # The zero-extension itself is accepted.
+        rig.decode_transition_descriptor(raw, transition_format_version=0x20)
+
+    # ── SUPERSEDED LABELS — refused, never silently accepted ──────────────────────────────────
+    def test_the_retired_and_superseded_labels_are_both_refused_and_named(self):
+        raw = self._raw()
+        retired = rig.keccak256_hex(rig.TRANSITION_DESCRIPTOR_RETIRED_LABEL + raw)
+        with pytest.raises(rig.TransitionDescriptorError) as excinfo:
+            rig.decode_transition_descriptor(raw, expected_patch_hash=retired)
+        assert excinfo.value.code == rig.DESCRIPTOR_HASH_MISMATCH
+        assert "coretex-patch-hash-v1" in str(excinfo.value)
+
+        superseded = rig.keccak256_hex(rig.TRANSITION_DESCRIPTOR_SUPERSEDED_MEMORY_LABEL + raw)
+        with pytest.raises(rig.TransitionDescriptorError) as excinfo:
+            rig.decode_transition_descriptor(raw, expected_patch_hash=superseded)
+        assert excinfo.value.code == rig.DESCRIPTOR_HASH_MISMATCH
+        assert "coretex-memory-transition-hash-v1" in str(excinfo.value)
+
+        plain = rig.keccak256_hex(raw)
+        with pytest.raises(rig.TransitionDescriptorError) as excinfo:
+            rig.decode_transition_descriptor(raw, expected_patch_hash=plain)
+        assert "PLAIN undomained keccak256" in str(excinfo.value)
+
+    def test_the_three_labels_are_prefix_free_and_three_distinct_lengths(self):
+        live = rig.TRANSITION_DESCRIPTOR_HASH_LABEL
+        retired = rig.TRANSITION_DESCRIPTOR_RETIRED_LABEL
+        superseded = rig.TRANSITION_DESCRIPTOR_SUPERSEDED_MEMORY_LABEL
+        assert {len(live), len(retired), len(superseded)} == {32, 21, 33}
+        for a, b in ((live, retired), (live, superseded), (retired, superseded)):
+            assert not a.startswith(b) and not b.startswith(a)
+
+    # ── OUTCOME-1 (SCREENER) DISCIPLINE — the tightening the retired model did not have ────────
+    def test_screener_pass_must_carry_an_empty_descriptor(self):
+        raw = self._raw()
+        with pytest.raises(rig.TransitionDescriptorError) as excinfo:
+            rig.check_screener_descriptor(raw)
+        assert excinfo.value.code == rig.DESCRIPTOR_UNEXPECTED
+        rig.check_screener_descriptor(b"")   # empty is the only legal shape
+        rig.check_screener_descriptor(None)  # None is treated as empty
+
+    def test_screener_pass_must_sign_zero_scores_and_zero_format_version(self):
+        for kwargs in ({"transition_format_version": 1}, {"score_before_ppm": 1},
+                      {"score_after_ppm": 1}):
+            with pytest.raises(rig.TransitionDescriptorError) as excinfo:
+                rig.check_screener_descriptor(b"", **kwargs)
+            assert excinfo.value.code == rig.DESCRIPTOR_UNEXPECTED
+        rig.check_screener_descriptor(b"", transition_format_version=0, score_before_ppm=0,
+                                      score_after_ppm=0)
+
+
+class TestTransitionArtifactV2:
+    """The canonical patch artifact (spec §5), scoped to the single-transition (T-1/T-2) shape
+    this repo's :mod:`.frontier` already supports. See :mod:`.rig_events`'s section note on why
+    T-3/T-4/T-5 multi-profile breadth is a documented gap rather than implemented here.
+    """
+
+    TRANSITION = fr.make_transition(
+        target_profile="conv.pref.v1", expected_prior_release_root="ab" * 32,
+        new_release_root="cd" * 32, resulting_composition_root="ef" * 32)
+
+    def _artifact(self, **overrides):
+        artifact = {
+            "format": rig.TRANSITION_ARTIFACT_FORMAT,
+            "parent_state_root": "aa" * 32,
+            "new_state_root": "bb" * 32,
+            "score_delta_ppm": 5000,
+            "transition": self.TRANSITION,
+        }
+        artifact.update(overrides)
+        return artifact
+
+    def _descriptor(self, **overrides):
+        artifact_hash = rig.transition_artifact_root(self._artifact())
+        kwargs = dict(patch_artifact_hash=artifact_hash, parent_state_root="aa" * 32,
+                     new_state_root="bb" * 32, score_delta_ppm=5000)
+        kwargs.update(overrides)
+        raw = rig.encode_transition_descriptor(**kwargs)
+        return rig.decode_transition_descriptor(raw)
+
+    def test_a_well_formed_artifact_validates_and_addresses_itself(self):
+        artifact = self._artifact()
+        validated = rig.validate_transition_artifact(artifact)
+        assert validated["parent_state_root"] == "aa" * 32
+        root = rig.transition_artifact_root(artifact)
+        assert len(root) == 64
+        # sha256, not keccak — a different digest for the same bytes.
+        assert root != rig.transition_descriptor_hash(rig.transition_artifact_bytes(artifact))
+
+    def test_unknown_field_is_refused_the_schema_is_closed(self):
+        with pytest.raises(rig.TransitionArtifactError) as excinfo:
+            rig.validate_transition_artifact(self._artifact(extra_field="nope"))
+        assert excinfo.value.code == rig.TRANSITION_ARTIFACT_MALFORMED
+
+    def test_missing_field_is_refused(self):
+        artifact = self._artifact()
+        del artifact["score_delta_ppm"]
+        with pytest.raises(rig.TransitionArtifactError) as excinfo:
+            rig.validate_transition_artifact(artifact)
+        assert excinfo.value.code == rig.TRANSITION_ARTIFACT_MALFORMED
+
+    def test_wrong_format_tag_is_refused(self):
+        with pytest.raises(rig.TransitionArtifactError) as excinfo:
+            rig.validate_transition_artifact(self._artifact(format="coretex.something-else/v1"))
+        assert excinfo.value.code == rig.TRANSITION_ARTIFACT_MALFORMED
+
+    def test_score_delta_out_of_range_is_refused(self):
+        with pytest.raises(rig.TransitionArtifactError) as excinfo:
+            rig.validate_transition_artifact(self._artifact(score_delta_ppm=0))
+        assert excinfo.value.code == rig.TRANSITION_ARTIFACT_MALFORMED
+
+    def test_an_invalid_frontier_transition_is_refused(self):
+        broken = dict(self.TRANSITION)
+        broken["new_release_root"] = broken["expected_prior_release_root"]  # no-op transition
+        with pytest.raises(rig.TransitionArtifactError) as excinfo:
+            rig.validate_transition_artifact(self._artifact(transition=broken))
+        assert excinfo.value.code == rig.TRANSITION_ARTIFACT_MALFORMED
+
+    # ── THE DESCRIPTOR <-> ARTIFACT BINDING ────────────────────────────────────────────────────
+    def test_a_bound_artifact_agrees_with_its_descriptor(self):
+        descriptor = self._descriptor()
+        document = rig.check_transition_artifact_binds_descriptor(
+            self._artifact(), descriptor=descriptor)
+        assert document["new_state_root"] == descriptor.new_state_root
+
+    def test_artifact_parent_mismatch_against_the_descriptor(self):
+        descriptor = self._descriptor()
+        substituted = self._artifact(parent_state_root="99" * 32)
+        with pytest.raises(rig.TransitionArtifactError) as excinfo:
+            rig.check_transition_artifact_binds_descriptor(substituted, descriptor=descriptor)
+        assert excinfo.value.code == rig.TRANSITION_PARENT_MISMATCH
+
+    def test_artifact_new_root_mismatch_against_the_descriptor(self):
+        descriptor = self._descriptor()
+        substituted = self._artifact(new_state_root="99" * 32)
+        with pytest.raises(rig.TransitionArtifactError) as excinfo:
+            rig.check_transition_artifact_binds_descriptor(substituted, descriptor=descriptor)
+        assert excinfo.value.code == rig.TRANSITION_REPLAY_ROOT_MISMATCH
+
+    def test_artifact_score_delta_mismatch_against_the_descriptor(self):
+        descriptor = self._descriptor()
+        substituted = self._artifact(score_delta_ppm=1)
+        with pytest.raises(rig.TransitionArtifactError) as excinfo:
+            rig.check_transition_artifact_binds_descriptor(substituted, descriptor=descriptor)
+        assert excinfo.value.code == rig.TRANSITION_SCORE_DELTA_MISMATCH
+
+    # ── FAIL-CLOSED AVAILABILITY (spec §6.3): the fetch+rehash wiring pipeline.py/chain_first.py
+    #    both use for the patchArtifactHash-addressed object, exactly as for any other artifact ──
+    def test_an_unpublished_patch_artifact_is_a_typed_unavailable_refusal(self):
+        store = pub.InMemoryCAS()
+        descriptor = self._descriptor()
+        with pytest.raises(pub.ObjectNotFoundError):
+            pub.fetch_json(descriptor.patch_artifact_hash, hash_rule=pub.HASH_RULE_FRONTIER_JSON,
+                           store=store)
+
+    def test_a_substituted_patch_artifact_fails_read_back_before_it_reaches_the_binding_check(self):
+        store = pub.InMemoryCAS()
+        descriptor = self._descriptor()
+        # A store that serves DIFFERENT bytes at the addressed root than what hashes to it.
+        store.put(descriptor.patch_artifact_hash, b'{"not":"the artifact"}')
+        with pytest.raises(pub.PublicationError):
+            pub.fetch_json(descriptor.patch_artifact_hash, hash_rule=pub.HASH_RULE_FRONTIER_JSON,
+                           store=store)
+
+    def test_publish_fetch_rehash_bind_is_the_full_happy_path(self):
+        store = pub.InMemoryCAS()
+        artifact = self._artifact()
+        published_root = pub.publish_and_read_back(artifact, hash_rule=pub.HASH_RULE_FRONTIER_JSON,
+                                                    store=store)
+        descriptor = self._descriptor(patch_artifact_hash=published_root)
+        fetched = pub.fetch_json(descriptor.patch_artifact_hash,
+                                 hash_rule=pub.HASH_RULE_FRONTIER_JSON, store=store)
+        document = rig.check_transition_artifact_binds_descriptor(fetched, descriptor=descriptor)
+        assert document["transition"]["new_release_root"] == self.TRANSITION["new_release_root"]
+
+
+class TestRigReceiptTypehashV2:
+    """The typehash pin — member 20 renamed, RE-DERIVED and cross-checked, never transcribed
+    once and trusted."""
+
+    def test_the_typehash_is_rederived_from_the_member_list_and_matches_the_pin(self):
+        derived = keccak256_hex(binding.CORETEX_RECEIPT_TYPEHASH_STRING.encode("utf-8"))
+        assert "0x" + derived == binding.CORETEX_RECEIPT_TYPEHASH
+        assert binding.CORETEX_RECEIPT_TYPEHASH == (
+            "0x70419dc57753cec023e5ca1563c9eb5858d96ddb82144f3c9e6d40e8f334b2cf")
+
+    def test_the_typehash_differs_from_the_retired_one_and_the_retired_one_is_kept_nameable(self):
+        assert binding.CORETEX_RECEIPT_TYPEHASH != binding.RETIRED_CORETEX_RECEIPT_TYPEHASH
+        assert binding.RETIRED_CORETEX_RECEIPT_TYPEHASH == (
+            "0x1cb41d15e03f32744933332c24f5fe35eb76fdc99cbdc02c432aad682c67973b")
+
+    def test_member_20_is_transitionFormatVersion_not_stateWordCount(self):
+        member_20 = binding.CORETEX_RECEIPT_TUPLE_COMPONENTS[20]
+        assert member_20 == {"name": "transitionFormatVersion", "type": "uint16"}
+        assert "stateWordCount" not in binding.CORETEX_RECEIPT_TYPEHASH_STRING
+        assert "transitionFormatVersion" in binding.CORETEX_RECEIPT_TYPEHASH_STRING
+
+    def test_the_selector_is_unchanged_types_not_names_determine_it(self):
+        # Renaming member 20 does not change the tuple's ABI TYPES, so the function selector is
+        # byte-for-byte the same as before the migration.
+        assert binding.SUBMIT_CORETEX_RECEIPT_SELECTOR == "0xcc45427e"
 
 
 class TestNoNullReachesCanonicalBytes:

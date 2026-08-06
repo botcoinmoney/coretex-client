@@ -114,4 +114,4 @@ The E2E test suite generates 1 000 randomised states and verifies that the root 
 ## See also
 
 - `packing_spec.md` — byte layout (pack input to each leaf)
-- `patch_format.md` — patch carries `parentStateRoot` (a root from this spec)
+- `patch_format.md` — the transition descriptor carries `parentStateRoot`/`newStateRoot` (roots from this spec); the retired compact patch carried only `parentStateRoot`
