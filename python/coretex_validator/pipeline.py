@@ -476,15 +476,59 @@ def _admit(selected: jn.JoinedTransition, law: hl.EpochLaw, store: pub.ContentSt
     except rig.TransitionDescriptorError as exc:
         return artifact, {"outcome": "FAIL", "code": exc.code, "reason": str(exc)}
 
+    # ── §6.3 "REFUSE, DO NOT DEGRADE" — three outcomes, not one ───────────────────────────────
+    #
+    # `fetch_json` -> `read_back` recomputes the root and, under HASH_RULE_FRONTIER_JSON,
+    # re-serialises the parsed document and refuses non-canonical bytes. So the failures it can
+    # raise are three MATERIALLY DIFFERENT facts, and a single `except pub.PublicationError`
+    # collapsed all of them into "could not be fetched" -> BACKLOG, i.e. TRY AGAIN LATER:
+    #
+    #   * ObjectNotFoundError   — the publication surface serves nothing at this address.
+    #     Availability genuinely failed and a later retry can genuinely succeed, so BACKLOG is the
+    #     honest outcome and the ONLY one of the three that is.
+    #   * ReadBackMismatchError — the store served bytes that do NOT re-hash to the committed
+    #     address: a SUBSTITUTED artifact. Retrying cannot make that right, and reporting it as an
+    #     outage is the exact opposite of §5.4's "disagreeing with the descriptor's newStateRoot is
+    #     a PUBLICLY PROVABLE refutation".
+    #   * HashRuleError         — the bytes at the address are not a canonical serialisation under
+    #     the repo's one canonical-JSON law. Also permanent, also a refutation.
+    #
+    # A publisher serving the wrong bytes at the committed address MUST NOT be indistinguishable,
+    # to this pipeline, from a publisher that is temporarily down. The subclasses are listed
+    # BEFORE the base class so Python's first-match-wins ordering cannot swallow them, and the
+    # residual `PublicationError` FAILS rather than backlogs: an unclassified publication failure
+    # is not evidence of availability.
     try:
         patch_artifact_raw = pub.fetch_json(descriptor.patch_artifact_hash,
                                             hash_rule=pub.HASH_RULE_FRONTIER_JSON, store=store)
+    except pub.ObjectNotFoundError as exc:
+        return artifact, {
+            "outcome": "BACKLOG", "code": rig.TRANSITION_ARTIFACT_UNAVAILABLE,
+            "reason": (f"the canonical patch artifact {descriptor.patch_artifact_hash} is not "
+                       f"served by this publication surface: {exc}. The descriptor is "
+                       "structurally valid; what is missing is the off-chain edit it addresses, "
+                       "and an artifact that is merely UNAVAILABLE may become available")}
+    except (pub.ReadBackMismatchError, pub.StoreIntegrityError) as exc:
+        return artifact, {
+            "outcome": "FAIL", "code": rig.TRANSITION_ARTIFACT_ADDRESS_MISMATCH,
+            "reason": (f"the store served bytes at {descriptor.patch_artifact_hash} that do not "
+                       f"re-hash to that address: {exc}. This is a SUBSTITUTED artifact, not an "
+                       "outage — it is a publicly provable refutation of the advance and must "
+                       "never sit in a backlog waiting for a retry that cannot help")}
+    except pub.HashRuleError as exc:
+        return artifact, {
+            "outcome": "FAIL", "code": rig.TRANSITION_ARTIFACT_NOT_CANONICAL,
+            "reason": (f"the bytes published at {descriptor.patch_artifact_hash} are not a "
+                       f"canonical serialisation under the repo's canonical-JSON law: {exc}. A "
+                       "content address names ONE byte string; a document that does not "
+                       "re-serialise to it was never addressable and cannot become so")}
     except pub.PublicationError as exc:
         return artifact, {
-            "outcome": "BACKLOG", "code": "missing_artifact",
-            "reason": (f"the canonical patch artifact {descriptor.patch_artifact_hash} could not "
-                       f"be fetched and re-hashed: {exc}. The descriptor is structurally valid; "
-                       "what is missing is the off-chain edit it addresses")}
+            "outcome": "FAIL", "code": rig.TRANSITION_ARTIFACT_MALFORMED,
+            "reason": (f"fetching the canonical patch artifact {descriptor.patch_artifact_hash} "
+                       f"failed in a way this pipeline does not classify: {exc}. Refused rather "
+                       "than backlogged — an unclassified publication failure is not evidence "
+                       "that the artifact is merely unavailable")}
 
     try:
         patch_artifact = rig.check_transition_artifact_binds_descriptor(

@@ -114,12 +114,22 @@ async function main() {
     // the operator must pass an explicit --policy-atoms-mode on|off.
     const policyAtomsMode = derivePolicyAtomsMode(args, opt(args, '--bundle-manifest'));
     const fromFixed = fromBlockArg === 'latest' ? await latestBlock(rpc) : parseBlock(fromBlockArg);
+    // THE ADDRESS FILTER IS MANDATORY. `CoreTexStateAdvanced`'s topic0 is shared with the rig
+    // registry, so an address-less query returns two lanes' confirmed history interleaved with no
+    // way to tell them apart afterwards — and a rig advance reaching the V4 replay used to be
+    // reported as `PATCH_HASH_MISMATCH`, i.e. a valid mine called a forgery. Refusing is the
+    // honest outcome; guessing which lane a log came from is not available.
+    if (addresses.length === 0) {
+      die('watch: --coretex-registry (or --registry) is required. CoreTexStateAdvanced shares its '
+        + 'topic0 with the rig registry, so an unfiltered log query mixes two lanes of confirmed '
+        + 'history and the result cannot be attributed to either');
+    }
 
     for (;;) {
       const latest = toBlockArg ? (toBlockArg === 'latest' ? await latestBlock(rpc) : parseBlock(toBlockArg)) : await latestBlock(rpc);
       if (latest >= fromFixed) {
         // cumulative + idempotent: always replay the full range from the pinned start over the empty/parent state.
-        const logs = await coretexRangeLogs(rpc, addresses.length > 0 ? addresses : undefined, blockHex(fromFixed), blockHex(latest));
+        const logs = await coretexRangeLogs(rpc, addresses, blockHex(fromFixed), blockHex(latest));
         const result = replayCoreTexFromLogs(parentState, logs, { ...(expectedBundleHash ? { expectedBundleHash } : {}), ...expectedPins, policyAtomsMode });
         print({ fromBlock: blockHex(fromFixed), toBlock: blockHex(latest), logCount: logs.length, ...result });
         if (!result.ok) process.exit(1);

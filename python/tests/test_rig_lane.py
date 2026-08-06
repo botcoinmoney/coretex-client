@@ -55,6 +55,41 @@ def _referenced_names(module) -> set:
     return names
 
 
+# --------------------------------------------------------------------------- #
+# Cross-tree file resolution — env override first, then candidate roots
+# --------------------------------------------------------------------------- #
+#: The coordinator checkouts this client is developed against, newest first. A HARDCODED ABSOLUTE
+#: PATH IS NOT A GUARD (review M-10): the one that used to sit in this file pointed at
+#: `/home/ubuntu/botcoin-coordinator-v5-p6`, a tree that does not exist on this host, so the tests
+#: it guarded skipped silently forever and their assertions never ran. Resolution is now: an
+#: explicit env override, then each candidate root in order, and only a genuinely absent file skips.
+_COORDINATOR_ROOTS = (
+    "/home/ubuntu/botcoin-coordinator-v5",
+    "/home/ubuntu/botcoin-coordinator-v5-p6",
+    "/home/ubuntu/botcoin-coordinator",
+)
+
+
+def _resolve_cross_tree(relative, env_var):
+    """The first existing ``<root>/<relative>``, or ``None``. ``env_var`` wins outright."""
+    import pathlib
+
+    override = os.environ.get(env_var)
+    if override:
+        candidate = pathlib.Path(override)
+        return candidate if candidate.is_file() else None
+    for root in _COORDINATOR_ROOTS:
+        candidate = pathlib.Path(root) / relative
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+#: The published epoch-180 resolver snapshot — LEGACY-ERA evidence, never modified by this suite.
+E180_SNAPSHOT_RELATIVE = "v5/resolver/evidence/mainnet-rehearsal-e180-20260804/snapshot.json"
+#: The machine-generated receipt binding this package's hand transcription must agree with.
+GENERATED_BINDING_RELATIVE = "v5/e2e/generated_rig_receipt_binding.py"
+
 REGISTRY = "0x1111111111111111111111111111111111111111"
 MINING = "0x2222222222222222222222222222222222222222"
 VERIFIER = "0x3333333333333333333333333333333333333333"
@@ -843,15 +878,31 @@ class TestCompactPatchIsBinaryNotJson:
             rig.decode_compact_patch(raw, **kwargs)
         return excinfo.value.code
 
-    # ── POSITIVE FIXTURE: the real 75-byte epoch-180 patch ────────────────────────────────
+    # ── POSITIVE FIXTURE: the real 75-byte epoch-180 patch, replayed as LEGACY-ERA history ──
     def test_the_real_epoch_180_patches_decode_to_documented_ground_truth(self):
-        import pathlib
+        """THE LEGACY-ERA REPLAY, restored (review M-10).
 
-        evidence = pathlib.Path("/home/ubuntu/botcoin-coordinator-v5-p6/v5/resolver/evidence"
-                                "/mainnet-rehearsal-e180-20260804/snapshot.json")
-        if not evidence.is_file():
-            pytest.skip("the published epoch-180 snapshot is not on this host")
+        These two advances are read under the RETIRED rules — the ``coretex-patch-hash-v1`` label
+        and the 42..178-byte word-diff layout — because that is what the deployed verifier enforced
+        when they were mined. They are NOT re-read under v2 and MUST NOT be: their first byte,
+        ``0xff``, is a permanently-burned descriptor version. The era is asserted here rather than
+        implied, so "this does not reproduce under today's constants" reads as the era boundary it
+        is instead of as a failed reproduction.
+
+        This test used to resolve its evidence through a hardcoded
+        ``/home/ubuntu/botcoin-coordinator-v5-p6/...`` path that does not exist on this host, so it
+        skipped silently and asserted nothing at all.
+        """
+        evidence = _resolve_cross_tree(E180_SNAPSHOT_RELATIVE, "CORETEX_E180_SNAPSHOT")
+        if evidence is None:
+            pytest.skip("the published epoch-180 snapshot is not on this host "
+                        f"(looked under {_COORDINATOR_ROOTS}; set CORETEX_E180_SNAPSHOT)")
         snapshot = json.loads(evidence.read_text(encoding="utf-8"))
+        # The era, asserted before anything is decoded under it.
+        assert snapshot["derivation"]["receipt_layout"]["typehash"] == (
+            "0x1cb41d15e03f32744933332c24f5fe35eb76fdc99cbdc02c432aad682c67973b")
+        assert snapshot["derivation"]["receipt_layout"]["source_commit"] == (
+            "cdb91d211e4620c6ecfd90b68d827d607033e1f1")
         expected = {0: (65500, "2170c3de"), 1: (90600, "17e41e20")}
         for entry in snapshot["transitions"]["lineage"]:
             event = entry["registry_event"]
@@ -1147,6 +1198,144 @@ class TestTransitionDescriptorV2:
         rig.check_screener_descriptor(b"", transition_format_version=0, score_before_ppm=0,
                                       score_after_ppm=0)
 
+    # ── H-2: the screener patchHash rule, which the FIRST cut of this tightening did not state ──
+    def test_screener_pass_must_sign_a_ZERO_patch_hash(self):
+        """Removing the descriptor BYTES without forbidding the WORD left a live defect.
+
+        ``patchHash`` is a signed member; with an empty descriptor mandatory and a non-zero
+        ``patchHash`` still demanded, the only descriptor-derived value an honest implementer could
+        reach was the CONSTANT ``keccak256(LABEL ‖ "")``. A screener never moves the root, so the
+        first screener burned ``coreTexPatchCredited[epoch][parent][thatConstant]`` and the second
+        reverted ``DuplicateCoreTexPatch`` — killing the screener cap and the whole difficulty
+        ramp, which exist to count many screeners between advances.
+        """
+        constant = rig.transition_descriptor_hash(b"")
+        for spelling in (constant, f"0x{constant}", bytes.fromhex(constant), "11" * 32):
+            with pytest.raises(rig.TransitionDescriptorError) as excinfo:
+                rig.check_screener_descriptor(b"", patch_hash=spelling)
+            assert excinfo.value.code == rig.SCREENER_PATCH_HASH_NONZERO
+        # bytes32(0) — the one word that names no transition — in every spelling.
+        for zero in ("0" * 64, f"0x{'0' * 64}", bytes(32)):
+            rig.check_screener_descriptor(b"", patch_hash=zero)
+
+    def test_the_screener_constant_is_exactly_the_value_the_review_computed(self):
+        """Pinned so the hazard cannot be re-introduced silently: this is THE word every honest
+        v2 implementer would have named, recomputed here with this repo's own keccak."""
+        assert rig.transition_descriptor_hash(b"") == (
+            "d5a9ab001580d40cfe5588c59d218b11f2e31503e1ca95f17d4f096da4b50c63")
+
+    def test_a_state_advance_must_sign_a_NON_ZERO_patch_hash(self):
+        """The outcome-2 half. ``_validateCoreTexNonZero`` deliberately no longer states it
+        outcome-independently — that is what forced a screener to name some word."""
+        for zero in ("0" * 64, f"0x{'0' * 64}", bytes(32)):
+            with pytest.raises(rig.TransitionDescriptorError) as excinfo:
+                rig.check_state_advance_patch_hash(zero)
+            assert excinfo.value.code == rig.STATE_ADVANCE_PATCH_HASH_ZERO
+        rig.check_state_advance_patch_hash(rig.transition_descriptor_hash(b"\x20" * 105))
+
+    def test_both_new_codes_are_in_the_declared_refusal_set(self):
+        """``code`` IS THE CONTRACT: a refusal that is not in the declared set cannot be asserted
+        on by a caller that only knows the vocabulary."""
+        assert rig.SCREENER_PATCH_HASH_NONZERO in rig.DESCRIPTOR_REFUSALS
+        assert rig.STATE_ADVANCE_PATCH_HASH_ZERO in rig.DESCRIPTOR_REFUSALS
+
+
+# --------------------------------------------------------------------------- #
+# L-1 / H-2 — the outcome-1 discipline is WIRED into the production screener path
+# --------------------------------------------------------------------------- #
+def _encode_receipt_calldata(values):
+    """Encode ``submitCoreTexReceipt((...))`` calldata from a member dict.
+
+    Hand-rolled rather than taken from :mod:`.join`: this is the counterpart to
+    :func:`join.decode_submit_calldata`, and an encoder that shared its code would agree with it
+    about a layout they were both wrong about.
+    """
+    comps = binding.CORETEX_RECEIPT_TUPLE_COMPONENTS
+    head, tail = [], b""
+    tail_base = 32 * len(comps)
+    for component in comps:
+        name, kind = component["name"], component["type"]
+        value = values[name]
+        if kind == "bytes":
+            data = bytes(value)
+            head.append((tail_base + len(tail)).to_bytes(32, "big"))
+            tail += len(data).to_bytes(32, "big") + data + bytes((-len(data)) % 32)
+        elif kind == "address":
+            head.append(bytes(12) + bytes.fromhex(str(value).lower().removeprefix("0x")))
+        elif kind == "bytes32":
+            head.append(bytes.fromhex(str(value).lower().removeprefix("0x").rjust(64, "0")))
+        else:
+            head.append(int(value).to_bytes(32, "big"))
+    body = (32).to_bytes(32, "big") + b"".join(head) + tail
+    return "0x" + jn.SUBMIT_SELECTOR[2:] + body.hex()
+
+
+class TestScreenerDisciplineIsWiredIntoTheProductionPath:
+    """L-1: ``check_screener_descriptor`` encoded the v2 tightening and NOTHING but a test called
+    it. The production screener branch checked the outcome, the receipt-hash binding and the
+    signature, and never looked at ``compactPatchBytes``, ``transitionFormatVersion``, the scores
+    or ``patchHash``. There was no acceptance hole — the chain enforces all of it — but a
+    tightening a validator cannot OBSERVE is one it cannot report, and reporting is the job.
+    """
+
+    DOMAIN = bytes.fromhex("cd" * 32)
+    TX = "0x" + "ab" * 32
+    SIGNER = "0x" + "11" * 20
+
+    def _receipt_values(self, **overrides):
+        values = {
+            "rigId": 7, "operator": self.SIGNER, "epochId": 9, "solveIndex": 3,
+            "prevReceiptHash": "00" * 32, "outcome": jn.OUTCOME_SCREENER_PASS,
+            "challengeId": "aa" * 32, "parentStateRoot": "bb" * 32, "newStateRoot": "bb" * 32,
+            "corpusRoot": "cc" * 32, "activeFrontierRoot": "dd" * 32, "coreVersionHash": "ee" * 32,
+            "evalReportHash": "ff" * 32,
+            # THE RULE: outcome 1 credits no transition, so patchHash is bytes32(0).
+            "patchHash": "00" * 32,
+            "artifactHash": "12" * 32, "worldSeed": 1, "rulesVersion": 1,
+            "workPolicyHash": "13" * 32, "workUnitsBps": 20000, "difficultyCountSnapshot": 0,
+            "transitionFormatVersion": 0, "scoreBeforePpm": 0, "scoreAfterPpm": 0,
+            "issuedAt": 1_800_000_000, "expiresAt": 1_800_000_600,
+            "compactPatchBytes": b"", "signature": bytes(65),
+        }
+        values.update(overrides)
+        return values
+
+    def _join(self, **overrides):
+        calldata = _encode_receipt_calldata(self._receipt_values(**overrides))
+        receipt = jn.decode_submit_calldata(calldata)
+        receipt_hash = receipt.receipt_hash(receipt.digest(self.DOMAIN))
+        credit = rig.CoreTexCreditAccepted(
+            epoch=9, rig_id=7, operator=self.SIGNER, solve_index=3, receipt_hash=receipt_hash,
+            challenge_id="aa" * 32, work_units_bps=20000, credits_earned=1,
+            provenance=dp.LogProvenance(transaction_hash=self.TX))
+        decoded = rig.DecodedLogs(
+            advances=[], coretex_credits=[credit], standard_credits=[], finalizations=[],
+            contexts=[], commits=[], reveals=[], policies=[])
+        return jn.join_all(decoded, calldata_for=lambda _tx: calldata,
+                           domain_separator=self.DOMAIN, coordinator_signer=self.SIGNER,
+                           verify_signature=False)
+
+    def test_a_clean_screener_reports_the_discipline_step(self):
+        result = self._join()
+        assert result.unresolved == []
+        assert len(result.screener_passes) == 1
+        assert jn.STEP8_SCREENER_DISCIPLINE in result.screener_passes[0].checks
+
+    @pytest.mark.parametrize("overrides,fragment", [
+        ({"patchHash": "d5a9ab001580d40cfe5588c59d218b11f2e31503e1ca95f17d4f096da4b50c63"},
+         "MUST be bytes32(0)"),
+        ({"compactPatchBytes": b"\x20" * 105}, "EMPTY compactPatchBytes"),
+        ({"transitionFormatVersion": 0x20}, "transitionFormatVersion"),
+        ({"scoreAfterPpm": 5}, "scoreAfterPpm"),
+    ])
+    def test_an_outcome_1_receipt_breaking_the_rule_is_UNRESOLVED_not_accepted(
+            self, overrides, fragment):
+        result = self._join(**overrides)
+        assert result.screener_passes == []
+        assert len(result.unresolved) == 1
+        assert result.unresolved[0]["code"] == "JOIN_SCREENER_DISCIPLINE_VIOLATED"
+        assert fragment in result.unresolved[0]["reason"]
+
 
 class TestTransitionArtifactV2:
     """The canonical patch artifact (spec §5), scoped to the single-transition (T-1/T-2) shape
@@ -1298,6 +1487,168 @@ class TestRigReceiptTypehashV2:
         # Renaming member 20 does not change the tuple's ABI TYPES, so the function selector is
         # byte-for-byte the same as before the migration.
         assert binding.SUBMIT_CORETEX_RECEIPT_SELECTOR == "0xcc45427e"
+def _load_generated_binding():
+    """Import ``generated_rig_receipt_binding.py`` from the coordinator tree, by absolute path."""
+    import importlib.util
+
+    path = _resolve_cross_tree(GENERATED_BINDING_RELATIVE, "CORETEX_GENERATED_RIG_BINDING")
+    if path is None:
+        return None
+    spec = importlib.util.spec_from_file_location("_generated_rig_receipt_binding", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+#: Constants that are legitimately DIFFERENT between the two files, each with its reason. Anything
+#: not listed here and present in both modules must be equal.
+_PARITY_EXEMPT = {
+    # Bundle provenance: the generated file is projected from a real bundle.json; this package has
+    # none vendored. Comparing them would pin the coordinator's regeneration cadence into this
+    # repo's test suite — and the coordinator side is regenerated independently.
+    "BINDING_SOURCE",
+    "BUNDLE_SHA256",
+    # The client deliberately records the SUPERSEDED rehearsal pair (cross-referenced with
+    # rehearsal_deployment.SUPERSEDED_DEPLOYMENTS); the generated file records the LIVE one plus a
+    # "superseded" list. Two different true statements, not a drift.
+    "EIP712_REHEARSAL_OBSERVED",
+    # The client carries extra prose keys (burned/unassigned version renderings, empty-patch note).
+    # The load-bearing keys are compared field by field below.
+    "TRANSITION_DESCRIPTOR_LAYOUT",
+}
+
+
+class TestGeneratedBindingParity:
+    """M-11. A hand-transcribed binding with no comparison test is a second source of truth by
+    definition.
+
+    ``rig_receipt_binding.py`` is a HAND TRANSCRIPTION of a file that is machine-generated on the
+    coordinator side (``v5/e2e/generated_rig_receipt_binding.py``). The review diffed the two
+    programmatically and found five divergences that no test in either repo could see — a string
+    ``"0x20"`` where the generated file has the int ``32`` (so ``descriptor_bytes[0] == …`` is
+    silently False forever), two absent constants the client kept private copies of, two names that
+    do not exist in the generated file at all, and one shared NAME holding two unrelated VALUES.
+
+    So the comparison exists now, and it is exhaustive rather than a list of the five: every shared
+    module-level constant, with an explicit exemption table for the ones that are legitimately
+    different. It SKIPS only when the generated file is genuinely not on this host.
+    """
+
+    @staticmethod
+    def generated():
+        """Not a fixture: a plain call, so the skip reason is attached to the test that needs it
+        and no fixture caching sits between the file on disk and the comparison."""
+        module = _load_generated_binding()
+        if module is None:
+            pytest.skip(
+                "the coordinator's generated_rig_receipt_binding.py is not on this host (looked "
+                f"under {_COORDINATOR_ROOTS} for {GENERATED_BINDING_RELATIVE}; set "
+                "CORETEX_GENERATED_RIG_BINDING to point at it)")
+        return module
+
+    def test_every_shared_module_level_constant_is_identical(self):
+        generated = self.generated()
+        shared = sorted(
+            name for name in vars(generated)
+            if name.isupper() and not name.startswith("_") and name not in _PARITY_EXEMPT
+            and hasattr(binding, name))
+        # A parity test that compared nothing would pass; assert it has real work to do.
+        assert len(shared) >= 15, f"only {len(shared)} shared constants found: {shared}"
+        mismatched = {name: (getattr(binding, name), getattr(generated, name))
+                      for name in shared
+                      if getattr(binding, name) != getattr(generated, name)}
+        assert mismatched == {}, (
+            "the client's hand-transcribed binding has drifted from the generated one: "
+            f"{sorted(mismatched)}")
+
+    def test_the_names_the_generated_file_declares_all_exist_here(self):
+        """A name-keyed importer that works against one file and not the other is the divergence.
+
+        ``COMPACT_PATCH_SUPERSEDED_LABEL`` was exactly that: the generated
+        ``TRANSITION_DESCRIPTOR_SUPERSEDED_MEMORY_LABEL`` under a different name (M-11.4).
+        """
+        generated = self.generated()
+        missing = sorted(
+            name for name in vars(generated)
+            if name.isupper() and not name.startswith("_") and name not in _PARITY_EXEMPT
+            and not hasattr(binding, name))
+        assert missing == [], f"the generated binding declares names this file does not: {missing}"
+
+    def test_the_retired_names_are_gone_and_the_live_ones_say_what_they_are(self):
+        """M-11.3/M-11.4/M-11.5, pinned by name so a revert is loud."""
+        for gone in ("COMPACT_PATCH_HASH_DOMAIN_LABEL", "COMPACT_PATCH_HASH_RULE",
+                     "COMPACT_PATCH_SUPERSEDED_LABEL", "BUNDLE_SHA256"):
+            assert not hasattr(binding, gone), f"{gone} names the wrong thing; it was renamed"
+        assert binding.RETIRED_COMPACT_PATCH_HASH_DOMAIN_LABEL == "coretex-patch-hash-v1"
+        assert "RETIRED" in binding.RETIRED_COMPACT_PATCH_HASH_RULE
+        assert binding.COMPATIBILITY_LOCK_ROOT == (
+            "307df364b165023b20ec1ea9ac699b8b39a5f340040be9a418b1a7d1d50b2c5a")
+        assert binding.EIP712_REHEARSAL_OBSERVED["status"] == "SUPERSEDED"
+        assert binding.EIP712_REHEARSAL_OBSERVED["superseded_on"] == "2026-08-04"
+
+    def test_the_superseded_rehearsal_domain_agrees_with_the_deployment_module(self):
+        """One module saying "observed" and another saying "dead" about one address is how an
+        operator ends up signing against a domain separator no contract has."""
+        from coretex_validator import rehearsal_deployment as rd
+
+        dead = {entry["mining"] for entry in rd.SUPERSEDED_DEPLOYMENTS.values()}
+        assert binding.EIP712_REHEARSAL_OBSERVED["verifying_contract"].lower() in dead
+
+    # ── M-1: the 105 / 0x20 transcriptions, compared against the authority ────────────────────
+    def test_the_descriptor_length_and_version_equal_the_generated_values(self):
+        generated = self.generated()
+        assert binding.TRANSITION_DESCRIPTOR_BYTES == generated.TRANSITION_DESCRIPTOR_BYTES == 105
+        assert binding.TRANSITION_DESCRIPTOR_VERSION == generated.TRANSITION_DESCRIPTOR_VERSION \
+            == 32
+
+    def test_the_layouts_load_bearing_fields_are_identical(self):
+        generated = self.generated()
+        mine, theirs = binding.TRANSITION_DESCRIPTOR_LAYOUT, generated.TRANSITION_DESCRIPTOR_LAYOUT
+        assert mine["total_bytes"] == theirs["total_bytes"] == 105
+        assert mine["version"] == theirs["version"] == 32
+        assert isinstance(mine["version"], int) and not isinstance(mine["version"], bool)
+        pick = lambda fields: [(f["offset"], f["size"], f["field"]) for f in fields]   # noqa: E731
+        assert pick(mine["fields"]) == pick(theirs["fields"])
+        assert sum(f["size"] for f in mine["fields"]) == 105
+
+    def test_the_layout_version_is_comparable_to_a_descriptor_byte(self):
+        """The whole point of M-11.1. Against the string ``"0x20"`` this is False for every input,
+        which is a check that is not there rather than a check that fails."""
+        descriptor = rig.encode_transition_descriptor(
+            patch_artifact_hash="7e" * 32, parent_state_root="aa" * 32,
+            new_state_root="bb" * 32, score_delta_ppm=7)
+        assert descriptor[0] == binding.TRANSITION_DESCRIPTOR_LAYOUT["version"]
+
+    def test_rig_events_uses_the_bindings_constants_rather_than_its_own_copies(self):
+        """M-11.2. The module that DECODES and the module that DESCRIBES must be one value, not
+        two agreeing transcriptions — only the binding module can be compared to the generator."""
+        assert rig.TRANSITION_DESCRIPTOR_BYTES is binding.TRANSITION_DESCRIPTOR_BYTES
+        assert rig.TRANSITION_DESCRIPTOR_VERSION is binding.TRANSITION_DESCRIPTOR_VERSION
+
+    def test_the_typehash_string_and_selectors_match_byte_for_byte(self):
+        generated = self.generated()
+        assert binding.CORETEX_RECEIPT_TYPEHASH_STRING == generated.CORETEX_RECEIPT_TYPEHASH_STRING
+        assert binding.CORETEX_RECEIPT_TYPEHASH == generated.CORETEX_RECEIPT_TYPEHASH
+        assert binding.SUBMIT_CORETEX_RECEIPT_SELECTOR == \
+            generated.SUBMIT_CORETEX_RECEIPT_SELECTOR
+        assert binding.SUBMIT_STATE_ADVANCE_SELECTOR == generated.SUBMIT_STATE_ADVANCE_SELECTOR
+
+    def test_all_27_tuple_components_and_25_signed_members_match(self):
+        generated = self.generated()
+        assert binding.CORETEX_RECEIPT_TUPLE_COMPONENTS == \
+            generated.CORETEX_RECEIPT_TUPLE_COMPONENTS
+        assert len(binding.CORETEX_RECEIPT_TUPLE_COMPONENTS) == 27
+        primary = binding.CORETEX_RECEIPT_PRIMARY_TYPE
+        assert binding.CORETEX_RECEIPT_TYPES[primary] == generated.CORETEX_RECEIPT_TYPES[primary]
+        assert len(binding.CORETEX_RECEIPT_TYPES[primary]) == 25
+
+    def test_the_domain_labels_match(self):
+        generated = self.generated()
+        for name in ("TRANSITION_DESCRIPTOR_HASH_DOMAIN_LABEL", "TRANSITION_DESCRIPTOR_HASH_RULE",
+                     "TRANSITION_DESCRIPTOR_RETIRED_LABEL",
+                     "TRANSITION_DESCRIPTOR_SUPERSEDED_MEMORY_LABEL",
+                     "TRANSITION_DESCRIPTOR_SPEC"):
+            assert getattr(binding, name) == getattr(generated, name), name
 
 
 class TestNoNullReachesCanonicalBytes:
@@ -1421,17 +1772,244 @@ class TestSchemaV1AndV2:
         assert "match by construction" in report["note"]
 
     def test_epoch_180_is_v1_and_stays_v1(self):
-        import pathlib
-
         from coretex_validator import resolver_snapshot as rsn
 
-        evidence = pathlib.Path("/home/ubuntu/botcoin-coordinator-v5-p6/v5/resolver/evidence"
-                                "/mainnet-rehearsal-e180-20260804/snapshot.json")
-        if not evidence.is_file():
-            pytest.skip("the published epoch-180 snapshot is not on this host")
+        evidence = _resolve_cross_tree(E180_SNAPSHOT_RELATIVE, "CORETEX_E180_SNAPSHOT")
+        if evidence is None:
+            pytest.skip("the published epoch-180 snapshot is not on this host "
+                        f"(looked under {_COORDINATOR_ROOTS}; set CORETEX_E180_SNAPSHOT)")
         payload = json.loads(evidence.read_text(encoding="utf-8"))
         # Historical evidence. The reproduction of 7087b32d… remains a true statement about it,
         # and chasing the new schema on this data would be a category error.
         assert payload["schema"] == rsn.SCHEMA_V1
         assert "resolver" in payload and "authority" not in payload
         rsn.check_shape(payload)
+
+    def test_epoch_180_is_LEGACY_ERA_and_the_divergence_from_live_constants_is_PINNED(self):
+        """M-10. The published payload is reproducible ONLY at client ``a4a18bc`` / rig
+        ``cdb91d21``, under the RETIRED word-diff rules.
+
+        ``resolver_snapshot.py`` embeds today's ``resolver_schema_constants`` into the RECONSTRUCTED
+        payload and ``compare()`` is whole-document byte equality, so re-running the reproduction
+        with current code yields a loud ``identical=False`` on ``derivation`` — a FALSE divergence
+        on legacy-era history, which is the same "slander a valid mine" class the descriptor
+        migration exists to remove.
+
+        The constants are deliberately NOT forked. What is pinned instead is the DIVERGENCE: this
+        test asserts the legacy-era values the published bytes actually carry AND that today's
+        constants differ, so a future constants rewrite that quietly makes the two agree (or that
+        edits the published evidence into agreement) is caught as the era confusion it would be.
+        NOTHING HERE WRITES TO THE SNAPSHOT.
+        """
+        from coretex_validator import resolver_schema_constants as rsc
+
+        evidence = _resolve_cross_tree(E180_SNAPSHOT_RELATIVE, "CORETEX_E180_SNAPSHOT")
+        if evidence is None:
+            pytest.skip("the published epoch-180 snapshot is not on this host "
+                        f"(looked under {_COORDINATOR_ROOTS}; set CORETEX_E180_SNAPSHOT)")
+        payload = json.loads(evidence.read_text(encoding="utf-8"))
+        layout = payload["derivation"]["receipt_layout"]
+        recipe = payload["derivation"]["join_recipe"]["fields"]
+
+        # ── the LEGACY era, as the published bytes state it ──
+        assert layout["typehash"] == (
+            "0x1cb41d15e03f32744933332c24f5fe35eb76fdc99cbdc02c432aad682c67973b")
+        assert layout["source_commit"] == "cdb91d211e4620c6ecfd90b68d827d607033e1f1"
+        assert layout["compact_patch_hash_rule"] == (
+            "keccak256(utf8('coretex-patch-hash-v1') || compactPatchBytes)")
+        assert "transition_descriptor_hash_rule" not in layout
+        assert "stateWordCount" in recipe and "transitionFormatVersion" not in recipe
+        # Every real epoch-180 advance signed a word COUNT, not a format version.
+        for step in payload["transitions"]["lineage"]:
+            assert step["receipt"]["stateWordCount"] >= 1
+
+        # ── and today's constants, which are the OTHER era ──
+        live = rsc.DERIVATION["receipt_layout"]
+        assert live["typehash"] == (
+            "0x70419dc57753cec023e5ca1563c9eb5858d96ddb82144f3c9e6d40e8f334b2cf")
+        assert live["source_commit"] == "ba4d5acfa7aa3042f39eb6e8e4d8e4007400090c"
+        assert "transition_descriptor_hash_rule" in live
+        assert "compact_patch_hash_rule" not in live
+        assert "transitionFormatVersion" in rsc.DERIVATION["join_recipe"]["fields"]
+        assert "stateWordCount" not in rsc.DERIVATION["join_recipe"]["fields"]
+
+        # ── therefore: the reproduction is ERA-BOUND, and that is the statement, not a bug ──
+        assert layout["typehash"] != live["typehash"]
+        assert layout["source_commit"] != live["source_commit"]
+
+
+# --------------------------------------------------------------------------- #
+# M-5 — "refuse, do not degrade": a substituted or non-canonical patch artifact
+#       is a FAIL, not a BACKLOG
+# --------------------------------------------------------------------------- #
+class TestPatchArtifactFailuresAreClassified:
+    """One ``except pub.PublicationError`` collapsed three facts into "try again later".
+
+    ``fetch_json`` -> ``read_back`` recomputes the root and re-serialises the parsed document, so
+    it distinguishes "nothing is served here" from "the wrong bytes are served here" from "these
+    bytes were never canonical". Reporting all three as BACKLOG made a publisher serving the wrong
+    bytes at the committed address indistinguishable from a publisher that is temporarily down —
+    the exact opposite of spec §5.4's "disagreeing with the descriptor's ``newStateRoot`` is a
+    PUBLICLY PROVABLE refutation", and it left two DECLARED refusal codes unraised anywhere in the
+    package.
+    """
+
+    PARENT = "a1" * 32
+    NEW = "b2" * 32
+    RELEASE = "cd" * 32
+    DELTA = 4321
+
+    def _patch_artifact(self):
+        return {
+            "format": rig.TRANSITION_ARTIFACT_FORMAT,
+            "parent_state_root": self.PARENT,
+            "new_state_root": self.NEW,
+            "score_delta_ppm": self.DELTA,
+            "transition": fr.make_transition(
+                target_profile="conv.pref.v1", expected_prior_release_root="ab" * 32,
+                new_release_root=self.RELEASE, resulting_composition_root="ef" * 32),
+        }
+
+    def _eval_artifact(self):
+        return {"frontier": {"parent_frontier_root": self.PARENT, "new_frontier_root": self.NEW,
+                             "composition_root": "ef" * 32, "benchmark_law_root": "12" * 32,
+                             "runtime_abi_root": "13" * 32},
+                "counter_resource_law_root": "14" * 32}
+
+    def _selected(self, patch_root):
+        descriptor = rig.encode_transition_descriptor(
+            patch_artifact_hash=patch_root, parent_state_root=self.PARENT,
+            new_state_root=self.NEW, score_delta_ppm=self.DELTA)
+        advance = rig.StateAdvanced(
+            epoch=9, transition_index=0, miner="0x" + "11" * 20,
+            parent_state_root=self.PARENT, new_state_root=self.NEW,
+            patch_hash=rig.transition_descriptor_hash(descriptor),
+            eval_report_hash=fr.sha256_hex(fr.canonical_bytes(self._eval_artifact())),
+            core_version_hash="ee" * 32, corpus_root="cc" * 32, active_frontier_root="dd" * 32,
+            improvement_credits=1, transition_format_version=0x20,
+            compact_patch_bytes=descriptor, provenance=dp.LogProvenance())
+
+        class _Selected:
+            pass
+
+        selected = _Selected()
+        selected.advance = advance
+        selected.receipt = {"scoreBeforePpm": 0, "scoreAfterPpm": self.DELTA,
+                            "artifactHash": self.RELEASE}
+        return selected
+
+    def _run(self, store):
+        from coretex_validator import pipeline
+
+        patch_root = fr.sha256_hex(fr.canonical_bytes(self._patch_artifact()))
+        return pipeline._admit(self._selected(patch_root), None, store,
+                               allow_test_doubles=False)[1], patch_root
+
+    class _Serving(pub.ContentStore):
+        """A store that serves the eval artifact honestly and does something SPECIFIC for the
+        patch artifact's address."""
+
+        def __init__(self, objects, behaviour=None):
+            self.objects = dict(objects)
+            self.behaviour = behaviour
+
+        def put(self, root, data):
+            self.objects[root] = data
+
+        def get(self, root):
+            if root in self.objects:
+                return self.objects[root]
+            if self.behaviour is not None:
+                return self.behaviour(root)
+            raise pub.ObjectNotFoundError(f"no object published at {root}")
+
+        def has(self, root):
+            return root in self.objects
+
+    def _base_objects(self):
+        artifact = self._eval_artifact()
+        return {fr.sha256_hex(fr.canonical_bytes(artifact)): fr.canonical_bytes(artifact)}
+
+    def test_an_unavailable_artifact_is_the_ONLY_backlog(self):
+        report, _ = self._run(self._Serving(self._base_objects()))
+        assert report["outcome"] == "BACKLOG"
+        assert report["code"] == rig.TRANSITION_ARTIFACT_UNAVAILABLE
+        assert "may become available" in report["reason"]
+
+    def test_a_SUBSTITUTED_artifact_is_a_FAIL_with_the_address_mismatch_code(self):
+        other = fr.canonical_bytes({"format": "something.else/v1"})
+
+        def serve_wrong_bytes(_root):
+            return other
+
+        report, _ = self._run(self._Serving(self._base_objects(), serve_wrong_bytes))
+        assert report["outcome"] == "FAIL"
+        assert report["code"] == rig.TRANSITION_ARTIFACT_ADDRESS_MISMATCH
+        assert "SUBSTITUTED" in report["reason"]
+
+    def test_a_NON_CANONICAL_serialisation_is_a_FAIL_with_its_own_code(self):
+        # Decodes fine, re-serialises differently: key order is not canonical.
+        def serve_non_canonical(_root):
+            return b'{"b": 1, "a": 2}'
+
+        report, _ = self._run(self._Serving(self._base_objects(), serve_non_canonical))
+        assert report["outcome"] == "FAIL"
+        assert report["code"] == rig.TRANSITION_ARTIFACT_NOT_CANONICAL
+
+    def test_an_unclassified_publication_failure_REFUSES_rather_than_backlogs(self):
+        def raise_availability(root):
+            raise pub.AvailabilityError(f"availability manifest is unusable for {root}")
+
+        report, _ = self._run(self._Serving(self._base_objects(), raise_availability))
+        assert report["outcome"] == "FAIL"
+        assert report["code"] == rig.TRANSITION_ARTIFACT_MALFORMED
+
+    def test_the_two_declared_codes_are_now_actually_raised_somewhere(self):
+        """They were declared in ``OFFCHAIN_TRANSITION_REFUSALS`` and raised nowhere."""
+        assert rig.TRANSITION_ARTIFACT_ADDRESS_MISMATCH in rig.OFFCHAIN_TRANSITION_REFUSALS
+        assert rig.TRANSITION_ARTIFACT_NOT_CANONICAL in rig.OFFCHAIN_TRANSITION_REFUSALS
+        assert rig.TRANSITION_ARTIFACT_UNAVAILABLE in rig.OFFCHAIN_TRANSITION_REFUSALS
+
+
+# --------------------------------------------------------------------------- #
+# L-7 — the mutual-unparseability claim, pinned in the direction the comment overstated
+# --------------------------------------------------------------------------- #
+def test_the_legacy_decoder_REFUSES_a_v2_descriptor_it_never_misreads_one():
+    """``rig_events.py``'s HISTORY note used to claim the legacy decoder "would not even refuse
+    [a v2 descriptor] outright — it would misread [it] as a same-length compact patch". It would
+    not. 105 is inside the retired 42..178 window so the LENGTH check passes, and then ``0x20`` is
+    not a key of ``PATCH_TYPE_WORD_RANGES`` so ``PATCH_TYPE_UNKNOWN`` fires before any word is
+    parsed. The patch-type check is LOAD-BEARING and must not be loosened.
+    """
+    descriptor = rig.encode_transition_descriptor(
+        patch_artifact_hash="7e" * 32, parent_state_root="aa" * 32,
+        new_state_root="bb" * 32, score_delta_ppm=11)
+    assert len(descriptor) == 105
+    assert rig.COMPACT_PATCH_HEADER_BYTES <= len(descriptor) <= rig.COMPACT_PATCH_MAX_BYTES
+    assert rig.TRANSITION_DESCRIPTOR_VERSION not in rig.PATCH_TYPE_WORD_RANGES
+    with pytest.raises(rig.CompactPatchError) as excinfo:
+        rig.decode_compact_patch(descriptor)
+    assert excinfo.value.code == rig.PATCH_TYPE_UNKNOWN
+
+
+def test_the_documented_patch_type_table_is_the_whole_key_set():
+    """L-7: the spec's historical table omitted ``0x07``, which the decoder accepts."""
+    documented = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0xFF}
+    assert set(rig.PATCH_TYPE_WORD_RANGES) == documented
+    assert set(int(k, 16) for k in
+               binding.RETIRED_COMPACT_PATCH_LAYOUT["patch_type_word_ranges"]) == documented
+    spec = pathlib_read_spec()
+    assert "| `0x07` |" in spec, "specs/patch_format.md must list 0x07"
+    # The document may NAME the non-existent constant only to say it does not exist; what it must
+    # never do again is cite it as the authority for the length window.
+    assert "COMPACT_PATCH_MIN/MAX_BYTES" not in spec
+    assert "There is no `COMPACT_PATCH_MIN_BYTES` constant" in spec
+    for real in ("COMPACT_PATCH_HEADER_BYTES", "COMPACT_PATCH_MAX_BYTES"):
+        assert real in spec and hasattr(rig, real)
+
+
+def pathlib_read_spec():
+    import pathlib
+
+    return (pathlib.Path(__file__).resolve().parents[2] / "specs" / "patch_format.md").read_text(
+        encoding="utf-8")

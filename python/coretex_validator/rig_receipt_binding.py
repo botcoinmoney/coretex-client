@@ -68,7 +68,18 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
-BUNDLE_SHA256 = "307df364b165023b20ec1ea9ac699b8b39a5f340040be9a418b1a7d1d50b2c5a"
+#: THE COMPATIBILITY-LOCK ROOT — NOT a bundle sha256.
+#:
+#: This constant was called ``BUNDLE_SHA256`` and it named a different object from the generated
+#: binding's constant of that name (review M-11.5): the generated binding's ``BUNDLE_SHA256`` is
+#: the sha256 of the rig integration ``bundle.json``, while the value here is the coordinator's
+#: COMPATIBILITY-LOCK root. Same name, two unrelated values, and nothing compared them — the
+#: cheapest possible way to get a "they agree" impression out of two things that were never the
+#: same measurement. Renamed to what it actually is. There is deliberately NO ``BUNDLE_SHA256``
+#: here: the real generation tool and a v2 ``bundle.json`` are not vendored in this repo, so this
+#: package has no bundle sha256 of its own to state, and transcribing the coordinator's would pin a
+#: value that moves whenever the coordinator regenerates.
+COMPATIBILITY_LOCK_ROOT = "307df364b165023b20ec1ea9ac699b8b39a5f340040be9a418b1a7d1d50b2c5a"
 
 BINDING_SOURCE: Dict[str, Any] = {
     "bundle_schema": "botcoin.rig-coordinator-integration.bundle/2",
@@ -171,22 +182,44 @@ CORETEX_RECEIPT_AUX_MEMBER: Dict[str, Any] = {
 # ── The transition descriptor (coretex.transition-descriptor/v2) ─────────────────────────
 #
 # The hash rule RigCoreTexVerifier._validateDescriptorHash applies. Both dead labels are recorded
-# deliberately: COMPACT_PATCH_SUPERSEDED_LABEL is the V5 MEMORY lane's transition-hash domain (this
-# lane signed under it once, historically); TRANSITION_DESCRIPTOR_RETIRED_LABEL is THIS lane's own
-# retired 4-word compact-patch rule. A receipt signed under either reverts
-# TransitionDescriptorHashMismatch (not CompactPatchHashMismatch — that revert belonged to the
-# retired verifier and no longer exists).
+# deliberately: TRANSITION_DESCRIPTOR_SUPERSEDED_MEMORY_LABEL is the V5 MEMORY lane's
+# transition-hash domain (this lane signed under it once, historically);
+# TRANSITION_DESCRIPTOR_RETIRED_LABEL is THIS lane's own retired 4-word compact-patch rule. A
+# receipt signed under either reverts TransitionDescriptorHashMismatch (not
+# CompactPatchHashMismatch — that revert belonged to the retired verifier and no longer exists).
+#
+# THE NAMES ARE THE GENERATED BINDING'S, EXACTLY. This file is a hand transcription of a file that
+# is machine-generated elsewhere, so a name that differs is a name-keyed importer that breaks
+# across the two (review M-11.4). `python/tests/test_rig_lane.py::TestGeneratedBindingParity`
+# compares every shared module-level constant against
+# `botcoin-coordinator-v5 v5/e2e/generated_rig_receipt_binding.py` when that file is on the host.
 TRANSITION_DESCRIPTOR_HASH_DOMAIN_LABEL = "coretex-transition-descriptor-v2"
 TRANSITION_DESCRIPTOR_HASH_RULE = (
     "keccak256(abi.encodePacked(\"coretex-transition-descriptor-v2\", compactPatchBytes))")
 TRANSITION_DESCRIPTOR_RETIRED_LABEL = "coretex-patch-hash-v1"
-COMPACT_PATCH_SUPERSEDED_LABEL = "coretex-memory-transition-hash-v1"
+TRANSITION_DESCRIPTOR_SUPERSEDED_MEMORY_LABEL = "coretex-memory-transition-hash-v1"
+TRANSITION_DESCRIPTOR_SPEC = "botcoin-mining-rigs docs/CORETEX-TRANSITION-DESCRIPTOR-V2.md"
+
+# THE AUTHORITATIVE LENGTH AND VERSION for this package.
+#
+# `RigCoreTexVerifier.TRANSITION_DESCRIPTOR_BYTES` / `.TRANSITION_DESCRIPTOR_VERSION`, stated ONCE
+# here and imported by `rig_events.py` rather than transcribed a second time three modules away
+# (review M-11.2 / M-1). `TRANSITION_DESCRIPTOR_VERSION` is an INT, not the string "0x20": a
+# descriptor's version byte is compared with `descriptor_bytes[0] == TRANSITION_DESCRIPTOR_VERSION`,
+# and `32 == "0x20"` is silently False forever.
+TRANSITION_DESCRIPTOR_BYTES = 105
+TRANSITION_DESCRIPTOR_VERSION = 32
 
 # The descriptor is a FIXED 105-byte commitment — no padding, no optional field, no length
 # prefix, no word ceiling. THE LENGTH IS THE FORMAT.
 TRANSITION_DESCRIPTOR_LAYOUT: Dict[str, Any] = {
-    "total_bytes": 105,
-    "version": "0x20",
+    "total_bytes": TRANSITION_DESCRIPTOR_BYTES,
+    # THE INT 32, NOT THE STRING "0x20" (review M-11.1). This dict is the shape a
+    # `descriptor_bytes[0] == LAYOUT["version"]` comparison reads, and against a string that
+    # comparison is False for every input — a check that cannot fail is a check that is not there.
+    "version": TRANSITION_DESCRIPTOR_VERSION,
+    "version_rule":
+        "an OPAQUE enumerated tag compared for EQUALITY - never arithmetic, never a range",
     "burned_versions": ["0x00-0x07", "0xff"],
     "unassigned_versions": ["0x08-0x1f"],
     "fields": [
@@ -206,8 +239,17 @@ TRANSITION_DESCRIPTOR_LAYOUT: Dict[str, Any] = {
 # Kept, not deleted: epoch-180 mainnet-rehearsal advances used this exact layout and remain valid
 # LEGACY-ERA history against the deployed legacy verifier (spec §9.5). MUST NOT be re-read under
 # v2 — 0xff, every real epoch-180 advance's patchType byte, is a permanently-burned version.
-COMPACT_PATCH_HASH_DOMAIN_LABEL = "coretex-patch-hash-v1"
-COMPACT_PATCH_HASH_RULE = "keccak256(abi.encodePacked(\"coretex-patch-hash-v1\", compactPatchBytes))"
+#
+# THE NAMES SAY RETIRED (review M-11.3). These used to be `COMPACT_PATCH_HASH_DOMAIN_LABEL` /
+# `COMPACT_PATCH_HASH_RULE` — names that read as "the compact patch hash rule", present tense,
+# sitting two blocks below the live `TRANSITION_DESCRIPTOR_HASH_RULE` and carrying the RETIRED
+# label. Neither name exists in the generated binding, so neither could be caught by a parity
+# comparison either. Renamed outright rather than aliased: nothing in this package or its tests
+# imported them.
+RETIRED_COMPACT_PATCH_HASH_DOMAIN_LABEL = "coretex-patch-hash-v1"
+RETIRED_COMPACT_PATCH_HASH_RULE = (
+    "keccak256(abi.encodePacked(\"coretex-patch-hash-v1\", compactPatchBytes)) "
+    "— RETIRED; refused on v2 as TransitionDescriptorHashMismatch")
 
 # The RETIRED patch was PARSED and cross-checked against the receipt's signed fields.
 RETIRED_COMPACT_PATCH_LAYOUT: Dict[str, Any] = {
@@ -292,12 +334,25 @@ CORETEX_REGISTRY_READS: List[Dict[str, Any]] = [
 # uint64, NOT uint256.
 TRANSITION_COUNT_RETURN_TYPE = "uint64"
 
-# Rehearsal-observed. NEVER a default; the real values come from the signed release artifact.
+# SUPERSEDED — KNOWN-DEAD. NEVER a default; the real values come from the signed release artifact.
+#
+# This block once said "rehearsal-observed" full stop, while `rehearsal_deployment.py`'s
+# `SUPERSEDED_DEPLOYMENTS["2026-08-03"]` independently recorded the SAME mining address as dead
+# (review M-11.5). One module in this package saying "observed" and another saying "dead" about one
+# address is how an operator ends up computing digests against a domain separator that no contract
+# has. The generated binding lists this pair under `EIP712_REHEARSAL_OBSERVED["superseded"]` with
+# `"superseded_on": "2026-08-04"`; the two records now agree, and this one refuses to read as
+# current.
 EIP712_REHEARSAL_OBSERVED: Dict[str, Any] = {
+    "status": "SUPERSEDED",
+    "superseded_on": "2026-08-04",
     "chain_id": 8453,
     "verifying_contract": "0x7302bCaBa9a2f17447AEA5CEB3dC1593681758F6",
     "domain_separator": "0xa97f26f993229e776369e7d009083557b1d5b469c057bd18311a36ef4baab6bb",
-    "note": "rehearsal-observed only; never a default, never production",
+    "note": ("SUPERSEDED / KNOWN-DEAD rehearsal observation, kept only so a run pointed at this "
+             "deployment can be TOLD which one it is instead of deducing it from a digest "
+             "mismatch. Cross-recorded as dead in rehearsal_deployment.SUPERSEDED_DEPLOYMENTS "
+             "['2026-08-03']. Never a default, never production, and never current"),
 }
 
 WORK_UNITS_VALID_OUTCOMES: List[int] = [1,2]

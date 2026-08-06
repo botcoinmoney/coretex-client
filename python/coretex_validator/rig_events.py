@@ -589,12 +589,19 @@ def scan(logs: Iterable[Mapping[str, Any]], deployment: RigDeployment) -> Decode
 # different patch" and the hash was checked first to resolve that. One legal length makes a length
 # mismatch unambiguously a format error, so LENGTH IS CHECKED FIRST here and the hash second.
 
-#: ``RigCoreTexVerifier.TRANSITION_DESCRIPTOR_BYTES``. The length IS the format.
-TRANSITION_DESCRIPTOR_BYTES = 105
-#: ``RigCoreTexVerifier.TRANSITION_DESCRIPTOR_VERSION``. An OPAQUE enumerated tag compared for
-#: EQUALITY — never arithmetic, never a range (spec §7.2). The mnemonic is "2.0"; it is not a
-#: packed major/minor pair.
-TRANSITION_DESCRIPTOR_VERSION = 0x20
+#: ``RigCoreTexVerifier.TRANSITION_DESCRIPTOR_BYTES`` (the length IS the format) and
+#: ``.TRANSITION_DESCRIPTOR_VERSION`` (an OPAQUE enumerated tag compared for EQUALITY — never
+#: arithmetic, never a range, spec §7.2; the mnemonic is "2.0", it is not a packed major/minor
+#: pair).
+#:
+#: IMPORTED, NOT TRANSCRIBED (review M-11.2 / M-1). These two values were previously a second
+#: hand-written copy of what :mod:`.rig_receipt_binding` already states, with nothing asserting the
+#: copies agreed — and M-1 counts seven independent transcriptions of ``105``/``0x20`` across the
+#: three repos, of which this module held one. One copy per package is the most this repo can do
+#: about that on its own; the binding module is the one that a cross-repo parity test can compare
+#: against the generated binding, so the binding module is the copy that survives.
+from .rig_receipt_binding import (                                          # noqa: E402
+    TRANSITION_DESCRIPTOR_BYTES, TRANSITION_DESCRIPTOR_VERSION)
 
 #: Field offsets, stated once.
 TRANSITION_DESCRIPTOR_VERSION_OFFSET = 0
@@ -730,11 +737,22 @@ DESCRIPTOR_FORMAT_VERSION_MISMATCH = "DESCRIPTOR_FORMAT_VERSION_MISMATCH"
 #: carry an EMPTY descriptor and zero scores. STRICTER than the retired verifier, which tolerated a
 #: well-formed patch on a screener and let it pre-burn the advance's dedupe key (audit L-4).
 DESCRIPTOR_UNEXPECTED = "DESCRIPTOR_UNEXPECTED"
+#: ``UnexpectedTransitionDescriptor`` — a screener pass signs a NON-ZERO ``patchHash``. Its own
+#: code, distinct from :data:`DESCRIPTOR_UNEXPECTED`, because "you sent bytes you must not send"
+#: and "you named a transition key you must not name" are different defects with different
+#: histories: removing the bytes without forbidding the word is what made the second screener
+#: against a parent unminable (review H-2).
+SCREENER_PATCH_HASH_NONZERO = "SCREENER_PATCH_HASH_NONZERO"
+#: ``InvalidCoreTexRoot`` — a state advance (outcome 2) signs ``patchHash == bytes32(0)``. The
+#: outcome-2 half of the same rule; ``_validateCoreTexNonZero`` no longer states it outcome-
+#: independently precisely so the screener half could become "MUST be zero".
+STATE_ADVANCE_PATCH_HASH_ZERO = "STATE_ADVANCE_PATCH_HASH_ZERO"
 
 DESCRIPTOR_REFUSALS: Tuple[str, ...] = (
     DESCRIPTOR_LENGTH_INVALID, DESCRIPTOR_HASH_MISMATCH, DESCRIPTOR_VERSION_UNSUPPORTED,
     DESCRIPTOR_ARTIFACT_HASH_ZERO, DESCRIPTOR_PARENT_MISMATCH, DESCRIPTOR_NEW_ROOT_MISMATCH,
-    DESCRIPTOR_SCORE_DELTA_MISMATCH, DESCRIPTOR_FORMAT_VERSION_MISMATCH, DESCRIPTOR_UNEXPECTED)
+    DESCRIPTOR_SCORE_DELTA_MISMATCH, DESCRIPTOR_FORMAT_VERSION_MISMATCH, DESCRIPTOR_UNEXPECTED,
+    SCREENER_PATCH_HASH_NONZERO, STATE_ADVANCE_PATCH_HASH_ZERO)
 
 
 @dataclass(frozen=True)
@@ -885,15 +903,41 @@ def decode_transition_descriptor(raw: bytes, *, parent_state_root: Optional[str]
                                 score_delta_ppm=delta, raw=data)
 
 
+def _is_zero_word(value: Any) -> bool:
+    """Is this ``bytes32`` the zero word, in any spelling this package renders one in?"""
+    if isinstance(value, (bytes, bytearray)):
+        return not any(bytes(value))
+    text = str(value).strip().lower().removeprefix("0x")
+    return text != "" and set(text) == {"0"}
+
+
 def check_screener_descriptor(raw: bytes, *, transition_format_version: Optional[int] = None,
                               score_before_ppm: Optional[int] = None,
-                              score_after_ppm: Optional[int] = None) -> None:
-    """Outcome 1 carries NO descriptor and zero scores. Anything else is refused.
+                              score_after_ppm: Optional[int] = None,
+                              patch_hash: Optional[Any] = None) -> None:
+    """Outcome 1 carries NO descriptor, a ZERO ``patchHash`` and zero scores. Anything else is
+    refused.
 
     A TIGHTENING THE FRAME DID NOT ASK FOR (audit L-4), recorded rather than buried: the retired
     verifier tolerated a non-empty patch on a screener and validated only its hash, which let a
-    screener pre-burn the advance's ``coreTexPatchCredited`` dedupe key. Under v2 the only receipt
-    that can mint a descriptor-derived ``patchHash`` is the advance that uses it.
+    screener pre-burn the advance's ``coreTexPatchCredited`` dedupe key.
+
+    THE FIRST CUT OF THAT TIGHTENING REMOVED THE BYTES AND NOT THE WORD, and that half-fix was its
+    own defect (review H-2). ``patchHash`` is a SIGNED member; the retired
+    ``_validateCoreTexNonZero`` demanded it be non-zero on EVERY outcome, so with an empty
+    descriptor mandatory the only descriptor-derived value an honest implementer could reach was
+    the CONSTANT ``keccak256(LABEL ‖ "")``. A screener therefore burned exactly one dedupe key per
+    ``(epoch, parentStateRoot)`` — a screener never moves the root — and the SECOND screener
+    against that parent reverted ``DuplicateCoreTexPatch``, killing
+    ``coreTexScreenerCapPerRigPerEpoch`` and the entire difficulty ramp, both of which exist to
+    count MANY screeners between advances.
+
+    ``RigCoreTexVerifier`` closes both halves by making the rule explicit rather than implicit:
+    ``_validateScreenerReceipt`` requires ``patchHash == bytes32(0)`` — the one word that names no
+    transition — and ``validateAndRecord`` reads and writes ``coreTexPatchCredited`` ONLY on
+    outcome 2. This checker mirrors the first half; the second is a chain-side storage rule with no
+    off-chain observable. ``patch_hash`` is optional only so a caller that does not have the signed
+    member can still check the rest; when it IS supplied the zero rule is enforced.
     """
     data = bytes(raw or b"")
     if data:
@@ -901,6 +945,13 @@ def check_screener_descriptor(raw: bytes, *, transition_format_version: Optional
             DESCRIPTOR_UNEXPECTED,
             f"a screener pass carries {len(data)} descriptor byte(s); outcome 1 advances no "
             "state, so it MUST carry an EMPTY compactPatchBytes")
+    if patch_hash is not None and not _is_zero_word(patch_hash):
+        raise TransitionDescriptorError(
+            SCREENER_PATCH_HASH_NONZERO,
+            f"a screener pass signs patchHash={patch_hash!r}; outcome 1 credits NO transition, so "
+            "its patchHash MUST be bytes32(0) — the one word that names no transition. A "
+            "descriptor-derived value here is necessarily the constant keccak256(LABEL ‖ \"\"), "
+            "which is why the retired rule made the second screener against a parent unminable")
     for name, value in (("transitionFormatVersion", transition_format_version),
                         ("scoreBeforePpm", score_before_ppm), ("scoreAfterPpm", score_after_ppm)):
         if value is not None and int(value) != 0:
@@ -908,6 +959,22 @@ def check_screener_descriptor(raw: bytes, *, transition_format_version: Optional
                 DESCRIPTOR_UNEXPECTED,
                 f"a screener pass signs {name}={int(value)}; outcome 1 requires "
                 "transitionFormatVersion, scoreBeforePpm and scoreAfterPpm to all be zero")
+
+
+def check_state_advance_patch_hash(patch_hash: Any) -> None:
+    """Outcome 2's ``patchHash`` MUST be non-zero — the outcome-2 half of the H-2 rule.
+
+    ``_validateCoreTexNonZero`` deliberately no longer states "patchHash is non-zero always" (that
+    is what forced a screener to name SOME word); ``_validateStateAdvanceReceipt`` states the
+    outcome-2 half instead, and refuses with the ROOT error rather than a hash-mismatch error that
+    would misdescribe the defect. Redundant with the hash rule — a keccak output cannot be zero —
+    and kept for exactly that reason.
+    """
+    if _is_zero_word(patch_hash):
+        raise TransitionDescriptorError(
+            STATE_ADVANCE_PATCH_HASH_ZERO,
+            "a state advance (outcome 2) signs patchHash=bytes32(0); the descriptor hash is a "
+            "keccak output and can never be zero, so this receipt commits to no transition at all")
 
 
 # --------------------------------------------------------------------------- #
@@ -1077,11 +1144,23 @@ def check_transition_artifact_binds_descriptor(artifact: Mapping[str, Any], *,
 # (spec §9.5). This decoder is the only thing that can still parse them; deleting it would erase
 # the evidence of what changed, not just the machinery for changing it.
 #
-# ``decode_compact_patch`` MUST NOT be called on anything decoded from a live v2 deployment: a v2
-# descriptor is fixed at 105 bytes, and 105 falls inside the retired ``42..178`` window, so this
-# decoder would not even refuse it outright — it would misread a v2 descriptor as a same-length
-# compact patch. Callers are responsible for routing by deployment/epoch, exactly as they already
-# must for the V4 topic0 collision this package documents elsewhere.
+# ``decode_compact_patch`` MUST NOT be called on anything decoded from a live v2 deployment. What
+# actually happens if it is: 105 falls inside the retired ``42..178`` length window, so the LENGTH
+# check passes — but a v2 descriptor's first byte is ``0x20``, which is not a key of
+# ``PATCH_TYPE_WORD_RANGES``, so the very next check raises ``PATCH_TYPE_UNKNOWN`` before any word
+# is parsed. IT REFUSES, LOUDLY, AND IT NEVER MISREADS THE BYTES.
+#
+# That is stated precisely on purpose. An earlier version of this note claimed the decoder "would
+# not even refuse it outright — it would misread a v2 descriptor as a same-length compact patch",
+# which is false, and a comment that overstates a hazard invites someone to "fix" the perceived
+# asymmetry by loosening the very check that closes it. THE PATCH-TYPE CHECK IS LOAD-BEARING: it is
+# the whole reason the two formats are mutually unparseable in this direction, and it MUST NOT be
+# loosened, widened to unknown types, or made a warning. (The other direction is closed by
+# ``0x01``-``0x07`` and ``0xff`` being permanently-burned descriptor versions.)
+#
+# Routing is still the caller's job — by deployment/epoch, exactly as it already must be for the V4
+# topic0 collision this package documents elsewhere. A refusal is the right outcome for a v2
+# descriptor reaching this decoder, but it is not a substitute for not sending it here.
 
 #: ``RigCoreTexVerifier`` constants, transcribed from the exact RETIRED source (``cdb91d2``).
 COMPACT_PATCH_HEADER_BYTES = 42

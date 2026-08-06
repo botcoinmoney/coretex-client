@@ -38,8 +38,17 @@
  */
 import { keccak256 } from '../state/keccak256.js';
 import { bytesToHex } from '../state/merkle.js';
-import { CORETEX_EVENT_TOPICS } from './coretex-registry.js';
+import {
+  CORETEX_EVENT_TOPICS,
+  RIG_TRANSITION_DESCRIPTOR_BYTES,
+  RIG_TRANSITION_DESCRIPTOR_VERSION,
+  isRigLaneTransitionDescriptor,
+} from './coretex-registry.js';
 import { V4_EVENT_TOPICS, type RpcLog } from './v4.js';
+
+/** Re-exported so a caller holding both dispatch tables can classify a payload without reaching
+ *  into the V4 module, and so the two files cannot drift on what "a rig advance looks like". */
+export { RIG_TRANSITION_DESCRIPTOR_BYTES, RIG_TRANSITION_DESCRIPTOR_VERSION, isRigLaneTransitionDescriptor };
 
 function eventTopic(sig: string): string {
   return bytesToHex(keccak256(new TextEncoder().encode(sig)));
@@ -180,7 +189,14 @@ export function routeRigLog(log: RpcLog, deployment: RigDeploymentAddresses): Ri
  *      registry lane in production today.
  *   3. The RIG registry's advance — signature-identical to (2), so topic0-identical.
  *
- * (2) and (3) are what collide, and the discriminator is the emitting address.
+ * (2) and (3) are what collide. The PRIMARY discriminator is the emitting address, and it is now
+ * MANDATORY rather than advisory: `coretexRangeLogs` refuses a query with no address filter,
+ * because a topic-only query returns both lanes interleaved and the result cannot be attributed
+ * afterwards. The PAYLOAD discriminator is the backstop for a log that arrived anyway — a rig
+ * advance carries a fixed 105-byte descriptor whose first byte is `0x20`, a (length, first-byte)
+ * pair no legal V4 compact patch has — and it exists so such a log is CLASSIFIED
+ * (`CROSS_LANE_RIG_ADVANCE`) instead of slandered as an invalid V4 patch hash.
+ *
  * Reported as data so a caller can assert on it rather than trust this comment.
  */
 export function laneSeparation(): {
@@ -190,6 +206,8 @@ export function laneSeparation(): {
   collidingLanes: readonly ['canonical-registry', 'rig-registry'];
   identical: boolean;
   discriminator: 'emitting address';
+  addressFilterMandatory: true;
+  payloadDiscriminator: { descriptorBytes: number; versionByte: number };
   consequence: string;
 } {
   return {
@@ -199,6 +217,11 @@ export function laneSeparation(): {
     collidingLanes: ['canonical-registry', 'rig-registry'] as const,
     identical: true,
     discriminator: 'emitting address',
+    addressFilterMandatory: true,
+    payloadDiscriminator: {
+      descriptorBytes: RIG_TRANSITION_DESCRIPTOR_BYTES,
+      versionByte: RIG_TRANSITION_DESCRIPTOR_VERSION,
+    },
     consequence:
       'the rig registry emits the same advance signature as the canonical registry lane, so a ' +
       'router that keys on topic0 alone will mix two lanes of confirmed history together. The ' +

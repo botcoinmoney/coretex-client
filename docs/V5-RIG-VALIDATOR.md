@@ -76,7 +76,8 @@ The contract wins: it is the thing that emits logs. So:
 
 `chain_first.RIG_PATCH_HASH_LABEL` is `b"coretex-memory-transition-hash-v1"` — the V5 **memory**
 lane's transition-hash domain. The rig verifier's rule (`RigCoreTexVerifier.sol:411-415`, and the
-generated binding, which records the memory label explicitly as `COMPACT_PATCH_SUPERSEDED_LABEL`)
+generated binding, which records the memory label explicitly as
+`TRANSITION_DESCRIPTOR_SUPERSEDED_MEMORY_LABEL`)
 is:
 
 ```
@@ -348,16 +349,37 @@ never silently becomes "X is broken".
 
 ---
 
-## 4. REPRODUCED: the real MAINNET_REHEARSAL snapshot
+## 4. REPRODUCED: the real MAINNET_REHEARSAL snapshot — **LEGACY-ERA, era-bound**
+
+> **ERA BOUNDARY — READ BEFORE RE-RUNNING THIS.** The reproduction below is a true statement about
+> the **legacy era** and is reproducible **only at client commit `a4a18bc` / rig commit
+> `cdb91d21`**, under the retired word-diff rules (`stateWordCount`, typehash `0x1cb41d15…`,
+> `patchHash = keccak256("coretex-patch-hash-v1" ‖ compactPatchBytes)`).
+>
+> **It does not reproduce under today's code, and that is correct.** `resolver_snapshot.py` embeds
+> the current `resolver_schema_constants` into the payload it *reconstructs*, and `compare()` is
+> whole-document byte equality, so re-running it against `coretex.transition-descriptor/v2`
+> constants yields a loud `identical=False` on `derivation` — the schema *description* moved
+> (`transitionFormatVersion`, typehash `0x70419dc5…`, `transition_descriptor_hash_rule`, rig source
+> `ba4d5acf…`), the chain-derived facts did not. Reading that as a failed reproduction would be a
+> false divergence on valid legacy history: the same "slander a valid mine" class the v2 migration
+> exists to remove.
+>
+> The live constants are deliberately **not forked** to chase this data. What is guarded instead is
+> the boundary itself: `test_epoch_180_is_LEGACY_ERA_and_the_divergence_from_live_constants_is_PINNED`
+> pins the legacy-era values the published bytes carry *and* asserts today's constants differ, and
+> `test_the_real_epoch_180_patches_decode_to_documented_ground_truth` still replays the two real
+> 75-byte `0xff` patches under the retired decoder. The published payload is never modified.
 
 A clean installation rebuilt the published epoch-180 snapshot **byte for byte from Base mainnet**,
-before any signature was consulted.
+before any signature was consulted — at client `a4a18bc` / rig `cdb91d21`, under the legacy rules:
 
 ```
 client   sha256 7087b32d3199c352336c3d7faa2126b3a1ce139a0f16b2ecc62d292fc9c672c7  28964 bytes
 target   sha256 7087b32d3199c352336c3d7faa2126b3a1ce139a0f16b2ecc62d292fc9c672c7  28964 bytes
 signing digest  0x15636ac13d8ed786a0da76e26bdd0b17a6d0e9127f0d32df87679bd8f453c41e   (matches)
 publication set a51544ecf69d59b29791bd7a83d82abd739c6a422d231a543ff0a13ea3718d51
+era             LEGACY (pre-transition-descriptor/v2): client a4a18bc, rig cdb91d21
 ```
 
 All 23 keys: 13 chain-derived, 10 schema-constant. Run conditions: a wheel built from source,
@@ -621,24 +643,42 @@ in this repo and why, alongside `specs/patch_format.md`'s technical rewrite.
   4-word rule) and `coretex-memory-transition-hash-v1` (the V5 memory lane's, and F3's finding
   above) — are REFUSED, never silently accepted; `rig_events.py` names which dead label a
   mismatched hash actually matches, the same "superseded label" idiom the retired decoder used.
-* **New bundle hash**: `rig_receipt_binding.py`'s `BUNDLE_SHA256` moves to
-  `307df364b165023b20ec1ea9ac699b8b39a5f340040be9a418b1a7d1d50b2c5a`. The real generation tool
-  (`scripts/generate-rig-receipt-bindings.mjs`) and a v2 ABI bundle are not vendored in this repo,
-  so this file's values were hand-transcribed from the migrated coordinator's mirrored binding and
-  independently re-derivation-checked (see the file's own header note); it should be regenerated
-  for real once a v2 bundle is available.
+* **The compatibility-lock root**: `rig_receipt_binding.py` records
+  `COMPATIBILITY_LOCK_ROOT = 307df364b165023b20ec1ea9ac699b8b39a5f340040be9a418b1a7d1d50b2c5a`.
+  It was called `BUNDLE_SHA256`, which is the generated binding's name for a *different* object
+  (the sha256 of the rig integration `bundle.json`) — one name, two unrelated values, and nothing
+  comparing them. This package states no bundle sha256 of its own: the real generation tool
+  (`scripts/generate-rig-receipt-bindings.mjs`) and a v2 ABI bundle are not vendored here, so this
+  file's values were hand-transcribed from the migrated coordinator's mirrored binding and
+  independently re-derivation-checked (see the file's own header note). The transcription is now
+  guarded: `python/tests/test_rig_lane.py::TestGeneratedBindingParity` compares **every shared
+  module-level constant** against the coordinator's `v5/e2e/generated_rig_receipt_binding.py` when
+  that file is on the host (`CORETEX_GENERATED_RIG_BINDING` overrides the search), with an explicit
+  exemption table for the handful that are legitimately different. The file should still be
+  regenerated for real once a v2 bundle is available.
 * The registry event/mutator field renames the same way: `wordCount` → `transitionFormatVersion`
   in `CoreTexStateAdvanced` and `submitStateAdvance`. Neither the event topic0
   (`2f0a8989…`) nor the mutator selector (`0xa2d87e1d`) changes — Solidity signatures are built
   from types, not names, so a positional/ABI-type decoder is unaffected; a name-keyed reader is
   the thing this rename is meant to break loudly.
 * Off-chain, fail-closed availability is now load-bearing for the rig lane specifically:
-  `pipeline.py`'s step-5 admission and `chain_first.py`'s rig join both fetch the canonical patch
-  artifact by `patchArtifactHash`, re-hash it (`pub.fetch_json(..., hash_rule=
-  pub.HASH_RULE_FRONTIER_JSON, ...)` — the same sha256-canonical-JSON rule every other
-  content-addressed object in this repo uses), and only then feed its `transition` into the
-  existing deterministic replay (`replay.replay_advance`, unchanged). An unpublished or
-  substituted patch artifact is refused before replay is ever reached.
+  **`pipeline.py`'s step-5 admission** fetches the canonical patch artifact by `patchArtifactHash`,
+  re-hashes it (`pub.fetch_json(..., hash_rule= pub.HASH_RULE_FRONTIER_JSON, ...)` — the same
+  sha256-canonical-JSON rule every other content-addressed object in this repo uses), and only then
+  feeds its `transition` into the existing deterministic replay (`replay.replay_advance`,
+  unchanged). An unpublished or substituted patch artifact is refused before replay is ever
+  reached, and the three failures are **not one outcome**: unavailable → `BACKLOG`
+  (`TRANSITION_ARTIFACT_UNAVAILABLE`), served-at-the-wrong-address → `FAIL`
+  (`TRANSITION_ARTIFACT_ADDRESS_MISMATCH`), non-canonical → `FAIL`
+  (`TRANSITION_ARTIFACT_NOT_CANONICAL`).
+
+  **`chain_first.py` does NOT fetch the patch artifact**, and this document previously said it did.
+  Its rig envelope binds the descriptor — `keccak256(LABEL ‖ compactPatchBytes)` against the
+  confirmed `patchHash`, plus the descriptor's own length/version/parent/new-root decode — and
+  stops there; the artifact behind `patchArtifactHash` is `pipeline.py`'s to fetch. The envelope is
+  also typed against the STAGED (never-deployed) `dispatch.RigStateAdvanced` event shape, which
+  carries no `compactPatchBytes` at all, so a caller that supplies no descriptor is refused
+  (`RIG_TRANSITION_DESCRIPTOR_UNAVAILABLE`) rather than checked against some other preimage.
 
 **Epoch-180 evidence remains valid, as legacy-era history, under the old rules only.** The two
 real epoch-180 mainnet-rehearsal advances documented in §4 above are NOT re-read under v2 — their

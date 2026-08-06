@@ -76,6 +76,13 @@ STEP5_ARTIFACT_HASH_BOUND = "step5_artifact_hash_bound_via_digest"
 STEP6_CALLDATA_BOUND_TO_LOGS = "step6_calldata_bound_to_logs"
 STEP7_COORDINATOR_SIGNATURE = "step7_coordinator_signature_verified"
 STEP8_PATCH_HASH_VERIFIED = "step8_patch_hash_verified"
+#: The SCREENER-only counterpart of step 8. A screener has no advance and therefore no descriptor
+#: to hash, so its step 8 is the OUTCOME-1 DISCIPLINE instead: empty ``compactPatchBytes``, a ZERO
+#: ``patchHash``, and zero ``transitionFormatVersion``/``scoreBeforePpm``/``scoreAfterPpm``. Wired
+#: here because the checker that encodes it was production-dead in this package — reachable only
+#: from tests — which made the v2 tightening a thing the validator asserted and never observed
+#: (review L-1, and the H-2 patchHash half).
+STEP8_SCREENER_DISCIPLINE = "step8_screener_outcome1_discipline"
 
 #: The eight, in order. A transition that reports fewer has not been fully joined.
 JOIN_STEPS = (STEP1_ADVANCE_DECODED, STEP2_CREDIT_EVENT_JOINED, STEP3_CALLDATA_DECODED,
@@ -442,7 +449,14 @@ def join_advance(advance: rig.StateAdvanced, credit: rig.CoreTexCreditAccepted,
     else:
         checks.append("step7_coordinator_signature_SKIPPED")
 
-    # 8. The patch.
+    # 8. The patch. The non-zero `patchHash` rule is checked FIRST and separately: it is the
+    #    outcome-2 half of `_validateStateAdvanceReceipt`'s explicit rule (review H-2), and it
+    #    refuses with the ROOT error rather than a hash-mismatch error that would misdescribe
+    #    "this receipt commits to no transition at all" as "these bytes are the wrong bytes".
+    try:
+        rig.check_state_advance_patch_hash(advance.patch_hash)
+    except rig.TransitionDescriptorError as exc:
+        raise JoinError("JOIN_ADVANCE_PATCH_HASH_ZERO", exc.message) from exc
     rig.check_patch_hash(advance)
     checks.append(STEP8_PATCH_HASH_VERIFIED)
 
@@ -536,9 +550,30 @@ def join_all(decoded: rig.DecodedLogs, *, calldata_for, domain_separator: bytes,
                     raise JoinError("JOIN_FIELD_MISMATCH",
                                     f"a credit with no advance must declare outcome "
                                     f"{OUTCOME_SCREENER_PASS}; it declares {receipt['outcome']}")
+                # ── OUTCOME-1 DISCIPLINE, ACTUALLY RUN ────────────────────────────────────────
+                #
+                # `rig.check_screener_descriptor` encodes `_validateScreenerReceipt` exactly, and
+                # until now nothing but a test ever called it: this branch checked the outcome,
+                # the receipt-hash binding and the signature and never looked at
+                # `compactPatchBytes`, `transitionFormatVersion`, the scores or `patchHash`
+                # (review L-1). There is no acceptance hole either way — the chain enforces all of
+                # it — but a tightening the validator cannot OBSERVE is a tightening this package
+                # cannot report, and reporting is what a public validator is for. Wiring it changes
+                # no verdict for a receipt the deployed verifier would have accepted: every
+                # condition here is one `validateAndRecord` already reverts on.
+                try:
+                    rig.check_screener_descriptor(
+                        receipt["compactPatchBytes"],
+                        transition_format_version=int(receipt["transitionFormatVersion"]),
+                        score_before_ppm=int(receipt["scoreBeforePpm"]),
+                        score_after_ppm=int(receipt["scoreAfterPpm"]),
+                        patch_hash=receipt["patchHash"])
+                except rig.TransitionDescriptorError as exc:
+                    raise JoinError("JOIN_SCREENER_DISCIPLINE_VIOLATED", exc.message) from exc
                 checks += [STEP3_CALLDATA_DECODED, STEP4_RECEIPT_HASH_BOUND,
                            STEP7_COORDINATOR_SIGNATURE if verify_signature
-                           else "step7_coordinator_signature_SKIPPED"]
+                           else "step7_coordinator_signature_SKIPPED",
+                           STEP8_SCREENER_DISCIPLINE]
             except JoinError as exc:
                 unresolved.append({"code": exc.code, "transaction_hash": tx,
                                    "epoch": credit.epoch, "reason": exc.message})

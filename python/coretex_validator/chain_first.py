@@ -338,14 +338,17 @@ RIG_ENFORCED_PIN_FIELDS: Tuple[str, ...] = (
 #: MIGRATION NOTE (transition-descriptor v2). This used to be
 #: ``b"coretex-memory-transition-hash-v1"`` — the V5 MEMORY lane's domain, which
 #: :mod:`.rig_events` independently flags as wrong for this lane ("the staged check does not
-#: merely differ in style: it refuses every real advance"). It is now the LIVE v2 label. Note the
-#: scope limit this envelope inherited from :class:`dispatch.RigStateAdvanced` (the STAGED,
-#: never-deployed rig-registry design this function's ``event`` parameter is typed against, per
-#: :mod:`.rig_events`'s module docstring): that event carries no ``compactPatchBytes`` at all, so
-#: this function can apply the v2 HASH LABEL to whatever bytes it is given, but it cannot decode or
-#: enforce the 105-byte descriptor layout the way :mod:`.pipeline`'s join does against the real
-#: deployed :class:`rig_events.StateAdvanced`. Unifying the two event shapes is a bigger change
-#: than this migration and is out of scope here.
+#: merely differ in style: it refuses every real advance"). It is now the LIVE v2 label, AND — the
+#: half that was missed the first time (review M-9) — it is applied to the LIVE v2 PREIMAGE: the
+#: 105 descriptor bytes, never the canonical-JSON transition object. The label and the preimage are
+#: one rule; migrating either alone produces a check that cannot pass.
+#:
+#: Note the scope limit this envelope inherited from :class:`dispatch.RigStateAdvanced` (the
+#: STAGED, never-deployed rig-registry design this function's ``event`` parameter is typed against,
+#: per :mod:`.rig_events`'s module docstring): that event carries no ``compactPatchBytes`` at all,
+#: so the descriptor must be handed to :func:`validate_rig_chain_first` beside the event, and an
+#: absent descriptor is a typed REFUSAL rather than a skipped check. Unifying the two event shapes
+#: is a bigger change than this migration and is out of scope here.
 RIG_PATCH_HASH_LABEL = b"coretex-transition-descriptor-v2"
 #: The label this constant WAS (kept nameable, never accepted).
 RIG_PATCH_HASH_LABEL_SUPERSEDED = b"coretex-memory-transition-hash-v1"
@@ -397,23 +400,29 @@ class RigCanonicalChainSource:
         raise NotImplementedError
 
 
-def _keccak_patch(transition_bytes: bytes) -> str:
-    """``keccak256(utf8(LABEL) ++ transitionBytes)`` — the LABELLED rule, never plain keccak.
+def _keccak_patch(descriptor_bytes: bytes) -> str:
+    """``keccak256(utf8(LABEL) ++ the 105 DESCRIPTOR bytes)`` — the LABELLED rule, never plain
+    keccak, and never over anything but the descriptor.
 
-    The candidate readings of Q-10 differ for every input, so substituting one for another is
-    never benign; this is the v2 reading the coordinator lane signs.
+    THE PREIMAGE IS PART OF THE RULE. Under ``coretex.transition-descriptor/v2`` ``patchHash`` is
+    ``keccak256(label ‖ compactPatchBytes)`` where ``compactPatchBytes`` is the fixed 105-byte
+    descriptor. It is NOT the canonical-JSON transition object: that was approximately right under
+    the retired model, where the patch committed the input side of the edit, and it is simply a
+    different value now. Applying the LIVE label to the RETIRED preimage is the same class of
+    defect as applying a dead label to the live preimage, and it is the more dangerous one because
+    the label makes the site look migrated.
     """
     # Imported lazily so `chain_first` keeps its stdlib-plus-v5-law dependency profile.
     from .keccak256 import keccak256_hex                                    # noqa: WPS433
-    return keccak256_hex(RIG_PATCH_HASH_LABEL + bytes(transition_bytes))
+    return keccak256_hex(RIG_PATCH_HASH_LABEL + bytes(descriptor_bytes))
 
 
-def _keccak_patch_dead_label_hint(transition_bytes: bytes, expected: str) -> str:
+def _keccak_patch_dead_label_hint(descriptor_bytes: bytes, expected: str) -> str:
     """Name the dead label a mismatched patch hash DOES correspond to, if it is one — the
     "superseded label" idiom :mod:`.rig_events` uses, mirrored here for the same reason."""
     from .keccak256 import keccak256_hex                                    # noqa: WPS433
     for label in (RIG_PATCH_HASH_LABEL_RETIRED, RIG_PATCH_HASH_LABEL_SUPERSEDED):
-        if keccak256_hex(label + bytes(transition_bytes)) == expected:
+        if keccak256_hex(label + bytes(descriptor_bytes)) == expected:
             return f" (it DOES match the DEAD label {label.decode('utf-8')!r})"
     return ""
 
@@ -424,6 +433,7 @@ def validate_rig_chain_first(
         deterministic_receipt_verifier: ReceiptSignatureVerifier,
         rig_receipt: Mapping[str, Any],
         now: int,
+        compact_patch_bytes: Optional[bytes] = None,
         rig_receipt_hasher: Optional[RigReceiptHasher] = None,
         expected_digest: Optional[str] = None,
         expected_receipt_hash: Optional[str] = None,
@@ -449,7 +459,12 @@ def validate_rig_chain_first(
       3. local coordinator state DEMOTED (a disagreement is a refusal, never a tie-break);
       4. every public dependency fetched by its committed root and REHASHED;
       5. the fetched eval artifact joined to the event: parent, new root, candidate release root,
-         and ``keccak256(LABEL ++ transitionBytes) == event.patchHash``;
+         and ``keccak256(LABEL ++ compactPatchBytes) == event.patchHash`` over the SUPPLIED
+         105-byte transition descriptor, followed by the descriptor's own layout/parent/new-root
+         decode. The staged event shape carries no descriptor, so a caller that supplies none is
+         REFUSED (``RIG_TRANSITION_DESCRIPTOR_UNAVAILABLE``) rather than checked against the
+         canonical-JSON transition, which is a different value under v2 — see M-9 in
+         ``docs/coretex-v5/ADVERSARIAL-REVIEW-DESCRIPTOR-V2-20260806.md``;
       6. the coordinator-signed rig receipt verified against the confirmed advance;
       7. committed canary evidence verified (never re-run);
       8. ONLY THEN the deterministic replay, over a projection of the event that carries the
@@ -593,15 +608,58 @@ def validate_rig_chain_first(
         except (KeyError, TypeError, fr.FrontierError) as exc:
             raise ChainFirstError("MALFORMED_ARTIFACT",
                                   f"the eval artifact's transition is unusable: {exc}") from exc
-        computed_patch = _keccak_patch(transition_bytes)
+        # ── THE DESCRIPTOR BINDING, repointed at the descriptor bytes (M-9) ───────────────────
+        #
+        # WHAT THIS USED TO BE AND WHY IT WAS WRONG. It hashed the LIVE v2 label over
+        # `fr.canonical_bytes(front["transition"])` — the canonical-JSON transition object. Under
+        # v2 `patchHash = keccak256(label ‖ the 105 descriptor bytes)`, so that comparison can
+        # NEVER match a genuine advance: it was the right label on the wrong preimage, the mirror
+        # image of the incident this lane already had once (the wrong label on the right bytes),
+        # and worse than an obviously stale check because the corrected label made the site LOOK
+        # migrated. Left in place it would have false-FAILed every valid v2 advance the day the
+        # staged and deployed event shapes were unified — "slander a valid mine", the exact
+        # failure class this migration exists to remove.
+        #
+        # WHERE THE BYTES COME FROM. `dispatch.RigStateAdvanced` is the STAGED, never-deployed
+        # rig-registry event shape (topic0 `7a35edec…`); it carries no `compactPatchBytes` member
+        # at all, so the descriptor cannot be recovered from the event and must be supplied by the
+        # caller alongside it. The DEPLOYED event (`rig_events.StateAdvanced`, topic0 `2f0a8989…`)
+        # does carry them, and `pipeline.py`'s join decodes them in full against the real log.
+        #
+        # FAIL CLOSED WHEN THEY ARE ABSENT. "The bytes the rule is defined over were not supplied"
+        # is not a reason to admit the advance, and it is emphatically not a reason to fall back
+        # to a preimage the rule does not name. A caller that cannot produce the descriptor gets a
+        # typed refusal saying so.
+        if compact_patch_bytes is None:
+            raise ChainFirstError(
+                "RIG_TRANSITION_DESCRIPTOR_UNAVAILABLE",
+                "under coretex.transition-descriptor/v2 patchHash is keccak256(LABEL ++ the 105 "
+                "DESCRIPTOR bytes), and this envelope's event type (the STAGED "
+                "RigCoreTexStateAdvanced shape) carries no compactPatchBytes, so the descriptor "
+                "must be supplied by the caller. It was not. This is a REFUSAL and not a skipped "
+                "check: hashing the label over the eval artifact's canonical transition instead — "
+                "which is what stood here before — is a DIFFERENT value for every input and would "
+                "have refused every valid advance")
+        descriptor_bytes = bytes(compact_patch_bytes)
+        computed_patch = _keccak_patch(descriptor_bytes)
         if computed_patch != event.patch_hash:
             raise ChainFirstError(
                 "RIG_PATCH_HASH_MISMATCH",
-                f"keccak256(LABEL ++ transitionBytes) over the fetched artifact's transition is "
-                f"{computed_patch}, the confirmed advance asserts {event.patch_hash}"
-                f"{_keccak_patch_dead_label_hint(transition_bytes, event.patch_hash)}. THIS is "
+                f"keccak256(LABEL ++ compactPatchBytes) over the supplied 105-byte transition "
+                f"descriptor is {computed_patch}, the confirmed advance asserts "
+                f"{event.patch_hash}"
+                f"{_keccak_patch_dead_label_hint(descriptor_bytes, event.patch_hash)}. THIS is "
                 "the check that makes fetching the edit by hash safe; without it the rig lane's "
                 "log carries no edit at all")
+        try:
+            rig.decode_transition_descriptor(
+                descriptor_bytes,
+                parent_state_root=event.parent_state_root,
+                new_state_root=event.new_state_root,
+                expected_patch_hash=event.patch_hash)
+        except rig.TransitionDescriptorError as exc:
+            raise ChainFirstError(exc.code, exc.message) from exc
+        checks.append("rig_transition_descriptor")
         if artifact.get("counter_resource_law_root") != snapshot.counter_resource_law_root:
             raise ChainFirstError(
                 "COUNTER_PACKAGE_SUBSTITUTION",

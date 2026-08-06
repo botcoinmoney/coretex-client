@@ -221,8 +221,11 @@ Compact patch = [
 ```
 
 Total for a 4-word patch: 42 (header) + 4×(1 or 2 + 32) = **174-178 bytes**. Header alone: 42
-bytes (`COMPACT_PATCH_HEADER_BYTES`). Legal length window: **42-178 bytes**
-(`COMPACT_PATCH_MIN/MAX_BYTES`).
+bytes (`COMPACT_PATCH_HEADER_BYTES`). Legal length window: **42-178 bytes** — the lower bound is
+`COMPACT_PATCH_HEADER_BYTES` and the upper is `COMPACT_PATCH_MAX_BYTES`
+(`rig_events.py`). There is no `COMPACT_PATCH_MIN_BYTES` constant; the header length *is* the
+minimum, and naming a constant that does not exist sends a reader looking for a second source of
+truth that was never there.
 
 ### Patch types
 
@@ -234,7 +237,14 @@ bytes (`COMPACT_PATCH_HEADER_BYTES`). Legal length window: **42-178 bytes**
 | `0x04` | RELATION_UPDATE | 672-799 |
 | `0x05` | CODEBOOK_UPDATE | 896-991 |
 | `0x06` | HEADER_UPDATE | 0-31 |
+| `0x07` | KEY_UPDATE (alias window) | 384-671 |
 | `0xFF` | MIXED / unrestricted | any index below 992 |
+
+The table is the complete key set of `rig_events.PATCH_TYPE_WORD_RANGES` and of the binding's
+`RETIRED_COMPACT_PATCH_LAYOUT["patch_type_word_ranges"]`, and it matches this document's own
+version table (`0x01`–`0x07`). `0x07` shares `0x01`'s window; it was omitted here once, which made
+the prose narrower than the decoder — and a decoder that accepts a byte the spec does not list is
+exactly the kind of gap a reader closes in the wrong direction.
 
 Word indices at or above `RESERVED_WORD_START = 992` were refused (`PATCH_INDEX_RESERVED`)
 regardless of `patchType`.

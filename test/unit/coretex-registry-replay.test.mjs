@@ -219,6 +219,75 @@ describe('CoreTexRegistry replay — per-epoch transitionIndex semantics', () =>
 
 });
 
+// --------------------------------------------------------------------------- #
+// M-12 — a RIG-lane advance is CLASSIFIED, never slandered as an invalid V4 patch
+// --------------------------------------------------------------------------- #
+describe('cross-lane topic0 collision — a rig advance is refused BY CLASSIFICATION', () => {
+  // A `coretex.transition-descriptor/v2` payload: version(1)=0x20 ++ patchArtifactHash(32) ++
+  // parentStateRoot(32) ++ newStateRoot(32) ++ scoreDeltaPpm(8, big-endian) = 105 bytes.
+  function rigDescriptorHex(parent, child) {
+    return '0x20' + '7e'.repeat(32) + pad32(parent) + pad32(child) + '0000000000000539';
+  }
+
+  const rigAdvance = advanceLog({
+    epoch: 7, idx: 0, miner: MINER, parent: genesis.stateRoot, child: temporalVec.childStateRoot,
+    // A rig `patchHash` is keccak256("coretex-transition-descriptor-v2" || descriptor) — a
+    // DIFFERENT function from this lane's `computePatchHash`, so it necessarily disagrees with it.
+    patchHash: '0x' + 'ab'.repeat(32),
+    evalHash: '0x' + '11'.repeat(32), cvh: BUNDLE, corpus: CORPUS, frontier: FRONTIER,
+    credits: 30000, wordCount: 0x20,
+    patchHex: rigDescriptorHex(genesis.stateRoot, temporalVec.childStateRoot),
+  });
+
+  test('the payload really is 105 bytes with a 0x20 version byte', () => {
+    const a = decodeCoreTexStateAdvanced(rigAdvance);
+    assert.equal(a.compactPatchBytes.length, 105);
+    assert.equal(a.compactPatchBytes[0], 0x20);
+  });
+
+  test('replay refuses it as CROSS_LANE_RIG_ADVANCE, NOT as PATCH_HASH_MISMATCH', () => {
+    const r = replayCoreTexFromLogs(empty, [rigAdvance], { expectedBundleHash: BUNDLE });
+    assert.equal(r.ok, false);
+    assert.equal(r.code, 'CROSS_LANE_RIG_ADVANCE');
+    assert.notEqual(r.code, 'PATCH_HASH_MISMATCH');
+    assert.match(r.message, /RIG-LANE advance/);
+    assert.match(r.message, /NOT an invalid patch/);
+  });
+
+  test('a genuine V4 patch with a corrupted hash still reports PATCH_HASH_MISMATCH', () => {
+    // The classification must not swallow the real refusal it sits in front of.
+    const tampered = advanceLog({
+      epoch: 7, idx: 0, miner: MINER, parent: genesis.stateRoot, child: temporalVec.childStateRoot,
+      patchHash: '0x' + 'cd'.repeat(32), evalHash: '0x' + '11'.repeat(32), cvh: BUNDLE,
+      corpus: CORPUS, frontier: FRONTIER, credits: 30000,
+      wordCount: temporalVec.patch.wordCount, patchHex: temporalVec.patchBytesHex,
+    });
+    const r = replayCoreTexFromLogs(empty, [tampered], { expectedBundleHash: BUNDLE });
+    assert.equal(r.code, 'PATCH_HASH_MISMATCH');
+  });
+
+  test('the discriminator is exported and agrees between the two replay modules', async () => {
+    const registry = await import('../../dist/replay/coretex-registry.js');
+    const dispatch = await import('../../dist/replay/rig-dispatch.js');
+    assert.equal(registry.RIG_TRANSITION_DESCRIPTOR_BYTES, 105);
+    assert.equal(registry.RIG_TRANSITION_DESCRIPTOR_VERSION, 0x20);
+    assert.equal(dispatch.RIG_TRANSITION_DESCRIPTOR_BYTES, registry.RIG_TRANSITION_DESCRIPTOR_BYTES);
+    assert.equal(dispatch.RIG_TRANSITION_DESCRIPTOR_VERSION, registry.RIG_TRANSITION_DESCRIPTOR_VERSION);
+    const lane = dispatch.laneSeparation();
+    assert.equal(lane.addressFilterMandatory, true);
+    assert.deepEqual(lane.payloadDiscriminator, { descriptorBytes: 105, versionByte: 0x20 });
+    // A legal V4 compact patch is never mistaken for a descriptor.
+    const real = Buffer.from(temporalVec.patchBytesHex.replace(/^0x/, ''), 'hex');
+    assert.equal(registry.isRigLaneTransitionDescriptor(new Uint8Array(real)), false);
+  });
+});
+
+/** The V4 registry address these pagination tests scope their queries to. The filter is MANDATORY
+ *  (see `coretexRangeLogs`): `CoreTexStateAdvanced`'s topic0 is shared with the rig registry, so an
+ *  unfiltered query returns two lanes interleaved and cannot be attributed. These tests are about
+ *  chunking, so any address will do — what matters is that there IS one. */
+const REGISTRY = '0x' + '11'.repeat(20);
+
 describe('coretexRangeLogs — pagination + confirmation-depth capping', () => {
   function withFetchMock(latestBlockNumber, fn) {
     const calls = [];
@@ -242,7 +311,7 @@ describe('coretexRangeLogs — pagination + confirmation-depth capping', () => {
 
   test('chunks the range at chunkBlocks boundaries and caps toBlock at latest - confirmationDepth', () =>
     withFetchMock(200n, async (calls) => {
-      const logs = await coretexRangeLogs('http://127.0.0.1:1', '0x' + '11'.repeat(20), '0x64', '0xc8', { chunkBlocks: 7, confirmationDepth: 50 });
+      const logs = await coretexRangeLogs('http://127.0.0.1:1', REGISTRY, '0x64', '0xc8', { chunkBlocks: 7, confirmationDepth: 50 });
       assert.deepEqual(logs, []);
       // latest=200, depth=50 → confirmed head 150; requested 100..200 → 100..150 in chunks of 7
       assert.equal(calls[0].fromBlock, 100n);
@@ -261,14 +330,14 @@ describe('coretexRangeLogs — pagination + confirmation-depth capping', () => {
 
   test('range entirely beyond the confirmed head yields zero eth_getLogs calls', () =>
     withFetchMock(100n, async (calls) => {
-      const logs = await coretexRangeLogs('http://127.0.0.1:1', undefined, '0x60', '0x64', { chunkBlocks: 10, confirmationDepth: 50 });
+      const logs = await coretexRangeLogs('http://127.0.0.1:1', REGISTRY, '0x60', '0x64', { chunkBlocks: 10, confirmationDepth: 50 });
       assert.deepEqual(logs, []);
       assert.equal(calls.length, 0); // from=96 > confirmed head 50
     }));
 
   test('latestBlock option skips the eth_blockNumber round-trip', () =>
     withFetchMock(0n, async (calls, blockNumberCalls) => {
-      await coretexRangeLogs('http://127.0.0.1:1', undefined, '0x0', '0x10', { chunkBlocks: 100, confirmationDepth: 0, latestBlock: 16n });
+      await coretexRangeLogs('http://127.0.0.1:1', REGISTRY, '0x0', '0x10', { chunkBlocks: 100, confirmationDepth: 0, latestBlock: 16n });
       assert.equal(blockNumberCalls(), 0);
       assert.equal(calls.length, 1);
       assert.equal(calls[0].fromBlock, 0n);
@@ -279,7 +348,7 @@ describe('coretexRangeLogs — pagination + confirmation-depth capping', () => {
     withFetchMock(100000n, async (calls) => {
       assert.equal(CORETEX_DEFAULT_LOG_CHUNK_BLOCKS, 9500);
       assert.equal(CORETEX_DEFAULT_CONFIRMATION_DEPTH, 15);
-      await coretexRangeLogs('http://127.0.0.1:1', undefined, '0x0', '0x' + (100000).toString(16));
+      await coretexRangeLogs('http://127.0.0.1:1', REGISTRY, '0x0', '0x' + (100000).toString(16));
       // confirmed head 99985; 99986 blocks / 9500 → 11 chunks
       assert.equal(calls.length, 11);
       assert.equal(calls[0].toBlock, 9499n);
@@ -288,8 +357,29 @@ describe('coretexRangeLogs — pagination + confirmation-depth capping', () => {
 
   test('rejects non-positive chunk size', async () => {
     await assert.rejects(
-      () => coretexRangeLogs('http://127.0.0.1:1', undefined, '0x0', '0x10', { chunkBlocks: 0, latestBlock: 16n }),
+      () => coretexRangeLogs('http://127.0.0.1:1', REGISTRY, '0x0', '0x10', { chunkBlocks: 0, latestBlock: 16n }),
       /chunkBlocks must be positive/,
     );
   });
+
+  // ── the address filter is MANDATORY (cross-lane topic0 collision) ──
+  test('an absent address filter is REFUSED, never widened into an unfiltered query', async () => {
+    for (const absent of [undefined, '', [], ['']]) {
+      await assert.rejects(
+        () => coretexRangeLogs('http://127.0.0.1:1', absent, '0x0', '0x10', { latestBlock: 16n }),
+        /an address filter is REQUIRED/,
+        `address=${JSON.stringify(absent)} must be refused`,
+      );
+    }
+  });
+
+  test('the address filter reaches eth_getLogs, as a scalar or a list', () =>
+    withFetchMock(0n, async (calls) => {
+      await coretexRangeLogs('http://127.0.0.1:1', REGISTRY, '0x0', '0x10', { confirmationDepth: 0, latestBlock: 16n });
+      assert.equal(calls[0].address, REGISTRY);
+      calls.length = 0;
+      const both = [REGISTRY, '0x' + '22'.repeat(20)];
+      await coretexRangeLogs('http://127.0.0.1:1', both, '0x0', '0x10', { confirmationDepth: 0, latestBlock: 16n });
+      assert.deepEqual(calls[0].address, both);
+    }));
 });

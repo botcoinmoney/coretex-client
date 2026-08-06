@@ -8,6 +8,21 @@
  "client_package": "coretex-validator",
  "client_repository": "https://github.com/botcoinmoney/coretex-client",
  "client_version": "0.1.0",
+ "era": {
+  "era": "LEGACY",
+  "label": "pre-coretex.transition-descriptor/v2",
+  "reproducible_at_client_commit": "a4a18bc",
+  "reproducible_at_rig_commit": "cdb91d211e4620c6ecfd90b68d827d607033e1f1",
+  "retired_rules": {
+   "patch_hash_rule": "keccak256(utf8('coretex-patch-hash-v1') || compactPatchBytes)",
+   "receipt_typehash": "0x1cb41d15e03f32744933332c24f5fe35eb76fdc99cbdc02c432aad682c67973b",
+   "signed_member_20": "uint16 stateWordCount",
+   "transition_format": "the 42..178-byte 4-changed-word compact patch"
+  },
+  "does_not_reproduce_under": "coretex.transition-descriptor/v2 (client ba2bd36 and later, rig ba4d5acf and later). `resolver_snapshot.py` embeds the CURRENT `resolver_schema_constants` into the payload it reconstructs and `compare()` is whole-document byte equality, so today's code yields `identical=False` on the `derivation` block: the schema DESCRIPTION moved (transitionFormatVersion, typehash 0x70419dc5..., transition_descriptor_hash_rule, rig source ba4d5acf...), the chain-derived facts did not.",
+  "not_a_regression": "That divergence is the ERA BOUNDARY, not a failed reproduction. Reading it as one would be a false divergence on valid legacy history - the same class of defect the v2 migration exists to remove. The live constants are deliberately NOT forked to chase this data; the boundary is guarded instead by `python/tests/test_rig_lane.py::TestSchemaV1AndV2::test_epoch_180_is_LEGACY_ERA_and_the_divergence_from_live_constants_is_PINNED`, and the two real 0xff patches are still replayed under the retired decoder by `test_the_real_epoch_180_patches_decode_to_documented_ground_truth`.",
+  "published_payload_is_immutable": "the epoch-180 snapshot and its signature are NEVER edited to agree with newer constants"
+ },
  "closed_since_first_written": {
   "F11": "runtime-integration record published (root 309cf988\u2026, commit df3c2ae)",
   "F4": "admission code trees published (root d90f469c\u2026)",

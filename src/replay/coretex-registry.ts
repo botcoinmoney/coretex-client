@@ -62,6 +62,38 @@ function wordNum(data: Uint8Array, i: number): bigint { let v = 0n; for (let j =
 function topicBig(t: string | undefined): bigint { return BigInt(t ?? '0x0'); }
 function topicAddr(t: string | undefined): string { const h = (t ?? '0x' + '00'.repeat(32)).replace(/^0x/, ''); return '0x' + h.slice(-40).toLowerCase(); }
 
+// ── the rig-lane discriminator (cross-lane topic0 collision) ──
+//
+// The RIG registry emits `CoreTexStateAdvanced(...)` with the SAME parameter types as this lane,
+// so its topic0 is BYTE-IDENTICAL and this decoder reads a rig advance correctly. What it cannot
+// do is tell which lane the log belongs to — topic0 does not say, and only the emitting address
+// does. See `rig-dispatch.ts`'s header.
+//
+// What that used to cost: a rig advance reaching `replayCoreTexFromLogs` had its
+// `coretex.transition-descriptor/v2` bytes hashed under THIS lane's retired
+// `coretex-patch-hash-v1` label and was reported as `PATCH_HASH_MISMATCH` — a false FAIL that
+// SLANDERS a perfectly valid mine as a forged patch. The two lanes' `patchHash` rules are
+// different functions; disagreeing with one says nothing about the other.
+//
+// The rig lane's `compactPatchBytes` is a FIXED 105-byte descriptor whose first byte is the opaque
+// version tag `0x20`. No legal V4 compact patch has that shape: the V4 patch's first byte is a
+// `patchType` from a closed set that does not contain `0x20`, and its legal lengths are
+// {75,76} ∪ {108..110} ∪ {141..144} ∪ {174..178}, which does not contain 105. So the pair
+// (length, first byte) classifies the log's LANE without needing its address — which matters
+// because it lets a caller that got its filter wrong be TOLD what it fetched.
+/** `RigCoreTexVerifier.TRANSITION_DESCRIPTOR_BYTES`. The length IS the format. */
+export const RIG_TRANSITION_DESCRIPTOR_BYTES = 105;
+/** `RigCoreTexVerifier.TRANSITION_DESCRIPTOR_VERSION` — an opaque tag, compared for equality. */
+export const RIG_TRANSITION_DESCRIPTOR_VERSION = 0x20;
+
+/** Is this advance's payload a rig-lane transition descriptor rather than a V4 compact patch? */
+export function isRigLaneTransitionDescriptor(compactPatchBytes: Uint8Array): boolean {
+  return (
+    compactPatchBytes.length === RIG_TRANSITION_DESCRIPTOR_BYTES &&
+    compactPatchBytes[0] === RIG_TRANSITION_DESCRIPTOR_VERSION
+  );
+}
+
 /** Max blocks per eth_getLogs request (most Base RPC providers cap unpaginated ranges at 10k). */
 export const CORETEX_DEFAULT_LOG_CHUNK_BLOCKS = 9500;
 /** Default reorg shielding: Base ~2s blocks → 15 blocks ≈ 30s behind head. */
@@ -80,14 +112,29 @@ export interface CoreTexRangeLogOptions {
  * Fetch all canonical CoreTexRegistry logs (advanced/finalized) in a block range.
  * Pages eth_getLogs in bounded chunks and caps toBlock at (latest - confirmationDepth) so
  * replay never ingests reorg-prone head blocks or trips provider range limits.
+ *
+ * THE ADDRESS FILTER IS MANDATORY, and that is a fail-closed tightening, not an ergonomic choice.
+ * `CoreTexStateAdvanced`'s topic0 is shared with the RIG registry (see the discriminator note
+ * above), so a topic-only query over a range returns BOTH lanes' confirmed history interleaved and
+ * there is no way, after the fact, to say which advance came from where. An unfiltered query is
+ * therefore not "a broader query" — it is a query whose result cannot be interpreted. Callers that
+ * genuinely want every registry pass the list of addresses they mean.
  */
 export async function coretexRangeLogs(
   rpcUrl: string,
-  address: string | readonly string[] | undefined,
+  address: string | readonly string[],
   fromBlock: string,
   toBlock: string,
   opts: CoreTexRangeLogOptions = {},
 ): Promise<RpcLog[]> {
+  const addresses = typeof address === 'string' ? [address] : Array.from(address ?? []);
+  if (addresses.length === 0 || addresses.some((a) => typeof a !== 'string' || a.length === 0)) {
+    throw new Error(
+      'coretexRangeLogs: an address filter is REQUIRED. CoreTexStateAdvanced shares its topic0 ' +
+        'with the rig registry, so a topic-only query mixes two lanes of confirmed history and ' +
+        'the result cannot be attributed to either',
+    );
+  }
   const chunkBlocks = BigInt(opts.chunkBlocks ?? CORETEX_DEFAULT_LOG_CHUNK_BLOCKS);
   if (chunkBlocks <= 0n) throw new Error('coretexRangeLogs: chunkBlocks must be positive');
   const confirmationDepth = BigInt(opts.confirmationDepth ?? CORETEX_DEFAULT_CONFIRMATION_DEPTH);
@@ -107,7 +154,7 @@ export async function coretexRangeLogs(
         CORETEX_EVENT_TOPICS.CoreTexEpochFinalized,
       ]],
     };
-    if (address) params.address = address;
+    params.address = addresses.length === 1 ? addresses[0] : addresses;
     out.push(...await rpcCall<RpcLog[]>(rpcUrl, 'eth_getLogs', [params]));
   }
   return out;
@@ -145,7 +192,10 @@ export interface CoreTexReplayResult {
   readonly code?: 'STATE_PARENT_MISMATCH' | 'PATCH_HASH_MISMATCH'
     | 'APPLY_FAILED' | 'NEW_ROOT_MISMATCH' | 'CORE_VERSION_MISMATCH' | 'OUT_OF_ORDER'
     | 'CORPUS_ROOT_MISMATCH' | 'ACTIVE_FRONTIER_ROOT_MISMATCH' | 'BASELINE_MANIFEST_HASH_MISMATCH'
-    | 'HIDDEN_SEED_COMMIT_MISMATCH' | 'FINAL_ROOT_MISMATCH' | 'NO_PATCH_BYTES';
+    | 'HIDDEN_SEED_COMMIT_MISMATCH' | 'FINAL_ROOT_MISMATCH' | 'NO_PATCH_BYTES'
+    /** A RIG-lane advance reached this V4 replay through the shared topic0. A CLASSIFICATION,
+     *  not a verdict on the advance: it is refused as NOT-OURS, never as an invalid patch. */
+    | 'CROSS_LANE_RIG_ADVANCE';
   readonly message?: string;
   readonly transitions: number;
   readonly reproducedFinalRoot?: string;
@@ -218,6 +268,26 @@ export function replayCoreTexFromLogs(
     }
     if (adv.compactPatchBytes.length === 0) {
       return { ok: false, code: 'NO_PATCH_BYTES', message: `advance ${adv.transitionIndex} has empty compactPatchBytes`, transitions: Number(adv.transitionIndex) };
+    }
+    // CLASSIFY BEFORE JUDGING. A rig-lane advance decodes cleanly here (shared topic0) but its
+    // patchHash is keccak256("coretex-transition-descriptor-v2" ‖ 105 bytes), a different function
+    // from this lane's `computePatchHash`. Running the comparison anyway produced
+    // PATCH_HASH_MISMATCH on a perfectly valid mine — the client calling a valid v2 advance a
+    // forged V4 patch. Refuse it as NOT THIS LANE'S, by name, and say what it actually is.
+    if (isRigLaneTransitionDescriptor(adv.compactPatchBytes)) {
+      return {
+        ok: false,
+        code: 'CROSS_LANE_RIG_ADVANCE',
+        message:
+          `advance ${adv.transitionIndex} carries a ${RIG_TRANSITION_DESCRIPTOR_BYTES}-byte ` +
+          `coretex.transition-descriptor/v2 payload (version byte 0x` +
+          `${RIG_TRANSITION_DESCRIPTOR_VERSION.toString(16)}), so it is a RIG-LANE advance that ` +
+          'reached this V4 replay through the shared CoreTexStateAdvanced topic0. This is NOT an ' +
+          'invalid patch and MUST NOT be reported as one: the rig lane derives patchHash under a ' +
+          'different domain label over different bytes. Scope the log query to the V4 registry ' +
+          'address, or replay it with the rig-lane validator',
+        transitions: Number(adv.transitionIndex),
+      };
     }
     if (!eqHex(computePatchHash(adv.compactPatchBytes), adv.patchHash)) {
       return { ok: false, code: 'PATCH_HASH_MISMATCH', message: `advance ${adv.transitionIndex} patchHash mismatch`, transitions: Number(adv.transitionIndex) };
