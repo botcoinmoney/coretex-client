@@ -171,8 +171,7 @@ RIG_RECEIPT_EVENT_BINDINGS: Tuple[Tuple[str, str], ...] = (
     ("rigId", "rig_id"),
     ("parentStateRoot", "parent_state_root"),
     ("newStateRoot", "new_state_root"),
-    ("corpusRoot", "corpus_root"),
-    ("activeFrontierRoot", "active_frontier_root"),
+    ("epochContextRoot", "epoch_context_root"),
     ("coreVersionHash", "core_version_hash"),
     ("workPolicyHash", "work_policy_hash"),
     ("evalReportHash", "eval_report_hash"),
@@ -274,7 +273,7 @@ def verify_rig_receipt_bindings(receipt: Mapping[str, Any], *, event: dp.RigStat
                               "the confirmed advance does not move the state root")
     # ``transitionFormatVersion`` (was ``stateWordCount`` — coretex.transition-descriptor/v2
     # §9.1). On a state advance it is no longer a count with a lower bound; it is the FIXED
-    # zero-extension of the 105-byte descriptor's version byte, so it must equal that constant
+    # zero-extension of the 97-byte descriptor's version byte, so it must equal that constant
     # exactly, not merely be non-zero.
     version = _required(receipt, "transitionFormatVersion")
     if (not isinstance(version, int) or isinstance(version, bool)
@@ -323,24 +322,23 @@ def verify_rig_receipt_bindings(receipt: Mapping[str, Any], *, event: dp.RigStat
 # --------------------------------------------------------------------------- #
 # The RIG chain-first envelope (§10)
 # --------------------------------------------------------------------------- #
-#: The FOUR law pins the registry re-checks word for word inside ``_recordStateAdvance``, keyed by
+#: The THREE law pins the registry re-checks word for word inside ``_recordStateAdvance``, keyed by
 #: the confirmed event's attribute name. ``baseline_manifest_hash`` and ``hidden_seed_commit`` are
 #: absent because the ADVANCE path does not carry them — they are checked at finalization, where
 #: the log does assert them — and "checked" is not a thing you can do to a value the log never
 #: published.
 RIG_ENFORCED_PIN_FIELDS: Tuple[str, ...] = (
-    "corpus_root", "active_frontier_root", "core_version_hash", "work_policy_hash")
+    "epoch_context_root", "core_version_hash", "work_policy_hash")
 
-#: The labelled ``patchHash`` rule the coordinator lane signs (Q-10, still open). Duplicated here
+#: The labelled ``patchHash`` rule the coordinator lane signs. Duplicated here
 #: as a LITERAL rather than imported from ``e2e`` on purpose: a validator must not depend on the
 #: proof harness (see :data:`RigReceiptHasher`). The two are asserted equal by the rig scenario.
 #:
-#: MIGRATION NOTE (transition-descriptor v2). This used to be
+#: MIGRATION NOTE (transition-descriptor v3). This used to be
 #: ``b"coretex-memory-transition-hash-v1"`` — the V5 MEMORY lane's domain, which
 #: :mod:`.rig_events` independently flags as wrong for this lane ("the staged check does not
-#: merely differ in style: it refuses every real advance"). It is now the LIVE v2 label, AND — the
-#: half that was missed the first time (review M-9) — it is applied to the LIVE v2 PREIMAGE: the
-#: 105 descriptor bytes, never the canonical-JSON transition object. The label and the preimage are
+#: merely differ in style: it refuses every real advance"). It is now the LIVE v3 label, applied
+#: to the 97 descriptor bytes, never the canonical-JSON transition object. Label and preimage are
 #: one rule; migrating either alone produces a check that cannot pass.
 #:
 #: Note the scope limit this envelope inherited from :class:`dispatch.RigStateAdvanced` (the
@@ -349,7 +347,9 @@ RIG_ENFORCED_PIN_FIELDS: Tuple[str, ...] = (
 #: so the descriptor must be handed to :func:`validate_rig_chain_first` beside the event, and an
 #: absent descriptor is a typed REFUSAL rather than a skipped check. Unifying the two event shapes
 #: is a bigger change than this migration and is out of scope here.
-RIG_PATCH_HASH_LABEL = b"coretex-transition-descriptor-v2"
+RIG_PATCH_HASH_LABEL = b"coretex-transition-descriptor-v3"
+#: This lane's immediately superseded 105-byte descriptor label.
+RIG_PATCH_HASH_LABEL_SUPERSEDED_V2 = b"coretex-transition-descriptor-v2"
 #: The label this constant WAS (kept nameable, never accepted).
 RIG_PATCH_HASH_LABEL_SUPERSEDED = b"coretex-memory-transition-hash-v1"
 #: This lane's own retired 4-word compact-patch label (kept nameable, never accepted).
@@ -362,12 +362,13 @@ class RigCanonicalSnapshot:
 
     ``pins`` is READ INDEPENDENTLY from the registry (or reconstructed from confirmed context and
     commit logs by :func:`dispatch.build_rig_pins_from_logs`) — never copied out of the event it is
-    used to check. A snapshot that repeated the event's own four roots back at it would agree with
+    used to check. A snapshot that repeated the event's own three roots back at it would agree with
     itself by construction and catch nothing.
 
     ``counter_resource_law_root`` IS NOT A CHAIN PIN IN THE RIG LANE, and that is a finding rather
-    than an omission. The rig registry pins six values and the counter-resource law is not among
-    them, so the resource half of the Pareto rule is bound only TRANSITIVELY, inside the bytes
+    than an omission. The rig registry exposes five canonical context/closure values and the
+    counter-resource law is not a separate chain cell among them, so the resource half of the
+    Pareto rule is bound only TRANSITIVELY, inside the bytes
     ``evalReportHash`` addresses. The caller therefore supplies the value it expects (from the
     signed release artifact / operator policy) and this envelope REFUSES an artifact that
     disagrees, instead of adopting whatever the artifact happens to say.
@@ -401,11 +402,11 @@ class RigCanonicalChainSource:
 
 
 def _keccak_patch(descriptor_bytes: bytes) -> str:
-    """``keccak256(utf8(LABEL) ++ the 105 DESCRIPTOR bytes)`` — the LABELLED rule, never plain
+    """``keccak256(utf8(LABEL) ++ the 97 DESCRIPTOR bytes)`` — the LABELLED rule, never plain
     keccak, and never over anything but the descriptor.
 
-    THE PREIMAGE IS PART OF THE RULE. Under ``coretex.transition-descriptor/v2`` ``patchHash`` is
-    ``keccak256(label ‖ compactPatchBytes)`` where ``compactPatchBytes`` is the fixed 105-byte
+    THE PREIMAGE IS PART OF THE RULE. Under ``coretex.transition-descriptor/v3`` ``patchHash`` is
+    ``keccak256(label ‖ compactPatchBytes)`` where ``compactPatchBytes`` is the fixed 97-byte
     descriptor. It is NOT the canonical-JSON transition object: that was approximately right under
     the retired model, where the patch committed the input side of the edit, and it is simply a
     different value now. Applying the LIVE label to the RETIRED preimage is the same class of
@@ -421,7 +422,8 @@ def _keccak_patch_dead_label_hint(descriptor_bytes: bytes, expected: str) -> str
     """Name the dead label a mismatched patch hash DOES correspond to, if it is one — the
     "superseded label" idiom :mod:`.rig_events` uses, mirrored here for the same reason."""
     from .keccak256 import keccak256_hex                                    # noqa: WPS433
-    for label in (RIG_PATCH_HASH_LABEL_RETIRED, RIG_PATCH_HASH_LABEL_SUPERSEDED):
+    for label in (RIG_PATCH_HASH_LABEL_SUPERSEDED_V2, RIG_PATCH_HASH_LABEL_RETIRED,
+                  RIG_PATCH_HASH_LABEL_SUPERSEDED):
         if keccak256_hex(label + bytes(descriptor_bytes)) == expected:
             return f" (it DOES match the DEAD label {label.decode('utf-8')!r})"
     return ""
@@ -454,16 +456,16 @@ def validate_rig_chain_first(
     The order is the point, and it is the same order the memory lane uses:
 
       1. the chain snapshot, including the epoch's pins read INDEPENDENTLY of the event;
-      2. the four law pins the registry enforces, re-checked here against the pins a validator
+      2. the three law pins the registry enforces, re-checked here against the pins a validator
          read for itself — this is the check a substituted registry cannot survive;
       3. local coordinator state DEMOTED (a disagreement is a refusal, never a tie-break);
       4. every public dependency fetched by its committed root and REHASHED;
       5. the fetched eval artifact joined to the event: parent, new root, candidate release root,
          and ``keccak256(LABEL ++ compactPatchBytes) == event.patchHash`` over the SUPPLIED
-         105-byte transition descriptor, followed by the descriptor's own layout/parent/new-root
+         97-byte transition descriptor, followed by the descriptor's own layout/parent/new-root
          decode. The staged event shape carries no descriptor, so a caller that supplies none is
          REFUSED (``RIG_TRANSITION_DESCRIPTOR_UNAVAILABLE``) rather than checked against the
-         canonical-JSON transition, which is a different value under v2 — see M-9 in
+         canonical-JSON transition, which is a different value under v3 — see M-9 in
          ``docs/coretex-v5/ADVERSARIAL-REVIEW-DESCRIPTOR-V2-20260806.md``;
       6. the coordinator-signed rig receipt verified against the confirmed advance;
       7. committed canary evidence verified (never re-run);
@@ -610,7 +612,7 @@ def validate_rig_chain_first(
                                   f"the eval artifact's transition is unusable: {exc}") from exc
         # ── THE DESCRIPTOR BINDING, repointed at the descriptor bytes (M-9) ───────────────────
         #
-        # WHAT THIS USED TO BE AND WHY IT WAS WRONG. It hashed the LIVE v2 label over
+        # WHAT THIS USED TO BE AND WHY IT WAS WRONG. It hashed the then-LIVE v2 label over
         # `fr.canonical_bytes(front["transition"])` — the canonical-JSON transition object. Under
         # v2 `patchHash = keccak256(label ‖ the 105 descriptor bytes)`, so that comparison can
         # NEVER match a genuine advance: it was the right label on the wrong preimage, the mirror
@@ -623,8 +625,10 @@ def validate_rig_chain_first(
         # WHERE THE BYTES COME FROM. `dispatch.RigStateAdvanced` is the STAGED, never-deployed
         # rig-registry event shape (topic0 `7a35edec…`); it carries no `compactPatchBytes` member
         # at all, so the descriptor cannot be recovered from the event and must be supplied by the
-        # caller alongside it. The DEPLOYED event (`rig_events.StateAdvanced`, topic0 `2f0a8989…`)
-        # does carry them, and `pipeline.py`'s join decodes them in full against the real log.
+        # caller alongside it. The historical v2 event
+        # (`rig_events.LegacyV2StateAdvanced`, topic0 `2f0a8989…`) did carry them; the v3 live
+        # event does as well, under its distinct topic, and `pipeline.py` decodes the applicable
+        # descriptor in full against the real log.
         #
         # FAIL CLOSED WHEN THEY ARE ABSENT. "The bytes the rule is defined over were not supplied"
         # is not a reason to admit the advance, and it is emphatically not a reason to fall back
@@ -633,7 +637,7 @@ def validate_rig_chain_first(
         if compact_patch_bytes is None:
             raise ChainFirstError(
                 "RIG_TRANSITION_DESCRIPTOR_UNAVAILABLE",
-                "under coretex.transition-descriptor/v2 patchHash is keccak256(LABEL ++ the 105 "
+                "under coretex.transition-descriptor/v3 patchHash is keccak256(LABEL ++ the 97 "
                 "DESCRIPTOR bytes), and this envelope's event type (the STAGED "
                 "RigCoreTexStateAdvanced shape) carries no compactPatchBytes, so the descriptor "
                 "must be supplied by the caller. It was not. This is a REFUSAL and not a skipped "
@@ -645,7 +649,7 @@ def validate_rig_chain_first(
         if computed_patch != event.patch_hash:
             raise ChainFirstError(
                 "RIG_PATCH_HASH_MISMATCH",
-                f"keccak256(LABEL ++ compactPatchBytes) over the supplied 105-byte transition "
+                f"keccak256(LABEL ++ compactPatchBytes) over the supplied 97-byte transition "
                 f"descriptor is {computed_patch}, the confirmed advance asserts "
                 f"{event.patch_hash}"
                 f"{_keccak_patch_dead_label_hint(descriptor_bytes, event.patch_hash)}. THIS is "

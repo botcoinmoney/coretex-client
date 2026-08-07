@@ -45,7 +45,7 @@ staged table for anything that touches a real chain. The staged table is **kept*
 — a decoder for a protocol that was never deployed — because deleting it would erase the evidence
 of what changed.
 
-### F2 — The rig advance topic0 is byte-identical to the V4 lane's
+### F2 — HISTORICAL: descriptor-v2 shared the V4 lane's topic0; descriptor-v3 does not
 
 ```
 CoreTexStateAdvanced(uint64,uint64,address,bytes32,bytes32,bytes32,bytes32,bytes32,
@@ -53,21 +53,21 @@ CoreTexStateAdvanced(uint64,uint64,address,bytes32,bytes32,bytes32,bytes32,bytes
   → 2f0a89894d44aa2294de109d294ac072f0e206dc834a0c35c6fbf1623ec02dd0
 ```
 
-That is the same digest as `dispatch.V4_STATE_ADVANCED_TOPIC0`, and `CoreTexEpochFinalized`
+That **descriptor-v2** signature is the same digest as `dispatch.V4_STATE_ADVANCED_TOPIC0`, and
+its `CoreTexEpochFinalized`
 likewise matches `V4_EPOCH_FINALIZED_TOPIC0`. It is deliberate on the contract's side — design
 §7.3 wants an indexer written for `RigCoreTexRegistry` to decode these logs unchanged — and it
 **flatly contradicts** the staged dispatcher's stated requirement that "V5 must never emit an
 event that collides with `CoreTexStateAdvanced`'s topic0". The dispatcher's import-time
 non-collision assertion passes only because it is checking a signature the chain never emits.
 
-The contract wins: it is the thing that emits logs. So:
+Descriptor-v3 replaces `corpusRoot + activeFrontierRoot` with `epochContextRoot`. The live
+advance topic is now `0xf2b42259…`, the finalization topic is `0x21223482…`, and the context-set
+topic is `0x024a5527…`; none equals the retired v2/V4 advance topic. Therefore:
 
-* **topic0 is not an identity.** A log at `2f0a8989…` is a V4 advance or a rig advance depending
-  only on which address emitted it. Routing is by address, in both languages.
-* **The wire format is shared, so the DECODE is shared.** Identical topic0 means identical
-  signature means identical field layout — the existing decoder reads a rig advance correctly.
-  The lanes diverge at *interpretation* (which registry owns the epoch, which verifier holds its
-  pins), never at decoding. This is why the TypeScript side adds no second advance decoder.
+* Live routing remains address-scoped, but the v3 wire format has its own decoder and topic.
+* Genuine v2 deployments remain readable only through explicitly named legacy-v2 decoders.
+  Their topics are absent from the live subscription table; there is no live dual-accept branch.
 * Note there are **three** advance generations, not two: `v4.ts`'s original
   `CortexStateAdvanced` + `CoretexPatchBytes` pair is distinct from both and collides with
   neither.
@@ -91,12 +91,9 @@ the whole rig chain-first envelope fails closed on correct data. Fixed in
 `rig_events.PATCH_HASH_LABEL`; the superseded label is kept beside it so a mismatch can *report*
 which rule produced the digest rather than leaving an operator to guess.
 
-**SUPERSEDED (2026-08-06, §7).** `coretex-patch-hash-v1` — the label this finding names as
-*correct* — is itself now the RETIRED rule: transition-descriptor v2 replaces it with
-`coretex-transition-descriptor-v2`. `chain_first.RIG_PATCH_HASH_LABEL` now carries the live v2
-label (it previously carried the memory lane's, which this finding correctly identified as
-wrong); the two-labels-give-different-digests property this finding relies on still holds, just
-with a third label added to the refused set. See §7 for the full correction.
+**SUPERSEDED twice (§§7–8).** `coretex-patch-hash-v1` was replaced by descriptor-v2, which is now
+itself historical. The live rule is `coretex-transition-descriptor-v3`; both earlier rig labels
+and the memory-lane label are named refusals, never fallback acceptance.
 
 ### F4 — CLOSED: the admission code trees are published
 
@@ -356,18 +353,16 @@ never silently becomes "X is broken".
 > `cdb91d21`**, under the retired word-diff rules (`stateWordCount`, typehash `0x1cb41d15…`,
 > `patchHash = keccak256("coretex-patch-hash-v1" ‖ compactPatchBytes)`).
 >
-> **It does not reproduce under today's code, and that is correct.** `resolver_snapshot.py` embeds
-> the current `resolver_schema_constants` into the payload it *reconstructs*, and `compare()` is
-> whole-document byte equality, so re-running it against `coretex.transition-descriptor/v2`
-> constants yields a loud `identical=False` on `derivation` — the schema *description* moved
-> (`transitionFormatVersion`, typehash `0x70419dc5…`, `transition_descriptor_hash_rule`, rig source
-> `ba4d5acf…`), the chain-derived facts did not. Reading that as a failed reproduction would be a
-> false divergence on valid legacy history: the same "slander a valid mine" class the v2 migration
-> exists to remove.
+> **It reproduces through an explicitly versioned historical path.** `resolver_snapshot.py`
+> selects immutable `DERIVATION_V1`, the stateWordCount-era calldata/typehash, the legacy event
+> decoder, and the legacy compact-patch hash rule only when the declared schema is `/v1`.
+> Descriptor-v2 and descriptor-v3 have separate constants/builders. No current value is projected
+> backward into epoch-180 bytes, and no legacy topic/typehash is accepted by the live v3 route.
 >
-> The live constants are deliberately **not forked** to chase this data. What is guarded instead is
-> the boundary itself: `test_epoch_180_is_LEGACY_ERA_and_the_divergence_from_live_constants_is_PINNED`
-> pins the legacy-era values the published bytes carry *and* asserts today's constants differ, and
+> The constants are deliberately **forked by declared schema**, not guessed from payload shape.
+> `test_epoch_180_is_LEGACY_ERA_and_the_divergence_from_live_constants_is_PINNED`
+> pins the legacy-era values the published bytes carry, asserts `DERIVATION_V1` equals them, and
+> asserts today's constants differ; and
 > `test_the_real_epoch_180_patches_decode_to_documented_ground_truth` still replays the two real
 > 75-byte `0xff` patches under the retired decoder. The published payload is never modified.
 
@@ -613,7 +608,11 @@ performs, not a gap in what it proves.
 
 ---
 
-## 7. Protocol correction: `coretex.transition-descriptor/v2` (2026-08-06)
+## 7. Historical correction: `coretex.transition-descriptor/v2` (2026-08-06)
+
+> Descriptor-v2 is retained for genuine historical deployments only. It is not the live rig
+> protocol and none of its topics, selector, typehash, descriptor length or label is accepted as
+> a v3 fallback. See §8.
 
 **The word-diff era is retired, pre-production.** Nothing in §§1-6 above describes a live
 deployment — the rehearsal legs proven there were, and remain, run against the retired 4-word
@@ -637,7 +636,7 @@ in this repo and why, alongside `specs/patch_format.md`'s technical rewrite.
   `0x1cb41d15e03f32744933332c24f5fe35eb76fdc99cbdc02c432aad682c67973b` to
   `0x70419dc57753cec023e5ca1563c9eb5858d96ddb82144f3c9e6d40e8f334b2cf`. Re-derived independently
   from the member list with this repo's own `keccak256` implementation and pinned in
-  `python/tests/test_rig_lane.py::TestRigReceiptTypehashV2`, not merely transcribed.
+  the then-current receipt typehash tests, not merely transcribed.
 * **New hash label**: `patchHash = keccak256("coretex-transition-descriptor-v2" ‖
   compactPatchBytes)`. Both prior labels — `coretex-patch-hash-v1` (this lane's own retired
   4-word rule) and `coretex-memory-transition-hash-v1` (the V5 memory lane's, and F3's finding
@@ -648,14 +647,14 @@ in this repo and why, alongside `specs/patch_format.md`'s technical rewrite.
   It was called `BUNDLE_SHA256`, which is the generated binding's name for a *different* object
   (the sha256 of the rig integration `bundle.json`) — one name, two unrelated values, and nothing
   comparing them. This package states no bundle sha256 of its own: the real generation tool
-  (`scripts/generate-rig-receipt-bindings.mjs`) and a v2 ABI bundle are not vendored here, so this
+  (`scripts/generate-rig-receipt-bindings.mjs`) and an ABI bundle are not vendored here, so this
   file's values were hand-transcribed from the migrated coordinator's mirrored binding and
   independently re-derivation-checked (see the file's own header note). The transcription is now
   guarded: `python/tests/test_rig_lane.py::TestGeneratedBindingParity` compares **every shared
   module-level constant** against the coordinator's `v5/e2e/generated_rig_receipt_binding.py` when
   that file is on the host (`CORETEX_GENERATED_RIG_BINDING` overrides the search), with an explicit
   exemption table for the handful that are legitimately different. The file should still be
-  regenerated for real once a v2 bundle is available.
+  regenerated for real from the final bundle when it is available.
 * The registry event/mutator field renames the same way: `wordCount` → `transitionFormatVersion`
   in `CoreTexStateAdvanced` and `submitStateAdvance`. Neither the event topic0
   (`2f0a8989…`) nor the mutator selector (`0xa2d87e1d`) changes — Solidity signatures are built
@@ -687,13 +686,12 @@ first byte (`0xff`) is a permanently-burned version, and the whole point of keep
 still decode them exactly as it always could. `resolver_schema_constants.py` keeps its
 `payload_sha256`/`DISCLOSURE`/`PRIOR` transcription of that real epoch-180 snapshot byte-for-byte;
 only the module's *schema description* (the typehash, the hash rule, the `stateWordCount` →
-`transitionFormatVersion` join-recipe entry) moves to the v2 values a future real snapshot would
-need to match, because there is no v2 mainnet snapshot to transcribe yet. Nothing described in
-this section is armed for a live epoch — see the normative spec's own "OFFLINE, PRE-ARM" status
-line.
+`transitionFormatVersion` join-recipe entry) is preserved as `DERIVATION_V2`; `/v1` retains its
+published stateWordCount bytes in `DERIVATION_V1`. Nothing described in this section is the live
+v3 protocol.
 
 **Test suite**: 600 passed / 8 skipped before this migration → 634 passed / 8 skipped after
-(34 new: `TestTransitionDescriptorV2`, `TestTransitionArtifactV2`, `TestRigReceiptTypehashV2`, plus
+(34 new descriptor-v2/artifact/typehash controls, plus
 adversarial additions to the existing rig-lane and chain-first suites). `decode_compact_patch`'s
 own adversarial suite (`TestCompactPatchIsBinaryNotJson`) is unchanged in shape and still green —
 it tests HISTORY, which does not move.
@@ -712,3 +710,50 @@ for a future pass, tracked here rather than left to be discovered.
 `test/unit/chain-mirror-solidity-parity.test.mjs` still reference `stateWordCount` and the
 word-diff `compactPatchBytes` model. They are TypeScript coordinator-side code, outside this
 migration's given scope (the Python validator client), and were not touched.
+
+---
+
+## 8. Live protocol: `coretex.transition-descriptor/v3`
+
+Canonical source: `botcoin-mining-rigs` commit
+`a473f3fd1038a81f8ef456cd4c7ce1f7b9fbef6e`. The live transition descriptor is exactly 97 bytes:
+
+```
+0x21 || patchArtifactHash[32] || parentStateRoot[32] || newStateRoot[32]
+```
+
+There is no score-delta field and no word-count ceiling. `patchHash` is
+`keccak256("coretex-transition-descriptor-v3" || descriptor)`. The complete generalized patch is
+fetched by `patchArtifactHash`, canonical-byte checked, rehashed, and replayed before admission.
+
+The epoch uses three canonical pins: parent/live state, `coreVersionHash`, and
+`epochContextRoot`. The last is the sha256 address of a closed `coretex.epoch-context/v1`
+manifest. Corpus, active frontier, baseline, law roots, selection law, thresholds, and the seed
+commitment scheme live inside that manifest; they are not duplicate chain cells. The client
+fetches and rehashes the served epoch-context bytes separately and refuses missing, substituted,
+non-canonical, or malformed documents.
+
+The receipt has 24 signed fields and 26 ABI tuple members. `epochContextRoot` replaces the signed
+`corpusRoot + activeFrontierRoot` pair. Pins:
+
+* typehash: `0xd21a4141318ac86ffd63faa82975263001e87a21ce5db2db3230837a90d2dab3`
+* `submitCoreTexReceipt` selector: `0xed5daa91`
+* `submitStateAdvance` selector: `0x0ae06920`
+* `epochContextRoot(uint64)` selector: `0x8104642b`
+* advance/finalize/context topics: `0xf2b42259…`, `0x21223482…`, `0x024a5527…`
+
+Resolver snapshots use `coretex.rig-state.resolver-snapshot/v3`. The top-level unsigned
+`authority` envelope has the same key set as v2, but the inner chain-derived state is different:
+
+* `state.context` is closed to `configured`, `epoch`, `parent_state_root`,
+  `core_version_hash`, `epoch_context_root`, `hidden_seed_commit`;
+* a sealed `state.header` is exactly `patch_set_root + score_root`; the final state remains
+  `liveStateRoot`, frozen by `epochFinalized`;
+* transition events and receipts carry `epoch_context_root` / `epochContextRoot`;
+* the separately resolved epoch-context manifest appears in the artifact index and is never
+  flattened back into `state.context`.
+
+Historical `/v1` and `/v2` builders, receipt layouts, event scanners, and hash rules remain
+explicitly named. The live scanner subscribes only to v3 topics. The committed
+`python/tests/fixtures/rig-descriptor-v3-vector.json` independently pins the descriptor bytes/hash,
+receipt facts, selectors, and moved topics.

@@ -362,6 +362,14 @@ class RigViews:
         return self._call(self.deployment.registry, "epochParentStateRoot(uint64)",
                           _encode_uint(epoch)).hex()
 
+    def epoch_core_version_hash(self, epoch: int) -> str:
+        return self._call(self.deployment.registry, "epochCoreVersionHash(uint64)",
+                          _encode_uint(epoch)).hex()
+
+    def epoch_context_root(self, epoch: int) -> str:
+        return self._call(self.deployment.registry, "epochContextRoot(uint64)",
+                          _encode_uint(epoch)).hex()
+
     def header(self, epoch: int) -> Dict[str, str]:
         """``getHeader(N)``. An UNSEALED epoch returns a ZERO-FILLED struct, not a revert.
 
@@ -372,10 +380,20 @@ class RigViews:
         all-zero header unambiguous only once you have asked.
         """
         raw = self._call(self.deployment.registry, "getHeader(uint64)", _encode_uint(epoch))
-        names = ("parent_state_root", "final_state_root", "core_version_hash", "corpus_root",
-                 "active_frontier_root", "patch_set_root", "score_root", "baseline_manifest_hash")
+        names = ("patch_set_root", "score_root")
         if len(raw) < 32 * len(names):
             raise RpcError(f"getHeader({epoch}) returned {len(raw)} bytes, expected "
+                           f"{32 * len(names)}")
+        return {name: raw[i * 32:(i + 1) * 32].hex() for i, name in enumerate(names)}
+
+    def legacy_v2_header(self, epoch: int) -> Dict[str, str]:
+        """Historical eight-word header decoder; never used for a live descriptor-v3 registry."""
+        raw = self._call(self.deployment.registry, "getHeader(uint64)", _encode_uint(epoch))
+        names = ("parent_state_root", "final_state_root", "core_version_hash", "corpus_root",
+                 "active_frontier_root", "patch_set_root", "score_root",
+                 "baseline_manifest_hash")
+        if len(raw) < 32 * len(names):
+            raise RpcError(f"legacy getHeader({epoch}) returned {len(raw)} bytes, expected "
                            f"{32 * len(names)}")
         return {name: raw[i * 32:(i + 1) * 32].hex() for i, name in enumerate(names)}
 

@@ -6,8 +6,9 @@ get historical verification wrong is to check an old transition against the curr
 conclude it was invalid. The rig lane makes that easy to do by accident, because both halves of
 its law are versioned in ways that read like constants:
 
-* the **epoch context** (``corpusRoot``, ``activeFrontierRoot``, ``coreVersionHash``,
-  ``baselineManifestHash``) is set per epoch on the VERIFIER and frozen at the arm point;
+* the **epoch context** (``epochContextRoot``, ``coreVersionHash``) is set per epoch on the
+  VERIFIER and frozen at the arm point; the manifest addressed by ``epochContextRoot`` contains
+  the corpus, frontier, baseline, thresholds and law roots;
 * the **scoring policy** (``rulesVersion``, screener/state-advance work bps) is SCHEDULED by
   ``effectiveEpoch`` — announced ahead of the epoch it starts applying at, and never retroactive.
 
@@ -51,11 +52,9 @@ class EpochLaw:
     """Everything that was law for one epoch, and where each piece came from."""
 
     epoch: int
-    #: The four values the registry enforces on every advance, from the verifier's context event.
-    corpus_root: str
-    active_frontier_root: str
+    #: The two context values the registry enforces on every advance.
+    epoch_context_root: str
     core_version_hash: str
-    baseline_manifest_hash: str
     #: The epoch's CONTEXT PARENT. A head, not a pin — kept apart deliberately.
     context_parent_state_root: str
     #: The entropy commitment, and the secret if it has been revealed. A transition inside an
@@ -71,8 +70,7 @@ class EpochLaw:
 
     def enforced_pins(self) -> Dict[str, str]:
         """Exactly what an advance carries and the registry checks. NOT the head, NOT the policy."""
-        return {"corpus_root": self.corpus_root,
-                "active_frontier_root": self.active_frontier_root,
+        return {"epoch_context_root": self.epoch_context_root,
                 "core_version_hash": self.core_version_hash}
 
     def as_dict(self) -> Dict[str, Any]:
@@ -95,7 +93,6 @@ class EpochLaw:
         return {
             "format": LAW_FORMAT, "epoch": self.epoch,
             "enforced_pins": self.enforced_pins(),
-            "baseline_manifest_hash": self.baseline_manifest_hash,
             "context_parent_state_root": self.context_parent_state_root,
             "entropy": entropy,
             "policy": policy,
@@ -143,10 +140,8 @@ def law_for_epoch(decoded: rig.DecodedLogs, epoch: int,
                         else dp.LogProvenance(None, None, None, False)))
     return EpochLaw(
         epoch=epoch,
-        corpus_root=context.corpus_root,
-        active_frontier_root=context.active_frontier_root,
+        epoch_context_root=context.epoch_context_root,
         core_version_hash=context.core_version_hash,
-        baseline_manifest_hash=context.baseline_manifest_hash,
         context_parent_state_root=context.parent_state_root,
         entropy_commitment=commit.entropy_commitment if commit else None,
         revealed_secret=reveal.revealed_secret if reveal else None,
@@ -197,8 +192,7 @@ def check_receipt_against_law(receipt_values: Mapping[str, Any], law: EpochLaw) 
             f"the receipt was priced under rulesVersion {claimed}, but the policy in force at "
             f"epoch {law.epoch} is version {law.rules_version} (effective from "
             f"{law.policy_effective_epoch})")
-    for name, key in (("corpusRoot", "corpus_root"),
-                      ("activeFrontierRoot", "active_frontier_root"),
+    for name, key in (("epochContextRoot", "epoch_context_root"),
                       ("coreVersionHash", "core_version_hash")):
         expected = law.enforced_pins()[key]
         if str(receipt_values.get(name)) != expected:

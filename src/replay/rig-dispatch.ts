@@ -3,17 +3,14 @@
  *
  * WHY THIS FILE EXISTS AT ALL, GIVEN `coretex-registry.ts` ALREADY DECODES THE ADVANCE.
  *
- * It does, and that is not a coincidence: the rig registry emits
- * `CoreTexStateAdvanced(...)` with the SAME parameter types as the lane
- * `coretex-registry.ts` was written for, so its topic0 is byte-identical and its
- * decoder reads a rig advance correctly today. What that decoder cannot do is tell
- * you WHICH LANE a log belongs to, because topic0 does not say. Two registries
- * emitting one signature are distinguished only by their address.
+ * Descriptor-v3 collapsed the two context words into `epochContextRoot`, so the live rig
+ * registry event signatures and topics moved. `coretex-registry.ts` remains the explicit
+ * descriptor-v2/legacy decoder; this module owns the v3 live shapes and never dual-accepts them.
  *
- * So the addition here is deliberately NOT another decoder. It is:
+ * The live addition here is deliberately separate from the historical decoder. It is:
  *
- *   1. `RIG_EVENT_TOPICS`  — the events the rig lane emits that the registry does
- *      not: the mining contract's credit + epoch entropy events, and the VERIFIER's
+ *   1. `RIG_EVENT_TOPICS` plus the v3 advance/finalize decoders — the registry's live
+ *      shapes, the mining contract's credit + epoch entropy events, and the VERIFIER's
  *      epoch-context and policy events. The rig lane's law lives on the verifier,
  *      not the registry, so a validator watching only the registry can never read
  *      the pins it is supposed to check an advance against.
@@ -22,11 +19,11 @@
  *      collision); a known topic0 from the WRONG one of our three addresses is an
  *      error, because something is emitting our events from a contract we did not
  *      expect and there is no safe way to guess which claim to believe.
- *   3. `assertLaneSeparation()` — the collision, asserted rather than described.
+ *   3. `assertLaneSeparation()` — the v3 topic separation, asserted rather than described.
  *
- * V4 IS UNTOUCHED. Nothing in `v4.ts` or `coretex-registry.ts` changes; this module
- * imports their topic constants and re-exports them so a caller can hold both
- * dispatch tables at once and see that they overlap.
+ * `v4.ts` is untouched. `coretex-registry.ts` is retained as the named descriptor-v2
+ * historical decoder; this module imports its topic constants and re-exports its legacy
+ * discriminator so a caller can hold both generations without silently dual-accepting them.
  *
  * PARITY WITH THE PYTHON VALIDATOR. Every topic0 below is derived here by hashing
  * the signature string with this package's own keccak — the same way
@@ -37,18 +34,32 @@
  * agree is worth more than one derivation copied twice.
  */
 import { keccak256 } from '../state/keccak256.js';
-import { bytesToHex } from '../state/merkle.js';
+import { bytesToHex, hexToBytes } from '../state/merkle.js';
 import {
   CORETEX_EVENT_TOPICS,
-  RIG_TRANSITION_DESCRIPTOR_BYTES,
-  RIG_TRANSITION_DESCRIPTOR_VERSION,
-  isRigLaneTransitionDescriptor,
+  LEGACY_V2_RIG_TRANSITION_DESCRIPTOR_BYTES,
+  LEGACY_V2_RIG_TRANSITION_DESCRIPTOR_VERSION,
+  isLegacyV2RigLaneTransitionDescriptor,
 } from './coretex-registry.js';
 import { V4_EVENT_TOPICS, type RpcLog } from './v4.js';
 
 /** Re-exported so a caller holding both dispatch tables can classify a payload without reaching
  *  into the V4 module, and so the two files cannot drift on what "a rig advance looks like". */
-export { RIG_TRANSITION_DESCRIPTOR_BYTES, RIG_TRANSITION_DESCRIPTOR_VERSION, isRigLaneTransitionDescriptor };
+export {
+  LEGACY_V2_RIG_TRANSITION_DESCRIPTOR_BYTES,
+  LEGACY_V2_RIG_TRANSITION_DESCRIPTOR_VERSION,
+  isLegacyV2RigLaneTransitionDescriptor,
+};
+
+/** Live `RigCoreTexVerifier.TRANSITION_DESCRIPTOR_BYTES`. */
+export const RIG_TRANSITION_DESCRIPTOR_BYTES = 97;
+/** Live opaque descriptor version tag. */
+export const RIG_TRANSITION_DESCRIPTOR_VERSION = 0x21;
+
+export function isRigLaneTransitionDescriptor(compactPatchBytes: Uint8Array): boolean {
+  return compactPatchBytes.length === RIG_TRANSITION_DESCRIPTOR_BYTES
+    && compactPatchBytes[0] === RIG_TRANSITION_DESCRIPTOR_VERSION;
+}
 
 function eventTopic(sig: string): string {
   return bytesToHex(keccak256(new TextEncoder().encode(sig)));
@@ -67,14 +78,21 @@ const SIG_EPOCH_COMMIT_SET = 'EpochCommitSet(uint64,bytes32)';
 const SIG_EPOCH_SECRET_REVEALED = 'EpochSecretRevealed(uint64,bytes32)';
 /** `RigCoreTexVerifier.sol:82-89` — the epoch's law pins, on the VERIFIER. */
 const SIG_EPOCH_CONTEXT_SET =
-  'CoreTexEpochContextSet(uint64,bytes32,bytes32,bytes32,bytes32,bytes32)';
+  'CoreTexEpochContextSet(uint64,bytes32,bytes32,bytes32)';
 /** `RigCoreTexVerifier.sol:90-97` — scheduled by `effectiveEpoch`, never retroactive.
  *  This is what makes HISTORICAL law recoverable from logs alone. */
 const SIG_POLICY_SCHEDULED =
   'CoreTexPolicyScheduled(uint32,uint64,bytes32,uint256,uint256[],uint256[])';
 
-/** The rig-lane events that are NOT already in `CORETEX_EVENT_TOPICS`. */
+const SIG_STATE_ADVANCED =
+  'CoreTexStateAdvanced(uint64,uint64,address,bytes32,bytes32,bytes32,bytes32,bytes32,bytes32,uint256,uint16,bytes)';
+const SIG_EPOCH_FINALIZED =
+  'CoreTexEpochFinalized(uint64,bytes32,bytes32,bytes32,bytes32,bytes32,bytes32)';
+
+/** Every live descriptor-v3 rig event. */
 export const RIG_EVENT_TOPICS = {
+  CoreTexStateAdvanced: eventTopic(SIG_STATE_ADVANCED),
+  CoreTexEpochFinalized: eventTopic(SIG_EPOCH_FINALIZED),
   RigCoreTexCreditAccepted: eventTopic(SIG_CORETEX_CREDIT_ACCEPTED),
   RigCreditAccepted: eventTopic(SIG_CREDIT_ACCEPTED),
   EpochCommitSet: eventTopic(SIG_EPOCH_COMMIT_SET),
@@ -87,8 +105,8 @@ export const RIG_EVENT_TOPICS = {
 export type RigEmitterRole = 'registry' | 'mining' | 'verifier';
 
 export const RIG_EXPECTED_EMITTER: Readonly<Record<string, RigEmitterRole>> = {
-  [CORETEX_EVENT_TOPICS.CoreTexStateAdvanced]: 'registry',
-  [CORETEX_EVENT_TOPICS.CoreTexEpochFinalized]: 'registry',
+  [RIG_EVENT_TOPICS.CoreTexStateAdvanced]: 'registry',
+  [RIG_EVENT_TOPICS.CoreTexEpochFinalized]: 'registry',
   [RIG_EVENT_TOPICS.RigCoreTexCreditAccepted]: 'mining',
   [RIG_EVENT_TOPICS.RigCreditAccepted]: 'mining',
   [RIG_EVENT_TOPICS.EpochCommitSet]: 'mining',
@@ -98,8 +116,8 @@ export const RIG_EXPECTED_EMITTER: Readonly<Record<string, RigEmitterRole>> = {
 } as const;
 
 export const RIG_EVENT_NAMES: Readonly<Record<string, string>> = {
-  [CORETEX_EVENT_TOPICS.CoreTexStateAdvanced]: 'CoreTexStateAdvanced',
-  [CORETEX_EVENT_TOPICS.CoreTexEpochFinalized]: 'CoreTexEpochFinalized',
+  [RIG_EVENT_TOPICS.CoreTexStateAdvanced]: 'CoreTexStateAdvanced',
+  [RIG_EVENT_TOPICS.CoreTexEpochFinalized]: 'CoreTexEpochFinalized',
   [RIG_EVENT_TOPICS.RigCoreTexCreditAccepted]: 'RigCoreTexCreditAccepted',
   [RIG_EVENT_TOPICS.RigCreditAccepted]: 'RigCreditAccepted',
   [RIG_EVENT_TOPICS.EpochCommitSet]: 'EpochCommitSet',
@@ -111,15 +129,13 @@ export const RIG_EVENT_NAMES: Readonly<Record<string, string>> = {
 /**
  * The `eth_getLogs` topic0 OR-set a rig validator subscribes to.
  *
- * It INCLUDES the V4 advance topic0, and it has to: that is the topic the rig
- * registry actually emits. A filter built from "the rig's own new events" alone
- * retrieves zero advances, which looks exactly like a deployment that never mined.
+ * It contains the descriptor-v3 registry, mining, and verifier topics only. The colliding
+ * descriptor-v2/V4 topic is available through the explicit historical table below and is never
+ * dual-accepted by this live subscription.
  */
 export const RIG_LOG_TOPICS: readonly string[] = Object.freeze(
   Array.from(
     new Set([
-      CORETEX_EVENT_TOPICS.CoreTexStateAdvanced,
-      CORETEX_EVENT_TOPICS.CoreTexEpochFinalized,
       ...Object.values(RIG_EVENT_TOPICS),
     ]),
   ).sort(),
@@ -144,6 +160,95 @@ export interface RigRoute {
 }
 
 export class RigDispatchError extends Error {}
+
+function word(data: Uint8Array, index: number): string {
+  const start = index * 32;
+  if (start + 32 > data.length) throw new RigDispatchError(`ABI word ${index} is out of range`);
+  return bytesToHex(data.subarray(start, start + 32));
+}
+
+function wordNum(data: Uint8Array, index: number): bigint {
+  const raw = hexToBytes(word(data, index));
+  let value = 0n;
+  for (const byte of raw) value = (value << 8n) | BigInt(byte);
+  return value;
+}
+
+function topicNum(log: RpcLog, index: number): bigint {
+  const value = log.topics?.[index];
+  if (!value) throw new RigDispatchError(`topic ${index} is absent`);
+  return BigInt(value);
+}
+
+function topicAddress(log: RpcLog, index: number): string {
+  const value = log.topics?.[index]?.replace(/^0x/, '') ?? '';
+  if (value.length !== 64 || !/^0{24}[0-9a-fA-F]{40}$/.test(value)) {
+    throw new RigDispatchError(`topic ${index} is not a canonically padded address`);
+  }
+  return `0x${value.slice(24).toLowerCase()}`;
+}
+
+export interface RigStateAdvancedEvent {
+  readonly epoch: bigint;
+  readonly transitionIndex: bigint;
+  readonly miner: string;
+  readonly parentStateRoot: string;
+  readonly newStateRoot: string;
+  readonly patchHash: string;
+  readonly evalReportHash: string;
+  readonly coreVersionHash: string;
+  readonly epochContextRoot: string;
+  readonly improvementCredits: bigint;
+  readonly transitionFormatVersion: number;
+  readonly compactPatchBytes: Uint8Array;
+}
+
+export function decodeRigStateAdvanced(log: RpcLog): RigStateAdvancedEvent | null {
+  if ((log.topics?.[0] ?? '').toLowerCase() !== RIG_EVENT_TOPICS.CoreTexStateAdvanced) return null;
+  if (log.topics.length !== 4) throw new RigDispatchError('CoreTexStateAdvanced needs 4 topics');
+  const data = hexToBytes(log.data);
+  const offset = wordNum(data, 8);
+  if (offset !== 9n * 32n) throw new RigDispatchError(`compactPatchBytes offset ${offset} is not 288`);
+  const length = wordNum(data, Number(offset / 32n));
+  if (length > BigInt(Number.MAX_SAFE_INTEGER)) throw new RigDispatchError('descriptor length is too large');
+  const start = Number(offset) + 32;
+  const end = start + Number(length);
+  const paddedEnd = start + Math.ceil(Number(length) / 32) * 32;
+  if (paddedEnd !== data.length || data.subarray(end, paddedEnd).some((b) => b !== 0)) {
+    throw new RigDispatchError('compactPatchBytes tail is truncated, padded non-zero, or has trailing data');
+  }
+  const version = wordNum(data, 7);
+  if (version > 0xffffn) throw new RigDispatchError('transitionFormatVersion has dirty high bits');
+  return {
+    epoch: topicNum(log, 1), transitionIndex: topicNum(log, 2), miner: topicAddress(log, 3),
+    parentStateRoot: word(data, 0), newStateRoot: word(data, 1), patchHash: word(data, 2),
+    evalReportHash: word(data, 3), coreVersionHash: word(data, 4), epochContextRoot: word(data, 5),
+    improvementCredits: wordNum(data, 6), transitionFormatVersion: Number(version),
+    compactPatchBytes: data.subarray(start, end),
+  };
+}
+
+export interface RigEpochFinalizedEvent {
+  readonly epoch: bigint;
+  readonly parentStateRoot: string;
+  readonly finalStateRoot: string;
+  readonly coreVersionHash: string;
+  readonly epochContextRoot: string;
+  readonly patchSetRoot: string;
+  readonly scoreRoot: string;
+}
+
+export function decodeRigEpochFinalized(log: RpcLog): RigEpochFinalizedEvent | null {
+  if ((log.topics?.[0] ?? '').toLowerCase() !== RIG_EVENT_TOPICS.CoreTexEpochFinalized) return null;
+  if (log.topics.length !== 2) throw new RigDispatchError('CoreTexEpochFinalized needs 2 topics');
+  const data = hexToBytes(log.data);
+  if (data.length !== 6 * 32) throw new RigDispatchError('CoreTexEpochFinalized needs 6 data words');
+  return {
+    epoch: topicNum(log, 1), parentStateRoot: word(data, 0), finalStateRoot: word(data, 1),
+    coreVersionHash: word(data, 2), epochContextRoot: word(data, 3),
+    patchSetRoot: word(data, 4), scoreRoot: word(data, 5),
+  };
+}
 
 function roleOf(address: string | undefined, d: RigDeploymentAddresses): RigEmitterRole | null {
   const target = (address ?? '').toLowerCase();
@@ -193,9 +298,9 @@ export function routeRigLog(log: RpcLog, deployment: RigDeploymentAddresses): Ri
  * MANDATORY rather than advisory: `coretexRangeLogs` refuses a query with no address filter,
  * because a topic-only query returns both lanes interleaved and the result cannot be attributed
  * afterwards. The PAYLOAD discriminator is the backstop for a log that arrived anyway — a rig
- * advance carries a fixed 105-byte descriptor whose first byte is `0x20`, a (length, first-byte)
- * pair no legal V4 compact patch has — and it exists so such a log is CLASSIFIED
- * (`CROSS_LANE_RIG_ADVANCE`) instead of slandered as an invalid V4 patch hash.
+ * descriptor-v2 used a 105-byte `0x20` discriminator in the colliding legacy decoder. Live
+ * descriptor-v3 moved to a distinct event topic and carries a 97-byte descriptor beginning
+ * `0x21`; the old payload classifier remains only in `coretex-registry.ts` for historical logs.
  *
  * Reported as data so a caller can assert on it rather than trust this comment.
  */
@@ -203,7 +308,7 @@ export function laneSeparation(): {
   legacyV4Advance: string;
   canonicalRegistryAdvance: string;
   rigRegistryAdvance: string;
-  collidingLanes: readonly ['canonical-registry', 'rig-registry'];
+  collidingLanes: readonly [];
   identical: boolean;
   discriminator: 'emitting address';
   addressFilterMandatory: true;
@@ -213,9 +318,9 @@ export function laneSeparation(): {
   return {
     legacyV4Advance: V4_EVENT_TOPICS.CortexStateAdvanced,
     canonicalRegistryAdvance: CORETEX_EVENT_TOPICS.CoreTexStateAdvanced,
-    rigRegistryAdvance: CORETEX_EVENT_TOPICS.CoreTexStateAdvanced,
-    collidingLanes: ['canonical-registry', 'rig-registry'] as const,
-    identical: true,
+    rigRegistryAdvance: RIG_EVENT_TOPICS.CoreTexStateAdvanced,
+    collidingLanes: [] as const,
+    identical: false,
     discriminator: 'emitting address',
     addressFilterMandatory: true,
     payloadDiscriminator: {
@@ -223,9 +328,9 @@ export function laneSeparation(): {
       versionByte: RIG_TRANSITION_DESCRIPTOR_VERSION,
     },
     consequence:
-      'the rig registry emits the same advance signature as the canonical registry lane, so a ' +
-      'router that keys on topic0 alone will mix two lanes of confirmed history together. The ' +
-      'original v4 pair in v4.ts is a third, distinct set and collides with neither',
+      'descriptor-v3 moved the rig registry signature by replacing corpusRoot + ' +
+      'activeFrontierRoot with epochContextRoot. The previous topic remains explicitly legacy ' +
+      'and is not accepted by the live rig router',
   };
 }
 
@@ -237,14 +342,14 @@ export function laneSeparation(): {
  * that breaks loudly.
  */
 export function assertLaneSeparation(): void {
-  const expected = eventTopic(
-    'CoreTexStateAdvanced(uint64,uint64,address,bytes32,bytes32,bytes32,bytes32,bytes32,' +
-      'bytes32,bytes32,uint256,uint16,bytes)',
-  );
-  if (CORETEX_EVENT_TOPICS.CoreTexStateAdvanced !== expected) {
+  const expected = eventTopic(SIG_STATE_ADVANCED);
+  if (RIG_EVENT_TOPICS.CoreTexStateAdvanced !== expected) {
     throw new RigDispatchError(
       'the registry advance topic0 no longer matches its recorded signature; re-read ' +
         'routeRigLog and docs/V5-RIG-VALIDATOR.md before relaxing anything',
     );
+  }
+  if (RIG_EVENT_TOPICS.CoreTexStateAdvanced === CORETEX_EVENT_TOPICS.CoreTexStateAdvanced) {
+    throw new RigDispatchError('the live descriptor-v3 advance topic collides with legacy v2');
   }
 }

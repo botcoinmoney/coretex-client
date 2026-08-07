@@ -1,12 +1,12 @@
 # Cross-lane fixtures
 
-Files here are **copies**, not originals. Their provenance and `sha256` are recorded so drift
-between the two copies is detectable rather than silent — which is the entire reason a shared
-known-answer vector is worth having.
+Files here are immutable known-answer vectors. Their provenance and `sha256` are recorded so drift
+is detectable rather than silent — which is the entire reason a shared vector is worth having.
 
 | file | origin | sha256 at copy time |
 | --- | --- | --- |
 | `signing-vector.json` | resolver lane, `v5/resolver/tests/fixtures/signing-vector.json` | `e19b0f513b4ebeb66bdd698ed95a6cd72eb38cac8bd990d11b071d76d332ba1c` |
+| `rig-descriptor-v3-vector.json` | independently derived from `botcoin-mining-rigs@a473f3fd1038a81f8ef456cd4c7ce1f7b9fbef6e` | `c9c6e86b23f34ba4c871d70f0c581b5019778f9fd8b187add0033e056339b1fb` |
 
 ## Why this is a fixture and not a recomputation
 

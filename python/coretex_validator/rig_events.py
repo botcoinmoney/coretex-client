@@ -15,28 +15,17 @@ evidence of what changed. Everything a real rig deployment emits is HERE.
 THE FACT THAT FORCED THIS MODULE TO EXIST. The registry's advance event is::
 
     CoreTexStateAdvanced(uint64,uint64,address,bytes32,bytes32,bytes32,bytes32,bytes32,
-                         bytes32,bytes32,uint256,uint16,bytes)
+                         bytes32,uint256,uint16,bytes)
 
-which hashes to ``2f0a8989…`` — **byte-identical to the V4 lane's advance topic0**. That is
-deliberate on the contract's side (RIG-CORETEX-REGISTRY-DESIGN.md §7.3: "an indexer written for
-``RigCoreTexRegistry`` decodes our logs unchanged"), and it flatly contradicts the staged
-dispatcher's premise that "V5 must never emit an event that collides with
-``CoreTexStateAdvanced``'s topic0". Both statements cannot be true, and the contract wins: it is
-the thing that emits logs.
+which hashes to ``f2b42259…``. Descriptor-v3 collapsed the two context words into one
+``epochContextRoot``, so the live topic deliberately moved. The previous ``2f0a8989…`` topic is
+kept below as an explicitly legacy descriptor-v2 decoder and is never accepted by the live route.
 
 Three consequences, all load-bearing, all asserted below rather than left as prose:
 
-1. **topic0 is not an identity.** A log at ``2f0a8989…`` is a V4 advance or a rig advance
-   depending ONLY on which address emitted it. Any router that keys on topic0 alone will mix the
-   two lanes' history together. :func:`route_rig_log` therefore takes the deployment addresses and
-   refuses a log from an address it was not given.
-2. **The rig subscription must include the V4 topic0.** ``dispatch.RIG_TOPICS`` does not, so an
-   ``eth_getLogs`` filtered by it retrieves ZERO advances from a real rig registry.
-   :data:`RIG_LOG_TOPICS` is the filter that actually works.
-3. **The wire format is shared, so the DECODE is shared.** Identical topic0 means identical
-   signature string means identical field layout — the V4 decoder reads a rig advance correctly.
-   What differs is the MEANING (which registry owns the epoch, which verifier holds its pins), so
-   the lanes diverge at interpretation, never at decoding.
+Live routing remains address-scoped because topic0 alone never identifies a deployment. A legacy
+descriptor-v2 log is decoded only by an explicitly named legacy function; the live route has no
+dual-accept branch.
 
 WHERE EACH EVENT LIVES. This is the other thing the staged table got wrong: the rig lane's epoch
 context is emitted by the **verifier**, not the registry (design §4, "Epoch context is DELEGATED,
@@ -70,20 +59,18 @@ from .keccak256 import keccak256_hex
 #: The protocol identifier for what the exact contracts deploy. Distinct from
 #: ``dispatch.PROTOCOL_RIG`` ("coretex.rig-state.v1"), which names the STAGED, never-deployed
 #: event set — conflating the two is precisely the mistake this module exists to prevent.
-PROTOCOL_RIG_EXACT = "coretex.rig-state.exact/v1"
+PROTOCOL_RIG_EXACT = "coretex.rig-state.exact/v3"
 
 
 # --------------------------------------------------------------------------- #
 # Signatures — transcribed from the exact sources, hashed here, never copied as digests
 # --------------------------------------------------------------------------- #
-#: ``RigCoreTexStateRegistry.sol`` / ``rig/mining/RigCoreTexRegistry.sol``. IDENTICAL in both, and
-#: identical to the V4 lane's — see the module docstring.
+#: ``rig/mining/RigCoreTexRegistry.sol`` at canonical descriptor-v3.
 STATE_ADVANCED_SIG = (
     "CoreTexStateAdvanced(uint64,uint64,address,bytes32,bytes32,bytes32,bytes32,bytes32,bytes32,"
-    "bytes32,uint256,uint16,bytes)")
+    "uint256,uint16,bytes)")
 EPOCH_FINALIZED_SIG = (
-    "CoreTexEpochFinalized(uint64,bytes32,bytes32,bytes32,bytes32,bytes32,bytes32,bytes32,"
-    "bytes32)")
+    "CoreTexEpochFinalized(uint64,bytes32,bytes32,bytes32,bytes32,bytes32,bytes32)")
 #: ``BotcoinMiningRigsV1.sol:165-174``. The join's source B.
 CORETEX_CREDIT_ACCEPTED_SIG = (
     "RigCoreTexCreditAccepted(uint64,uint256,address,uint64,bytes32,bytes32,uint256,uint256)")
@@ -94,7 +81,17 @@ CREDIT_ACCEPTED_SIG = (
 EPOCH_COMMIT_SET_SIG = "EpochCommitSet(uint64,bytes32)"
 EPOCH_SECRET_REVEALED_SIG = "EpochSecretRevealed(uint64,bytes32)"
 #: ``RigCoreTexVerifier.sol:82-89`` — the epoch's law pins, on the VERIFIER.
-EPOCH_CONTEXT_SET_SIG = "CoreTexEpochContextSet(uint64,bytes32,bytes32,bytes32,bytes32,bytes32)"
+EPOCH_CONTEXT_SET_SIG = "CoreTexEpochContextSet(uint64,bytes32,bytes32,bytes32)"
+
+# Explicit descriptor-v2 history. These signatures are not members of RIG_LOG_TOPICS and are
+# never routed as live events. Callers replaying a genuine retired deployment must opt in by name.
+LEGACY_V2_STATE_ADVANCED_SIG = (
+    "CoreTexStateAdvanced(uint64,uint64,address,bytes32,bytes32,bytes32,bytes32,bytes32,bytes32,"
+    "bytes32,uint256,uint16,bytes)")
+LEGACY_V2_EPOCH_FINALIZED_SIG = (
+    "CoreTexEpochFinalized(uint64,bytes32,bytes32,bytes32,bytes32,bytes32,bytes32,bytes32,bytes32)")
+LEGACY_V2_EPOCH_CONTEXT_SET_SIG = (
+    "CoreTexEpochContextSet(uint64,bytes32,bytes32,bytes32,bytes32,bytes32)")
 #: ``RigCoreTexVerifier.sol:90-97`` — the scoring law, scheduled by ``effectiveEpoch``. This is
 #: what makes HISTORICAL law recoverable: a policy is announced for the epoch it starts applying
 #: at, so "the law at that transition" is a lookup, not an assumption about today.
@@ -114,10 +111,16 @@ EPOCH_COMMIT_SET_TOPIC0 = dp.event_topic(EPOCH_COMMIT_SET_SIG)
 EPOCH_SECRET_REVEALED_TOPIC0 = dp.event_topic(EPOCH_SECRET_REVEALED_SIG)
 EPOCH_CONTEXT_SET_TOPIC0 = dp.event_topic(EPOCH_CONTEXT_SET_SIG)
 POLICY_SCHEDULED_TOPIC0 = dp.event_topic(POLICY_SCHEDULED_SIG)
+LEGACY_V2_STATE_ADVANCED_TOPIC0 = dp.event_topic(LEGACY_V2_STATE_ADVANCED_SIG)
+LEGACY_V2_EPOCH_FINALIZED_TOPIC0 = dp.event_topic(LEGACY_V2_EPOCH_FINALIZED_SIG)
+LEGACY_V2_EPOCH_CONTEXT_SET_TOPIC0 = dp.event_topic(LEGACY_V2_EPOCH_CONTEXT_SET_SIG)
 
 _PINNED = {
-    STATE_ADVANCED_TOPIC0: "2f0a89894d44aa2294de109d294ac072f0e206dc834a0c35c6fbf1623ec02dd0",
-    EPOCH_FINALIZED_TOPIC0: "7c882e64d34d7e0b82f8004ec182f5b9e942388f7b7b1ea60233306c02821085",
+    STATE_ADVANCED_TOPIC0: "f2b422592475276aa1bbea8c780acec02e5628df6e59392a7ce6625907ca54e7",
+    EPOCH_FINALIZED_TOPIC0: "212234825d6a82269e63c2bc21582948deb7729436c4dcba0dfdd831351c43b2",
+    EPOCH_CONTEXT_SET_TOPIC0: "024a552750f4344a8386eb7109fcbdfd7c822052efcc0cf8c92d0619a3cec80f",
+    LEGACY_V2_STATE_ADVANCED_TOPIC0: "2f0a89894d44aa2294de109d294ac072f0e206dc834a0c35c6fbf1623ec02dd0",
+    LEGACY_V2_EPOCH_FINALIZED_TOPIC0: "7c882e64d34d7e0b82f8004ec182f5b9e942388f7b7b1ea60233306c02821085",
     EPOCH_COMMIT_SET_TOPIC0: "59292804aa2c2d886e7b2e3982ee2e6df6e3d52f35220fbcafc233d216f7ddf6",
     EPOCH_SECRET_REVEALED_TOPIC0:
         "874024d45050fc7f9a2b883212a09399fe2d44dcff11ef6e75782efd2bc22bb6",
@@ -126,16 +129,11 @@ for _derived, _pin in _PINNED.items():
     if _derived != _pin:                                    # pragma: no cover - fail closed
         raise RuntimeError(f"topic0 drift: derived {_derived}, pinned {_pin}")
 
-#: THE COLLISION, ASSERTED. If a future contract cut renames the advance event, this fails at
-#: import and every assumption built on "the rig advance shares V4's topic0" gets re-examined
-#: instead of quietly becoming false.
-if STATE_ADVANCED_TOPIC0 != dp.V4_STATE_ADVANCED_TOPIC0:    # pragma: no cover - fail closed
-    raise RuntimeError(
-        "the rig registry's advance topic0 no longer equals the V4 lane's. That is a GOOD change, "
-        "but this package routes on the assumption that it does not hold; re-read "
-        "rig_events.route_rig_log and docs/V5-RIG-VALIDATOR.md before relaxing anything.")
-if EPOCH_FINALIZED_TOPIC0 != dp.V4_EPOCH_FINALIZED_TOPIC0:  # pragma: no cover - fail closed
-    raise RuntimeError("the rig registry's finalization topic0 no longer equals the V4 lane's")
+# The previous deployment remains identifiable, while the live path must not collide with it.
+if LEGACY_V2_STATE_ADVANCED_TOPIC0 != dp.V4_STATE_ADVANCED_TOPIC0:  # pragma: no cover
+    raise RuntimeError("the explicit legacy-v2 advance pin drifted from its genuine deployment")
+if STATE_ADVANCED_TOPIC0 == LEGACY_V2_STATE_ADVANCED_TOPIC0:       # pragma: no cover
+    raise RuntimeError("descriptor-v3 live advance topic unexpectedly equals retired v2")
 
 #: The ``eth_getLogs`` topic0 OR-set a rig validator actually subscribes to. Compare
 #: ``dispatch.RIG_TOPICS``, which contains none of the advance/credit/context topics a real
@@ -282,12 +280,10 @@ class StateAdvanced:
     patch_hash: str
     eval_report_hash: str
     core_version_hash: str
-    corpus_root: str
-    active_frontier_root: str
+    epoch_context_root: str
     improvement_credits: int
     #: ``uint16 transitionFormatVersion`` — renamed from ``wordCount`` by
-    #: ``coretex.transition-descriptor/v2`` §6.4 (same ABI slot, same topic0, different meaning:
-    #: it is the zero-extension of the 105-byte descriptor's version byte, not a word count).
+    #: it is the zero-extension of the 97-byte descriptor's version byte, not a word count.
     transition_format_version: int
     compact_patch_bytes: bytes
     provenance: dp.LogProvenance
@@ -299,13 +295,13 @@ class StateAdvanced:
         return (self.epoch, self.parent_state_root, self.patch_hash)
 
 
-_ADVANCE_HEAD_WORDS = 10
+_ADVANCE_HEAD_WORDS = 9
 
 
 def decode_state_advanced(log: Mapping[str, Any]) -> StateAdvanced:
     _require(log, STATE_ADVANCED_TOPIC0, "CoreTexStateAdvanced")
     data = dp._data(log)                                                       # noqa: SLF001
-    patch = dp._tail_bytes(data, 9, _ADVANCE_HEAD_WORDS, "compactPatchBytes")   # noqa: SLF001
+    patch = dp._tail_bytes(data, 8, _ADVANCE_HEAD_WORDS, "compactPatchBytes")   # noqa: SLF001
     return StateAdvanced(
         epoch=dp._topic_uint(log, 1, "epoch", bits=64),                         # noqa: SLF001
         transition_index=dp._topic_uint(log, 2, "transitionIndex", bits=64),    # noqa: SLF001
@@ -315,10 +311,9 @@ def decode_state_advanced(log: Mapping[str, Any]) -> StateAdvanced:
         patch_hash=dp._word(data, 2, "patchHash"),                              # noqa: SLF001
         eval_report_hash=dp._word(data, 3, "evalReportHash"),                   # noqa: SLF001
         core_version_hash=dp._word(data, 4, "coreVersionHash"),                 # noqa: SLF001
-        corpus_root=dp._word(data, 5, "corpusRoot"),                            # noqa: SLF001
-        active_frontier_root=dp._word(data, 6, "activeFrontierRoot"),           # noqa: SLF001
-        improvement_credits=dp._word_uint(data, 7, "improvementCredits"),       # noqa: SLF001
-        transition_format_version=dp._word_uint(data, 8, "transitionFormatVersion",  # noqa: SLF001
+        epoch_context_root=dp._word(data, 5, "epochContextRoot"),               # noqa: SLF001
+        improvement_credits=dp._word_uint(data, 6, "improvementCredits"),       # noqa: SLF001
+        transition_format_version=dp._word_uint(data, 7, "transitionFormatVersion",  # noqa: SLF001
                                                  bits=16),
         compact_patch_bytes=patch,
         provenance=dp._provenance(log))                                         # noqa: SLF001
@@ -330,19 +325,17 @@ class EpochFinalized:
     parent_state_root: str
     final_state_root: str
     core_version_hash: str
-    corpus_root: str
-    active_frontier_root: str
+    epoch_context_root: str
     patch_set_root: str
     score_root: str
-    baseline_manifest_hash: str
     provenance: dp.LogProvenance
 
 
 def decode_epoch_finalized(log: Mapping[str, Any]) -> EpochFinalized:
     _require(log, EPOCH_FINALIZED_TOPIC0, "CoreTexEpochFinalized")
     data = dp._data(log)                                                       # noqa: SLF001
-    names = ("parent_state_root", "final_state_root", "core_version_hash", "corpus_root",
-             "active_frontier_root", "patch_set_root", "score_root", "baseline_manifest_hash")
+    names = ("parent_state_root", "final_state_root", "core_version_hash",
+             "epoch_context_root", "patch_set_root", "score_root")
     values = {n: dp._word(data, i, n) for i, n in enumerate(names)}            # noqa: SLF001
     return EpochFinalized(epoch=dp._topic_uint(log, 1, "epoch", bits=64),      # noqa: SLF001
                           provenance=dp._provenance(log), **values)            # noqa: SLF001
@@ -397,37 +390,105 @@ def decode_standard_credit(log: Mapping[str, Any]) -> CoreTexCreditAccepted:
         provenance=dp._provenance(log), coretex=False)                          # noqa: SLF001
 
 
-#: The five law pins the verifier publishes per epoch. ``parent_state_root`` is the epoch's
-#: CONTEXT PARENT — the head epoch N inherits — and is deliberately NOT called a "pin" elsewhere
-#: in this package: it is a head, and heads and law have different rules.
-EPOCH_CONTEXT_FIELDS = ("parent_state_root", "corpus_root", "active_frontier_root",
-                        "baseline_manifest_hash", "core_version_hash")
+#: The three canonical pins: the context parent seeds live state; the manifest root carries all
+#: admission inputs; the core version identifies the active bundle.
+EPOCH_CONTEXT_EVENT_FIELDS = ("parent_state_root", "epoch_context_root", "core_version_hash")
 
 
 @dataclass(frozen=True)
 class EpochContextSet:
     epoch: int
     parent_state_root: str
-    corpus_root: str
-    active_frontier_root: str
-    baseline_manifest_hash: str
+    epoch_context_root: str
     core_version_hash: str
     provenance: dp.LogProvenance
 
     def law_pins(self) -> Dict[str, str]:
-        """The four values an advance carries and the registry enforces. NOT the head."""
-        return {"corpus_root": self.corpus_root,
-                "active_frontier_root": self.active_frontier_root,
-                "core_version_hash": self.core_version_hash,
-                "baseline_manifest_hash": self.baseline_manifest_hash}
+        """The two context values an advance carries and the registry enforces. NOT the head."""
+        return {"epoch_context_root": self.epoch_context_root,
+                "core_version_hash": self.core_version_hash}
 
 
 def decode_epoch_context_set(log: Mapping[str, Any]) -> EpochContextSet:
     _require(log, EPOCH_CONTEXT_SET_TOPIC0, "CoreTexEpochContextSet")
     data = dp._data(log)                                                       # noqa: SLF001
-    values = {n: dp._word(data, i, n) for i, n in enumerate(EPOCH_CONTEXT_FIELDS)}  # noqa: SLF001
+    values = {n: dp._word(data, i, n)
+              for i, n in enumerate(EPOCH_CONTEXT_EVENT_FIELDS)}                  # noqa: SLF001
     return EpochContextSet(epoch=dp._topic_uint(log, 1, "epochId", bits=64),   # noqa: SLF001
                            provenance=dp._provenance(log), **values)           # noqa: SLF001
+
+
+@dataclass(frozen=True)
+class LegacyV2StateAdvanced:
+    """Genuine retired descriptor-v2 deployment event. Never returned by the live router."""
+
+    epoch: int
+    transition_index: int
+    miner: str
+    parent_state_root: str
+    new_state_root: str
+    patch_hash: str
+    eval_report_hash: str
+    core_version_hash: str
+    corpus_root: str
+    active_frontier_root: str
+    improvement_credits: int
+    transition_format_version: int
+    compact_patch_bytes: bytes
+    provenance: dp.LogProvenance
+
+    @property
+    def join_key(self) -> Tuple[int, str, str]:
+        return (self.epoch, self.parent_state_root, self.patch_hash)
+
+
+def decode_legacy_v2_state_advanced(log: Mapping[str, Any]) -> LegacyV2StateAdvanced:
+    """Decode only the genuine 13-field descriptor-v2 advance shape."""
+    _require(log, LEGACY_V2_STATE_ADVANCED_TOPIC0, "LegacyV2CoreTexStateAdvanced")
+    data = dp._data(log)                                                       # noqa: SLF001
+    patch = dp._tail_bytes(data, 9, 10, "compactPatchBytes")                  # noqa: SLF001
+    return LegacyV2StateAdvanced(
+        epoch=dp._topic_uint(log, 1, "epoch", bits=64),                        # noqa: SLF001
+        transition_index=dp._topic_uint(log, 2, "transitionIndex", bits=64),  # noqa: SLF001
+        miner=dp._topic_address(log, 3, "miner"),                              # noqa: SLF001
+        parent_state_root=dp._word(data, 0, "parentStateRoot"),                # noqa: SLF001
+        new_state_root=dp._word(data, 1, "newStateRoot"),                      # noqa: SLF001
+        patch_hash=dp._word(data, 2, "patchHash"),                             # noqa: SLF001
+        eval_report_hash=dp._word(data, 3, "evalReportHash"),                  # noqa: SLF001
+        core_version_hash=dp._word(data, 4, "coreVersionHash"),                # noqa: SLF001
+        corpus_root=dp._word(data, 5, "corpusRoot"),                           # noqa: SLF001
+        active_frontier_root=dp._word(data, 6, "activeFrontierRoot"),          # noqa: SLF001
+        improvement_credits=dp._word_uint(data, 7, "improvementCredits"),      # noqa: SLF001
+        transition_format_version=dp._word_uint(                               # noqa: SLF001
+            data, 8, "transitionFormatVersion", bits=16),
+        compact_patch_bytes=patch,
+        provenance=dp._provenance(log))                                        # noqa: SLF001
+
+
+@dataclass(frozen=True)
+class LegacyV2EpochFinalized:
+    epoch: int
+    parent_state_root: str
+    final_state_root: str
+    core_version_hash: str
+    corpus_root: str
+    active_frontier_root: str
+    patch_set_root: str
+    score_root: str
+    baseline_manifest_hash: str
+    provenance: dp.LogProvenance
+
+
+def decode_legacy_v2_epoch_finalized(log: Mapping[str, Any]) -> LegacyV2EpochFinalized:
+    """Decode only the genuine retired descriptor-v2 finalization shape."""
+    _require(log, LEGACY_V2_EPOCH_FINALIZED_TOPIC0, "LegacyV2CoreTexEpochFinalized")
+    data = dp._data(log)                                                       # noqa: SLF001
+    names = ("parent_state_root", "final_state_root", "core_version_hash", "corpus_root",
+             "active_frontier_root", "patch_set_root", "score_root", "baseline_manifest_hash")
+    values = {n: dp._word(data, i, n) for i, n in enumerate(names)}           # noqa: SLF001
+    return LegacyV2EpochFinalized(
+        epoch=dp._topic_uint(log, 1, "epoch", bits=64),                        # noqa: SLF001
+        provenance=dp._provenance(log), **values)                              # noqa: SLF001
 
 
 @dataclass(frozen=True)
@@ -544,12 +605,178 @@ def scan(logs: Iterable[Mapping[str, Any]], deployment: RigDeployment) -> Decode
     return out
 
 
+def scan_legacy_v2(logs: Iterable[Mapping[str, Any]], deployment: RigDeployment) -> DecodedLogs:
+    """Explicit historical scanner for a genuine descriptor-v2 deployment.
+
+    It is intentionally separate from :func:`scan`: a live descriptor-v3 subscription never
+    dual-accepts the retired advance/finalization topics.
+    """
+    out = DecodedLogs([], [], [], [], [], [], [], [])
+    common = {
+        CORETEX_CREDIT_ACCEPTED_TOPIC0: decode_coretex_credit,
+        CREDIT_ACCEPTED_TOPIC0: decode_standard_credit,
+        EPOCH_COMMIT_SET_TOPIC0: decode_epoch_commit_set,
+        EPOCH_SECRET_REVEALED_TOPIC0: decode_epoch_secret_revealed,
+        POLICY_SCHEDULED_TOPIC0: decode_policy_scheduled,
+    }
+    for log in logs:
+        topics = log.get("topics") or ()
+        if not topics:
+            out.ignored += 1
+            continue
+        topic0 = dp.from_0x(topics[0], "topics[0]").hex()
+        role = deployment.role_of(log.get("address", ""))
+        decoded = None
+        if topic0 == LEGACY_V2_STATE_ADVANCED_TOPIC0:
+            if role == "registry":
+                decoded = decode_legacy_v2_state_advanced(log)
+            elif role is not None:
+                raise RigAddressError("legacy-v2 CoreTexStateAdvanced came from a non-registry "
+                                      f"deployment address {log.get('address')}")
+        elif topic0 == LEGACY_V2_EPOCH_FINALIZED_TOPIC0:
+            if role == "registry":
+                decoded = decode_legacy_v2_epoch_finalized(log)
+            elif role is not None:
+                raise RigAddressError("legacy-v2 CoreTexEpochFinalized came from a non-registry "
+                                      f"deployment address {log.get('address')}")
+        elif topic0 in common:
+            expected_role = "mining" if topic0 != POLICY_SCHEDULED_TOPIC0 else "verifier"
+            if role == expected_role:
+                decoded = common[topic0](log)
+            elif role is not None:
+                raise RigAddressError(f"legacy-v2 event {topic0} came from {role}, expected "
+                                      f"{expected_role}")
+        if decoded is None:
+            out.ignored += 1
+        elif isinstance(decoded, LegacyV2StateAdvanced):
+            out.advances.append(decoded)  # type: ignore[arg-type]
+        elif isinstance(decoded, LegacyV2EpochFinalized):
+            out.finalizations.append(decoded)  # type: ignore[arg-type]
+        elif isinstance(decoded, CoreTexCreditAccepted):
+            (out.coretex_credits if decoded.coretex else out.standard_credits).append(decoded)
+        elif isinstance(decoded, EpochCommitSet):
+            out.commits.append(decoded)
+        elif isinstance(decoded, EpochSecretRevealed):
+            out.reveals.append(decoded)
+        elif isinstance(decoded, PolicyScheduled):
+            out.policies.append(decoded)
+    return out
+
+
 # --------------------------------------------------------------------------- #
-# The transition descriptor — coretex.transition-descriptor/v2
+# The content-addressed epoch context — coretex.epoch-context/v1
+# --------------------------------------------------------------------------- #
+EPOCH_CONTEXT_FORMAT = "coretex.epoch-context/v1"
+EPOCH_CONTEXT_ROOT_FIELDS: Tuple[str, ...] = (
+    "corpus_root", "active_frontier_root", "baseline_manifest_hash", "benchmark_law_root",
+    "runtime_abi_root", "counter_resource_law_root", "selection_law_root")
+EPOCH_CONTEXT_FIELDS: Tuple[str, ...] = (
+    "format", "epoch", "corpus_root", "active_frontier_root", "baseline_manifest_hash",
+    "benchmark_law_root", "runtime_abi_root", "counter_resource_law_root",
+    "selection_law_root", "admission_thresholds_ppm", "seed_commitment")
+EPOCH_CONTEXT_SEED_COMMITMENT_FIELDS: Tuple[str, ...] = (
+    "scheme", "binding_rule", "commitment_source")
+EPOCH_CONTEXT_UNAVAILABLE = "EPOCH_CONTEXT_UNAVAILABLE"
+EPOCH_CONTEXT_MALFORMED = "EPOCH_CONTEXT_MALFORMED"
+EPOCH_CONTEXT_ADDRESS_MISMATCH = "EPOCH_CONTEXT_ADDRESS_MISMATCH"
+
+
+class EpochContextError(RigEventError):
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(f"{code}: {message}")
+        self.code = code
+        self.message = message
+
+
+def _epoch_context_require(condition: Any, code: str, message: str) -> None:
+    if not condition:
+        raise EpochContextError(code, message)
+
+
+def validate_epoch_context(manifest: Any) -> Dict[str, Any]:
+    """Validate the closed epoch-context document without repairing any spelling."""
+    _epoch_context_require(isinstance(manifest, Mapping), EPOCH_CONTEXT_MALFORMED,
+                           f"an epoch context must be an object, got {type(manifest).__name__}")
+    _epoch_context_require(manifest.get("format") == EPOCH_CONTEXT_FORMAT,
+                           EPOCH_CONTEXT_MALFORMED,
+                           f"format {manifest.get('format')!r} is not "
+                           f"{EPOCH_CONTEXT_FORMAT!r}")
+    unknown = sorted(set(manifest) - set(EPOCH_CONTEXT_FIELDS))
+    missing = sorted(set(EPOCH_CONTEXT_FIELDS) - set(manifest))
+    _epoch_context_require(not unknown, EPOCH_CONTEXT_MALFORMED,
+                           f"unknown field(s) {unknown}; the schema is closed")
+    _epoch_context_require(not missing, EPOCH_CONTEXT_MALFORMED,
+                           f"required field(s) {missing} are absent")
+    try:
+        fr.check_epoch(manifest["epoch"], "epoch_context.epoch")
+        for field in EPOCH_CONTEXT_ROOT_FIELDS:
+            root = fr.check_root(manifest[field], f"epoch_context.{field}")
+            _epoch_context_require(root != "0" * 64, EPOCH_CONTEXT_MALFORMED,
+                                   f"epoch_context.{field} is the all-zero root")
+        canonical = fr.canonical_bytes(manifest)
+    except fr.FrontierError as exc:
+        raise EpochContextError(EPOCH_CONTEXT_MALFORMED, str(exc)) from exc
+
+    thresholds = manifest["admission_thresholds_ppm"]
+    _epoch_context_require(isinstance(thresholds, Mapping) and bool(thresholds),
+                           EPOCH_CONTEXT_MALFORMED,
+                           "epoch_context.admission_thresholds_ppm must be a nonempty object")
+    for key, value in thresholds.items():
+        _epoch_context_require(isinstance(key, str) and bool(key), EPOCH_CONTEXT_MALFORMED,
+                               "admission threshold keys must be nonempty strings")
+        _epoch_context_require(isinstance(value, int) and not isinstance(value, bool)
+                               and 0 <= value <= 0xffff_ffff, EPOCH_CONTEXT_MALFORMED,
+                               f"admission threshold {key!r} must be a uint32")
+
+    seed = manifest["seed_commitment"]
+    _epoch_context_require(isinstance(seed, Mapping), EPOCH_CONTEXT_MALFORMED,
+                           "epoch_context.seed_commitment must be an object")
+    seed_unknown = sorted(set(seed) - set(EPOCH_CONTEXT_SEED_COMMITMENT_FIELDS))
+    seed_missing = sorted(set(EPOCH_CONTEXT_SEED_COMMITMENT_FIELDS) - set(seed))
+    _epoch_context_require(not seed_unknown and not seed_missing, EPOCH_CONTEXT_MALFORMED,
+                           f"seed_commitment closed-schema mismatch: missing={seed_missing}, "
+                           f"unexpected={seed_unknown}")
+    for field in EPOCH_CONTEXT_SEED_COMMITMENT_FIELDS:
+        _epoch_context_require(isinstance(seed[field], str) and bool(seed[field]),
+                               EPOCH_CONTEXT_MALFORMED,
+                               f"seed_commitment.{field} must be a non-empty string")
+    # Keep the call visible: addressability is defined by these exact canonical bytes.
+    if fr.canonical_bytes(manifest) != canonical:                   # pragma: no cover
+        raise EpochContextError(EPOCH_CONTEXT_UNAVAILABLE, "epoch context canonicalization drift")
+    return dict(manifest)
+
+
+def epoch_context_root(manifest: Mapping[str, Any]) -> str:
+    return fr.sha256_hex(fr.canonical_bytes(validate_epoch_context(manifest)))
+
+
+def verify_epoch_context_bytes(served: bytes, *, expected_root: str) -> Dict[str, Any]:
+    """Rehash served canonical bytes, bind them to pin 3, then validate the closed document."""
+    pin = fr.check_root(expected_root, "epochContextRoot")
+    observed = fr.sha256_hex(bytes(served))
+    if observed != pin:
+        raise EpochContextError(
+            EPOCH_CONTEXT_ADDRESS_MISMATCH,
+            f"bytes served for epochContextRoot {pin} hash to {observed}")
+    try:
+        document = fr.parse_json(bytes(served).decode("utf-8"))
+    except (UnicodeDecodeError, fr.FrontierError) as exc:
+        raise EpochContextError(EPOCH_CONTEXT_UNAVAILABLE,
+                                f"epoch context bytes are not canonical JSON: {exc}") from exc
+    validated = validate_epoch_context(document)
+    if fr.canonical_bytes(validated) != bytes(served):
+        raise EpochContextError(EPOCH_CONTEXT_UNAVAILABLE,
+                                "epoch context bytes are not canonical")
+    return validated
+
+
+# --------------------------------------------------------------------------- #
+# The transition descriptor — coretex.transition-descriptor/v3
 # --------------------------------------------------------------------------- #
 # SUPERSEDES the 4-changed-word compact patch below in full. Normative reference:
-# ``botcoin-mining-rigs`` @ ``ba4d5acfa7aa3042f39eb6e8e4d8e4007400090c``,
-# ``docs/CORETEX-TRANSITION-DESCRIPTOR-V2.md`` (+ its companion AUDIT). Mirrored here from the
+# ``botcoin-mining-rigs`` @ ``a473f3fd1038a81f8ef456cd4c7ce1f7b9fbef6e``, including the
+# descriptor-v3 correction recorded in ``docs/CORETEX-TRANSITION-DESCRIPTOR-V2.md`` and its
+# companion audit. Mirrored here from the
 # migrated coordinator's ``v5/validator/dispatch.py`` (``encode_transition_descriptor`` /
 # ``decode_transition_descriptor``) and ``v5/resolver/receipt.py`` (the typehash transcription),
 # with this repo's own typed-refusal-code and file-generation discipline kept intact.
@@ -558,46 +785,43 @@ def scan(logs: Iterable[Mapping[str, Any]], deployment: RigDeployment) -> Decode
 # this section (``COMPACT_PATCH_*``, ``PATCH_TYPE_WORD_RANGES``, ``CompactPatchError`` and its 14
 # codes, ``CompactPatch``, ``_read_leb128_word_index``, ``decode_compact_patch``) was PRODUCTION
 # machinery — an encoder a coordinator signed against and a decoder a validator ran — retired
-# pre-production by the operator directive that produced the v2 descriptor. It is removed, not
+# pre-production by the operator directive that produced the descriptor family. It is removed, not
 # archived: the retired label it hashed under (``coretex-patch-hash-v1``) is kept, below, because a
 # signer that was never migrated produces bytes that look right and hash wrong, and "signed under
 # the retired 4-word rule" is a cheaper answer than "these bytes are wrong". ``transition_from_patch``
 # — which asserted the RETIRED word-diff model over these same log bytes and was never called from
 # anywhere in this package — is deleted outright rather than migrated: it was dead code built on a
-# premise (verbatim canonical-JSON transition bytes in the log) the v2 descriptor does not have.
+# premise (verbatim canonical-JSON transition bytes in the log) the descriptor model does not have.
 #
-# THE FORMAT. 105 bytes, no padding, no optional field, no length prefix — the length IS the
+# THE FORMAT. 97 bytes, no padding, no optional field, no length prefix — the length IS the
 # format:
 #
-#     [0]        uint8   version             == 0x20
+#     [0]        uint8   version             == 0x21
 #     [1..33)    bytes32 patchArtifactHash   != 0, sha256 of the complete canonical patch artifact
 #     [33..65)   bytes32 parentStateRoot     == the receipt's signed parentStateRoot
 #     [65..97)   bytes32 newStateRoot        == the receipt's signed newStateRoot
-#     [97..105)  uint64  scoreDeltaPpm BE    == scoreAfterPpm - scoreBeforePpm
 #
 # THE CHAIN COMMITS AND ORDERS THE TRANSITION; IT NEVER STORES IT AND NEVER INTERPRETS IT. The
 # complete canonical patch artifact lives OFF CHAIN, addressed by ``patchArtifactHash``, and is
 # replayed deterministically by anyone (spec §5.4). That is why ``patchHash`` is now a content
-# address of the whole EDGE — ``(version, artifact, parent, new, delta)`` — and not, as under the
+# address of the whole EDGE — ``(version, artifact, parent, new)`` — and not, as under the
 # retired model, of the input side only: the old header carried ``parentStateRoot`` and never the
 # resulting root, so one ``patchHash`` was compatible with any ``newStateRoot`` a receipt named
 # (audit L-6). :func:`decode_transition_descriptor` therefore checks the descriptor's
 # ``newStateRoot`` against the receipt — a check that did not and could not exist before.
 #
-# CHECK ORDER IS INVERTED FROM THE RETIRED DECODER, deliberately (spec §6.1). The old patch had a
-# RANGE of legal lengths (42..178), so a length outside it was ambiguous between "malformed" and "a
-# different patch" and the hash was checked first to resolve that. One legal length makes a length
-# mismatch unambiguously a format error, so LENGTH IS CHECKED FIRST here and the hash second.
+# CHECK ORDER mirrors the contract: non-empty, version byte, exact length, hash, fields. Reading
+# the discriminator first makes an unmigrated 0x20 signer fail by name before its 105-byte length
+# or v2 label can obscure the actual fault.
 
 #: ``RigCoreTexVerifier.TRANSITION_DESCRIPTOR_BYTES`` (the length IS the format) and
 #: ``.TRANSITION_DESCRIPTOR_VERSION`` (an OPAQUE enumerated tag compared for EQUALITY — never
-#: arithmetic, never a range, spec §7.2; the mnemonic is "2.0", it is not a packed major/minor
-#: pair).
+#: arithmetic, never a range, and not a packed major/minor pair).
 #:
 #: IMPORTED, NOT TRANSCRIBED (review M-11.2 / M-1). These two values were previously a second
 #: hand-written copy of what :mod:`.rig_receipt_binding` already states, with nothing asserting the
-#: copies agreed — and M-1 counts seven independent transcriptions of ``105``/``0x20`` across the
-#: three repos, of which this module held one. One copy per package is the most this repo can do
+#: copies agreed — and the v2 review counted seven independent transcriptions of ``105``/``0x20``
+#: across the three repos, of which this module held one. One copy per package is the most this repo can do
 #: about that on its own; the binding module is the one that a cross-repo parity test can compare
 #: against the generated binding, so the binding module is the copy that survives.
 from .rig_receipt_binding import (                                          # noqa: E402
@@ -608,8 +832,6 @@ TRANSITION_DESCRIPTOR_VERSION_OFFSET = 0
 TRANSITION_DESCRIPTOR_ARTIFACT_OFFSET = 1
 TRANSITION_DESCRIPTOR_PARENT_OFFSET = 33
 TRANSITION_DESCRIPTOR_NEW_ROOT_OFFSET = 65
-TRANSITION_DESCRIPTOR_SCORE_DELTA_OFFSET = 97
-TRANSITION_DESCRIPTOR_SCORE_DELTA_BYTES = 8
 
 #: PERMANENTLY BURNED version bytes (spec §7.1). ``0x01``-``0x07`` were the retired compact patch's
 #: ``patchType`` values and ``0xff`` was ``COMPACT_PATCH_TYPE_UNRESTRICTED`` — the value every real
@@ -619,15 +841,18 @@ TRANSITION_DESCRIPTOR_BURNED_VERSIONS: Tuple[int, ...] = tuple(range(0x00, 0x08)
 #: UNASSIGNED and refused. Left deliberately EMPTY so the first descriptor version is not ADJACENT
 #: to the burned range: an off-by-one in a hand-written encoder lands in a hole, not on a version.
 TRANSITION_DESCRIPTOR_UNASSIGNED_VERSIONS: Tuple[int, ...] = tuple(range(0x08, 0x20))
+RETIRED_TRANSITION_DESCRIPTOR_VERSION = 0x20
 
 #: ``_validatedScoreDelta`` bounds both score members to ``[0, 1e6]`` and requires a STRICT
 #: improvement, so a legal delta is ``1..1_000_000``.
 TRANSITION_DESCRIPTOR_MIN_SCORE_DELTA_PPM = 1
 TRANSITION_DESCRIPTOR_MAX_SCORE_DELTA_PPM = 1_000_000
 
-# ── The domain-separation table. Three labels, three lengths, prefix-free (spec §4.2) ──────────
+# ── The domain-separation table. Four prefix-free labels (spec §4.2) ────────────────────────────
 #: THE LIVE RULE — ``RigCoreTexVerifier._validateDescriptorHash``.
-TRANSITION_DESCRIPTOR_HASH_LABEL = b"coretex-transition-descriptor-v2"
+TRANSITION_DESCRIPTOR_HASH_LABEL = b"coretex-transition-descriptor-v3"
+#: THIS LANE'S immediately superseded 105-byte descriptor label.
+TRANSITION_DESCRIPTOR_SUPERSEDED_V2_LABEL = b"coretex-transition-descriptor-v2"
 #: THIS LANE'S OWN RETIRED LABEL (the 4-word compact patch's — was ``PATCH_HASH_LABEL``), and the
 #: most dangerous of the three precisely because it is this lane's own history: a signer that was
 #: never migrated produces bytes that look right and hash wrong.
@@ -637,7 +862,8 @@ TRANSITION_DESCRIPTOR_RETIRED_LABEL = b"coretex-patch-hash-v1"
 TRANSITION_DESCRIPTOR_SUPERSEDED_MEMORY_LABEL = b"coretex-memory-transition-hash-v1"
 #: Every DEAD label, in the order spec §4.2 tables them. Both are REFUSED, never "unsupported".
 TRANSITION_DESCRIPTOR_DEAD_LABELS: Tuple[bytes, ...] = (
-    TRANSITION_DESCRIPTOR_RETIRED_LABEL, TRANSITION_DESCRIPTOR_SUPERSEDED_MEMORY_LABEL)
+    TRANSITION_DESCRIPTOR_SUPERSEDED_V2_LABEL, TRANSITION_DESCRIPTOR_RETIRED_LABEL,
+    TRANSITION_DESCRIPTOR_SUPERSEDED_MEMORY_LABEL)
 
 if TRANSITION_DESCRIPTOR_HASH_LABEL in TRANSITION_DESCRIPTOR_DEAD_LABELS:  # pragma: no cover
     raise RuntimeError("the live descriptor label is one of the dead ones")
@@ -647,12 +873,8 @@ for _dead in TRANSITION_DESCRIPTOR_DEAD_LABELS:                            # pra
         raise RuntimeError(
             f"{_dead!r} is a prefix of the live label (or vice versa); abi.encodePacked would "
             "admit a (label, payload) re-split")
-if len({len(TRANSITION_DESCRIPTOR_HASH_LABEL), *[len(l) for l in TRANSITION_DESCRIPTOR_DEAD_LABELS]}
-       ) != 3:                                                             # pragma: no cover
-    raise RuntimeError("the three descriptor labels must have three DISTINCT lengths")
-
 TRANSITION_DESCRIPTOR_HASH_RULE = (
-    'keccak256(abi.encodePacked("coretex-transition-descriptor-v2", compactPatchBytes))')
+    'keccak256(abi.encodePacked("coretex-transition-descriptor-v3", compactPatchBytes))')
 
 
 def transition_descriptor_hash(descriptor_bytes: bytes) -> str:
@@ -688,7 +910,7 @@ def _dead_label_hint(data: bytes, expected: str) -> str:
 
 
 def check_patch_hash(advance: StateAdvanced) -> None:
-    """Design §7.2 step 8, under the v2 rule. Self-verifying: the log carries both the bytes and
+    """Design §7.2 step 8, under the v3 rule. Self-verifying: the log carries both the bytes and
     their hash."""
     computed = transition_descriptor_hash(advance.compact_patch_bytes)
     if computed != advance.patch_hash:
@@ -712,8 +934,10 @@ class TransitionDescriptorError(RigEventError):
 
 
 # ── Descriptor refusal codes — one per RigCoreTexVerifier revert, in the contract's check order ─
-#: ``InvalidTransitionDescriptor`` — the length is not exactly 105. Checked FIRST.
+#: ``InvalidTransitionDescriptor`` — empty or not exactly 97 bytes.
 DESCRIPTOR_LENGTH_INVALID = "DESCRIPTOR_LENGTH_INVALID"
+#: ``RetiredTransitionDescriptorVersion(uint8)`` — the previous 0x20 layout is named separately.
+DESCRIPTOR_VERSION_RETIRED = "DESCRIPTOR_VERSION_RETIRED"
 #: ``TransitionDescriptorHashMismatch`` — these bytes are not a malformed descriptor, they are a
 #: DIFFERENT descriptor.
 DESCRIPTOR_HASH_MISMATCH = "DESCRIPTOR_HASH_MISMATCH"
@@ -727,8 +951,6 @@ DESCRIPTOR_PARENT_MISMATCH = "DESCRIPTOR_PARENT_MISMATCH"
 #: ``TransitionDescriptorNewRootMismatch`` — the transition's OUTPUT side, committed for the first
 #: time. The retired patch had no such field and therefore no such check.
 DESCRIPTOR_NEW_ROOT_MISMATCH = "DESCRIPTOR_NEW_ROOT_MISMATCH"
-#: ``TransitionDescriptorScoreMismatch``.
-DESCRIPTOR_SCORE_DELTA_MISMATCH = "DESCRIPTOR_SCORE_DELTA_MISMATCH"
 #: ``TransitionDescriptorVersionMismatch`` — the SIGNED ``transitionFormatVersion`` (a ``uint16``
 #: whose upper byte MUST be zero) is not the descriptor's version byte. The descriptor byte is the
 #: authority; the signed member is the binding.
@@ -749,15 +971,16 @@ SCREENER_PATCH_HASH_NONZERO = "SCREENER_PATCH_HASH_NONZERO"
 STATE_ADVANCE_PATCH_HASH_ZERO = "STATE_ADVANCE_PATCH_HASH_ZERO"
 
 DESCRIPTOR_REFUSALS: Tuple[str, ...] = (
-    DESCRIPTOR_LENGTH_INVALID, DESCRIPTOR_HASH_MISMATCH, DESCRIPTOR_VERSION_UNSUPPORTED,
+    DESCRIPTOR_LENGTH_INVALID, DESCRIPTOR_VERSION_RETIRED, DESCRIPTOR_HASH_MISMATCH,
+    DESCRIPTOR_VERSION_UNSUPPORTED,
     DESCRIPTOR_ARTIFACT_HASH_ZERO, DESCRIPTOR_PARENT_MISMATCH, DESCRIPTOR_NEW_ROOT_MISMATCH,
-    DESCRIPTOR_SCORE_DELTA_MISMATCH, DESCRIPTOR_FORMAT_VERSION_MISMATCH, DESCRIPTOR_UNEXPECTED,
+    DESCRIPTOR_FORMAT_VERSION_MISMATCH, DESCRIPTOR_UNEXPECTED,
     SCREENER_PATCH_HASH_NONZERO, STATE_ADVANCE_PATCH_HASH_ZERO)
 
 
 @dataclass(frozen=True)
 class TransitionDescriptor:
-    """A decoded 105-byte transition descriptor. Roots are bare lowercase hex."""
+    """A decoded 97-byte transition descriptor. Roots are bare lowercase hex."""
 
     version: int
     #: sha256 content address of the COMPLETE canonical patch artifact. Never the eval artifact:
@@ -766,18 +989,16 @@ class TransitionDescriptor:
     patch_artifact_hash: str
     parent_state_root: str
     new_state_root: str
-    score_delta_ppm: int
     raw: bytes
 
     def as_dict(self) -> Dict[str, Any]:
         return {"version": self.version, "patch_artifact_hash": self.patch_artifact_hash,
                 "parent_state_root": self.parent_state_root,
-                "new_state_root": self.new_state_root, "score_delta_ppm": self.score_delta_ppm,
-                "bytes": len(self.raw)}
+                "new_state_root": self.new_state_root, "bytes": len(self.raw)}
 
 
 def encode_transition_descriptor(*, patch_artifact_hash: str, parent_state_root: str,
-                                  new_state_root: str, score_delta_ppm: int) -> bytes:
+                                  new_state_root: str) -> bytes:
     """Build ``compactPatchBytes`` exactly as ``_validateTransitionDescriptor`` reads them back.
 
     Everything written here is re-read by :func:`decode_transition_descriptor` before it is
@@ -793,46 +1014,59 @@ def encode_transition_descriptor(*, patch_artifact_hash: str, parent_state_root:
             DESCRIPTOR_ARTIFACT_HASH_ZERO,
             "patchArtifactHash is zero. A descriptor committing to nothing would be structurally "
             "valid and would advance the head to a root with no addressable derivation")
-    delta = int(score_delta_ppm)
-    if not (TRANSITION_DESCRIPTOR_MIN_SCORE_DELTA_PPM <= delta
-            <= TRANSITION_DESCRIPTOR_MAX_SCORE_DELTA_PPM):
-        raise TransitionDescriptorError(
-            DESCRIPTOR_SCORE_DELTA_MISMATCH,
-            f"scoreDeltaPpm {delta} is outside {TRANSITION_DESCRIPTOR_MIN_SCORE_DELTA_PPM}.."
-            f"{TRANSITION_DESCRIPTOR_MAX_SCORE_DELTA_PPM}")
     raw = (bytes([TRANSITION_DESCRIPTOR_VERSION]) + bytes.fromhex(artifact)
-           + bytes.fromhex(parent) + bytes.fromhex(new_root)
-           + delta.to_bytes(TRANSITION_DESCRIPTOR_SCORE_DELTA_BYTES, "big"))
-    decode_transition_descriptor(raw, parent_state_root=parent, new_state_root=new_root,
-                                 score_delta_ppm=delta)
+           + bytes.fromhex(parent) + bytes.fromhex(new_root))
+    decode_transition_descriptor(raw, parent_state_root=parent, new_state_root=new_root)
     return raw
 
 
 def decode_transition_descriptor(raw: bytes, *, parent_state_root: Optional[str] = None,
                                   new_state_root: Optional[str] = None,
-                                  score_delta_ppm: Optional[int] = None,
                                   expected_patch_hash: Optional[str] = None,
                                   transition_format_version: Optional[int] = None
                                   ) -> TransitionDescriptor:
     """Decode ``compactPatchBytes`` exactly as ``RigCoreTexVerifier`` validates them (spec §6.1
-    rows 4-11, checked in that order — each failure the earliest true statement about what is
+    rows 4-12, checked in that order — each failure the earliest true statement about what is
     wrong).
 
     The optional arguments are the cross-checks the contract performs against the SIGNED receipt.
     Re-doing them is how a validator confirms the descriptor belongs to THIS advance rather than
-    merely being well-formed — and under v2 that now includes the transition's OUTPUT side, which
+    merely being well-formed — and under v3 that includes the transition's OUTPUT side, which
     the retired patch never carried.
     """
     data = bytes(raw)
-    # 4. LENGTH FIRST (see the section note above on why this order is inverted from the retired
-    #    decoder).
-    if len(data) != TRANSITION_DESCRIPTOR_BYTES:
+    # 4. Non-empty, then 5/6. VERSION FIRST: byte zero is shared by every descriptor-family layout.
+    if not data:
         raise TransitionDescriptorError(
             DESCRIPTOR_LENGTH_INVALID,
             f"a transition descriptor is EXACTLY {TRANSITION_DESCRIPTOR_BYTES} bytes; this one is "
             f"{len(data)}. The length is the format: there is no padding, no optional field and "
             "no length prefix")
-    # 5. the hash rule.
+    version = data[TRANSITION_DESCRIPTOR_VERSION_OFFSET]
+    if version != TRANSITION_DESCRIPTOR_VERSION:
+        if version == RETIRED_TRANSITION_DESCRIPTOR_VERSION:
+            raise TransitionDescriptorError(
+                DESCRIPTOR_VERSION_RETIRED,
+                "descriptor version 0x20 is the retired 105-byte descriptor-v2 layout; the live "
+                "rig accepts only 0x21 and never dual-accepts the previous format")
+        if version in TRANSITION_DESCRIPTOR_BURNED_VERSIONS:
+            why = ("PERMANENTLY BURNED: 0x01-0x07 were the retired compact patch's patchType "
+                   "values, 0xff was COMPACT_PATCH_TYPE_UNRESTRICTED, and 0x00 is burned too")
+        elif version in TRANSITION_DESCRIPTOR_UNASSIGNED_VERSIONS:
+            why = "UNASSIGNED: 0x08-0x1f is deliberately empty"
+        else:
+            why = "reserved for a successor; one deployed verifier accepts exactly one version"
+        raise TransitionDescriptorError(
+            DESCRIPTOR_VERSION_UNSUPPORTED,
+            f"descriptor version 0x{version:02x} is not 0x{TRANSITION_DESCRIPTOR_VERSION:02x} — "
+            f"{why}")
+    # 7. exact length, after the version has named the format.
+    if len(data) != TRANSITION_DESCRIPTOR_BYTES:
+        raise TransitionDescriptorError(
+            DESCRIPTOR_LENGTH_INVALID,
+            f"a version-0x{version:02x} transition descriptor is EXACTLY "
+            f"{TRANSITION_DESCRIPTOR_BYTES} bytes; this one is {len(data)}")
+    # 8. the hash rule.
     if expected_patch_hash is not None:
         computed = transition_descriptor_hash(data)
         expected = str(expected_patch_hash).lower().replace("0x", "")
@@ -841,25 +1075,7 @@ def decode_transition_descriptor(raw: bytes, *, parent_state_root: Optional[str]
                 DESCRIPTOR_HASH_MISMATCH,
                 f"{TRANSITION_DESCRIPTOR_HASH_RULE} is {computed}, the confirmed advance says "
                 f"{expected}{_dead_label_hint(data, expected)}")
-    # 6. the version byte, compared for EQUALITY against one constant.
-    version = data[TRANSITION_DESCRIPTOR_VERSION_OFFSET]
-    if version != TRANSITION_DESCRIPTOR_VERSION:
-        if version in TRANSITION_DESCRIPTOR_BURNED_VERSIONS:
-            why = ("PERMANENTLY BURNED: 0x01-0x07 were the retired compact patch's patchType "
-                   "values, 0xff was COMPACT_PATCH_TYPE_UNRESTRICTED (the value every real "
-                   "epoch-180 advance used), and 0x00 is burned with the low run so the whole "
-                   "range is one rule")
-        elif version in TRANSITION_DESCRIPTOR_UNASSIGNED_VERSIONS:
-            why = ("UNASSIGNED. 0x08-0x1f is left deliberately empty so this first version is not "
-                   "ADJACENT to the burned range")
-        else:
-            why = ("reserved for a successor, which takes a new version byte AND a new domain "
-                   "label; one deployed verifier accepts exactly one version")
-        raise TransitionDescriptorError(
-            DESCRIPTOR_VERSION_UNSUPPORTED,
-            f"descriptor version 0x{version:02x} is not 0x{TRANSITION_DESCRIPTOR_VERSION:02x} — "
-            f"{why}")
-    # 7. the artifact address must be non-zero.
+    # 9. the artifact address must be non-zero.
     artifact_hash = data[TRANSITION_DESCRIPTOR_ARTIFACT_OFFSET:
                          TRANSITION_DESCRIPTOR_PARENT_OFFSET].hex()
     if artifact_hash == "0" * 64:
@@ -868,10 +1084,8 @@ def decode_transition_descriptor(raw: bytes, *, parent_state_root: Optional[str]
             "patchArtifactHash is zero: the descriptor commits to no artifact, so the head would "
             "advance to a root with no addressable derivation")
     parent = data[TRANSITION_DESCRIPTOR_PARENT_OFFSET:TRANSITION_DESCRIPTOR_NEW_ROOT_OFFSET].hex()
-    new_root = data[TRANSITION_DESCRIPTOR_NEW_ROOT_OFFSET:
-                    TRANSITION_DESCRIPTOR_SCORE_DELTA_OFFSET].hex()
-    delta = int.from_bytes(data[TRANSITION_DESCRIPTOR_SCORE_DELTA_OFFSET:], "big")
-    # 8. parent, 9. new root, 10. delta — one at a time, each with its own revert.
+    new_root = data[TRANSITION_DESCRIPTOR_NEW_ROOT_OFFSET:].hex()
+    # 10/11. parent and new root, one at a time, each with its own revert.
     if parent_state_root is not None:
         expected_parent = str(parent_state_root).lower().replace("0x", "")
         if parent != expected_parent:
@@ -886,12 +1100,7 @@ def decode_transition_descriptor(raw: bytes, *, parent_state_root: Optional[str]
                 f"the descriptor's newStateRoot {new_root} is not the receipt's {expected_new}. "
                 "This check did not exist under the retired model because the patch carried no "
                 "resulting root at all")
-    if score_delta_ppm is not None and delta != int(score_delta_ppm):
-        raise TransitionDescriptorError(
-            DESCRIPTOR_SCORE_DELTA_MISMATCH,
-            f"the descriptor declares scoreDeltaPpm {delta} but the signed receipt says "
-            f"{int(score_delta_ppm)}")
-    # 11. the SIGNED uint16 must be the zero-extension of the version byte.
+    # 12. the SIGNED uint16 must be the zero-extension of the version byte.
     if transition_format_version is not None and int(transition_format_version) != version:
         raise TransitionDescriptorError(
             DESCRIPTOR_FORMAT_VERSION_MISMATCH,
@@ -899,8 +1108,7 @@ def decode_transition_descriptor(raw: bytes, *, parent_state_root: Optional[str]
             f"descriptor's version byte is 0x{version:02x}. The descriptor byte is the AUTHORITY; "
             "the signed member is the binding, and its upper byte MUST be zero")
     return TransitionDescriptor(version=version, patch_artifact_hash=artifact_hash,
-                                parent_state_root=parent, new_state_root=new_root,
-                                score_delta_ppm=delta, raw=data)
+                                parent_state_root=parent, new_state_root=new_root, raw=data)
 
 
 def _is_zero_word(value: Any) -> bool:
@@ -1108,7 +1316,9 @@ def validate_transition_artifact(artifact: Any) -> Dict[str, Any]:
 
 
 def check_transition_artifact_binds_descriptor(artifact: Mapping[str, Any], *,
-                                               descriptor: "TransitionDescriptor") -> Dict[str, Any]:
+                                               descriptor: "TransitionDescriptor",
+                                               expected_score_delta_ppm: Optional[int] = None
+                                               ) -> Dict[str, Any]:
     """Validate + check the two off-chain bindings the artifact can prove WITHOUT the parent state.
 
     Everything else — does the artifact re-hash to ``descriptor.patch_artifact_hash``, and does
@@ -1127,11 +1337,12 @@ def check_transition_artifact_binds_descriptor(artifact: Mapping[str, Any], *,
             TRANSITION_REPLAY_ROOT_MISMATCH,
             f"artifact.new_state_root {document['new_state_root']} != descriptor's "
             f"{descriptor.new_state_root}")
-    if document["score_delta_ppm"] != descriptor.score_delta_ppm:
+    if (expected_score_delta_ppm is not None
+            and document["score_delta_ppm"] != int(expected_score_delta_ppm)):
         raise TransitionArtifactError(
             TRANSITION_SCORE_DELTA_MISMATCH,
-            f"artifact.score_delta_ppm {document['score_delta_ppm']} != descriptor's "
-            f"{descriptor.score_delta_ppm}")
+            f"artifact.score_delta_ppm {document['score_delta_ppm']} != signed receipt delta "
+            f"{int(expected_score_delta_ppm)}")
     return document
 
 
@@ -1140,18 +1351,18 @@ def check_transition_artifact_binds_descriptor(artifact: Mapping[str, Any], *,
 # --------------------------------------------------------------------------- #
 # KEPT, not deleted: epoch-180 mainnet-rehearsal advances (two 75-byte patches, patchType 0xff,
 # wordCount 1) are LEGACY-ERA history. They remain valid against the deployed LEGACY verifier and
-# MUST NOT be re-read under v2 — their first byte, 0xff, is a permanently-burned version
+# MUST NOT be re-read under either descriptor generation — their first byte, 0xff, is a burned
 # (spec §9.5). This decoder is the only thing that can still parse them; deleting it would erase
 # the evidence of what changed, not just the machinery for changing it.
 #
-# ``decode_compact_patch`` MUST NOT be called on anything decoded from a live v2 deployment. What
-# actually happens if it is: 105 falls inside the retired ``42..178`` length window, so the LENGTH
-# check passes — but a v2 descriptor's first byte is ``0x20``, which is not a key of
+# ``decode_compact_patch`` MUST NOT be called on anything decoded from a live v3 deployment. What
+# actually happens if it is: 97 falls inside the retired ``42..178`` length window, so the LENGTH
+# check passes — but a v3 descriptor's first byte is ``0x21``, which is not a key of
 # ``PATCH_TYPE_WORD_RANGES``, so the very next check raises ``PATCH_TYPE_UNKNOWN`` before any word
 # is parsed. IT REFUSES, LOUDLY, AND IT NEVER MISREADS THE BYTES.
 #
 # That is stated precisely on purpose. An earlier version of this note claimed the decoder "would
-# not even refuse it outright — it would misread a v2 descriptor as a same-length compact patch",
+# not even refuse it outright — it would misread a descriptor as a same-length compact patch",
 # which is false, and a comment that overstates a hazard invites someone to "fix" the perceived
 # asymmetry by loosening the very check that closes it. THE PATCH-TYPE CHECK IS LOAD-BEARING: it is
 # the whole reason the two formats are mutually unparseable in this direction, and it MUST NOT be
@@ -1258,8 +1469,8 @@ def decode_compact_patch(raw: bytes, *, parent_state_root: Optional[str] = None,
 
     HISTORY ONLY (see the section note above) — a decoder for the ``coretex-patch-hash-v1`` era,
     kept so epoch-180-and-earlier legacy-format advances stay replayable. ``expected_patch_hash``
-    is checked against :data:`TRANSITION_DESCRIPTOR_RETIRED_LABEL`, the RETIRED label, not the live
-    v2 rule.
+    is checked against :data:`TRANSITION_DESCRIPTOR_RETIRED_LABEL`, the RETIRED label, not either
+    descriptor rule.
     """
     data = bytes(raw)
     if expected_patch_hash is not None:

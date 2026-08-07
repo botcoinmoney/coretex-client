@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Reproduce the resolver's per-epoch snapshot — ``coretex.rig-state.resolver-snapshot/v1``.
+"""Reproduce the resolver's per-epoch snapshots (v1/v2 history and descriptor-v3 live state).
 
 WHY THE RESOLVER'S SCHEMA AND NOT THIS PACKAGE'S
 ------------------------------------------------
@@ -56,11 +56,15 @@ SCHEMA_V1 = "coretex.rig-state.resolver-snapshot/v1"
 #: itself, and it is the right call: two documents with different shapes must not answer to one
 #: name, or a validator cannot tell from the id alone what it is about to parse.
 SCHEMA_V2 = "coretex.rig-state.resolver-snapshot/v2"
+#: THE DESCRIPTOR-V3 ERA. It retains v2's unsigned ``authority`` envelope while changing the
+#: chain-derived state, transition/event, receipt and derivation blocks to the canonical three-pin
+#: contract. Reusing v2 would make two incompatible inner schemas answer to one identifier.
+SCHEMA_V3 = "coretex.rig-state.resolver-snapshot/v3"
 
 #: Both are accepted, and the set is widened DELIBERATELY. An unknown schema is refused rather
 #: than guessed at — a validator that guesses is one that will eventually parse a v3 as a v2 and
 #: report a confident, wrong answer.
-SUPPORTED_SCHEMAS: Tuple[str, ...] = (SCHEMA_V1, SCHEMA_V2)
+SUPPORTED_SCHEMAS: Tuple[str, ...] = (SCHEMA_V1, SCHEMA_V2, SCHEMA_V3)
 
 #: Retained for callers that predate the v2 cut. New code should name a version explicitly.
 SCHEMA = SCHEMA_V1
@@ -83,8 +87,10 @@ _COMMON_KEYS: Tuple[str, ...] = (
     "transitions", "version", "wiring")
 TOP_LEVEL_KEYS_V1: Tuple[str, ...] = tuple(sorted(_COMMON_KEYS + ("resolver",)))
 TOP_LEVEL_KEYS_V2: Tuple[str, ...] = tuple(sorted(_COMMON_KEYS + ("authority",)))
+TOP_LEVEL_KEYS_V3: Tuple[str, ...] = TOP_LEVEL_KEYS_V2
 KEYS_BY_SCHEMA: Dict[str, Tuple[str, ...]] = {SCHEMA_V1: TOP_LEVEL_KEYS_V1,
-                                              SCHEMA_V2: TOP_LEVEL_KEYS_V2}
+                                              SCHEMA_V2: TOP_LEVEL_KEYS_V2,
+                                              SCHEMA_V3: TOP_LEVEL_KEYS_V3}
 
 #: Retained for callers that predate the v2 cut.
 TOP_LEVEL_KEYS: Tuple[str, ...] = TOP_LEVEL_KEYS_V1
@@ -222,8 +228,75 @@ def build_state(*, epoch: int, context: Mapping[str, Any],
     return block
 
 
+_V3_CONTEXT_KEYS = frozenset({
+    "configured", "epoch", "parent_state_root", "core_version_hash", "epoch_context_root",
+    "hidden_seed_commit",
+})
+_V3_HEADER_KEYS = frozenset({"patch_set_root", "score_root"})
+
+
+def build_state_v3(*, epoch: int, context: Mapping[str, Any],
+                   live_state_root: str, transition_count: int, sealed: bool, served: bool,
+                   header: Optional[Mapping[str, Any]] = None,
+                   finalized_at: Optional[int] = None) -> Dict[str, Any]:
+    """The descriptor-v3 registry state, without flattening the addressed epoch manifest.
+
+    ``state.context`` mirrors the canonical contract's six cells exactly. Corpus, active-frontier,
+    baseline, selection and threshold values are fields of the separately content-addressed
+    ``epochContextRoot`` document and are deliberately absent here. A sealed header contains only
+    closing evidence roots; final state and the epoch/core/context pins remain their canonical
+    accessors rather than duplicate header cells.
+    """
+    supplied = set(context)
+    if supplied != _V3_CONTEXT_KEYS:
+        raise ReproductionError(
+            "V3_CONTEXT_SHAPE_MISMATCH",
+            f"descriptor-v3 state.context has exactly {sorted(_V3_CONTEXT_KEYS)}; "
+            f"missing={sorted(_V3_CONTEXT_KEYS - supplied)}, "
+            f"unexpected={sorted(supplied - _V3_CONTEXT_KEYS)}")
+    block: Dict[str, Any] = {
+        "context": {
+            "configured": bool(context["configured"]),
+            "core_version_hash": cn.word(context["core_version_hash"], "core_version_hash"),
+            "epoch": cn.narrow(int(context["epoch"]), "context.epoch"),
+            "epoch_context_root": cn.word(context["epoch_context_root"],
+                                           "epoch_context_root"),
+            "hidden_seed_commit": cn.word(context["hidden_seed_commit"],
+                                           "hidden_seed_commit"),
+            "parent_state_root": cn.word(context["parent_state_root"], "parent_state_root"),
+        },
+        "epoch": cn.narrow(int(epoch), "epoch"),
+        "live_state_root": cn.word(live_state_root, "live_state_root"),
+        "sealed": bool(sealed),
+        "served": bool(served),
+        "transition_count": cn.narrow(int(transition_count), "transition_count"),
+    }
+    if int(context["epoch"]) != int(epoch):
+        raise ReproductionError(
+            "V3_CONTEXT_EPOCH_MISMATCH",
+            f"state epoch {epoch} != context epoch {context['epoch']}")
+    if sealed:
+        if header is None or finalized_at is None:
+            raise ReproductionError("SEALED_WITHOUT_HEADER",
+                                    "a sealed epoch must carry its header and finalizedAt")
+        supplied_header = set(header)
+        if supplied_header != _V3_HEADER_KEYS:
+            raise ReproductionError(
+                "V3_HEADER_SHAPE_MISMATCH",
+                f"descriptor-v3 sealed header has exactly {sorted(_V3_HEADER_KEYS)}; "
+                f"missing={sorted(_V3_HEADER_KEYS - supplied_header)}, "
+                f"unexpected={sorted(supplied_header - _V3_HEADER_KEYS)}")
+        block["finalized_at"] = cn.wide(int(finalized_at), "finalized_at")
+        block["header"] = {name: cn.word(header[name], name) for name in sorted(_V3_HEADER_KEYS)}
+    elif header is not None or finalized_at is not None:
+        raise ReproductionError(
+            "UNSEALED_WITH_HEADER",
+            "an unsealed descriptor-v3 epoch must not carry header/finalizedAt stand-ins")
+    return block
+
+
 def build_transition(transition: jn.JoinedTransition) -> Dict[str, Any]:
-    """One joined transition, in the resolver's spelling.
+    """One legacy v1/v2 joined transition, in the historical resolver spelling.
 
     Every wide field — ``rigId``, ``workUnitsBps``, ``difficultyCountSnapshot``, ``worldSeed``,
     ``improvement_credits``, ``credits_earned`` — renders as a decimal string. They sit beside
@@ -279,14 +352,88 @@ def build_transition(transition: jn.JoinedTransition) -> Dict[str, Any]:
     }
 
 
+def build_transition_v3(transition: jn.JoinedTransition) -> Dict[str, Any]:
+    """One descriptor-v3 transition using the canonical event and 24-field receipt."""
+    advance = transition.advance
+    credit = transition.credit
+    values = transition.receipt.values
+    return {
+        "block_number": cn.narrow(int(advance.provenance.block_number or 0), "block_number"),
+        "checks": list(transition.checks),
+        "coordinator_signer": cn.address(transition.recovered_signer or "",
+                                          "coordinator_signer"),
+        "eip712_digest": cn.word(transition.digest, "eip712_digest"),
+        "key": {
+            "epoch": cn.narrow(advance.epoch, "key.epoch"),
+            "parent_state_root": cn.word(advance.parent_state_root, "key.parent_state_root"),
+            "patch_hash": cn.word(advance.patch_hash, "key.patch_hash"),
+        },
+        "log_index": cn.narrow(int(advance.provenance.log_index or 0), "log_index"),
+        "mining_event": {
+            "challenge_id": cn.word(credit.challenge_id, "challenge_id"),
+            "credits_earned": cn.wide(credit.credits_earned, "credits_earned"),
+            "epoch": cn.narrow(credit.epoch, "mining_event.epoch"),
+            "operator": cn.address(credit.operator, "operator"),
+            "receipt_hash": cn.word(credit.receipt_hash, "receipt_hash"),
+            "rig_id": cn.wide(credit.rig_id, "rig_id"),
+            "solve_index": cn.narrow(credit.solve_index, "solve_index"),
+            "work_units_bps": cn.wide(credit.work_units_bps, "work_units_bps"),
+        },
+        "receipt": _receipt_block_v3(values),
+        "receipt_hash": cn.word(transition.receipt_hash, "receipt_hash"),
+        "registry_event": {
+            "compact_patch_bytes": cn.hexdata(advance.compact_patch_bytes,
+                                               "compact_patch_bytes"),
+            "core_version_hash": cn.word(advance.core_version_hash, "core_version_hash"),
+            "epoch": cn.narrow(advance.epoch, "registry_event.epoch"),
+            "epoch_context_root": cn.word(advance.epoch_context_root, "epoch_context_root"),
+            "eval_report_hash": cn.word(advance.eval_report_hash, "eval_report_hash"),
+            "improvement_credits": cn.wide(advance.improvement_credits,
+                                            "improvement_credits"),
+            "miner": cn.address(advance.miner, "miner"),
+            "new_state_root": cn.word(advance.new_state_root, "new_state_root"),
+            "parent_state_root": cn.word(advance.parent_state_root, "parent_state_root"),
+            "patch_hash": cn.word(advance.patch_hash, "patch_hash"),
+            "transition_index": cn.narrow(advance.transition_index, "transition_index"),
+            "transition_format_version": cn.narrow(advance.transition_format_version,
+                                                    "transition_format_version"),
+        },
+        "transaction_hash": cn.word(advance.provenance.transaction_hash or "",
+                                    "transaction_hash"),
+        "transition_index": cn.narrow(advance.transition_index, "transition_index"),
+    }
+
+
+def build_transition_v1(transition: jn.JoinedTransition) -> Dict[str, Any]:
+    """Immutable stateWordCount-era rendering used by signed resolver-snapshot/v1 history."""
+    values = dict(transition.receipt.values)
+    values["transitionFormatVersion"] = values.pop("stateWordCount")
+    projected = jn.JoinedTransition(
+        advance=transition.advance, credit=transition.credit,
+        receipt=jn.CoreTexReceipt(values), digest=transition.digest,
+        receipt_hash=transition.receipt_hash, recovered_signer=transition.recovered_signer,
+        transaction_hash=transition.transaction_hash, checks=list(transition.checks))
+    block = build_transition(projected)
+    block["receipt"]["stateWordCount"] = block["receipt"].pop("transitionFormatVersion")
+    block["registry_event"]["word_count"] = block["registry_event"].pop(
+        "transition_format_version")
+    return block
+
+
 #: Which receipt members are wide (decimal strings) and which are narrow (JSON numbers).
 _WIDE_RECEIPT_MEMBERS = ("rigId", "workUnitsBps", "difficultyCountSnapshot", "worldSeed")
 _NARROW_RECEIPT_MEMBERS = ("epochId", "solveIndex", "outcome", "rulesVersion",
                            "transitionFormatVersion", "scoreBeforePpm", "scoreAfterPpm",
                            "issuedAt", "expiresAt")
-_WORD_RECEIPT_MEMBERS = ("prevReceiptHash", "challengeId", "parentStateRoot", "newStateRoot",
-                         "corpusRoot", "activeFrontierRoot", "coreVersionHash", "evalReportHash",
-                         "patchHash", "artifactHash", "workPolicyHash")
+_WORD_RECEIPT_MEMBERS_V2 = (
+    "prevReceiptHash", "challengeId", "parentStateRoot", "newStateRoot", "corpusRoot",
+    "activeFrontierRoot", "coreVersionHash", "evalReportHash", "patchHash", "artifactHash",
+    "workPolicyHash")
+_WORD_RECEIPT_MEMBERS_V3 = (
+    "prevReceiptHash", "challengeId", "parentStateRoot", "newStateRoot", "epochContextRoot",
+    "coreVersionHash", "evalReportHash", "patchHash", "artifactHash", "workPolicyHash")
+# Retained for old callers and snapshot tests that introspect the historical layout.
+_WORD_RECEIPT_MEMBERS = _WORD_RECEIPT_MEMBERS_V2
 
 
 def _receipt_block(values: Mapping[str, Any]) -> Dict[str, Any]:
@@ -295,7 +442,21 @@ def _receipt_block(values: Mapping[str, Any]) -> Dict[str, Any]:
         out[name] = cn.wide(int(values[name]), name)
     for name in _NARROW_RECEIPT_MEMBERS:
         out[name] = cn.narrow(int(values[name]), name)
-    for name in _WORD_RECEIPT_MEMBERS:
+    for name in _WORD_RECEIPT_MEMBERS_V2:
+        out[name] = cn.word(values[name], name)
+    out["operator"] = cn.address(values["operator"], "operator")
+    out["compactPatchBytes"] = cn.hexdata(values["compactPatchBytes"], "compactPatchBytes")
+    out["signature"] = cn.hexdata(values["signature"], "signature")
+    return out
+
+
+def _receipt_block_v3(values: Mapping[str, Any]) -> Dict[str, Any]:
+    out: Dict[str, Any] = {}
+    for name in _WIDE_RECEIPT_MEMBERS:
+        out[name] = cn.wide(int(values[name]), name)
+    for name in _NARROW_RECEIPT_MEMBERS:
+        out[name] = cn.narrow(int(values[name]), name)
+    for name in _WORD_RECEIPT_MEMBERS_V3:
         out[name] = cn.word(values[name], name)
     out["operator"] = cn.address(values["operator"], "operator")
     out["compactPatchBytes"] = cn.hexdata(values["compactPatchBytes"], "compactPatchBytes")
@@ -308,6 +469,22 @@ def build_transitions(transitions: Sequence[jn.JoinedTransition]) -> Dict[str, A
         "count": cn.narrow(len(transitions), "transitions.count"),
         "lineage": [build_transition(t) for t in transitions],
         # Spelled out rather than concatenated so a reader can SEE that patchHash is in it.
+        "primary_key": ["epoch", "parentStateRoot", "patchHash"],
+    }
+
+
+def build_transitions_v3(transitions: Sequence[jn.JoinedTransition]) -> Dict[str, Any]:
+    return {
+        "count": cn.narrow(len(transitions), "transitions.count"),
+        "lineage": [build_transition_v3(t) for t in transitions],
+        "primary_key": ["epoch", "parentStateRoot", "patchHash"],
+    }
+
+
+def build_transitions_v1(transitions: Sequence[jn.JoinedTransition]) -> Dict[str, Any]:
+    return {
+        "count": cn.narrow(len(transitions), "transitions.count"),
+        "lineage": [build_transition_v1(t) for t in transitions],
         "primary_key": ["epoch", "parentStateRoot", "patchHash"],
     }
 
@@ -449,7 +626,8 @@ def check_shape(payload: Mapping[str, Any]) -> None:
 # --------------------------------------------------------------------------- #
 def build_epoch_lineage(*, epoch: int, steps: Sequence[Mapping[str, Any]],
                         continuous: bool, terminates_at: int,
-                        findings: Sequence[str] = ()) -> Dict[str, Any]:
+                        findings: Sequence[str] = (),
+                        rule: Optional[Mapping[str, str]] = None) -> Dict[str, Any]:
     """The §7.5 backwards walk, including the epochs it fell THROUGH.
 
     Header-less epochs are in the record, not omitted from it. An epoch that was never armed
@@ -485,7 +663,7 @@ def build_epoch_lineage(*, epoch: int, steps: Sequence[Mapping[str, Any]],
         # conclusions would be unauditable: a reader could not tell a fall-through from a missed
         # epoch, nor learn that continuity is asserted OFF chain and that this walk is the
         # mitigation rather than an on-chain guarantee.
-        "rule": LINEAGE_RULE,
+        "rule": dict(rule or LINEAGE_RULE),
         "terminates_at": cn.narrow(int(terminates_at), "terminates_at"),
     }
 
@@ -503,6 +681,19 @@ LINEAGE_RULE: Dict[str, str] = {
     "sealed": "epochFinalized(N)",
     "served": "transitionCount(N) > 0",
     "specification": "RIG-CORETEX-REGISTRY-DESIGN.md §7.5 (normative)",
+}
+
+LINEAGE_RULE_V3: Dict[str, str] = {
+    "fall_through": ("unserved epochs are SKIPPED, not treated as breaks: a screener-only epoch "
+                     "can never be sealed and is an ordinary gap in the header chain"),
+    "final_root": ("served ? liveStateRoot(N) : epochParentStateRoot(N); epochFinalized(N) "
+                   "freezes liveStateRoot and getHeader carries closing evidence only"),
+    "on_chain_enforcement": ("NONE — epoch-to-epoch continuity is asserted by the "
+                             "CORETEX_CONTEXT_OPERATOR, not derived on chain. This walk is the "
+                             "off-chain mitigation"),
+    "sealed": "epochFinalized(N)",
+    "served": "transitionCount(N) > 0",
+    "specification": "canonical descriptor-v3 RigCoreTexRegistry lineage",
 }
 
 
@@ -531,6 +722,34 @@ def build_migration(*, registry: str, registry_code_hash: str, verifier_bound_re
                      "design (ABI compatibility with the shipped reference). Logs MUST be "
                      "filtered by emitting address; a topic0 filter splices the two lanes' "
                      "histories"),
+            "registry_state_advanced": cn.word(rig.LEGACY_V2_STATE_ADVANCED_TOPIC0,
+                                               "registry_state_advanced"),
+        },
+    }
+
+
+def build_migration_v3(*, registry: str, registry_code_hash: str,
+                       verifier_bound_registry: str, epoch_clock: str, cutover_epoch: int,
+                       lineage_floor_epoch: int, log_window_from_block: int) -> Dict[str, Any]:
+    """Descriptor-v3 generation identity. Its advance topic no longer collides with legacy v2."""
+    return {
+        "cutover_epoch": cn.narrow(int(cutover_epoch), "cutover_epoch"),
+        "lineage_floor_epoch": cn.narrow(int(lineage_floor_epoch), "lineage_floor_epoch"),
+        "log_window_from_block": cn.narrow(int(log_window_from_block), "log_window_from_block"),
+        "protocol": rig.PROTOCOL_RIG_EXACT,
+        "registry_generation": {
+            "epoch_clock": cn.address(epoch_clock, "epoch_clock"),
+            "registry": cn.address(registry, "registry"),
+            "registry_code_hash": cn.word(registry_code_hash, "registry_code_hash"),
+            "verifier_bound_registry": cn.address(verifier_bound_registry,
+                                                  "verifier_bound_registry"),
+        },
+        "supersedes": list(SUPERSEDED_PROTOCOLS) + [PROTOCOL_ID],
+        "topic0_routing": {
+            "address_scoped": True,
+            "legacy_v2_state_advanced": cn.word(rig.LEGACY_V2_STATE_ADVANCED_TOPIC0,
+                                                 "legacy_v2_state_advanced"),
+            "live_collides_with_legacy_v2": False,
             "registry_state_advanced": cn.word(rig.STATE_ADVANCED_TOPIC0,
                                                "registry_state_advanced"),
         },
@@ -692,6 +911,79 @@ def build_locks(manifest: Mapping[str, Any], runtime_record: Optional[Mapping[st
     return block, findings
 
 
+V3_EPOCH_CONTEXT_LOCKS = (
+    "benchmark_law_root", "runtime_abi_root", "counter_resource_law_root",
+    "selection_law_root")
+
+
+def build_locks_v3(state_manifest: Mapping[str, Any], epoch_context: Mapping[str, Any],
+                   runtime_record: Optional[Mapping[str, Any]], *, core_version_hash: str,
+                   record_root: Optional[str] = None) -> Tuple[Dict[str, Any], List[str]]:
+    """V3 admission locks, sourced from the separately verified epoch-context manifest."""
+    claimed = record_locks(runtime_record or {}) if runtime_record else {}
+    chain_bound = bool(record_root) and cn.word(record_root, "record_root") == cn.word(
+        core_version_hash, "core_version_hash")
+    locks: Dict[str, Any] = {}
+    findings: List[str] = []
+    disputes: List[Dict[str, str]] = []
+    for name in V3_EPOCH_CONTEXT_LOCKS:
+        root = cn.bare_root(epoch_context[name], f"epoch_context.{name}")
+        entry: Dict[str, Any] = {"binding": "epoch-context-manifest", "root": root}
+        state_value = state_manifest.get(name)
+        if state_value is not None:
+            state_root = cn.bare_root(state_value, f"state_manifest.{name}")
+            if state_root == root:
+                entry["also_in_live_state_manifest"] = True
+            else:
+                entry["disputed_by_live_state_manifest"] = state_root
+                disputes.append({"authoritative_epoch_context": root, "lock": name,
+                                 "live_state_manifest": state_root})
+                findings.append(
+                    f"LOCK DISPUTE on {name}: epochContextRoot addresses {root}, while the live "
+                    f"state manifest says {state_root}; the epoch-context value governs admission")
+        claimed_value = claimed.get(name)
+        if claimed_value is not None:
+            claimed_root = cn.bare_root(claimed_value, f"runtime_record.{name}")
+            if claimed_root == root:
+                entry["also_in_runtime_record"] = True
+            else:
+                entry["disputed_by_runtime_record"] = claimed_root
+                disputes.append({"authoritative_epoch_context": root, "lock": name,
+                                 "runtime_integration_record": claimed_root})
+                findings.append(
+                    f"LOCK DISPUTE on {name}: epochContextRoot addresses {root}, while the runtime "
+                    f"integration record says {claimed_root}; the epoch-context value governs "
+                    "admission")
+        locks[name] = entry
+    for name in TRANSITIVE_LOCKS:
+        if name in locks or name not in claimed:
+            continue
+        locks[name] = {"binding": "chain-bound" if chain_bound else
+                                  ("disputed" if disputes else "transitive"),
+                       "root": cn.bare_root(claimed[name], name)}
+    if not chain_bound:
+        findings.append(
+            "the runtime-integration record is NOT chain-bound for this epoch; only locks marked "
+            "`epoch-context-manifest` are attested by the epochContextRoot chain pin")
+    block: Dict[str, Any] = {
+        "binding_note": (
+            "`epoch-context-manifest` locks are fields of the canonical bytes addressed by "
+            "registry.epochContextRoot(epoch). `chain-bound` runtime-record locks are addressed "
+            "by coreVersionHash. `transitive` and `disputed` locks must not be treated as chain "
+            "facts"),
+        "locks": locks,
+        "runtime_record_chain_bound": chain_bound,
+    }
+    if disputes:
+        block["dispute_resolution"] = (
+            "the epoch-context manifest governs admission; conflicting state-manifest or "
+            "runtime-record copies are retained only as disputed evidence")
+        block["disputes"] = sorted(disputes, key=lambda d: d["lock"])
+    if record_root is not None:
+        block["runtime_record_root"] = cn.bare_root(record_root, "runtime_record_root")
+    return block, findings
+
+
 #: Where each lock lives inside a ``coretex.runtime-integrated-pre-rig/v1`` record.
 #:
 #: The record states several of these more than once — ``abi_root`` appears under
@@ -767,6 +1059,7 @@ def reproduce_from_chain(published: Mapping[str, Any], *, rpc_url: str,
 
     check_shape(published)
     declared_schema = schema_of(published)
+    descriptor_v3 = declared_schema == SCHEMA_V3
     chain_id = int(published["chain"]["chain_id"])
     block = int(published["chain"]["observation"]["block_number"])
     epoch = int(published["epoch"])
@@ -796,11 +1089,14 @@ def reproduce_from_chain(published: Mapping[str, Any], *, rpc_url: str,
 
     built: Dict[str, Any] = {
         "schema": declared_schema,
-        "version": cn.narrow(int(published["version"]), "version"),
-        "protocol": PROTOCOL_ID,
+        "version": cn.narrow(3 if descriptor_v3 else int(published["version"]), "version"),
+        "protocol": rig_mod.PROTOCOL_RIG_EXACT if descriptor_v3 else PROTOCOL_ID,
         "classification": CLASSIFICATION_REHEARSAL, "production_authority": False,
         "disclosure": constants.DISCLOSURE, "canonicalization": constants.CANONICALIZATION,
-        "derivation": constants.DERIVATION, "prior": constants.PRIOR,
+        "derivation": (constants.DERIVATION_V3 if descriptor_v3 else
+                       (constants.DERIVATION_V1 if declared_schema == SCHEMA_V1
+                        else constants.DERIVATION_V2)),
+        "prior": constants.PRIOR,
         "epoch": cn.narrow(epoch, "epoch"),
     }
     # THE ONE KEY THAT DIFFERS BETWEEN THE VERSIONS, and both are ADOPTED from the published
@@ -845,26 +1141,36 @@ def reproduce_from_chain(published: Mapping[str, Any], *, rpc_url: str,
         verifier_core_tex_registry=addr(verifier, "coreTexRegistry()"),
         verifier_mining=addr(verifier, "mining()"))
 
-    context = {"configured": views.epoch_has_context(epoch)}
-    for name, sig in (("parent_state_root", "epochParentStateRoot(uint64)"),
-                      ("corpus_root", "epochCorpusRoot(uint64)"),
-                      ("active_frontier_root", "epochActiveFrontierRoot(uint64)"),
-                      ("baseline_manifest_hash", "epochBaselineManifestHash(uint64)"),
-                      ("core_version_hash", "epochCoreVersionHash(uint64)"),
-                      ("hidden_seed_commit", "epochHiddenSeedCommit(uint64)")):
+    context = {"configured": views.epoch_has_context(epoch), "epoch": epoch}
+    context_getters = (
+        (("parent_state_root", "epochParentStateRoot(uint64)"),
+         ("core_version_hash", "epochCoreVersionHash(uint64)"),
+         ("epoch_context_root", "epochContextRoot(uint64)"),
+         ("hidden_seed_commit", "epochHiddenSeedCommit(uint64)"))
+        if descriptor_v3 else
+        (("parent_state_root", "epochParentStateRoot(uint64)"),
+         ("corpus_root", "epochCorpusRoot(uint64)"),
+         ("active_frontier_root", "epochActiveFrontierRoot(uint64)"),
+         ("baseline_manifest_hash", "epochBaselineManifestHash(uint64)"),
+         ("core_version_hash", "epochCoreVersionHash(uint64)"),
+         ("hidden_seed_commit", "epochHiddenSeedCommit(uint64)")))
+    for name, sig in context_getters:
         context[name] = wordcall(registry, sig, epoch)
     sealed = views.epoch_finalized(epoch)
     count = views.transition_count(epoch)
-    built["state"] = build_state(
+    observed_header = (views.header(epoch) if descriptor_v3 else views.legacy_v2_header(epoch))
+    state_builder = build_state_v3 if descriptor_v3 else build_state
+    built["state"] = state_builder(
         epoch=epoch, context=context,
         live_state_root=wordcall(registry, "liveStateRoot(uint64)", epoch),
         transition_count=count, sealed=sealed, served=count > 0,
-        header=({k: "0x" + v for k, v in views.header(epoch).items()} if sealed else None),
+        header=({k: "0x" + v for k, v in observed_header.items()} if sealed else None),
         finalized_at=(uint(registry, "finalizedAt(uint64)", epoch) if sealed else None))
 
     logs = rpc.get_logs(addresses=list(deployment.addresses), topics=[], from_block=from_block,
                         to_block=block)
-    decoded = rig_mod.scan(logs, deployment)
+    decoded = (rig_mod.scan(logs, deployment) if descriptor_v3
+               else rig_mod.scan_legacy_v2(logs, deployment))
     cache: Dict[str, str] = {}
 
     def calldata_for(tx: str) -> str:
@@ -872,12 +1178,18 @@ def reproduce_from_chain(published: Mapping[str, Any], *, rpc_url: str,
             cache[tx] = str(rpc.transaction(tx).get("input", ""))
         return cache[tx]
 
-    joined = jn_mod.join_all(
+    joiner = (jn_mod.join_all if descriptor_v3 else
+              (jn_mod.join_all_legacy_v1 if declared_schema == SCHEMA_V1
+               else jn_mod.join_all_legacy_v2))
+    joined = joiner(
         decoded, calldata_for=calldata_for,
         domain_separator=bytes.fromhex(built["wiring"]["domain_separator"][2:]),
         coordinator_signer=built["wiring"]["coordinator_signer"])
     selected = [t for t in joined.transitions if t.advance.epoch == epoch]
-    built["transitions"] = build_transitions(selected)
+    built["transitions"] = (
+        build_transitions_v3(selected) if descriptor_v3 else
+        (build_transitions_v1(selected) if declared_schema == SCHEMA_V1
+         else build_transitions(selected)))
 
     steps = []
     walk = epoch
@@ -894,17 +1206,23 @@ def reproduce_from_chain(published: Mapping[str, Any], *, rpc_url: str,
         else:
             step["context_parent"] = wordcall(registry, "epochParentStateRoot(uint64)", walk)
             if is_sealed:
-                step["final_root_source"] = "getHeader.finalStateRoot"
-                step["final_root"] = "0x" + views.header(walk)["final_state_root"]
+                if descriptor_v3:
+                    step["final_root_source"] = "liveStateRoot (frozen by epochFinalized)"
+                    step["final_root"] = wordcall(registry, "liveStateRoot(uint64)", walk)
+                else:
+                    step["final_root_source"] = "getHeader.finalStateRoot"
+                    step["final_root"] = "0x" + views.legacy_v2_header(walk)["final_state_root"]
             else:
                 step["final_root_source"] = "liveStateRoot"
                 step["final_root"] = wordcall(registry, "liveStateRoot(uint64)", walk)
         steps.append(step)
         walk -= 1
-    built["epoch_lineage"] = build_epoch_lineage(epoch=epoch, steps=steps, continuous=True,
-                                                 terminates_at=floor, findings=[])
+    built["epoch_lineage"] = build_epoch_lineage(
+        epoch=epoch, steps=steps, continuous=True, terminates_at=floor, findings=[],
+        rule=LINEAGE_RULE_V3 if descriptor_v3 else LINEAGE_RULE)
 
-    built["migration"] = build_migration(
+    migration_builder = build_migration_v3 if descriptor_v3 else build_migration
+    built["migration"] = migration_builder(
         registry=registry, registry_code_hash=built["contracts"]["registry"]["code_hash"],
         verifier_bound_registry=built["wiring"]["verifier_coreTexRegistry"],
         epoch_clock=built["wiring"]["registry_epochClock"],
@@ -912,6 +1230,20 @@ def reproduce_from_chain(published: Mapping[str, Any], *, rpc_url: str,
         log_window_from_block=from_block)
 
     store = pub_mod.FilesystemCAS(store_dir)
+    epoch_context_manifest = None
+    epoch_context_root = None
+    epoch_context_bytes_len = None
+    if descriptor_v3:
+        epoch_context_root = cn.root_from_word(
+            built["state"]["context"]["epoch_context_root"], "epoch_context_root")
+        # Fetch the addressed admission context independently of the state manifest and rehash the
+        # exact served canonical bytes before any of its fields can inform derived presentation.
+        epoch_context_manifest = pub_mod.fetch_json(
+            epoch_context_root, hash_rule=pub_mod.HASH_RULE_FRONTIER_JSON, store=store)
+        rig_mod.validate_epoch_context(epoch_context_manifest)
+        served_context = store.get(epoch_context_root)
+        rig_mod.verify_epoch_context_bytes(served_context, expected_root=epoch_context_root)
+        epoch_context_bytes_len = len(served_context)
     head_root = built["state"]["live_state_root"][2:]
     manifest = pub_mod.fetch_json(head_root, hash_rule=pub_mod.HASH_RULE_FRONTIER_JSON,
                                   store=store)
@@ -919,17 +1251,25 @@ def reproduce_from_chain(published: Mapping[str, Any], *, rpc_url: str,
     built["composition"] = build_composition(manifest)
 
     record_root = record_root_of(runtime_record) if runtime_record else None
-    locks_block, lock_findings = build_locks(
-        manifest, runtime_record, core_version_hash=built["state"]["context"]["core_version_hash"],
-        record_root=record_root)
+    if descriptor_v3:
+        locks_block, lock_findings = build_locks_v3(
+            manifest, epoch_context_manifest or {}, runtime_record,
+            core_version_hash=built["state"]["context"]["core_version_hash"],
+            record_root=record_root)
+    else:
+        locks_block, lock_findings = build_locks(
+            manifest, runtime_record,
+            core_version_hash=built["state"]["context"]["core_version_hash"],
+            record_root=record_root)
     built["locks"] = locks_block
     built["findings"] = sorted(set(lock_findings))
 
     refs: List[Dict[str, Any]] = []
     for item in selected:
         index = item.advance.transition_index
+        artifact_ordinal = 14 if descriptor_v3 else 15
         refs.append({"chain_binding": (f"receipt.artifactHash of transition {index} — signed "
-                                       "member 15, bound by the EIP-712 digest inside the "
+                                       f"member {artifact_ordinal}, bound by the EIP-712 digest inside the "
                                        "receiptHash preimage"),
                      "chain_word": cn.word(item.receipt["artifactHash"], "artifactHash"),
                      # SIGNED-MANIFEST-BODY, not frontier-JSON. Rehashing a signed manifest under
@@ -952,6 +1292,18 @@ def reproduce_from_chain(published: Mapping[str, Any], *, rpc_url: str,
                  "hash_rule": pub_mod.HASH_RULE_FRONTIER_JSON,
                  "kind": "coretex.memory-frontier.v1", "location": f"cas://{head_root}",
                  "resolved": True, "root": head_root, "size": len(store.get(head_root))})
+    if descriptor_v3 and epoch_context_root is not None:
+        refs.append({
+            "chain_binding": ("registry.epochContextRoot(epoch) — receipt/event pin 3; fetched "
+                              "and rehashed separately from liveStateRoot"),
+            "chain_word": built["state"]["context"]["epoch_context_root"],
+            "hash_rule": pub_mod.HASH_RULE_FRONTIER_JSON,
+            "kind": rig_mod.EPOCH_CONTEXT_FORMAT,
+            "location": f"cas://{epoch_context_root}",
+            "resolved": True,
+            "root": epoch_context_root,
+            "size": int(epoch_context_bytes_len or 0),
+        })
     if record_root is not None:
         refs.append({"chain_binding": ("epoch context coreVersionHash (bound only if the two are "
                                        "equal)"),

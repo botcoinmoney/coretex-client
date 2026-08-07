@@ -148,8 +148,8 @@ V5_CREDIT_ACCEPTED_SIG = (
 
 # ── The RIG lane (RigCoreTexStateRegistry) ─────────────────────────────────
 #: THE canonical rig state advance. Indexed ``(uint64 epoch, uint64 transitionIndex,
-#: uint256 rigId)``, then nine ``bytes32`` in the DATA section: parent/new state root, the four
-#: epoch-context roots the registry enforces, ``evalReportHash``, ``patchHash``, ``artifactHash``,
+#: uint256 rigId)``, then eight ``bytes32`` in the DATA section: parent/new state root,
+#: ``epochContextRoot``, core/work-policy roots, ``evalReportHash``, ``patchHash``, ``artifactHash``,
 #: and a TRAILING ``bool viaLegacyRoute``.
 #: It carries NO ``transitionBytes``: the rig lane addresses the candidate by ``artifactHash``
 #: and the edit by ``patchHash``, so a replayer FETCHES rather than reads the edit out of the log.
@@ -162,7 +162,7 @@ V5_CREDIT_ACCEPTED_SIG = (
 #: it rather than skipping the extra word.
 RIG_STATE_ADVANCED_SIG = (
     "RigCoreTexStateAdvanced(uint64,uint64,uint256,bytes32,bytes32,bytes32,bytes32,bytes32,"
-    "bytes32,bytes32,bytes32,bytes32,bool)")
+    "bytes32,bytes32,bytes32,bool)")
 #: Priced work that did NOT move the root. Emitted with NO storage write, so a replayer can
 #: account for EVERY priced CoreTex receipt and not only the ones that advanced the state. It
 #: carries the SAME trailing ``bool viaLegacyRoute`` as the advance, for the same H-11 reason: a
@@ -172,12 +172,11 @@ RIG_SCREENER_PASS_SIG = (
 #: The rig lane's epoch-head publication. Same role as ``CoreTexMemoryEpochInherited``.
 RIG_EPOCH_INHERITED_SIG = "RigCoreTexEpochInherited(uint64,uint64,bytes32,bytes32,bool)"
 RIG_EPOCH_FINALIZED_SIG = (
-    "RigCoreTexEpochFinalized(uint64,bytes32,bytes32,bytes32,bytes32,bytes32,bytes32,bytes32,"
-    "bytes32,uint64)")
+    "RigCoreTexEpochFinalized(uint64,bytes32,bytes32,bytes32,bytes32,bytes32,bytes32,bytes32,uint64)")
 #: NO head field, for the same §17.237 reason the V5 context event has none: a context pins the
 #: epoch's LAW and never its head.
 RIG_EPOCH_CONTEXT_SET_SIG = (
-    "RigCoreTexEpochContextSet(uint64,bytes32,bytes32,bytes32,bytes32,bytes32,bytes32)")
+    "RigCoreTexEpochContextSet(uint64,bytes32,bytes32,bytes32,bytes32,bytes32)")
 
 
 def event_topic(signature: str) -> str:
@@ -219,11 +218,11 @@ V5_CREDIT_ACCEPTED_TOPIC0 = "040115536fbde89efa2d3fd2903f086f16802696a73119b8733
 #: them (the flag landed before any rig deployment), so there is no historical log to keep
 #: decoding under them, and a stale pin simply means "this advance matched nothing" — the exact
 #: symptom the §10 proof caught at ``verify_atomic_transition``.
-RIG_STATE_ADVANCED_TOPIC0 = "7a35edecfff48147c4e02fea3e25eb585e2b5a24ab3daa4d031f3da3b68617f7"
+RIG_STATE_ADVANCED_TOPIC0 = "7ae8ca47bd3b28315092d66393f84f3aa6558e77044befb9cd84230ba706a1eb"
 RIG_SCREENER_PASS_TOPIC0 = "eda3819a2fd3c640e6e7e3896d8f05b75629fb5db3c7108982cd1ff87aa04428"
 RIG_EPOCH_INHERITED_TOPIC0 = "837d744f70df7a57a08d1dc2b093b17a502134b4e484acdd9602b1dc4681a00a"
-RIG_EPOCH_FINALIZED_TOPIC0 = "4c47a11cab44ede36958f36a4ee44f85930e78349f5fe0d5fda340478c2b21b8"
-RIG_EPOCH_CONTEXT_SET_TOPIC0 = "aaa500a1bd0dfc74e51c4e190786560dbb6efd8e3e4544c2175b8883e48de055"
+RIG_EPOCH_FINALIZED_TOPIC0 = "48df8d442fe4c3a24fcc7e1dbe1c88635badaaed6aef8a43bca5755927a6e889"
+RIG_EPOCH_CONTEXT_SET_TOPIC0 = "bb2b0961e2170827dacf299941bbb8ace1326f3a224bd6cd7b8c23099c7e1f06"
 
 #: Event NAMES, per protocol. The dispatch table is keyed by topic0; this is the reverse map.
 EVENT_V4_STATE_ADVANCED = "CoreTexStateAdvanced"
@@ -972,8 +971,8 @@ class RigStateAdvanced:
 
       * the actor is a ``rigId`` (``uint256``), not a ``miner`` address. A rig is the mining unit,
         and its receipt chain is keyed by rig alone;
-      * the four epoch-context roots the registry ENFORCES (``corpus_root``,
-        ``active_frontier_root``, ``core_version_hash``, ``work_policy_hash``) ride on the advance
+      * the context and policy roots the registry ENFORCES (``epoch_context_root``,
+        ``core_version_hash``, ``work_policy_hash``) ride on the advance
         itself, so a replayer no longer has to join them from a separate context event;
       * there is no ``transition_bytes``. The edit is addressed by ``patch_hash`` and the
         candidate by ``artifact_hash``, so replay FETCHES both instead of reading the edit out of
@@ -999,8 +998,7 @@ class RigStateAdvanced:
     rig_id: int
     parent_state_root: str
     new_state_root: str
-    corpus_root: str
-    active_frontier_root: str
+    epoch_context_root: str
     core_version_hash: str
     work_policy_hash: str
     eval_report_hash: str
@@ -1053,14 +1051,13 @@ def decode_rig_state_advanced(log: Mapping[str, Any]) -> RigStateAdvanced:
         rig_id=_topic_uint256(log, 3, "rigId"),
         parent_state_root=_word(data, 0, "parentStateRoot"),
         new_state_root=_word(data, 1, "newStateRoot"),
-        corpus_root=_word(data, 2, "corpusRoot"),
-        active_frontier_root=_word(data, 3, "activeFrontierRoot"),
-        core_version_hash=_word(data, 4, "coreVersionHash"),
-        work_policy_hash=_word(data, 5, "workPolicyHash"),
-        eval_report_hash=_word(data, 6, "evalReportHash"),
-        patch_hash=_word(data, 7, "patchHash"),
-        artifact_hash=_word(data, 8, "artifactHash"),
-        via_legacy_route=_word_bool(data, 9, "viaLegacyRoute"),
+        epoch_context_root=_word(data, 2, "epochContextRoot"),
+        core_version_hash=_word(data, 3, "coreVersionHash"),
+        work_policy_hash=_word(data, 4, "workPolicyHash"),
+        eval_report_hash=_word(data, 5, "evalReportHash"),
+        patch_hash=_word(data, 6, "patchHash"),
+        artifact_hash=_word(data, 7, "artifactHash"),
+        via_legacy_route=_word_bool(data, 8, "viaLegacyRoute"),
         provenance=_provenance(log),
     )
 
@@ -1141,7 +1138,7 @@ def decode_rig_epoch_inherited(log: Mapping[str, Any]) -> RigEpochInherited:
 #: the context decoder and by the finalization decoder, whose seven ``bytes32`` are the final root
 #: FOLLOWED BY exactly these six.
 RIG_EPOCH_CONTEXT_PINS: Tuple[str, ...] = (
-    "corpus_root", "active_frontier_root", "core_version_hash", "baseline_manifest_hash",
+    "epoch_context_root", "core_version_hash", "baseline_manifest_hash",
     "hidden_seed_commit", "work_policy_hash")
 
 
@@ -1156,8 +1153,7 @@ class RigEpochContextSet:
     """
 
     epoch: int
-    corpus_root: str
-    active_frontier_root: str
+    epoch_context_root: str
     core_version_hash: str
     baseline_manifest_hash: str
     hidden_seed_commit: str
@@ -1169,7 +1165,7 @@ class RigEpochContextSet:
 
 
 def decode_rig_epoch_context_set(log: Mapping[str, Any]) -> RigEpochContextSet:
-    """Decode ``RigCoreTexEpochContextSet``. Six static ``bytes32`` words; nothing dynamic."""
+    """Decode ``RigCoreTexEpochContextSet``. Five static ``bytes32`` words; nothing dynamic."""
     _require_topic0(log, RIG_EPOCH_CONTEXT_SET_TOPIC0, EVENT_RIG_EPOCH_CONTEXT_SET)
     data = _data(log)
     values = {name: _word(data, index, name)
@@ -1180,7 +1176,7 @@ def decode_rig_epoch_context_set(log: Mapping[str, Any]) -> RigEpochContextSet:
 
 @dataclass(frozen=True)
 class RigEpochFinalized:
-    """A SEALED rig epoch: its parent, its final root, its six frozen pins and its transition count.
+    """A SEALED rig epoch: its parent, final root, five frozen pins and transition count.
 
     ``parent_state_root`` is the root the epoch INHERITED (a recorded historical fact written on
     its first advance), not a re-derivation — which is why a validator can walk the non-empty
@@ -1190,8 +1186,7 @@ class RigEpochFinalized:
     epoch: int
     parent_state_root: str
     final_state_root: str
-    corpus_root: str
-    active_frontier_root: str
+    epoch_context_root: str
     core_version_hash: str
     baseline_manifest_hash: str
     hidden_seed_commit: str
@@ -1204,7 +1199,7 @@ class RigEpochFinalized:
 
 
 def decode_rig_epoch_finalized(log: Mapping[str, Any]) -> RigEpochFinalized:
-    """Decode ``RigCoreTexEpochFinalized``: 8 ``bytes32`` then a ``uint64`` transition count."""
+    """Decode ``RigCoreTexEpochFinalized``: 7 ``bytes32`` then a ``uint64`` transition count."""
     _require_topic0(log, RIG_EPOCH_FINALIZED_TOPIC0, EVENT_RIG_EPOCH_FINALIZED)
     data = _data(log)
     values = {name: _word(data, 2 + index, name)
@@ -1213,7 +1208,7 @@ def decode_rig_epoch_finalized(log: Mapping[str, Any]) -> RigEpochFinalized:
         epoch=_topic_uint(log, 1, "epoch", bits=64),
         parent_state_root=_word(data, 0, "parentStateRoot"),
         final_state_root=_word(data, 1, "finalStateRoot"),
-        transitions=_word_uint(data, 8, "transitions", bits=64),
+        transitions=_word_uint(data, 7, "transitions", bits=64),
         provenance=_provenance(log),
         **values)
 
@@ -1445,8 +1440,7 @@ class RigEpochPins:
     """
 
     epoch: int
-    corpus_root: str
-    active_frontier_root: str
+    epoch_context_root: str
     core_version_hash: str
     baseline_manifest_hash: str
     hidden_seed_commit: str
@@ -1468,8 +1462,7 @@ class RigEpochPins:
         path does not carry them, so a validator that "checked" them against an advance would be
         comparing a pin against a value the log never asserted.
         """
-        return {"corpus_root": self.corpus_root,
-                "active_frontier_root": self.active_frontier_root,
+        return {"epoch_context_root": self.epoch_context_root,
                 "core_version_hash": self.core_version_hash,
                 "work_policy_hash": self.work_policy_hash}
 

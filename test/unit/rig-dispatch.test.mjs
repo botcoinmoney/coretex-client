@@ -16,7 +16,8 @@ import {
   RigDispatchError,
   CORETEX_EVENT_TOPICS,
   V4_EVENT_TOPICS,
-  decodeCoreTexStateAdvanced,
+  decodeRigStateAdvanced,
+  decodeRigEpochFinalized,
   decodeCortexStateAdvancedLog,
 } from '../../dist/index.js';
 
@@ -43,19 +44,19 @@ function word(hex) {
 
 /** A well-formed CoreTexStateAdvanced log from `address`. */
 function advanceLog(address) {
+  const descriptor = '21' + '7e'.repeat(32) + 'aa'.repeat(32) + 'bb'.repeat(32);
   const head = [
     word('aa'.repeat(32)), // parentStateRoot
     word('bb'.repeat(32)), // newStateRoot
     word('cc'.repeat(32)), // patchHash
     word('dd'.repeat(32)), // evalReportHash
     word('ee'.repeat(32)), // coreVersionHash
-    word('11'.repeat(32)), // corpusRoot
-    word('22'.repeat(32)), // activeFrontierRoot
+    word('11'.repeat(32)), // epochContextRoot
     word('64'), // improvementCredits = 100
-    word('01'), // wordCount = 1
-    word((10 * 32).toString(16)), // offset of compactPatchBytes
-    word('04'), // length 4
-    '61626364'.padEnd(64, '0'), // "abcd"
+    word('21'), // transitionFormatVersion = descriptor byte 0
+    word((9 * 32).toString(16)), // offset of compactPatchBytes
+    word((descriptor.length / 2).toString(16)),
+    descriptor.padEnd(Math.ceil(descriptor.length / 64) * 64, '0'),
   ].join('');
   return {
     address,
@@ -63,7 +64,7 @@ function advanceLog(address) {
       // Already `0x`-prefixed: this package's `bytesToHex` prefixes, the Python lane's does
       // not. Adding one here produced `0x0x…`, which routed as an UNKNOWN topic and was
       // silently ignored — exactly the failure mode an unknown topic0 is supposed to have.
-      CORETEX_EVENT_TOPICS.CoreTexStateAdvanced,
+      RIG_EVENT_TOPICS.CoreTexStateAdvanced,
       topicUint(7),
       topicUint(0),
       topicAddress('0x00000000000000000000000000000000000000aa'),
@@ -75,11 +76,23 @@ function advanceLog(address) {
   };
 }
 
+function finalizedLog(address) {
+  return {
+    address,
+    topics: [RIG_EVENT_TOPICS.CoreTexEpochFinalized, topicUint(7)],
+    data: '0x' + [
+      word('aa'.repeat(32)), word('bb'.repeat(32)), word('ee'.repeat(32)),
+      word('11'.repeat(32)), word('44'.repeat(32)), word('55'.repeat(32)),
+    ].join(''),
+  };
+}
+
 describe('rig dispatch coexists with V4 rather than replacing it', () => {
-  test('the rig registry advance topic0 IS the canonical lane advance topic0', () => {
+  test('descriptor-v3 moved the rig registry advance topic away from legacy v2', () => {
     const lanes = laneSeparation();
-    assert.equal(lanes.identical, true);
-    assert.equal(lanes.canonicalRegistryAdvance, lanes.rigRegistryAdvance);
+    assert.equal(lanes.identical, false);
+    assert.notEqual(lanes.canonicalRegistryAdvance, lanes.rigRegistryAdvance);
+    assert.deepEqual(lanes.collidingLanes, []);
     assert.equal(lanes.discriminator, 'emitting address');
     assert.doesNotThrow(assertLaneSeparation);
   });
@@ -94,11 +107,11 @@ describe('rig dispatch coexists with V4 rather than replacing it', () => {
     }
   });
 
-  test('the rig subscription INCLUDES the shared advance topic0', () => {
-    // The whole point: a filter built only from the rig's own new events retrieves zero
-    // advances, which is indistinguishable from a deployment that never mined.
-    assert.ok(RIG_LOG_TOPICS.includes(CORETEX_EVENT_TOPICS.CoreTexStateAdvanced));
-    assert.ok(RIG_LOG_TOPICS.includes(CORETEX_EVENT_TOPICS.CoreTexEpochFinalized));
+  test('the rig subscription includes only the live v3 advance/finalize topics', () => {
+    assert.ok(RIG_LOG_TOPICS.includes(RIG_EVENT_TOPICS.CoreTexStateAdvanced));
+    assert.ok(RIG_LOG_TOPICS.includes(RIG_EVENT_TOPICS.CoreTexEpochFinalized));
+    assert.ok(!RIG_LOG_TOPICS.includes(CORETEX_EVENT_TOPICS.CoreTexStateAdvanced));
+    assert.ok(!RIG_LOG_TOPICS.includes(CORETEX_EVENT_TOPICS.CoreTexEpochFinalized));
     assert.equal(RIG_LOG_TOPICS.length, 8);
   });
 
@@ -137,12 +150,24 @@ describe('rig dispatch coexists with V4 rather than replacing it', () => {
 });
 
 describe('V4 decoding is not regressed by the rig lane', () => {
-  test('the canonical registry decoder still decodes an advance', () => {
-    const decoded = decodeCoreTexStateAdvanced(advanceLog(DEPLOYMENT.registry));
+  test('the live rig decoder reads epochContextRoot and the 97-byte descriptor', () => {
+    const decoded = decodeRigStateAdvanced(advanceLog(DEPLOYMENT.registry));
     assert.ok(decoded !== null);
     assert.equal(decoded.epoch, 7n);
     assert.equal(decoded.improvementCredits, 100n);
-    assert.equal(Buffer.from(decoded.compactPatchBytes).toString('utf8'), 'abcd');
+    assert.equal(decoded.epochContextRoot, '0x' + '11'.repeat(32));
+    assert.equal(decoded.transitionFormatVersion, 0x21);
+    assert.equal(decoded.compactPatchBytes.length, 97);
+    assert.equal(decoded.compactPatchBytes[0], 0x21);
+  });
+
+  test('the live finalization decoder reads only canonical seal fields', () => {
+    const decoded = decodeRigEpochFinalized(finalizedLog(DEPLOYMENT.registry));
+    assert.ok(decoded !== null);
+    assert.equal(decoded.finalStateRoot, '0x' + 'bb'.repeat(32));
+    assert.equal(decoded.epochContextRoot, '0x' + '11'.repeat(32));
+    assert.equal(decoded.patchSetRoot, '0x' + '44'.repeat(32));
+    assert.equal(decoded.scoreRoot, '0x' + '55'.repeat(32));
   });
 
   test('the legacy v4 decoder ignores a rig/canonical advance', () => {

@@ -177,23 +177,22 @@ RESOURCE_AXIS_FIELDS = ("id", "integer_axis", "source", "unit", "weight_ppm")
 # --------------------------------------------------------------------------- #
 # The RIG-PROTOCOL receipt fields (V5 rig-keyed integration, step 6)
 # --------------------------------------------------------------------------- #
-#: The NINE signed ``RigCoreTexReceipt`` fields that no other part of the artifact carries.
+#: The EIGHT signed ``RigCoreTexReceipt`` fields that no other part of the artifact carries.
 #:
-#: The rig receipt signs 25 fields. Sixteen of them the artifact already determines (the state
+#: The rig receipt signs 24 fields. Sixteen of them the artifact already determines (the state
 #: roots, ``evalReportHash``, the ppm scores) or the chain does (``rigId``, ``operator``,
 #: ``epochId``, ``solveIndex``, ``prevReceiptHash``, ``workUnitsBps``,
 #: ``difficultyCountSnapshot``, ``issuedAt``, ``expiresAt``, ``patchHash``, ``artifactHash``).
-#: These nine are the remainder: values only the EVALUATOR can know. They live here, inside the
+#: These eight are the remainder: values only the EVALUATOR can know. They live here, inside the
 #: bytes ``evalReportHash`` addresses, so they are hashed and signed rather than merely asserted
 #: by whichever process happened to build the calldata — the ruling
 #: ``RIG-CORETEX-REGISTRY-DESIGN.md`` §5.1 made for ``stateWordCount`` and which applies equally to
-#: the other eight. ``transition_format_version`` is its transition-descriptor/v2 successor
+#: the other seven. ``transition_format_version`` is its transition-descriptor/v3 successor
 #: (§9.1): unlike the retired counter it is not evaluator-observed data, it is the descriptor's
 #: version byte zero-extended to ``uint16`` — but it stays in this tuple because it is still a
 #: signed field only the evaluator (never the coordinator) supplies at the moment of signing.
-RIG_RECEIPT_FIELDS = ("active_frontier_root", "challenge_id", "core_version_hash", "corpus_root",
-                      "outcome", "rules_version", "transition_format_version", "work_policy_hash",
-                      "world_seed")
+RIG_RECEIPT_FIELDS = ("challenge_id", "core_version_hash", "epoch_context_root", "outcome",
+                      "rules_version", "transition_format_version", "work_policy_hash", "world_seed")
 
 #: ``outcome`` values the rig verifier prices. 0 and anything above 2 revert for EVERY epoch, so
 #: an artifact may not even claim them.
@@ -206,8 +205,8 @@ MAX_UINT128 = 2 ** 128 - 1
 #: ``uint16`` — ``transitionFormatVersion``'s signed width (was ``stateWordCount``'s).
 MAX_UINT16 = 2 ** 16 - 1
 
-#: RETIRED (coretex.transition-descriptor/v2 §9.1). ``stateWordCount`` was a PATCH-WIDTH counter
-#: bounded 1..4 (``RIG-CORETEX-REGISTRY-DESIGN.md`` §5.1); there is no word count under v2 — a
+#: RETIRED by the descriptor family. ``stateWordCount`` was a PATCH-WIDTH counter
+#: bounded 1..4 (``RIG-CORETEX-REGISTRY-DESIGN.md`` §5.1); there is no word count under v3 — a
 #: single descriptor now expresses breadth the retired 4-word ceiling could never reach (spec §1.1,
 #: §8 T-3). Kept, unused, so a reader who remembers the old bound can find where it went.
 RIG_STATE_WORD_COUNT_MAX = 4
@@ -227,19 +226,18 @@ RIG_TRANSITION_FORMAT_VERSION_ADVANCE = rig_ev.TRANSITION_DESCRIPTOR_VERSION
 #: and the JS coordinator spell them differently". :func:`rig_receipt_projection` emits BOTH so
 #: neither side has to guess which spelling the other chose.
 RIG_RECEIPT_CAMEL_CASE: Dict[str, str] = {
-    "active_frontier_root": "activeFrontierRoot",
     "challenge_id": "challengeId",
     "core_version_hash": "coreVersionHash",
-    "corpus_root": "corpusRoot",
+    "epoch_context_root": "epochContextRoot",
     "outcome": "outcome",
     "rules_version": "rulesVersion",
     "transition_format_version": "transitionFormatVersion",
     "work_policy_hash": "workPolicyHash",
     "world_seed": "worldSeed",
 }
-#: The five that are 32-byte roots on chain.
-RIG_RECEIPT_ROOT_FIELDS = ("active_frontier_root", "challenge_id", "core_version_hash",
-                           "corpus_root", "work_policy_hash")
+#: The four that are 32-byte roots on chain.
+RIG_RECEIPT_ROOT_FIELDS = ("challenge_id", "core_version_hash", "epoch_context_root",
+                           "work_policy_hash")
 
 #: Fields too WIDE to survive JSON as numbers, rendered as decimal strings by
 #: :func:`rig_receipt_projection`. ``world_seed`` is a ``uint128``: JSON numbers are IEEE-754
@@ -992,7 +990,7 @@ def validate_rig_receipt_block(block: Any) -> Dict[str, Any]:
     ``AbiError`` on a document a validator has already accepted.
 
     Two semantic rules are enforced beyond the widths, from
-    ``RIG-CORETEX-REGISTRY-DESIGN.md`` §5.1 and ``coretex.transition-descriptor/v2`` §6.2/§9.1:
+    ``RIG-CORETEX-REGISTRY-DESIGN.md`` §5.1 and ``coretex.transition-descriptor/v3``:
 
       * ``outcome`` must be 1 or 2. 0 and >2 revert for every epoch, so an artifact may not claim
         one even as an intention.
@@ -1353,8 +1351,7 @@ def verify_artifact(artifact: Mapping[str, Any], *, expected_parent_root: str,
                     store: Optional[pub.ContentStore] = None,
                     check_availability: bool = False,
                     require_rig_receipt: bool = False,
-                    expected_corpus_root: Optional[str] = None,
-                    expected_active_frontier_root: Optional[str] = None,
+                    expected_epoch_context_root: Optional[str] = None,
                     expected_core_version_hash: Optional[str] = None,
                     expected_work_policy_hash: Optional[str] = None,
                     signature_verifier=None) -> Dict[str, Any]:
@@ -1379,8 +1376,8 @@ def verify_artifact(artifact: Mapping[str, Any], *, expected_parent_root: str,
     rig pre-sign gate always passes true, so an artifact that is about to be bound to a rig
     receipt but cannot supply the fields that receipt signs is refused
     (:class:`RigReceiptFieldsMissingError`) rather than silently signed with invented values.
-    The four ``expected_*`` rig pins (``corpus_root``, ``active_frontier_root``,
-    ``core_version_hash``, ``work_policy_hash``) are the epoch context the registry itself
+    The three ``expected_*`` rig pins (``epoch_context_root``, ``core_version_hash``,
+    ``work_policy_hash``) are the epoch context the registry itself
     enforces; supplying one checks the artifact against it, omitting one skips only that check.
     """
     validate_artifact(artifact)
@@ -1695,10 +1692,9 @@ def verify_artifact(artifact: Mapping[str, Any], *, expected_parent_root: str,
             "does not invent a signed field, so there is nothing to sign.")
     if rig_present:
         rig = validate_rig_receipt_block(artifact["rig_receipt"])
-        # The four epoch-context pins the registry itself enforces. Each is checked only when the
+        # The three receipt/context pins. Each is checked only when the
         # caller supplies it: a validator replaying history has them, a builder may not yet.
-        for field, expected in (("corpus_root", expected_corpus_root),
-                                ("active_frontier_root", expected_active_frontier_root),
+        for field, expected in (("epoch_context_root", expected_epoch_context_root),
                                 ("core_version_hash", expected_core_version_hash),
                                 ("work_policy_hash", expected_work_policy_hash)):
             if expected is None:

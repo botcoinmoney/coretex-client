@@ -82,15 +82,15 @@ function topicAddr(t: string | undefined): string { const h = (t ?? '0x' + '00'.
 // (length, first byte) classifies the log's LANE without needing its address — which matters
 // because it lets a caller that got its filter wrong be TOLD what it fetched.
 /** `RigCoreTexVerifier.TRANSITION_DESCRIPTOR_BYTES`. The length IS the format. */
-export const RIG_TRANSITION_DESCRIPTOR_BYTES = 105;
+export const LEGACY_V2_RIG_TRANSITION_DESCRIPTOR_BYTES = 105;
 /** `RigCoreTexVerifier.TRANSITION_DESCRIPTOR_VERSION` — an opaque tag, compared for equality. */
-export const RIG_TRANSITION_DESCRIPTOR_VERSION = 0x20;
+export const LEGACY_V2_RIG_TRANSITION_DESCRIPTOR_VERSION = 0x20;
 
 /** Is this advance's payload a rig-lane transition descriptor rather than a V4 compact patch? */
-export function isRigLaneTransitionDescriptor(compactPatchBytes: Uint8Array): boolean {
+export function isLegacyV2RigLaneTransitionDescriptor(compactPatchBytes: Uint8Array): boolean {
   return (
-    compactPatchBytes.length === RIG_TRANSITION_DESCRIPTOR_BYTES &&
-    compactPatchBytes[0] === RIG_TRANSITION_DESCRIPTOR_VERSION
+    compactPatchBytes.length === LEGACY_V2_RIG_TRANSITION_DESCRIPTOR_BYTES &&
+    compactPatchBytes[0] === LEGACY_V2_RIG_TRANSITION_DESCRIPTOR_VERSION
   );
 }
 
@@ -274,14 +274,14 @@ export function replayCoreTexFromLogs(
     // from this lane's `computePatchHash`. Running the comparison anyway produced
     // PATCH_HASH_MISMATCH on a perfectly valid mine — the client calling a valid v2 advance a
     // forged V4 patch. Refuse it as NOT THIS LANE'S, by name, and say what it actually is.
-    if (isRigLaneTransitionDescriptor(adv.compactPatchBytes)) {
+    if (isLegacyV2RigLaneTransitionDescriptor(adv.compactPatchBytes)) {
       return {
         ok: false,
         code: 'CROSS_LANE_RIG_ADVANCE',
         message:
-          `advance ${adv.transitionIndex} carries a ${RIG_TRANSITION_DESCRIPTOR_BYTES}-byte ` +
+          `advance ${adv.transitionIndex} carries a ${LEGACY_V2_RIG_TRANSITION_DESCRIPTOR_BYTES}-byte ` +
           `coretex.transition-descriptor/v2 payload (version byte 0x` +
-          `${RIG_TRANSITION_DESCRIPTOR_VERSION.toString(16)}), so it is a RIG-LANE advance that ` +
+          `${LEGACY_V2_RIG_TRANSITION_DESCRIPTOR_VERSION.toString(16)}), so it is a legacy RIG-LANE advance that ` +
           'reached this V4 replay through the shared CoreTexStateAdvanced topic0. This is NOT an ' +
           'invalid patch and MUST NOT be reported as one: the rig lane derives patchHash under a ' +
           'different domain label over different bytes. Scope the log query to the V4 registry ' +

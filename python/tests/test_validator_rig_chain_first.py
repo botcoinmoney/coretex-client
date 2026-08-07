@@ -6,10 +6,10 @@ replay is still the consensus implementation, and everything here happens BEFORE
 execute. So the thing worth testing in isolation is exactly the set of refusals that are unique to
 the rig lane and that no other module makes:
 
-  * the FOUR law pins the registry enforces, re-checked against pins a validator read for ITSELF.
+  * the THREE law pins the registry enforces, re-checked against pins a validator read for ITSELF.
     A snapshot that repeated the event's own roots back at it would agree with itself and catch
     nothing, so the substitution is injected into the SNAPSHOT, not into the event;
-  * ``keccak256(LABEL ++ compactPatchBytes) == event.patchHash`` over the 105-byte TRANSITION
+  * ``keccak256(LABEL ++ compactPatchBytes) == event.patchHash`` over the 97-byte TRANSITION
     DESCRIPTOR, followed by the descriptor's own decode. The rig advance carries no edit — it is
     addressed by hash — so this is the entire reason fetching the edit is safe. The preimage is the
     descriptor and NOT the canonical-JSON transition object (review M-9): the label and the
@@ -46,8 +46,7 @@ RIG_ID = 2 ** 200 + 7
 
 PARENT = "aa" * 32
 NEW = "bb" * 32
-CORPUS = "cc" * 32
-FRONTIER = "dd" * 32
+EPOCH_CONTEXT = "cc" * 32
 CORE = "ee" * 32
 POLICY = "11" * 32
 BASELINE = "55" * 32
@@ -62,18 +61,17 @@ TRANSITION = fr.make_transition(
     resulting_composition_root="ef" * 32)
 TRANSITION_BYTES = fr.canonical_bytes(TRANSITION)
 
-#: THE 105-BYTE TRANSITION DESCRIPTOR — the bytes ``patchHash`` actually binds under
-#: ``coretex.transition-descriptor/v2``: version(1) ‖ patchArtifactHash(32) ‖ parentStateRoot(32) ‖
-#: newStateRoot(32) ‖ scoreDeltaPpm(8, big-endian).
+#: THE 97-BYTE TRANSITION DESCRIPTOR — the bytes ``patchHash`` actually binds under
+#: ``coretex.transition-descriptor/v3``: version(1) ‖ patchArtifactHash(32) ‖
+#: parentStateRoot(32) ‖ newStateRoot(32).
 #:
 #: Built here from raw bytes rather than through ``rig_events.encode_transition_descriptor`` on
 #: purpose: this file is the negative-control suite for the envelope, and a fixture produced by the
 #: same module the envelope decodes with would agree with itself no matter what either of them did.
 PATCH_ARTIFACT = "7e" * 32
-SCORE_DELTA_PPM = 1234
-DESCRIPTOR = (bytes([0x20]) + bytes.fromhex(PATCH_ARTIFACT) + bytes.fromhex(PARENT)
-              + bytes.fromhex(NEW) + SCORE_DELTA_PPM.to_bytes(8, "big"))
-assert len(DESCRIPTOR) == 105
+DESCRIPTOR = (bytes([0x21]) + bytes.fromhex(PATCH_ARTIFACT) + bytes.fromhex(PARENT)
+              + bytes.fromhex(NEW))
+assert len(DESCRIPTOR) == 97
 #: ``keccak256(LABEL ‖ THE DESCRIPTOR)``. It was ``keccak256(LABEL ‖ TRANSITION_BYTES)`` — the
 #: right label on the wrong preimage, a value no genuine v2 advance can ever carry (review M-9).
 PATCH = keccak256_hex(cf.RIG_PATCH_HASH_LABEL + DESCRIPTOR)
@@ -89,7 +87,7 @@ ARTIFACT = _root(CANDIDATE_MANIFEST)
 
 
 def _pins(**overrides):
-    values = {"corpus_root": CORPUS, "active_frontier_root": FRONTIER, "core_version_hash": CORE,
+    values = {"epoch_context_root": EPOCH_CONTEXT, "core_version_hash": CORE,
               "baseline_manifest_hash": BASELINE, "hidden_seed_commit": SEED_COMMIT,
               "work_policy_hash": POLICY, "entropy_commitment": SEED_COMMIT}
     values.update(overrides)
@@ -99,7 +97,7 @@ def _pins(**overrides):
 def _event(**overrides):
     values = dict(
         epoch=EPOCH, transition_index=0, rig_id=RIG_ID, parent_state_root=PARENT,
-        new_state_root=NEW, corpus_root=CORPUS, active_frontier_root=FRONTIER,
+        new_state_root=NEW, epoch_context_root=EPOCH_CONTEXT,
         core_version_hash=CORE, work_policy_hash=POLICY, eval_report_hash=REPORT,
         patch_hash=PATCH, artifact_hash=ARTIFACT,
         # Explicit, not left to the field default: these fixtures stand in for a DECODED log, and
@@ -215,7 +213,7 @@ def test_the_legacy_route_observable_survives_to_the_result_even_on_a_refusal(fl
     advance here would be this lane inventing a consensus rule the chain does not have.
     """
     refused = _run(event=_event(via_legacy_route=flag),
-                   chain=_snapshot(pins=_pins(corpus_root="99" * 32)))
+                   chain=_snapshot(pins=_pins(epoch_context_root="99" * 32)))
     assert refused.ok is False, "this fixture is deliberately a refusal"
     assert refused.via_legacy_route is flag
     assert refused.route == route
@@ -227,7 +225,7 @@ def test_the_two_pins_the_advance_does_not_carry_are_not_pretended_to_be_checked
     """``baselineManifestHash`` / ``hiddenSeedCommit`` ride on FINALIZATION, not on the advance.
 
     "Checking" them against an advance would be comparing a pin to a value the log never published,
-    so the enforced set is deliberately four and not six.
+    so the enforced set is deliberately three and not five.
     """
     assert set(cf.RIG_ENFORCED_PIN_FIELDS) == set(_pins().enforced_pins())
     assert "baseline_manifest_hash" not in cf.RIG_ENFORCED_PIN_FIELDS
@@ -249,7 +247,7 @@ def test_a_substituted_eval_artifact_never_reaches_the_descriptor_check():
                                 ARTIFACT: fr.canonical_bytes(CANDIDATE_MANIFEST)}))
     assert result.ok is False
     # Content addressing catches it — the substituted bytes no longer hash to REPORT. Under v2 the
-    # descriptor commits `patchArtifactHash`, `parentStateRoot`, `newStateRoot` and the delta, NOT
+    # descriptor commits `patchArtifactHash`, `parentStateRoot`, and `newStateRoot`, NOT
     # the eval artifact's transition object, so the descriptor check is no longer the backstop for
     # a swapped transition and must not be advertised as one.
     assert result.code == "ARTIFACT_INTEGRITY_FAILURE"
@@ -257,8 +255,8 @@ def test_a_substituted_eval_artifact_never_reaches_the_descriptor_check():
 
 def test_a_descriptor_that_is_not_the_confirmed_patch_hash_preimage_is_refused():
     """The backstop: a validator handed a well-formed descriptor that is not THIS advance's."""
-    other = (bytes([0x20]) + bytes.fromhex("8f" * 32) + bytes.fromhex(PARENT)
-             + bytes.fromhex(NEW) + (99).to_bytes(8, "big"))
+    other = (bytes([0x21]) + bytes.fromhex("8f" * 32) + bytes.fromhex(PARENT)
+             + bytes.fromhex(NEW))
     result = _run(compact_patch_bytes=other)
     assert result.ok is False
     assert result.code == "RIG_PATCH_HASH_MISMATCH"
@@ -267,11 +265,11 @@ def test_a_descriptor_that_is_not_the_confirmed_patch_hash_preimage_is_refused()
 
 def test_an_absent_descriptor_is_a_TYPED_REFUSAL_never_a_skipped_check():
     """M-9. The staged event carries no ``compactPatchBytes``; a caller that supplies none is
-    refused BY NAME rather than checked against a preimage the v2 rule does not name."""
+    refused BY NAME rather than checked against a preimage the v3 rule does not name."""
     result = _run(compact_patch_bytes=None)
     assert result.ok is False
     assert result.code == "RIG_TRANSITION_DESCRIPTOR_UNAVAILABLE"
-    assert "105" in result.reason
+    assert "97" in result.reason
 
 
 @pytest.mark.parametrize("field,offset,code", [
@@ -293,7 +291,7 @@ def test_the_descriptor_is_DECODED_not_merely_hashed(field, offset, code):
 
 
 def test_a_descriptor_of_the_wrong_LENGTH_is_refused_before_anything_else():
-    short = DESCRIPTOR[:104]
+    short = DESCRIPTOR[:-1]
     result = _run(event=_event(patch_hash=keccak256_hex(cf.RIG_PATCH_HASH_LABEL + short)),
                   compact_patch_bytes=short)
     assert result.ok is False
@@ -308,7 +306,7 @@ def test_the_labelled_patch_rule_is_not_the_plain_one():
 
 def test_the_preimage_is_the_DESCRIPTOR_and_not_the_canonical_transition():
     """M-9, pinned: the two preimages give different values, so a check over the transition object
-    can never pass on a genuine v2 advance no matter how correct its LABEL is."""
+    can never pass on a genuine v3 advance no matter how correct its LABEL is."""
     assert cf._keccak_patch(TRANSITION_BYTES) != PATCH
     assert cf._keccak_patch(DESCRIPTOR) == PATCH
 
@@ -398,15 +396,14 @@ def _rig_receipt(**overrides):
         "rigId": str(RIG_ID),
         "parentStateRoot": f"0x{PARENT}",
         "newStateRoot": f"0x{NEW}",
-        "corpusRoot": f"0x{CORPUS}",
-        "activeFrontierRoot": f"0x{FRONTIER}",
+        "epochContextRoot": f"0x{EPOCH_CONTEXT}",
         "coreVersionHash": f"0x{CORE}",
         "workPolicyHash": f"0x{POLICY}",
         "evalReportHash": f"0x{REPORT}",
         "patchHash": f"0x{PATCH}",
         "artifactHash": f"0x{ARTIFACT}",
         "outcome": 2,
-        "transitionFormatVersion": 0x20,
+        "transitionFormatVersion": 0x21,
         "issuedAt": 1_800_000_000,
         "expiresAt": 1_800_000_600,
     }
@@ -436,11 +433,11 @@ def test_a_genuinely_substituted_root_still_fails_whichever_spelling_it_uses():
 
 
 def test_transition_format_version_must_equal_the_descriptor_version_exactly():
-    # coretex.transition-descriptor/v2 §9.1: transitionFormatVersion is no longer a count with a
+    # coretex.transition-descriptor/v3: transitionFormatVersion is no longer a count with a
     # lower bound (the retired stateWordCount was "at least 1"); it is the FIXED zero-extension of
     # the descriptor's version byte, so anything else — including a plausible-looking small
     # integer — is refused.
-    for bad in (0, 1, 4, 0x21, 0xff):
+    for bad in (0, 1, 4, 0x20, 0xff):
         with pytest.raises(cf.ChainFirstError) as caught:
             cf.verify_rig_receipt_bindings(
                 _rig_receipt(transitionFormatVersion=bad), event=_event(),

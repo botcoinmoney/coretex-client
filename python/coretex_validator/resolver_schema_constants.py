@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""SCHEMA CONSTANTS of ``coretex.rig-state.resolver-snapshot/v1`` — spec text, not chain data.
+"""Versioned resolver-snapshot schema constants — spec text, not chain data.
 
 Every value here is IDENTICAL in every snapshot of this schema. Reproducing them proves that this
 package transcribed the schema correctly and says NOTHING WHATEVER about any chain, which is why
@@ -20,19 +20,18 @@ resolution that chains onto a previous snapshot carries a different, derived pri
 Transcribed from the published mainnet-rehearsal snapshot for epoch 180
 (payload_sha256 7087b32d3199c352336c3d7faa2126b3a1ce139a0f16b2ecc62d292fc9c672c7).
 
-MIGRATION NOTE (transition-descriptor v2, epoch-180 is LEGACY-ERA). Epoch 180's real snapshot —
-and therefore ``payload_sha256`` and every value that is a verbatim fact ABOUT that snapshot
-(``DISCLOSURE``, ``PRIOR``) — is retained UNCHANGED: it is legacy-era history, replayable only
-under the retired ``coretex-patch-hash-v1`` / ``stateWordCount`` rules it was actually produced
-under (spec §9.5), and MUST NOT be re-read as if it were a v2 snapshot. Nothing here is armed for
-a new epoch yet (no v2 mainnet advance has been produced to transcribe), so ``DERIVATION`` below —
-which describes the CURRENT schema's join recipe and receipt ABI, not a fact about any one chain
-event — is updated to the v2 values a future real snapshot MUST match: the ``stateWordCount``
-join-recipe entry and the ``receipt_layout`` typehash/hash-rule are the ones this note flags.
+MIGRATION NOTE. ``DERIVATION_V1`` reconstructs epoch-180's published bytes under the historical
+``coretex-patch-hash-v1`` / ``stateWordCount`` rules. ``DERIVATION_V2`` preserves the later
+105-byte descriptor schema. ``DERIVATION_V3`` projects the canonical 97-byte three-pin receipt and
+event facts from :mod:`rig_receipt_binding`. The declared snapshot schema selects one of them;
+there is no payload-shape sniffing and no live dual-accept path.
 """
 from __future__ import annotations
 
+from copy import deepcopy
 from typing import Any, Dict
+
+from . import rig_receipt_binding as binding
 
 CANONICALIZATION: Dict[str, Any] = {'chain_word_rendering': '0x-prefixed lowercase hex',
  'content_root_rendering': 'bare lowercase 64-hex',
@@ -280,6 +279,123 @@ DERIVATION: Dict[str, Any] = {'join_recipe': {'fields': {'activeFrontierRoot': {
              'transaction calldata',
              'content-addressed artifacts']}
 
+DERIVATION_V2: Dict[str, Any] = DERIVATION
+
+
+def _legacy_v1_derivation() -> Dict[str, Any]:
+    """Restore the exact immutable signed-snapshot/v1 derivation block."""
+    result = deepcopy(DERIVATION_V2)
+    fields = result["join_recipe"]["fields"]
+    fields["stateWordCount"] = {
+        "how": "registry log `wordCount` (uint16) == calldata",
+        "source": "A, C",
+    }
+    fields.pop("transitionFormatVersion", None)
+    result["join_recipe"]["steps"][-1] = (
+        "8. verify the patch: keccak256('coretex-patch-hash-v1' || compactPatchBytes) == "
+        "patchHash")
+    layout = result["receipt_layout"]
+    for name in ("transition_descriptor_hash_rule", "transition_descriptor_bytes",
+                 "transition_descriptor_version", "retired_compact_patch_hash_rule",
+                 "retired_typehash"):
+        layout.pop(name, None)
+    layout.update({
+        "compact_patch_hash_rule": (
+            "keccak256(utf8('coretex-patch-hash-v1') || compactPatchBytes)"),
+        "source_commit": "cdb91d211e4620c6ecfd90b68d827d607033e1f1",
+        "typehash": "0x1cb41d15e03f32744933332c24f5fe35eb76fdc99cbdc02c432aad682c67973b",
+        "typehash_string": layout["typehash_string"].replace(
+            "uint16 transitionFormatVersion", "uint16 stateWordCount"),
+    })
+    return result
+
+
+DERIVATION_V1: Dict[str, Any] = _legacy_v1_derivation()
+
+
+def _descriptor_v3_derivation() -> Dict[str, Any]:
+    """Project the v3 schema constants from the canonical generated receipt binding.
+
+    ``DERIVATION`` remains the immutable v1/v2-era transcription above. V3 changes the inner
+    receipt/event/state law while retaining the unsigned v2 top-level envelope, so it has its own
+    constant block instead of silently rewriting historical reproduction bytes.
+    """
+    result = deepcopy(DERIVATION_V2)
+    recipe = result["join_recipe"]
+    fields = recipe["fields"]
+    for retired in ("activeFrontierRoot", "corpusRoot", "epochActiveFrontierRoot",
+                    "epochBaselineManifestHash", "epochCorpusRoot"):
+        fields.pop(retired, None)
+    fields["epochContextRoot"] = {
+        "how": ("registry log; signed receipt member; registry.epochContextRoot(epoch); the "
+                "addressed manifest is fetched, canonical-byte checked and rehashed separately"),
+        "source": "A, C, state",
+    }
+    fields["getHeader"] = {
+        "how": ("registry.getHeader(epoch) — exactly patchSetRoot and scoreRoot when sealed; "
+                "epochFinalized is the discriminator and liveStateRoot remains the final root "
+                "accessor"),
+        "source": "state",
+    }
+    fields["transitionFormatVersion"] = {
+        "how": ("registry log transitionFormatVersion == calldata == zero-extension of the "
+                "descriptor byte 0x21"),
+        "source": "A, C",
+    }
+    fields["artifactHash"]["how"] = (
+        "CALLDATA ONLY. No event and no registry parameter carries it; bound because it is "
+        "signed member 14 of the EIP-712 digest that the step-4 preimage hashes")
+    fields["worldSeed"]["how"] = "calldata; signed member 15, bound via the digest"
+    fields["scoreBeforePpm"]["how"] = (
+        "calldata; signed member 21, bound via the digest. NOTHING ON CHAIN CHECKS THAT THE "
+        "SCORE IS TRUE — coordinator-attested only")
+    fields["scoreAfterPpm"]["how"] = (
+        "calldata; signed member 22, bound via the digest. Same truthfulness caveat")
+    fields["issuedAt"]["how"] = "calldata; signed member 23, bound via the digest"
+    fields["expiresAt"]["how"] = "calldata; signed member 24, bound via the digest"
+    fields["rulesVersion"]["how"] = "calldata; signed member 16, bound via the digest"
+    fields["workUnitsBps"]["how"] = "mining log data word 3; also signed member 18"
+    recipe["steps"] = [
+        "1. find A: registry CoreTexStateAdvanced, filtered by the canonical registry address",
+        "2. find B: the next RigCoreTexCreditAccepted in the same transaction; cross-check "
+        "epoch, operator and credits",
+        "3. fetch C: the transaction calldata, ABI-decoded as the 26-member receipt",
+        "4. bind C to B: recompute receiptHash over 13 members + the EIP-712 digest and require "
+        "equality with B — this alone proves workPolicyHash",
+        "5. bind artifactHash: it is signed member 14 of the digest hashed in step 4",
+        "6. bind C to A: epoch/context/core/transition fields and compactPatchBytes byte-for-byte",
+        "7. verify the signature: ecrecover(digest, signature) == mining.coordinatorSigner()",
+        "8. verify descriptor-v3: 97 canonical bytes, byte 0 == 0x21, and "
+        "keccak256('coretex-transition-descriptor-v3' || compactPatchBytes) == patchHash",
+    ]
+    layout = result["receipt_layout"]
+    layout.update({
+        "artifact_hash_member_ordinal": 14,
+        "transition_descriptor_hash_rule": (
+            "keccak256(utf8('coretex-transition-descriptor-v3') || compactPatchBytes)"),
+        "transition_descriptor_bytes": binding.TRANSITION_DESCRIPTOR_BYTES,
+        "transition_descriptor_version": "0x21",
+        "signed_members": len(binding.CORETEX_RECEIPT_TYPES[
+            binding.CORETEX_RECEIPT_PRIMARY_TYPE]),
+        "source_commit": "a473f3fd1038a81f8ef456cd4c7ce1f7b9fbef6e",
+        "submit_selector": binding.SUBMIT_CORETEX_RECEIPT_SELECTOR,
+        "submit_signature": ("submitCoreTexReceipt(("
+                             + ",".join(binding.CORETEX_RECEIPT_TUPLE_TYPES) + "))"),
+        "tuple_members": len(binding.CORETEX_RECEIPT_TUPLE_COMPONENTS),
+        "typehash": binding.CORETEX_RECEIPT_TYPEHASH,
+        "typehash_string": binding.CORETEX_RECEIPT_TYPEHASH_STRING,
+        "superseded_v2_typehash": binding.RETIRED_CORETEX_RECEIPT_TYPEHASH,
+    })
+    layout.pop("retired_typehash", None)
+    layout["superseded_v2_descriptor_hash_rule"] = (
+        "keccak256(utf8('coretex-transition-descriptor-v2') || compactPatchBytes) "
+        "(historical descriptor-v2 only; never live dual-accept)")
+    return result
+
+
+DERIVATION_V3: Dict[str, Any] = _descriptor_v3_derivation()
+
+
 DISCLOSURE = ('MAINNET_REHEARSAL. This snapshot is derived from chain truth alone and is signed by a '
  'QUALIFIED REHEARSAL/TEST authority for transport only. It is NOT MAINNET_CANONICAL, it carries '
  'no production authority, and its signature is not a substitute for chain replay: the unsigned '
@@ -288,4 +404,3 @@ DISCLOSURE = ('MAINNET_REHEARSAL. This snapshot is derived from chain truth alon
 PRIOR: Dict[str, Any] = {'genesis': True,
  'note': 'no prior snapshot was supplied; this is the first resolution of this lane. A zero hash '
          'is NOT used as a stand-in for a link that does not exist'}
-

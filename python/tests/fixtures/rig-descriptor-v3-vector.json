@@ -1,0 +1,30 @@
+{
+  "schema": "coretex.rig-transition-descriptor-vector/v3",
+  "source": {
+    "repository": "botcoin-mining-rigs",
+    "commit": "a473f3fd1038a81f8ef456cd4c7ce1f7b9fbef6e"
+  },
+  "descriptor": {
+    "version": 33,
+    "bytes": 97,
+    "patch_artifact_hash": "1111111111111111111111111111111111111111111111111111111111111111",
+    "parent_state_root": "2222222222222222222222222222222222222222222222222222222222222222",
+    "new_state_root": "3333333333333333333333333333333333333333333333333333333333333333",
+    "canonical_hex": "21111111111111111111111111111111111111111111111111111111111111111122222222222222222222222222222222222222222222222222222222222222223333333333333333333333333333333333333333333333333333333333333333",
+    "hash_label": "coretex-transition-descriptor-v3",
+    "patch_hash": "c4e702b5aa1ca2e871a6c4ad950345ab51da332e85961a4cfb2e1613432aba7b"
+  },
+  "receipt": {
+    "signed_members": 24,
+    "tuple_members": 26,
+    "typehash": "0xd21a4141318ac86ffd63faa82975263001e87a21ce5db2db3230837a90d2dab3",
+    "submit_selector": "0xed5daa91"
+  },
+  "registry": {
+    "submit_state_advance_selector": "0x0ae06920",
+    "epoch_context_root_selector": "0x8104642b",
+    "state_advanced_topic0": "0xf2b422592475276aa1bbea8c780acec02e5628df6e59392a7ce6625907ca54e7",
+    "epoch_finalized_topic0": "0x212234825d6a82269e63c2bc21582948deb7729436c4dcba0dfdd831351c43b2",
+    "epoch_context_set_topic0": "0x024a552750f4344a8386eb7109fcbdfd7c822052efcc0cf8c92d0619a3cec80f"
+  }
+}

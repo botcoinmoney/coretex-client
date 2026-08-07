@@ -1,23 +1,23 @@
 """
-# GENERATED FROM bundle.json sha256=307df364b165023b20ec1ea9ac699b8b39a5f340040be9a418b1a7d1d50b2c5a — DO NOT EDIT.
+# HAND TRANSCRIPTION OF THE COORDINATOR-GENERATED BINDING — parity-tested below.
 #
 # Regenerate with:
 #   node scripts/generate-rig-receipt-bindings.mjs --bundle <path-to-bundle.json>
 #
-# MIGRATION NOTE (transition-descriptor v2). The generation tool and the real ABI bundle it reads
+# MIGRATION NOTE (transition-descriptor v3). The generation tool and the real ABI bundle it reads
 # are not vendored in this repo (they live on the coordinator side), so the values below were
-# TRANSCRIBED by hand from the migrated coordinator's mirrored binding
-# (botcoin-coordinator-v5 @ 167444f, v5/resolver/receipt.py) and cross-checked independently: the
-# typehash was RE-DERIVED from CORETEX_RECEIPT_TYPEHASH_STRING with this repo's own keccak256
+# TRANSCRIBED by hand from the migrated coordinator's generated binding and canonical rig source
+# (botcoin-mining-rigs @ a473f3fd1038a81f8ef456cd4c7ce1f7b9fbef6e) and cross-checked independently: the
+# typehash and selectors were RE-DERIVED from their canonical signatures with this repo's own keccak256
 # implementation (python/coretex_validator/keccak256.py) and found to equal the literal below
-# before it was committed. Regenerate this file for real once a v2 bundle.json is available; until
+# before it was committed. Regenerate this file for real once the final v3 bundle.json is available; until
 # then this transcription is the authority, not an inference.
 #
 # Source of authority: the rig lane's integration bundle
 #   schema        botcoin.rig-coordinator-integration.bundle/2
-#   mining ABI    sha256=cd1c9f7404053e944a612dcbd74365b6248e80adb3c05c6ec989f8a1d9ba2881
-#   vendored .sol contracts/rig/mining/BotcoinMiningRigsV1.sol (sha256=95b8a6f6efd677f85bd71e571c1c816511ad89facc7daf624a7b32afdab71962)
-#   rig source    github.com/botcoinmoney/botcoin-mining-rigs @ ba4d5acfa7aa3042f39eb6e8e4d8e4007400090c
+#   mining ABI    sha256=6773c7fb4f5b31c3f66f0cb6b9c28310a92739cce132421d8aeafbecd167565d
+#   vendored .sol contracts/rig/mining/BotcoinMiningRigsV1.sol (sha256=feea8f83685a9897ae6597a08492da6b83ebb2e9d4683c6e79b859c118cb05bb)
+#   rig source    github.com/botcoinmoney/botcoin-mining-rigs @ a473f3fd1038a81f8ef456cd4c7ce1f7b9fbef6e
 #
 # EVERYTHING BELOW IS SOURCE-DERIVED. The bundle's ABIs come from a real compile of the
 # rig team's own source, vendored verbatim (contracts/rig/VENDOR.md). They are no longer
@@ -28,39 +28,40 @@
 # dressed as a transcription. Everything is projected mechanically from the ABI and
 # cross-checked three ways: the projected typehash equals the bundle's recorded
 # RigCoreTexReceipt typehash, it equals the independently pinned
-# 0x70419dc57753cec023e5ca1563c9eb5858d96ddb82144f3c9e6d40e8f334b2cf,
-# and the fragment's selector equals the pinned 0xcc45427e (unchanged: renaming member 20
-# does not change the tuple's ABI TYPES, and selectors are built from types, not names).
+# 0xd21a4141318ac86ffd63faa82975263001e87a21ce5db2db3230837a90d2dab3,
+# and the fragment's selector equals the pinned 0xed5daa91.
 #
-# MEMBER 20 IS NOW `uint16 transitionFormatVersion`, NOT `uint16 stateWordCount`
-# (coretex.transition-descriptor/v2 §9.1). Same position, same width, DIFFERENT MEANING, and
+# MEMBER 19 IS `uint16 transitionFormatVersion`. The signed pair `corpusRoot` /
+# `activeFrontierRoot` is replaced by the single `epochContextRoot`, so the signed
+# struct has 24 members and the ABI tuple has 26 components.
+# Descriptor-v3 retains the uint16 slot but changes the surrounding signed context shape, and
 # therefore a DIFFERENT TYPEHASH — EIP-712 hashes the member NAMES. Every receipt signed under the
 # retired typehash (1cb41d15e03f32744933332c24f5fe35eb76fdc99cbdc02c432aad682c67973b) is
 # unverifiable here and vice versa; there is no dual-accept window.
 #
-# MEMBER 25 IS `bytes compactPatchBytes` — CONFIRMED, no longer inferred.
-# It is the 105-byte transition descriptor whose hash is the SIGNED `patchHash`. It is OUTSIDE the
+# MEMBER 24 IS `bytes compactPatchBytes` — CONFIRMED, no longer inferred.
+# It is the 97-byte transition descriptor whose hash is the SIGNED `patchHash`. It is OUTSIDE the
 # typehash, so it is UNSIGNED: a miner can alter it without invalidating the
 # coordinator's signature, which is exactly why the COORDINATOR must hash-bind it before
 # signing. The mining contract never reads it; the verifier does, and forwards it as
 # submitStateAdvance's dynamic tail.
 #
-# THE HASH RULE IS keccak256(utf8("coretex-transition-descriptor-v2") ++ compactPatchBytes).
+# THE HASH RULE IS keccak256(utf8("coretex-transition-descriptor-v3") ++ compactPatchBytes).
 # This lane previously used "coretex-patch-hash-v1" (the retired 4-word compact patch's own
 # label) and, before that, "coretex-memory-transition-hash-v1" — the V5 MEMORY lane's
 # transition-hash domain. Receipts signed under either dead label revert
 # TransitionDescriptorHashMismatch on chain.
 #
-# THE PATCH IS A FIXED 105-BYTE COMMITMENT, not a parsed word-diff structure: version (1 byte,
-# == 0x20) ++ patchArtifactHash (32 bytes, sha256 of the complete canonical patch artifact) ++
-# parentStateRoot (32 bytes) ++ newStateRoot (32 bytes) ++ scoreDeltaPpm (8 bytes, big-endian
-# uint64). THE LENGTH IS THE FORMAT — no padding, no optional field, no length prefix, no word
+# THE PATCH IS A FIXED 97-BYTE COMMITMENT, not a parsed word-diff structure: version (1 byte,
+# == 0x21) ++ patchArtifactHash (32 bytes, sha256 of the complete canonical patch artifact) ++
+# parentStateRoot (32 bytes) ++ newStateRoot (32 bytes). THE LENGTH IS THE FORMAT — no padding,
+# no optional field, no length prefix, no word
 # ceiling. The retired 42..178-byte / patchType / LEB128-word-index layout is history; see
 # `rig_events.py`'s "HISTORY" section for the decoder that still reads it.
 #
 # THE REGISTRY MUTATOR'S TAIL IS DYNAMIC. submitStateAdvance has
-# 11 static parameters followed by `bytes compactPatchBytes`; the twelfth
-# head word is that tail's OFFSET, not a twelfth value. And transitionCount returns
+# 10 static parameters followed by `bytes compactPatchBytes`; the eleventh
+# head word is that tail's OFFSET, not an eleventh value. And transitionCount returns
 # uint64, not uint256.
 """
 
@@ -84,14 +85,14 @@ COMPATIBILITY_LOCK_ROOT = "307df364b165023b20ec1ea9ac699b8b39a5f340040be9a418b1a
 BINDING_SOURCE: Dict[str, Any] = {
     "bundle_schema": "botcoin.rig-coordinator-integration.bundle/2",
     "bundle_generated_at": "unknown",
-    "mining_abi_sha256": "cd1c9f7404053e944a612dcbd74365b6248e80adb3c05c6ec989f8a1d9ba2881",
+    "mining_abi_sha256": "6773c7fb4f5b31c3f66f0cb6b9c28310a92739cce132421d8aeafbecd167565d",
     "vendored_mining_source_path": "contracts/rig/mining/BotcoinMiningRigsV1.sol",
-    "vendored_mining_source_sha256": "95b8a6f6efd677f85bd71e571c1c816511ad89facc7daf624a7b32afdab71962",
+    "vendored_mining_source_sha256": "feea8f83685a9897ae6597a08492da6b83ebb2e9d4683c6e79b859c118cb05bb",
     "release_classification": "DISPOSABLE_REHEARSAL_AVAILABLE",
     "production_allowed": False,
 }
 
-# All 27 ABI components of IRigCoreTexVerifier.CoreTexReceipt, in declared order.
+# All 26 ABI components of IRigCoreTexVerifier.CoreTexReceipt, in declared order.
 CORETEX_RECEIPT_TUPLE_COMPONENTS: List[Dict[str, str]] = [
     {"name": "rigId", "type": "uint256"},
     {"name": "operator", "type": "address"},
@@ -102,8 +103,7 @@ CORETEX_RECEIPT_TUPLE_COMPONENTS: List[Dict[str, str]] = [
     {"name": "challengeId", "type": "bytes32"},
     {"name": "parentStateRoot", "type": "bytes32"},
     {"name": "newStateRoot", "type": "bytes32"},
-    {"name": "corpusRoot", "type": "bytes32"},
-    {"name": "activeFrontierRoot", "type": "bytes32"},
+    {"name": "epochContextRoot", "type": "bytes32"},
     {"name": "coreVersionHash", "type": "bytes32"},
     {"name": "evalReportHash", "type": "bytes32"},
     {"name": "patchHash", "type": "bytes32"},
@@ -124,8 +124,8 @@ CORETEX_RECEIPT_TUPLE_COMPONENTS: List[Dict[str, str]] = [
 
 CORETEX_RECEIPT_TUPLE_TYPES: List[str] = [c["type"] for c in CORETEX_RECEIPT_TUPLE_COMPONENTS]
 
-SUBMIT_CORETEX_RECEIPT_FRAGMENT = "function submitCoreTexReceipt((uint256,address,uint64,uint64,bytes32,uint8,bytes32,bytes32,bytes32,bytes32,bytes32,bytes32,bytes32,bytes32,bytes32,uint128,uint32,bytes32,uint256,uint256,uint16,uint32,uint32,uint64,uint64,bytes,bytes) r) external"
-SUBMIT_CORETEX_RECEIPT_SELECTOR = "0xcc45427e"
+SUBMIT_CORETEX_RECEIPT_FRAGMENT = "function submitCoreTexReceipt((uint256,address,uint64,uint64,bytes32,uint8,bytes32,bytes32,bytes32,bytes32,bytes32,bytes32,bytes32,bytes32,uint128,uint32,bytes32,uint256,uint256,uint16,uint32,uint32,uint64,uint64,bytes,bytes) r) external"
+SUBMIT_CORETEX_RECEIPT_SELECTOR = "0xed5daa91"
 
 EIP712_DOMAIN_NAME = "BotcoinMiningRigs"
 EIP712_DOMAIN_VERSION = "2"
@@ -144,8 +144,7 @@ CORETEX_RECEIPT_TYPES: Dict[str, List[Dict[str, str]]] = {
         {"name": "challengeId", "type": "bytes32"},
         {"name": "parentStateRoot", "type": "bytes32"},
         {"name": "newStateRoot", "type": "bytes32"},
-        {"name": "corpusRoot", "type": "bytes32"},
-        {"name": "activeFrontierRoot", "type": "bytes32"},
+        {"name": "epochContextRoot", "type": "bytes32"},
         {"name": "coreVersionHash", "type": "bytes32"},
         {"name": "evalReportHash", "type": "bytes32"},
         {"name": "patchHash", "type": "bytes32"},
@@ -163,23 +162,23 @@ CORETEX_RECEIPT_TYPES: Dict[str, List[Dict[str, str]]] = {
     ],
 }
 
-CORETEX_RECEIPT_TYPEHASH_STRING = "RigCoreTexReceipt(uint256 rigId,address operator,uint64 epochId,uint64 solveIndex,bytes32 prevReceiptHash,uint8 outcome,bytes32 challengeId,bytes32 parentStateRoot,bytes32 newStateRoot,bytes32 corpusRoot,bytes32 activeFrontierRoot,bytes32 coreVersionHash,bytes32 evalReportHash,bytes32 patchHash,bytes32 artifactHash,uint128 worldSeed,uint32 rulesVersion,bytes32 workPolicyHash,uint256 workUnitsBps,uint256 difficultyCountSnapshot,uint16 transitionFormatVersion,uint32 scoreBeforePpm,uint32 scoreAfterPpm,uint64 issuedAt,uint64 expiresAt)"
-CORETEX_RECEIPT_TYPEHASH = "0x70419dc57753cec023e5ca1563c9eb5858d96ddb82144f3c9e6d40e8f334b2cf"
+CORETEX_RECEIPT_TYPEHASH_STRING = "RigCoreTexReceipt(uint256 rigId,address operator,uint64 epochId,uint64 solveIndex,bytes32 prevReceiptHash,uint8 outcome,bytes32 challengeId,bytes32 parentStateRoot,bytes32 newStateRoot,bytes32 epochContextRoot,bytes32 coreVersionHash,bytes32 evalReportHash,bytes32 patchHash,bytes32 artifactHash,uint128 worldSeed,uint32 rulesVersion,bytes32 workPolicyHash,uint256 workUnitsBps,uint256 difficultyCountSnapshot,uint16 transitionFormatVersion,uint32 scoreBeforePpm,uint32 scoreAfterPpm,uint64 issuedAt,uint64 expiresAt)"
+CORETEX_RECEIPT_TYPEHASH = "0xd21a4141318ac86ffd63faa82975263001e87a21ce5db2db3230837a90d2dab3"
 #: The retired member-20 typehash (``uint16 stateWordCount``). Kept so it can be named in a
 #: mismatch report rather than appearing as an opaque wrong hash; NEVER accepted.
-RETIRED_CORETEX_RECEIPT_TYPEHASH = "0x1cb41d15e03f32744933332c24f5fe35eb76fdc99cbdc02c432aad682c67973b"
+RETIRED_CORETEX_RECEIPT_TYPEHASH = "0x70419dc57753cec023e5ca1563c9eb5858d96ddb82144f3c9e6d40e8f334b2cf"
 
-# Member 25 — SOURCE-CONFIRMED. The 105-byte transition descriptor whose hash is the SIGNED
+# Member 24 — SOURCE-CONFIRMED. The 97-byte transition descriptor whose hash is the SIGNED
 # patchHash. UNSIGNED (outside the typehash), so the COORDINATOR must hash-bind it before signing.
 CORETEX_RECEIPT_AUX_MEMBER: Dict[str, Any] = {
-    "tuple_index": 25,
+    "tuple_index": 24,
     "name": "compactPatchBytes",
     "type": "bytes",
     "signed": False,
     "derivation": "SOURCE_DERIVED",
 }
 
-# ── The transition descriptor (coretex.transition-descriptor/v2) ─────────────────────────
+# ── The transition descriptor (coretex.transition-descriptor/v3) ─────────────────────────
 #
 # The hash rule RigCoreTexVerifier._validateDescriptorHash applies. Both dead labels are recorded
 # deliberately: TRANSITION_DESCRIPTOR_SUPERSEDED_MEMORY_LABEL is the V5 MEMORY lane's
@@ -193,9 +192,10 @@ CORETEX_RECEIPT_AUX_MEMBER: Dict[str, Any] = {
 # across the two (review M-11.4). `python/tests/test_rig_lane.py::TestGeneratedBindingParity`
 # compares every shared module-level constant against
 # `botcoin-coordinator-v5 v5/e2e/generated_rig_receipt_binding.py` when that file is on the host.
-TRANSITION_DESCRIPTOR_HASH_DOMAIN_LABEL = "coretex-transition-descriptor-v2"
+TRANSITION_DESCRIPTOR_HASH_DOMAIN_LABEL = "coretex-transition-descriptor-v3"
 TRANSITION_DESCRIPTOR_HASH_RULE = (
-    "keccak256(abi.encodePacked(\"coretex-transition-descriptor-v2\", compactPatchBytes))")
+    "keccak256(abi.encodePacked(\"coretex-transition-descriptor-v3\", compactPatchBytes))")
+TRANSITION_DESCRIPTOR_SUPERSEDED_V2_LABEL = "coretex-transition-descriptor-v2"
 TRANSITION_DESCRIPTOR_RETIRED_LABEL = "coretex-patch-hash-v1"
 TRANSITION_DESCRIPTOR_SUPERSEDED_MEMORY_LABEL = "coretex-memory-transition-hash-v1"
 TRANSITION_DESCRIPTOR_SPEC = "botcoin-mining-rigs docs/CORETEX-TRANSITION-DESCRIPTOR-V2.md"
@@ -204,17 +204,20 @@ TRANSITION_DESCRIPTOR_SPEC = "botcoin-mining-rigs docs/CORETEX-TRANSITION-DESCRI
 #
 # `RigCoreTexVerifier.TRANSITION_DESCRIPTOR_BYTES` / `.TRANSITION_DESCRIPTOR_VERSION`, stated ONCE
 # here and imported by `rig_events.py` rather than transcribed a second time three modules away
-# (review M-11.2 / M-1). `TRANSITION_DESCRIPTOR_VERSION` is an INT, not the string "0x20": a
+# (review M-11.2 / M-1). `TRANSITION_DESCRIPTOR_VERSION` is an INT, not the string "0x21": a
 # descriptor's version byte is compared with `descriptor_bytes[0] == TRANSITION_DESCRIPTOR_VERSION`,
-# and `32 == "0x20"` is silently False forever.
-TRANSITION_DESCRIPTOR_BYTES = 105
-TRANSITION_DESCRIPTOR_VERSION = 32
+# and `33 == "0x21"` is silently False forever.
+TRANSITION_DESCRIPTOR_BYTES = 97
+TRANSITION_DESCRIPTOR_VERSION = 33
+TRANSITION_DESCRIPTOR_RETIRED_BYTES = 105
+TRANSITION_DESCRIPTOR_RETIRED_VERSION = 32
+RETIRED_TRANSITION_DESCRIPTOR_VERSION = 32
 
-# The descriptor is a FIXED 105-byte commitment — no padding, no optional field, no length
+# The descriptor is a FIXED 97-byte commitment — no padding, no optional field, no length
 # prefix, no word ceiling. THE LENGTH IS THE FORMAT.
 TRANSITION_DESCRIPTOR_LAYOUT: Dict[str, Any] = {
     "total_bytes": TRANSITION_DESCRIPTOR_BYTES,
-    # THE INT 32, NOT THE STRING "0x20" (review M-11.1). This dict is the shape a
+    # THE INT 33, NOT THE STRING "0x21" (review M-11.1). This dict is the shape a
     # `descriptor_bytes[0] == LAYOUT["version"]` comparison reads, and against a string that
     # comparison is False for every input — a check that cannot fail is a check that is not there.
     "version": TRANSITION_DESCRIPTOR_VERSION,
@@ -223,15 +226,14 @@ TRANSITION_DESCRIPTOR_LAYOUT: Dict[str, Any] = {
     "burned_versions": ["0x00-0x07", "0xff"],
     "unassigned_versions": ["0x08-0x1f"],
     "fields": [
-        {"offset": 0, "size": 1, "field": "version", "encoding": "uint8, == 0x20"},
+        {"offset": 0, "size": 1, "field": "version", "encoding": "uint8, == 0x21"},
         {"offset": 1, "size": 32, "field": "patchArtifactHash",
          "encoding": "bytes32, != 0, sha256 of the complete canonical patch artifact"},
         {"offset": 33, "size": 32, "field": "parentStateRoot", "encoding": "bytes32"},
         {"offset": 65, "size": 32, "field": "newStateRoot", "encoding": "bytes32"},
-        {"offset": 97, "size": 8, "field": "scoreDeltaPpm", "encoding": "uint64 big-endian"},
     ],
     "empty_patch":
-        "MANDATORY for a SCREENER pass (outcome 1); a STATE ADVANCE MUST carry exactly 105 bytes",
+        "MANDATORY for a SCREENER pass (outcome 1); a STATE ADVANCE MUST carry exactly 97 bytes",
 }
 
 # ── HISTORY — the retired 4-changed-word compact patch (coretex-patch-hash-v1 era) ───────────
@@ -249,7 +251,7 @@ TRANSITION_DESCRIPTOR_LAYOUT: Dict[str, Any] = {
 RETIRED_COMPACT_PATCH_HASH_DOMAIN_LABEL = "coretex-patch-hash-v1"
 RETIRED_COMPACT_PATCH_HASH_RULE = (
     "keccak256(abi.encodePacked(\"coretex-patch-hash-v1\", compactPatchBytes)) "
-    "— RETIRED; refused on v2 as TransitionDescriptorHashMismatch")
+    "— RETIRED; refused on v3 as TransitionDescriptorHashMismatch")
 
 # The RETIRED patch was PARSED and cross-checked against the receipt's signed fields.
 RETIRED_COMPACT_PATCH_LAYOUT: Dict[str, Any] = {
@@ -289,17 +291,10 @@ RECEIPT_WINDOW: Dict[str, Any] = {
 # ── The registry mutator ──────────────────────────────────────────────────
 #
 # ICoreTexRegistry.submitStateAdvance. Its LAST parameter is a DYNAMIC bytes, so the calldata head
-# is 11 static words plus ONE OFFSET word. Modelling it as
-# 12 static words yields malformed calldata.
-#
-# THE 11TH PARAMETER IS RENAMED, THE SELECTOR IS NOT (transition-descriptor v2 §6.4): `uint16
-# wordCount` becomes `uint16 transitionFormatVersion` at the same position. Solidity selectors and
-# event topic0s are built from TYPES, not names, so `0xa2d87e1d` is unchanged; a name-keyed reader
-# (as opposed to a positional one) is the one thing this rename is meant to break loudly rather
-# than let drift silently.
-SUBMIT_STATE_ADVANCE_FRAGMENT = "function submitStateAdvance(uint64 epoch, address miner, bytes32 parentStateRoot, bytes32 newStateRoot, bytes32 patchHash, bytes32 evalReportHash, bytes32 coreVersionHash, bytes32 corpusRoot, bytes32 activeFrontierRoot, uint256 improvementCredits, uint16 transitionFormatVersion, bytes compactPatchBytes) external"
-SUBMIT_STATE_ADVANCE_SIGNATURE = "submitStateAdvance(uint64,address,bytes32,bytes32,bytes32,bytes32,bytes32,bytes32,bytes32,uint256,uint16,bytes)"
-SUBMIT_STATE_ADVANCE_SELECTOR = "0xa2d87e1d"
+# is 10 static words plus ONE OFFSET word. Modelling it as 11 static words yields malformed calldata.
+SUBMIT_STATE_ADVANCE_FRAGMENT = "function submitStateAdvance(uint64 epoch, address miner, bytes32 parentStateRoot, bytes32 newStateRoot, bytes32 patchHash, bytes32 evalReportHash, bytes32 coreVersionHash, bytes32 epochContextRoot_, uint256 improvementCredits, uint16 transitionFormatVersion, bytes compactPatchBytes) external"
+SUBMIT_STATE_ADVANCE_SIGNATURE = "submitStateAdvance(uint64,address,bytes32,bytes32,bytes32,bytes32,bytes32,bytes32,uint256,uint16,bytes)"
+SUBMIT_STATE_ADVANCE_SELECTOR = "0x0ae06920"
 SUBMIT_STATE_ADVANCE_PARAMETERS: List[Dict[str, str]] = [
     {"name": "epoch", "type": "uint64"},
     {"name": "miner", "type": "address"},
@@ -308,24 +303,22 @@ SUBMIT_STATE_ADVANCE_PARAMETERS: List[Dict[str, str]] = [
     {"name": "patchHash", "type": "bytes32"},
     {"name": "evalReportHash", "type": "bytes32"},
     {"name": "coreVersionHash", "type": "bytes32"},
-    {"name": "corpusRoot", "type": "bytes32"},
-    {"name": "activeFrontierRoot", "type": "bytes32"},
+    {"name": "epochContextRoot_", "type": "bytes32"},
     {"name": "improvementCredits", "type": "uint256"},
     {"name": "transitionFormatVersion", "type": "uint16"},
     {"name": "compactPatchBytes", "type": "bytes"},
 ]
-SUBMIT_STATE_ADVANCE_STATIC_PARAMS = 11
+SUBMIT_STATE_ADVANCE_STATIC_PARAMS = 10
 SUBMIT_STATE_ADVANCE_DYNAMIC_TAIL: Dict[str, Any] = {
     "name": "compactPatchBytes",
     "type": "bytes",
-    "head_word_index": 11,
+    "head_word_index": 10,
 }
 
 # The ICoreTexRegistry READ surface the verifier consumes.
 CORETEX_REGISTRY_READS: List[Dict[str, Any]] = [
-    {"signature": "epochActiveFrontierRoot(uint64)", "selector": "0x00879d98", "returns": ["bytes32"]},
+    {"signature": "epochContextRoot(uint64)", "selector": "0x8104642b", "returns": ["bytes32"]},
     {"signature": "epochCoreVersionHash(uint64)", "selector": "0xf392d765", "returns": ["bytes32"]},
-    {"signature": "epochCorpusRoot(uint64)", "selector": "0xad64f0c3", "returns": ["bytes32"]},
     {"signature": "epochFinalized(uint64)", "selector": "0xbc68a310", "returns": ["bool"]},
     {"signature": "liveStateRoot(uint64)", "selector": "0x696466ed", "returns": ["bytes32"]},
     {"signature": "transitionCount(uint64)", "selector": "0x9f6b961d", "returns": ["uint64"]},

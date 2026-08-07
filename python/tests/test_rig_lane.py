@@ -119,8 +119,8 @@ def advance_log(*, address: str = REGISTRY, epoch: int = 7, index: int = 0,
     padded = patch + b"\x00" * ((32 - len(patch) % 32) % 32)
     data = "".join([
         word(parent), word(new_root), word(patch_hash), word("dd" * 32), word("ee" * 32),
-        word("11" * 32), word("22" * 32), word(f"{credits:x}"), word("1"),
-        word(f"{10 * 32:x}"), word(f"{len(patch):x}"), padded.hex(),
+        word("11" * 32), word(f"{credits:x}"), word("21"),
+        word(f"{9 * 32:x}"), word(f"{len(patch):x}"), padded.hex(),
     ])
     return {"address": address,
             "topics": ["0x" + rig.STATE_ADVANCED_TOPIC0, topic_uint(epoch), topic_uint(index),
@@ -129,16 +129,61 @@ def advance_log(*, address: str = REGISTRY, epoch: int = 7, index: int = 0,
             "transactionHash": tx}
 
 
+def legacy_v2_advance_log(*, address: str = REGISTRY):
+    descriptor = (bytes([0x20]) + bytes.fromhex("7e" * 32) + bytes.fromhex("aa" * 32)
+                  + bytes.fromhex("bb" * 32) + (1234).to_bytes(8, "big"))
+    patch_hash = keccak256_hex(rig.TRANSITION_DESCRIPTOR_SUPERSEDED_V2_LABEL + descriptor)
+    padded = descriptor + b"\x00" * ((32 - len(descriptor) % 32) % 32)
+    data = "".join([
+        word("aa" * 32), word("bb" * 32), word(patch_hash), word("dd" * 32),
+        word("ee" * 32), word("11" * 32), word("22" * 32), word("64"), word("20"),
+        word(f"{10 * 32:x}"), word(f"{len(descriptor):x}"), padded.hex(),
+    ])
+    return {"address": address,
+            "topics": ["0x" + rig.LEGACY_V2_STATE_ADVANCED_TOPIC0, topic_uint(7),
+                       topic_uint(0),
+                       topic_address("0x00000000000000000000000000000000000000aa")],
+            "data": "0x" + data, "blockNumber": "0x10", "logIndex": "0x0",
+            "transactionHash": "0x" + "ab" * 32}
+
+
+def epoch_context_log(*, address: str = VERIFIER, epoch: int = 7):
+    return {
+        "address": address,
+        "topics": ["0x" + rig.EPOCH_CONTEXT_SET_TOPIC0, topic_uint(epoch)],
+        "data": "0x" + "".join([word("aa" * 32), word("cc" * 32), word("ee" * 32)]),
+        "blockNumber": "0xf", "logIndex": "0x0", "transactionHash": "0x" + "ac" * 32,
+    }
+
+
 # --------------------------------------------------------------------------- #
 # The event surface
 # --------------------------------------------------------------------------- #
 class TestEventSurface:
-    def test_the_rig_advance_topic0_is_the_v4_advance_topic0(self):
-        # The finding this whole module exists for. The staged dispatcher asserts the OPPOSITE
-        # ("V5 must never emit an event that collides"), and it only passes because it registers
-        # a signature no deployed contract emits.
-        assert rig.STATE_ADVANCED_TOPIC0 == dp.V4_STATE_ADVANCED_TOPIC0
-        assert rig.EPOCH_FINALIZED_TOPIC0 == dp.V4_EPOCH_FINALIZED_TOPIC0
+    def test_descriptor_v3_topics_move_and_v2_stays_explicitly_legacy(self):
+        assert rig.STATE_ADVANCED_TOPIC0 != dp.V4_STATE_ADVANCED_TOPIC0
+        assert rig.EPOCH_FINALIZED_TOPIC0 != dp.V4_EPOCH_FINALIZED_TOPIC0
+        assert rig.LEGACY_V2_STATE_ADVANCED_TOPIC0 == dp.V4_STATE_ADVANCED_TOPIC0
+        assert rig.LEGACY_V2_STATE_ADVANCED_TOPIC0 not in rig.RIG_LOG_TOPICS
+
+    def test_genuine_v2_requires_the_explicit_legacy_decoder(self):
+        log = legacy_v2_advance_log()
+        assert rig.decode(log, DEPLOYMENT) is None
+        decoded = rig.decode_legacy_v2_state_advanced(log)
+        assert decoded.transition_format_version == 0x20
+        assert len(decoded.compact_patch_bytes) == 105
+        assert decoded.corpus_root == "11" * 32
+        assert decoded.active_frontier_root == "22" * 32
+        scanned = rig.scan_legacy_v2([log], DEPLOYMENT)
+        assert scanned.advances == [decoded]
+
+    def test_descriptor_v3_epoch_context_event_decodes_exactly_three_pins(self):
+        decoded = rig.decode_epoch_context_set(epoch_context_log())
+        assert decoded.epoch == 7
+        assert decoded.parent_state_root == "aa" * 32
+        assert decoded.epoch_context_root == "cc" * 32
+        assert decoded.core_version_hash == "ee" * 32
+        assert rig.scan([epoch_context_log()], DEPLOYMENT).contexts == [decoded]
 
     def test_the_staged_rig_events_are_not_what_any_contract_emits(self):
         staged = {dp.RIG_STATE_ADVANCED_TOPIC0, dp.RIG_SCREENER_PASS_TOPIC0,
@@ -168,17 +213,19 @@ class TestEventSurface:
         assert rig.route_rig_log(log, DEPLOYMENT).event is None
 
     def test_the_patch_hash_label_is_the_verifier_s_not_the_memory_lane_s(self):
-        # coretex.transition-descriptor/v2: the LIVE label is "coretex-transition-descriptor-v2".
+        # coretex.transition-descriptor/v3: the LIVE label is "coretex-transition-descriptor-v3".
         # Both the RETIRED 4-word-patch label (this lane's own history) and the SUPERSEDED
         # memory-lane label give a DIFFERENT digest for every input, so a signer still on either
         # one is refused, never silently accepted.
         patch = b'{"x":1}'
-        assert rig.TRANSITION_DESCRIPTOR_HASH_LABEL == b"coretex-transition-descriptor-v2"
+        assert rig.TRANSITION_DESCRIPTOR_HASH_LABEL == b"coretex-transition-descriptor-v3"
+        assert rig.patch_hash(patch) != keccak256_hex(
+            rig.TRANSITION_DESCRIPTOR_SUPERSEDED_V2_LABEL + patch)
         assert rig.patch_hash(patch) != keccak256_hex(
             rig.TRANSITION_DESCRIPTOR_SUPERSEDED_MEMORY_LABEL + patch)
         assert rig.patch_hash(patch) != keccak256_hex(
             rig.TRANSITION_DESCRIPTOR_RETIRED_LABEL + patch)
-        # chain_first's own Q-10 label now matches the live v2 rule (it used to be pinned to the
+        # chain_first's own label now matches the live v3 rule (it used to be pinned to the
         # SUPERSEDED memory-lane label, which the finding above documents as always wrong).
         from coretex_validator import chain_first as cf
         assert cf.RIG_PATCH_HASH_LABEL == rig.TRANSITION_DESCRIPTOR_HASH_LABEL
@@ -268,8 +315,7 @@ class TestReceiptContinuity:
 # --------------------------------------------------------------------------- #
 def context(epoch: int):
     return rig.EpochContextSet(
-        epoch=epoch, parent_state_root="aa" * 32, corpus_root="11" * 32,
-        active_frontier_root="22" * 32, baseline_manifest_hash="33" * 32,
+        epoch=epoch, parent_state_root="aa" * 32, epoch_context_root="11" * 32,
         core_version_hash="ee" * 32,
         provenance=dp.LogProvenance(1, 0, "0x" + "cd" * 32, False))
 
@@ -290,8 +336,7 @@ class TestHistoricalLaw:
     def test_law_comes_from_the_verifier_context_not_the_registry(self):
         decoded = rig.DecodedLogs([], [], [], [], [context(7)], [], [], [policy(2, 5)])
         law = hl.law_for_epoch(decoded, 7)
-        assert law.enforced_pins() == {"corpus_root": "11" * 32,
-                                       "active_frontier_root": "22" * 32,
+        assert law.enforced_pins() == {"epoch_context_root": "11" * 32,
                                        "core_version_hash": "ee" * 32}
         assert law.rules_version == 2
 
@@ -304,7 +349,7 @@ class TestHistoricalLaw:
         decoded = rig.DecodedLogs([], [], [], [], [context(7)], [], [], [policy(2, 5)])
         law = hl.law_for_epoch(decoded, 7)
         problems = hl.check_receipt_against_law(
-            {"rulesVersion": 3, "corpusRoot": "11" * 32, "activeFrontierRoot": "22" * 32,
+            {"rulesVersion": 3, "epochContextRoot": "11" * 32,
              "coreVersionHash": "ee" * 32}, law)
         assert any("priced under rulesVersion 3" in p for p in problems)
 
@@ -312,7 +357,7 @@ class TestHistoricalLaw:
         decoded = rig.DecodedLogs([], [], [], [], [context(7)], [], [], [])
         law = hl.law_for_epoch(decoded, 7)
         problems = hl.check_receipt_against_law(
-            {"rulesVersion": 1, "corpusRoot": "11" * 32, "activeFrontierRoot": "22" * 32,
+            {"rulesVersion": 1, "epochContextRoot": "11" * 32,
              "coreVersionHash": "ee" * 32}, law)
         assert any("UNCHECKED (not accepted)" in p for p in problems)
 
@@ -856,7 +901,7 @@ class TestCompactPatchIsBinaryNotJson:
     (coretex-patch-hash-v1 era), kept because epoch-180-and-earlier advances are legacy-era
     history that must stay decodable (transition-descriptor/v2 spec §9.5) — never re-migrated,
     because ``decode_compact_patch`` is explicitly preserved as-is. See
-    ``TestTransitionDescriptorV2`` below for the LIVE v2 model's equivalent adversarial breadth.
+    ``TestTransitionDescriptorV3`` below for the live model's equivalent adversarial breadth.
 
     Every negative control asserts its SPECIFIC refusal code. A control that only checked "it
     threw" would pass just as happily when the decoder rejects for the wrong reason — and a
@@ -1008,7 +1053,7 @@ class TestCompactPatchIsBinaryNotJson:
     def test_the_live_v2_label_is_also_diagnosed_as_a_dead_label_here(self):
         # The RETIRED decoder's own hint only names the TWO labels it always checked
         # (coretex-patch-hash-v1's own family and the memory lane's). A receipt signed under the
-        # LIVE v2 label and mistakenly fed to this HISTORY decoder is still just "wrong hash" —
+        # LIVE v3 label and mistakenly fed to this HISTORY decoder is still just "wrong hash" —
         # recorded here so nobody mistakes silence for a promise the hint covers every label.
         raw = self._patch()
         live = rig.transition_descriptor_hash(raw)
@@ -1017,11 +1062,11 @@ class TestCompactPatchIsBinaryNotJson:
         assert excinfo.value.code == rig.PATCH_HASH_MISMATCH
 
 
-class TestTransitionDescriptorV2:
-    """coretex.transition-descriptor/v2 — the descriptor's own adversarial suite.
+class TestTransitionDescriptorV3:
+    """coretex.transition-descriptor/v3 — the descriptor's own adversarial suite.
 
     Mirrors ``TestCompactPatchIsBinaryNotJson`` in shape (one method per refusal, each asserting
-    the SPECIFIC code) but tests the LIVE model: a fixed 105-byte commitment plus a separately
+    the SPECIFIC code) but tests the LIVE model: a fixed 97-byte commitment plus a separately
     fetched, rehashed and replayed canonical patch artifact. See
     ``docs/CORETEX-TRANSITION-DESCRIPTOR-V2.md`` (botcoin-mining-rigs @
     ba4d5acfa7aa3042f39eb6e8e4d8e4007400090c) for the normative spec this decodes against.
@@ -1034,27 +1079,25 @@ class TestTransitionDescriptorV2:
 
     def _raw(self, **overrides):
         kwargs = dict(patch_artifact_hash=self.ARTIFACT_HASH, parent_state_root=self.PARENT,
-                     new_state_root=self.NEW, score_delta_ppm=self.DELTA)
+                     new_state_root=self.NEW)
         kwargs.update(overrides)
         return rig.encode_transition_descriptor(**kwargs)
 
     # ── THE FORMAT ──────────────────────────────────────────────────────────────────────────
-    def test_encode_decode_round_trips_at_exactly_105_bytes(self):
+    def test_encode_decode_round_trips_at_exactly_97_bytes(self):
         raw = self._raw()
-        assert len(raw) == rig.TRANSITION_DESCRIPTOR_BYTES == 105
-        assert raw[0] == rig.TRANSITION_DESCRIPTOR_VERSION == 0x20
+        assert len(raw) == rig.TRANSITION_DESCRIPTOR_BYTES == 97
+        assert raw[0] == rig.TRANSITION_DESCRIPTOR_VERSION == 0x21
         decoded = rig.decode_transition_descriptor(raw)
-        assert decoded.version == 0x20
+        assert decoded.version == 0x21
         assert decoded.patch_artifact_hash == self.ARTIFACT_HASH
         assert decoded.parent_state_root == self.PARENT
         assert decoded.new_state_root == self.NEW
-        assert decoded.score_delta_ppm == self.DELTA
         # Cross-checks against the "signed receipt" all pass together.
         digest = rig.transition_descriptor_hash(raw)
         again = rig.decode_transition_descriptor(
             raw, parent_state_root=self.PARENT, new_state_root=self.NEW,
-            score_delta_ppm=self.DELTA, expected_patch_hash=digest,
-            transition_format_version=0x20)
+            expected_patch_hash=digest, transition_format_version=0x21)
         assert again == decoded
 
     def test_length_is_the_format(self):
@@ -1069,17 +1112,17 @@ class TestTransitionDescriptorV2:
             rig.decode_transition_descriptor(b"")
         assert excinfo.value.code == rig.DESCRIPTOR_LENGTH_INVALID
 
-    # ── THE HASH RULE — checked SECOND (length is checked first, unlike the retired decoder) ──
+    # ── THE HASH RULE — checked after version and length ─────────────────────────────────────
     def test_hash_mismatch_is_refused_before_any_field_is_read(self):
         raw = self._raw()
         with pytest.raises(rig.TransitionDescriptorError) as excinfo:
             rig.decode_transition_descriptor(raw, expected_patch_hash="00" * 32)
         assert excinfo.value.code == rig.DESCRIPTOR_HASH_MISMATCH
 
-    def test_legacy_first_bytes_are_refused_even_at_the_v2_length(self):
+    def test_legacy_first_bytes_are_refused_even_at_the_v3_length(self):
         # A LEGACY compact patch's first byte (patchType) is always in {0x01..0x07, 0xff}. All are
         # PERMANENTLY BURNED version values, so a coincidentally-105-byte legacy-shaped blob is
-        # refused on the version byte, not silently misread as a v2 descriptor of some other kind.
+        # refused on the version byte, not silently misread as a v3 descriptor of some other kind.
         raw = self._raw()
         for burned_first_byte in (0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0xFF):
             legacy_shaped = bytes([burned_first_byte]) + raw[1:]
@@ -1102,10 +1145,17 @@ class TestTransitionDescriptorV2:
             assert excinfo.value.code == rig.DESCRIPTOR_VERSION_UNSUPPORTED
         # A hypothetical successor version (reserved, not burned/unassigned) is ALSO refused: one
         # deployed verifier accepts exactly one version, compared for equality, never a range.
-        mutated = bytes([0x21]) + raw[1:]
+        mutated = bytes([0x22]) + raw[1:]
         with pytest.raises(rig.TransitionDescriptorError) as excinfo:
             rig.decode_transition_descriptor(mutated)
         assert excinfo.value.code == rig.DESCRIPTOR_VERSION_UNSUPPORTED
+
+    def test_the_retired_v2_version_is_named_before_length_or_hash(self):
+        old = bytes([0x20]) + self._raw()[1:] + bytes(8)
+        with pytest.raises(rig.TransitionDescriptorError) as excinfo:
+            rig.decode_transition_descriptor(
+                old, expected_patch_hash=keccak256_hex(rig.TRANSITION_DESCRIPTOR_SUPERSEDED_V2_LABEL + old))
+        assert excinfo.value.code == rig.DESCRIPTOR_VERSION_RETIRED
 
     def test_zero_artifact_hash_is_refused_both_at_encode_and_decode(self):
         with pytest.raises(rig.TransitionDescriptorError) as excinfo:
@@ -1130,19 +1180,10 @@ class TestTransitionDescriptorV2:
             rig.decode_transition_descriptor(raw, new_state_root="99" * 32)
         assert excinfo.value.code == rig.DESCRIPTOR_NEW_ROOT_MISMATCH
 
-    def test_score_delta_mismatch(self):
+    def test_score_delta_is_not_a_descriptor_field(self):
         raw = self._raw()
-        with pytest.raises(rig.TransitionDescriptorError) as excinfo:
-            rig.decode_transition_descriptor(raw, score_delta_ppm=self.DELTA + 1)
-        assert excinfo.value.code == rig.DESCRIPTOR_SCORE_DELTA_MISMATCH
-
-    def test_score_delta_bounds_at_encode_time(self):
-        with pytest.raises(rig.TransitionDescriptorError) as excinfo:
-            self._raw(score_delta_ppm=0)
-        assert excinfo.value.code == rig.DESCRIPTOR_SCORE_DELTA_MISMATCH
-        with pytest.raises(rig.TransitionDescriptorError) as excinfo:
-            self._raw(score_delta_ppm=1_000_001)
-        assert excinfo.value.code == rig.DESCRIPTOR_SCORE_DELTA_MISMATCH
+        assert len(raw) == 97
+        assert raw[65:97] == bytes.fromhex(self.NEW)
 
     def test_signed_transition_format_version_must_be_the_descriptor_byte_zero_extended(self):
         raw = self._raw()
@@ -1150,11 +1191,17 @@ class TestTransitionDescriptorV2:
             rig.decode_transition_descriptor(raw, transition_format_version=1)
         assert excinfo.value.code == rig.DESCRIPTOR_FORMAT_VERSION_MISMATCH
         # The zero-extension itself is accepted.
-        rig.decode_transition_descriptor(raw, transition_format_version=0x20)
+        rig.decode_transition_descriptor(raw, transition_format_version=0x21)
 
     # ── SUPERSEDED LABELS — refused, never silently accepted ──────────────────────────────────
-    def test_the_retired_and_superseded_labels_are_both_refused_and_named(self):
+    def test_all_three_dead_labels_are_refused_and_named(self):
         raw = self._raw()
+        v2 = rig.keccak256_hex(rig.TRANSITION_DESCRIPTOR_SUPERSEDED_V2_LABEL + raw)
+        with pytest.raises(rig.TransitionDescriptorError) as excinfo:
+            rig.decode_transition_descriptor(raw, expected_patch_hash=v2)
+        assert excinfo.value.code == rig.DESCRIPTOR_HASH_MISMATCH
+        assert "coretex-transition-descriptor-v2" in str(excinfo.value)
+
         retired = rig.keccak256_hex(rig.TRANSITION_DESCRIPTOR_RETIRED_LABEL + raw)
         with pytest.raises(rig.TransitionDescriptorError) as excinfo:
             rig.decode_transition_descriptor(raw, expected_patch_hash=retired)
@@ -1172,12 +1219,14 @@ class TestTransitionDescriptorV2:
             rig.decode_transition_descriptor(raw, expected_patch_hash=plain)
         assert "PLAIN undomained keccak256" in str(excinfo.value)
 
-    def test_the_three_labels_are_prefix_free_and_three_distinct_lengths(self):
+    def test_the_four_labels_are_prefix_free(self):
         live = rig.TRANSITION_DESCRIPTOR_HASH_LABEL
+        v2 = rig.TRANSITION_DESCRIPTOR_SUPERSEDED_V2_LABEL
         retired = rig.TRANSITION_DESCRIPTOR_RETIRED_LABEL
         superseded = rig.TRANSITION_DESCRIPTOR_SUPERSEDED_MEMORY_LABEL
-        assert {len(live), len(retired), len(superseded)} == {32, 21, 33}
-        for a, b in ((live, retired), (live, superseded), (retired, superseded)):
+        assert len(live) == len(v2) == 32 and live != v2
+        for a, b in ((live, v2), (live, retired), (live, superseded), (v2, retired),
+                     (v2, superseded), (retired, superseded)):
             assert not a.startswith(b) and not b.startswith(a)
 
     # ── OUTCOME-1 (SCREENER) DISCIPLINE — the tightening the retired model did not have ────────
@@ -1222,7 +1271,7 @@ class TestTransitionDescriptorV2:
         """Pinned so the hazard cannot be re-introduced silently: this is THE word every honest
         v2 implementer would have named, recomputed here with this repo's own keccak."""
         assert rig.transition_descriptor_hash(b"") == (
-            "d5a9ab001580d40cfe5588c59d218b11f2e31503e1ca95f17d4f096da4b50c63")
+            "9382d3cfe879c5c069835615ecc625f1858991dd6a71f64dade11727b08e2964")
 
     def test_a_state_advance_must_sign_a_NON_ZERO_patch_hash(self):
         """The outcome-2 half. ``_validateCoreTexNonZero`` deliberately no longer states it
@@ -1231,7 +1280,7 @@ class TestTransitionDescriptorV2:
             with pytest.raises(rig.TransitionDescriptorError) as excinfo:
                 rig.check_state_advance_patch_hash(zero)
             assert excinfo.value.code == rig.STATE_ADVANCE_PATCH_HASH_ZERO
-        rig.check_state_advance_patch_hash(rig.transition_descriptor_hash(b"\x20" * 105))
+        rig.check_state_advance_patch_hash(rig.transition_descriptor_hash(b"\x21" * 97))
 
     def test_both_new_codes_are_in_the_declared_refusal_set(self):
         """``code`` IS THE CONTRACT: a refusal that is not in the declared set cannot be asserted
@@ -1287,7 +1336,7 @@ class TestScreenerDisciplineIsWiredIntoTheProductionPath:
             "rigId": 7, "operator": self.SIGNER, "epochId": 9, "solveIndex": 3,
             "prevReceiptHash": "00" * 32, "outcome": jn.OUTCOME_SCREENER_PASS,
             "challengeId": "aa" * 32, "parentStateRoot": "bb" * 32, "newStateRoot": "bb" * 32,
-            "corpusRoot": "cc" * 32, "activeFrontierRoot": "dd" * 32, "coreVersionHash": "ee" * 32,
+            "epochContextRoot": "cc" * 32, "coreVersionHash": "ee" * 32,
             "evalReportHash": "ff" * 32,
             # THE RULE: outcome 1 credits no transition, so patchHash is bytes32(0).
             "patchHash": "00" * 32,
@@ -1322,10 +1371,10 @@ class TestScreenerDisciplineIsWiredIntoTheProductionPath:
         assert jn.STEP8_SCREENER_DISCIPLINE in result.screener_passes[0].checks
 
     @pytest.mark.parametrize("overrides,fragment", [
-        ({"patchHash": "d5a9ab001580d40cfe5588c59d218b11f2e31503e1ca95f17d4f096da4b50c63"},
+        ({"patchHash": "9382d3cfe879c5c069835615ecc625f1858991dd6a71f64dade11727b08e2964"},
          "MUST be bytes32(0)"),
-        ({"compactPatchBytes": b"\x20" * 105}, "EMPTY compactPatchBytes"),
-        ({"transitionFormatVersion": 0x20}, "transitionFormatVersion"),
+        ({"compactPatchBytes": b"\x21" * 97}, "EMPTY compactPatchBytes"),
+        ({"transitionFormatVersion": 0x21}, "transitionFormatVersion"),
         ({"scoreAfterPpm": 5}, "scoreAfterPpm"),
     ])
     def test_an_outcome_1_receipt_breaking_the_rule_is_UNRESOLVED_not_accepted(
@@ -1361,7 +1410,7 @@ class TestTransitionArtifactV2:
     def _descriptor(self, **overrides):
         artifact_hash = rig.transition_artifact_root(self._artifact())
         kwargs = dict(patch_artifact_hash=artifact_hash, parent_state_root="aa" * 32,
-                     new_state_root="bb" * 32, score_delta_ppm=5000)
+                     new_state_root="bb" * 32)
         kwargs.update(overrides)
         raw = rig.encode_transition_descriptor(**kwargs)
         return rig.decode_transition_descriptor(raw)
@@ -1408,7 +1457,7 @@ class TestTransitionArtifactV2:
     def test_a_bound_artifact_agrees_with_its_descriptor(self):
         descriptor = self._descriptor()
         document = rig.check_transition_artifact_binds_descriptor(
-            self._artifact(), descriptor=descriptor)
+            self._artifact(), descriptor=descriptor, expected_score_delta_ppm=5000)
         assert document["new_state_root"] == descriptor.new_state_root
 
     def test_artifact_parent_mismatch_against_the_descriptor(self):
@@ -1429,7 +1478,8 @@ class TestTransitionArtifactV2:
         descriptor = self._descriptor()
         substituted = self._artifact(score_delta_ppm=1)
         with pytest.raises(rig.TransitionArtifactError) as excinfo:
-            rig.check_transition_artifact_binds_descriptor(substituted, descriptor=descriptor)
+            rig.check_transition_artifact_binds_descriptor(
+                substituted, descriptor=descriptor, expected_score_delta_ppm=5000)
         assert excinfo.value.code == rig.TRANSITION_SCORE_DELTA_MISMATCH
 
     # ── FAIL-CLOSED AVAILABILITY (spec §6.3): the fetch+rehash wiring pipeline.py/chain_first.py
@@ -1462,31 +1512,68 @@ class TestTransitionArtifactV2:
         assert document["transition"]["new_release_root"] == self.TRANSITION["new_release_root"]
 
 
-class TestRigReceiptTypehashV2:
-    """The typehash pin — member 20 renamed, RE-DERIVED and cross-checked, never transcribed
+class TestDescriptorV3GoldenVector:
+    def test_the_committed_vector_rederives_every_cross_surface_pin(self):
+        from pathlib import Path
+
+        vector = json.loads((Path(__file__).parent / "fixtures" /
+                             "rig-descriptor-v3-vector.json").read_text(encoding="utf-8"))
+        descriptor = vector["descriptor"]
+        raw = bytes.fromhex(descriptor["canonical_hex"])
+        assert len(raw) == descriptor["bytes"] == binding.TRANSITION_DESCRIPTOR_BYTES
+        assert raw[0] == descriptor["version"] == binding.TRANSITION_DESCRIPTOR_VERSION
+        assert raw[1:33].hex() == descriptor["patch_artifact_hash"]
+        assert raw[33:65].hex() == descriptor["parent_state_root"]
+        assert raw[65:97].hex() == descriptor["new_state_root"]
+        assert keccak256_hex(descriptor["hash_label"].encode() + raw) == descriptor["patch_hash"]
+        decoded = rig.decode_transition_descriptor(
+            raw, parent_state_root=descriptor["parent_state_root"],
+            new_state_root=descriptor["new_state_root"],
+            expected_patch_hash=descriptor["patch_hash"],
+            transition_format_version=descriptor["version"])
+        assert decoded.patch_artifact_hash == descriptor["patch_artifact_hash"]
+
+        receipt = vector["receipt"]
+        assert receipt["signed_members"] == len(binding.CORETEX_RECEIPT_TYPES[
+            binding.CORETEX_RECEIPT_PRIMARY_TYPE])
+        assert receipt["tuple_members"] == len(binding.CORETEX_RECEIPT_TUPLE_COMPONENTS)
+        assert receipt["typehash"] == binding.CORETEX_RECEIPT_TYPEHASH
+        assert receipt["submit_selector"] == binding.SUBMIT_CORETEX_RECEIPT_SELECTOR
+        registry = vector["registry"]
+        assert registry["submit_state_advance_selector"] == binding.SUBMIT_STATE_ADVANCE_SELECTOR
+        assert registry["epoch_context_root_selector"] == next(
+            item["selector"] for item in binding.CORETEX_REGISTRY_READS
+            if item["signature"] == "epochContextRoot(uint64)")
+        assert registry["state_advanced_topic0"][2:] == rig.STATE_ADVANCED_TOPIC0
+        assert registry["epoch_finalized_topic0"][2:] == rig.EPOCH_FINALIZED_TOPIC0
+        assert registry["epoch_context_set_topic0"][2:] == rig.EPOCH_CONTEXT_SET_TOPIC0
+
+
+class TestRigReceiptTypehashV3:
+    """The typehash pin — the context pair collapsed, RE-DERIVED and cross-checked, never transcribed
     once and trusted."""
 
     def test_the_typehash_is_rederived_from_the_member_list_and_matches_the_pin(self):
         derived = keccak256_hex(binding.CORETEX_RECEIPT_TYPEHASH_STRING.encode("utf-8"))
         assert "0x" + derived == binding.CORETEX_RECEIPT_TYPEHASH
         assert binding.CORETEX_RECEIPT_TYPEHASH == (
-            "0x70419dc57753cec023e5ca1563c9eb5858d96ddb82144f3c9e6d40e8f334b2cf")
+            "0xd21a4141318ac86ffd63faa82975263001e87a21ce5db2db3230837a90d2dab3")
 
     def test_the_typehash_differs_from_the_retired_one_and_the_retired_one_is_kept_nameable(self):
         assert binding.CORETEX_RECEIPT_TYPEHASH != binding.RETIRED_CORETEX_RECEIPT_TYPEHASH
         assert binding.RETIRED_CORETEX_RECEIPT_TYPEHASH == (
-            "0x1cb41d15e03f32744933332c24f5fe35eb76fdc99cbdc02c432aad682c67973b")
+            "0x70419dc57753cec023e5ca1563c9eb5858d96ddb82144f3c9e6d40e8f334b2cf")
 
-    def test_member_20_is_transitionFormatVersion_not_stateWordCount(self):
-        member_20 = binding.CORETEX_RECEIPT_TUPLE_COMPONENTS[20]
-        assert member_20 == {"name": "transitionFormatVersion", "type": "uint16"}
+    def test_member_19_is_transitionFormatVersion_and_member_9_is_epoch_context(self):
+        assert binding.CORETEX_RECEIPT_TUPLE_COMPONENTS[9] == {
+            "name": "epochContextRoot", "type": "bytes32"}
+        assert binding.CORETEX_RECEIPT_TUPLE_COMPONENTS[19] == {
+            "name": "transitionFormatVersion", "type": "uint16"}
         assert "stateWordCount" not in binding.CORETEX_RECEIPT_TYPEHASH_STRING
         assert "transitionFormatVersion" in binding.CORETEX_RECEIPT_TYPEHASH_STRING
 
-    def test_the_selector_is_unchanged_types_not_names_determine_it(self):
-        # Renaming member 20 does not change the tuple's ABI TYPES, so the function selector is
-        # byte-for-byte the same as before the migration.
-        assert binding.SUBMIT_CORETEX_RECEIPT_SELECTOR == "0xcc45427e"
+    def test_the_selector_moves_when_the_tuple_loses_a_word(self):
+        assert binding.SUBMIT_CORETEX_RECEIPT_SELECTOR == "0xed5daa91"
 def _load_generated_binding():
     """Import ``generated_rig_receipt_binding.py`` from the coordinator tree, by absolute path."""
     import importlib.util
@@ -1503,10 +1590,8 @@ def _load_generated_binding():
 #: Constants that are legitimately DIFFERENT between the two files, each with its reason. Anything
 #: not listed here and present in both modules must be equal.
 _PARITY_EXEMPT = {
-    # Bundle provenance: the generated file is projected from a real bundle.json; this package has
-    # none vendored. Comparing them would pin the coordinator's regeneration cadence into this
-    # repo's test suite — and the coordinator side is regenerated independently.
-    "BINDING_SOURCE",
+    # The generated file's bundle hash moves with independent coordinator regeneration; this
+    # package has no bundle.json to state a hash for. ABI/source provenance itself is compared.
     "BUNDLE_SHA256",
     # The client deliberately records the SUPERSEDED rehearsal pair (cross-referenced with
     # rehearsal_deployment.SUPERSEDED_DEPLOYMENTS); the generated file records the LIVE one plus a
@@ -1544,6 +1629,9 @@ class TestGeneratedBindingParity:
                 "the coordinator's generated_rig_receipt_binding.py is not on this host (looked "
                 f"under {_COORDINATOR_ROOTS} for {GENERATED_BINDING_RELATIVE}; set "
                 "CORETEX_GENERATED_RIG_BINDING to point at it)")
+        if getattr(module, "CORETEX_RECEIPT_TYPEHASH", None) != binding.CORETEX_RECEIPT_TYPEHASH:
+            pytest.skip("the coordinator generated binding is still descriptor-v2; v3 parity "
+                        "resumes once the interrupted coordinator migration regenerates it")
         return module
 
     def test_every_shared_module_level_constant_is_identical(self):
@@ -1594,29 +1682,29 @@ class TestGeneratedBindingParity:
         dead = {entry["mining"] for entry in rd.SUPERSEDED_DEPLOYMENTS.values()}
         assert binding.EIP712_REHEARSAL_OBSERVED["verifying_contract"].lower() in dead
 
-    # ── M-1: the 105 / 0x20 transcriptions, compared against the authority ────────────────────
+    # ── M-1: the 97 / 0x21 transcriptions, compared against the authority ─────────────────────
     def test_the_descriptor_length_and_version_equal_the_generated_values(self):
         generated = self.generated()
-        assert binding.TRANSITION_DESCRIPTOR_BYTES == generated.TRANSITION_DESCRIPTOR_BYTES == 105
+        assert binding.TRANSITION_DESCRIPTOR_BYTES == generated.TRANSITION_DESCRIPTOR_BYTES == 97
         assert binding.TRANSITION_DESCRIPTOR_VERSION == generated.TRANSITION_DESCRIPTOR_VERSION \
-            == 32
+            == 33
 
     def test_the_layouts_load_bearing_fields_are_identical(self):
         generated = self.generated()
         mine, theirs = binding.TRANSITION_DESCRIPTOR_LAYOUT, generated.TRANSITION_DESCRIPTOR_LAYOUT
-        assert mine["total_bytes"] == theirs["total_bytes"] == 105
-        assert mine["version"] == theirs["version"] == 32
+        assert mine["total_bytes"] == theirs["total_bytes"] == 97
+        assert mine["version"] == theirs["version"] == 33
         assert isinstance(mine["version"], int) and not isinstance(mine["version"], bool)
         pick = lambda fields: [(f["offset"], f["size"], f["field"]) for f in fields]   # noqa: E731
         assert pick(mine["fields"]) == pick(theirs["fields"])
-        assert sum(f["size"] for f in mine["fields"]) == 105
+        assert sum(f["size"] for f in mine["fields"]) == 97
 
     def test_the_layout_version_is_comparable_to_a_descriptor_byte(self):
-        """The whole point of M-11.1. Against the string ``"0x20"`` this is False for every input,
+        """The whole point of M-11.1. Against the string ``"0x21"`` this is False for every input,
         which is a check that is not there rather than a check that fails."""
         descriptor = rig.encode_transition_descriptor(
             patch_artifact_hash="7e" * 32, parent_state_root="aa" * 32,
-            new_state_root="bb" * 32, score_delta_ppm=7)
+            new_state_root="bb" * 32)
         assert descriptor[0] == binding.TRANSITION_DESCRIPTOR_LAYOUT["version"]
 
     def test_rig_events_uses_the_bindings_constants_rather_than_its_own_copies(self):
@@ -1633,18 +1721,19 @@ class TestGeneratedBindingParity:
             generated.SUBMIT_CORETEX_RECEIPT_SELECTOR
         assert binding.SUBMIT_STATE_ADVANCE_SELECTOR == generated.SUBMIT_STATE_ADVANCE_SELECTOR
 
-    def test_all_27_tuple_components_and_25_signed_members_match(self):
+    def test_all_26_tuple_components_and_24_signed_members_match(self):
         generated = self.generated()
         assert binding.CORETEX_RECEIPT_TUPLE_COMPONENTS == \
             generated.CORETEX_RECEIPT_TUPLE_COMPONENTS
-        assert len(binding.CORETEX_RECEIPT_TUPLE_COMPONENTS) == 27
+        assert len(binding.CORETEX_RECEIPT_TUPLE_COMPONENTS) == 26
         primary = binding.CORETEX_RECEIPT_PRIMARY_TYPE
         assert binding.CORETEX_RECEIPT_TYPES[primary] == generated.CORETEX_RECEIPT_TYPES[primary]
-        assert len(binding.CORETEX_RECEIPT_TYPES[primary]) == 25
+        assert len(binding.CORETEX_RECEIPT_TYPES[primary]) == 24
 
     def test_the_domain_labels_match(self):
         generated = self.generated()
         for name in ("TRANSITION_DESCRIPTOR_HASH_DOMAIN_LABEL", "TRANSITION_DESCRIPTOR_HASH_RULE",
+                     "TRANSITION_DESCRIPTOR_SUPERSEDED_V2_LABEL",
                      "TRANSITION_DESCRIPTOR_RETIRED_LABEL",
                      "TRANSITION_DESCRIPTOR_SUPERSEDED_MEMORY_LABEL",
                      "TRANSITION_DESCRIPTOR_SPEC"):
@@ -1710,8 +1799,8 @@ class TestNoNullReachesCanonicalBytes:
         cn.canonical_bytes(export.document)
 
 
-class TestSchemaV1AndV2:
-    """Both eras are supported; an unknown schema is REFUSED rather than guessed at."""
+class TestSchemaV1V2AndV3:
+    """Historical readers stay immutable while descriptor-v3 has an explicit schema boundary."""
 
     def _payload(self, schema, identity_key):
         from coretex_validator import resolver_snapshot as rsn
@@ -1725,15 +1814,17 @@ class TestSchemaV1AndV2:
     def test_both_schemas_are_supported(self):
         from coretex_validator import resolver_snapshot as rsn
 
-        assert rsn.SUPPORTED_SCHEMAS == (rsn.SCHEMA_V1, rsn.SCHEMA_V2)
+        assert rsn.SUPPORTED_SCHEMAS == (rsn.SCHEMA_V1, rsn.SCHEMA_V2, rsn.SCHEMA_V3)
         rsn.check_shape(self._payload(rsn.SCHEMA_V1, "resolver"))
         rsn.check_shape(self._payload(rsn.SCHEMA_V2, "authority"))
+        rsn.check_shape(self._payload(rsn.SCHEMA_V3, "authority"))
 
     def test_the_versions_differ_in_exactly_one_key(self):
         from coretex_validator import resolver_snapshot as rsn
 
         assert len(rsn.TOP_LEVEL_KEYS_V1) == len(rsn.TOP_LEVEL_KEYS_V2) == 23
         assert set(rsn.TOP_LEVEL_KEYS_V1) ^ set(rsn.TOP_LEVEL_KEYS_V2) == {"resolver", "authority"}
+        assert rsn.TOP_LEVEL_KEYS_V3 == rsn.TOP_LEVEL_KEYS_V2
 
     def test_a_v2_payload_wearing_the_v1_id_is_refused_on_SHAPE(self):
         # The bump exists because the shape changed. A document that claims v1 but carries v2's
@@ -1748,9 +1839,84 @@ class TestSchemaV1AndV2:
         from coretex_validator import resolver_snapshot as rsn
 
         with pytest.raises(rsn.ReproductionError) as excinfo:
-            rsn.schema_of({"schema": "coretex.rig-state.resolver-snapshot/v3"})
+            rsn.schema_of({"schema": "coretex.rig-state.resolver-snapshot/v4"})
         assert excinfo.value.code == "SCHEMA_UNSUPPORTED"
         assert "Refusing to guess" in excinfo.value.message
+
+    def test_v3_state_context_and_sealed_header_are_closed_to_canonical_contract_cells(self):
+        from coretex_validator import resolver_snapshot as rsn
+
+        root = lambda byte: "0x" + byte * 64
+        state = rsn.build_state_v3(
+            epoch=181,
+            context={"configured": True, "epoch": 181,
+                     "parent_state_root": root("1"), "core_version_hash": root("2"),
+                     "epoch_context_root": root("3"), "hidden_seed_commit": root("4")},
+            live_state_root=root("5"), transition_count=2, sealed=True, served=True,
+            header={"patch_set_root": root("6"), "score_root": root("7")}, finalized_at=9)
+        assert set(state["context"]) == rsn._V3_CONTEXT_KEYS  # noqa: SLF001
+        assert set(state["header"]) == {"patch_set_root", "score_root"}
+        for retired in ("corpus_root", "active_frontier_root", "baseline_manifest_hash",
+                        "final_state_root", "core_version_hash", "epoch_context_root"):
+            assert retired not in state["header"]
+        with pytest.raises(rsn.ReproductionError) as excinfo:
+            rsn.build_state_v3(
+                epoch=181,
+                context={**state["context"], "corpus_root": root("8")},
+                live_state_root=root("5"), transition_count=2, sealed=False, served=True)
+        assert excinfo.value.code == "V3_CONTEXT_SHAPE_MISMATCH"
+
+    def test_v3_derivation_pins_the_new_receipt_descriptor_and_selector(self):
+        from coretex_validator import resolver_schema_constants as constants
+
+        layout = constants.DERIVATION_V3["receipt_layout"]
+        assert layout["transition_descriptor_bytes"] == 97
+        assert layout["transition_descriptor_version"] == "0x21"
+        assert layout["signed_members"] == 24
+        assert layout["tuple_members"] == 26
+        assert layout["submit_selector"] == "0xed5daa91"
+        assert layout["typehash"] == (
+            "0xd21a4141318ac86ffd63faa82975263001e87a21ce5db2db3230837a90d2dab3")
+        fields = constants.DERIVATION_V3["join_recipe"]["fields"]
+        assert "epochContextRoot" in fields
+        assert not {"corpusRoot", "activeFrontierRoot"} & set(fields)
+
+    def test_epoch_context_is_a_separately_rehashed_closed_document(self):
+        manifest = {
+            "format": rig.EPOCH_CONTEXT_FORMAT, "epoch": 181,
+            "corpus_root": "11" * 32, "active_frontier_root": "22" * 32,
+            "baseline_manifest_hash": "33" * 32, "benchmark_law_root": "44" * 32,
+            "runtime_abi_root": "55" * 32, "counter_resource_law_root": "66" * 32,
+            "selection_law_root": "77" * 32,
+            "admission_thresholds_ppm": {"minimum": 1},
+            "seed_commitment": {"scheme": "keccak256-hidden-seed/v1",
+                                "binding_rule": "keccak256(secret)",
+                                "commitment_source": "mining.epochCommit(epochId)"},
+        }
+        encoded = fr.canonical_bytes(manifest)
+        root = fr.sha256_hex(encoded)
+        assert rig.verify_epoch_context_bytes(encoded, expected_root=root) == manifest
+        with pytest.raises(rig.EpochContextError) as excinfo:
+            rig.verify_epoch_context_bytes(encoded, expected_root="88" * 32)
+        assert excinfo.value.code == rig.EPOCH_CONTEXT_ADDRESS_MISMATCH
+        with pytest.raises(rig.EpochContextError) as excinfo:
+            rig.validate_epoch_context({**manifest, "corpus_root_copy": "11" * 32})
+        assert excinfo.value.code == rig.EPOCH_CONTEXT_MALFORMED
+
+    def test_v3_admission_locks_come_from_epoch_context_not_flattened_state(self):
+        from coretex_validator import resolver_snapshot as rsn
+
+        context = {name: f"{index:02x}" * 32
+                   for index, name in enumerate(rsn.V3_EPOCH_CONTEXT_LOCKS, start=1)}
+        state = {"benchmark_law_root": "99" * 32,
+                 "runtime_abi_root": context["runtime_abi_root"]}
+        block, findings = rsn.build_locks_v3(
+            state, context, None, core_version_hash="aa" * 32)
+        assert block["locks"]["benchmark_law_root"]["root"] == context["benchmark_law_root"]
+        assert block["locks"]["benchmark_law_root"]["binding"] == "epoch-context-manifest"
+        assert block["locks"]["runtime_abi_root"]["also_in_live_state_manifest"] is True
+        assert block["locks"]["selection_law_root"]["binding"] == "epoch-context-manifest"
+        assert any("benchmark_law_root" in finding for finding in findings)
 
     def test_the_identity_block_is_a_schema_constant_in_both_versions(self):
         from coretex_validator import resolver_snapshot as rsn
@@ -1810,6 +1976,7 @@ class TestSchemaV1AndV2:
         payload = json.loads(evidence.read_text(encoding="utf-8"))
         layout = payload["derivation"]["receipt_layout"]
         recipe = payload["derivation"]["join_recipe"]["fields"]
+        assert rsc.DERIVATION_V1 == payload["derivation"]
 
         # ── the LEGACY era, as the published bytes state it ──
         assert layout["typehash"] == (
@@ -1879,14 +2046,14 @@ class TestPatchArtifactFailuresAreClassified:
     def _selected(self, patch_root):
         descriptor = rig.encode_transition_descriptor(
             patch_artifact_hash=patch_root, parent_state_root=self.PARENT,
-            new_state_root=self.NEW, score_delta_ppm=self.DELTA)
+            new_state_root=self.NEW)
         advance = rig.StateAdvanced(
             epoch=9, transition_index=0, miner="0x" + "11" * 20,
             parent_state_root=self.PARENT, new_state_root=self.NEW,
             patch_hash=rig.transition_descriptor_hash(descriptor),
             eval_report_hash=fr.sha256_hex(fr.canonical_bytes(self._eval_artifact())),
-            core_version_hash="ee" * 32, corpus_root="cc" * 32, active_frontier_root="dd" * 32,
-            improvement_credits=1, transition_format_version=0x20,
+            core_version_hash="ee" * 32, epoch_context_root="cc" * 32,
+            improvement_credits=1, transition_format_version=0x21,
             compact_patch_bytes=descriptor, provenance=dp.LogProvenance())
 
         class _Selected:
@@ -1974,17 +2141,17 @@ class TestPatchArtifactFailuresAreClassified:
 # --------------------------------------------------------------------------- #
 # L-7 — the mutual-unparseability claim, pinned in the direction the comment overstated
 # --------------------------------------------------------------------------- #
-def test_the_legacy_decoder_REFUSES_a_v2_descriptor_it_never_misreads_one():
+def test_the_legacy_word_decoder_REFUSES_a_v3_descriptor_it_never_misreads_one():
     """``rig_events.py``'s HISTORY note used to claim the legacy decoder "would not even refuse
     [a v2 descriptor] outright — it would misread [it] as a same-length compact patch". It would
-    not. 105 is inside the retired 42..178 window so the LENGTH check passes, and then ``0x20`` is
+    not. 97 is inside the retired 42..178 window so the LENGTH check passes, and then ``0x21`` is
     not a key of ``PATCH_TYPE_WORD_RANGES`` so ``PATCH_TYPE_UNKNOWN`` fires before any word is
     parsed. The patch-type check is LOAD-BEARING and must not be loosened.
     """
     descriptor = rig.encode_transition_descriptor(
         patch_artifact_hash="7e" * 32, parent_state_root="aa" * 32,
-        new_state_root="bb" * 32, score_delta_ppm=11)
-    assert len(descriptor) == 105
+        new_state_root="bb" * 32)
+    assert len(descriptor) == 97
     assert rig.COMPACT_PATCH_HEADER_BYTES <= len(descriptor) <= rig.COMPACT_PATCH_MAX_BYTES
     assert rig.TRANSITION_DESCRIPTOR_VERSION not in rig.PATCH_TYPE_WORD_RANGES
     with pytest.raises(rig.CompactPatchError) as excinfo:

@@ -269,16 +269,25 @@ describe('cross-lane topic0 collision — a rig advance is refused BY CLASSIFICA
   test('the discriminator is exported and agrees between the two replay modules', async () => {
     const registry = await import('../../dist/replay/coretex-registry.js');
     const dispatch = await import('../../dist/replay/rig-dispatch.js');
-    assert.equal(registry.RIG_TRANSITION_DESCRIPTOR_BYTES, 105);
-    assert.equal(registry.RIG_TRANSITION_DESCRIPTOR_VERSION, 0x20);
-    assert.equal(dispatch.RIG_TRANSITION_DESCRIPTOR_BYTES, registry.RIG_TRANSITION_DESCRIPTOR_BYTES);
-    assert.equal(dispatch.RIG_TRANSITION_DESCRIPTOR_VERSION, registry.RIG_TRANSITION_DESCRIPTOR_VERSION);
+    assert.equal(registry.LEGACY_V2_RIG_TRANSITION_DESCRIPTOR_BYTES, 105);
+    assert.equal(registry.LEGACY_V2_RIG_TRANSITION_DESCRIPTOR_VERSION, 0x20);
+    assert.equal(dispatch.RIG_TRANSITION_DESCRIPTOR_BYTES, 97);
+    assert.equal(dispatch.RIG_TRANSITION_DESCRIPTOR_VERSION, 0x21);
+    assert.equal(
+      dispatch.LEGACY_V2_RIG_TRANSITION_DESCRIPTOR_BYTES,
+      registry.LEGACY_V2_RIG_TRANSITION_DESCRIPTOR_BYTES,
+    );
+    assert.equal(
+      dispatch.LEGACY_V2_RIG_TRANSITION_DESCRIPTOR_VERSION,
+      registry.LEGACY_V2_RIG_TRANSITION_DESCRIPTOR_VERSION,
+    );
     const lane = dispatch.laneSeparation();
     assert.equal(lane.addressFilterMandatory, true);
-    assert.deepEqual(lane.payloadDiscriminator, { descriptorBytes: 105, versionByte: 0x20 });
+    assert.equal(lane.identical, false);
+    assert.deepEqual(lane.payloadDiscriminator, { descriptorBytes: 97, versionByte: 0x21 });
     // A legal V4 compact patch is never mistaken for a descriptor.
     const real = Buffer.from(temporalVec.patchBytesHex.replace(/^0x/, ''), 'hex');
-    assert.equal(registry.isRigLaneTransitionDescriptor(new Uint8Array(real)), false);
+    assert.equal(registry.isLegacyV2RigLaneTransitionDescriptor(new Uint8Array(real)), false);
   });
 });
 

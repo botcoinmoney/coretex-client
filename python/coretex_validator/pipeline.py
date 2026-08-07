@@ -454,10 +454,10 @@ def _admit(selected: jn.JoinedTransition, law: hl.EpochLaw, store: pub.ContentSt
                 "reason": f"the fetched artifact says {name}={artifact_value!r}, the confirmed "
                           f"advance says {event_value!r}"}
 
-    # ── THE EDIT: coretex.transition-descriptor/v2 — a commitment, not the edit ────────────────
+    # ── THE EDIT: coretex.transition-descriptor/v3 — a commitment, not the edit ────────────────
     #
-    # The rig lane's `compactPatchBytes` is now a FIXED 105-byte commitment (version,
-    # patchArtifactHash, parentStateRoot, newStateRoot, scoreDeltaPpm), never JSON, never a
+    # The rig lane's `compactPatchBytes` is now a FIXED 97-byte commitment (version,
+    # patchArtifactHash, parentStateRoot, newStateRoot), never JSON, never a
     # variable-length word-diff struct. It does not carry the edit; it addresses it. So step 5 is
     # now three steps: decode the descriptor and cross-check it against the confirmed receipt,
     # FETCH the canonical patch artifact it addresses (by `patchArtifactHash`, sha256, separate
@@ -469,8 +469,6 @@ def _admit(selected: jn.JoinedTransition, law: hl.EpochLaw, store: pub.ContentSt
             selected.advance.compact_patch_bytes,
             parent_state_root=selected.advance.parent_state_root,
             new_state_root=selected.advance.new_state_root,
-            score_delta_ppm=(int(selected.receipt["scoreAfterPpm"])
-                             - int(selected.receipt["scoreBeforePpm"])),
             expected_patch_hash=selected.advance.patch_hash,
             transition_format_version=selected.advance.transition_format_version)
     except rig.TransitionDescriptorError as exc:
@@ -532,7 +530,9 @@ def _admit(selected: jn.JoinedTransition, law: hl.EpochLaw, store: pub.ContentSt
 
     try:
         patch_artifact = rig.check_transition_artifact_binds_descriptor(
-            patch_artifact_raw, descriptor=descriptor)
+            patch_artifact_raw, descriptor=descriptor,
+            expected_score_delta_ppm=(int(selected.receipt["scoreAfterPpm"])
+                                      - int(selected.receipt["scoreBeforePpm"])))
     except rig.TransitionArtifactError as exc:
         return artifact, {"outcome": "FAIL", "code": exc.code, "reason": str(exc)}
 
