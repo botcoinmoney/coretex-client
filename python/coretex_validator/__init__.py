@@ -39,6 +39,7 @@ from __future__ import annotations
 __all__ = [
     "__version__",
     "abi",
+    "authority_law",
     "backlog",
     "chain_first",
     "dispatch",

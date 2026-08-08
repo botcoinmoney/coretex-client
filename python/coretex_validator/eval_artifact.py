@@ -82,20 +82,26 @@ import json
 import os
 from typing import Any, Dict, Mapping, Optional, Tuple
 
+from . import authority_law as al
 from . import frontier as fr
 from . import publication as pub
-from . import rig_events as rig_ev
 from .keccak256 import keccak256_hex
 # Identity constants
 # --------------------------------------------------------------------------- #
-ARTIFACT_FORMAT = "coretex.memory-eval-artifact.v1"
+ARTIFACT_FORMAT = "coretex.memory-eval-artifact.v2"
+ARTIFACT_FORMAT_V1_SIGNED_ERA = "coretex.memory-eval-artifact.v1"
+ARTIFACT_FAMILY_LAWS = {
+    ARTIFACT_FORMAT_V1_SIGNED_ERA: al.LAW_OFF_CHAIN_SIGNATURE_V1,
+    ARTIFACT_FORMAT: al.LAW_CHAIN_COMMITTED_V2,
+}
 CANARY_BLOCK_FORMAT = "coretex.memory-eval-artifact.v1/canary-reference"
 COUNTER_RESOURCE_LAW_FORMAT = "coretex.counter-resource-law.v1"
 
-#: The Benchmark-v2 signed-receipt wrapper family this artifact addresses (V5 does not mint a new
-#: receipt family — ``benchmark-v2/validator/receipt.py`` already owns that shape).
-RECEIPT_WRAPPER_FORMAT = "benchmark-v2/signed-receipt/v1"
-RECEIPT_BODY_FORMAT = "benchmark-v2/receipt/v1"
+EVAL_REPORT_FORMAT = "benchmark-v2/receipt/v1"
+RECEIPT_BODY_FORMAT = EVAL_REPORT_FORMAT
+RECEIPT_WRAPPER_FORMAT_V1_SIGNED_ERA = "benchmark-v2/signed-receipt/v1"
+# Compatibility name for the historical builder and its frozen tests.
+RECEIPT_WRAPPER_FORMAT = RECEIPT_WRAPPER_FORMAT_V1_SIGNED_ERA
 
 #: The sealed canary transcript family (``benchmark-v2/canary/run_canary.build_sealed``).
 CANARY_TRANSCRIPT_FORMAT = "benchmark-v2/canary/transcript/v1"
@@ -124,9 +130,14 @@ MAX_UINT64 = 2 ** 64 - 1
 COUNTER_RESOURCE_LAW_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                          "COUNTER_RESOURCE_LAW.v1.json")
 
-#: Availability names a broadcastable receipt REQUIRES (spec §9).
-REQUIRED_AVAILABILITY = ("candidate_bundle", "composition_manifest", "counter_resource_law",
-                         "parent_frontier_manifest", "receipt_wrapper")
+REQUIRED_AVAILABILITY_V2 = (
+    "candidate_bundle", "composition_manifest", "counter_resource_law",
+    "eval_report", "parent_frontier_manifest")
+REQUIRED_AVAILABILITY_V1_SIGNED_ERA = (
+    "candidate_bundle", "composition_manifest", "counter_resource_law",
+    "parent_frontier_manifest", "receipt_wrapper")
+# Frozen compatibility name used by the historical builder.
+REQUIRED_AVAILABILITY = REQUIRED_AVAILABILITY_V1_SIGNED_ERA
 
 ARTIFACT_FIELDS: Tuple[str, ...] = (
     "availability", "candidate", "counter_resource_law_root", "entropy", "epoch", "format",
@@ -159,8 +170,10 @@ SIDE_FIELDS = ("composite_micro", "compute_micro", "corpus_supported", "events_s
                "hook_compute_fuel", "hook_fuel", "host_profile", "latency_micro",
                "objectives_micro", "rendered_cost_micro", "storage_bytes", "store_events",
                "store_ops", "work_fuel")
-RECEIPT_FIELDS = ("code_roots", "measurement_policy", "outputs_hash", "receipt_hash",
-                  "signature_key_id", "wrapper_root")
+RECEIPT_FIELDS = ("code_roots", "eval_report_root", "measurement_policy", "outputs_hash")
+RECEIPT_FIELDS_V1_SIGNED_ERA = (
+    "code_roots", "measurement_policy", "outputs_hash", "receipt_hash",
+    "signature_key_id", "wrapper_root")
 REPLAY_INPUT_FIELDS = ("candidate_declaration_id", "candidate_exec", "candidate_manifest_hash",
                        "incumbent", "parent_manifest")
 INCUMBENT_FIELDS = ("candidate_hash", "exec", "id")
@@ -218,7 +231,7 @@ RIG_STATE_WORD_COUNT_MAX = 4
 #: hold, and every assertion built on it) is DELETED rather than repointed at the new value: spec
 #: §9.3 is explicit that a pin the retired model produced must be RE-MINTED, not adjusted, and a
 #: constant named "word count" holding a version byte would misname what it is.
-RIG_TRANSITION_FORMAT_VERSION_ADVANCE = rig_ev.TRANSITION_DESCRIPTOR_VERSION
+RIG_TRANSITION_FORMAT_VERSION_ADVANCE = 0x21
 
 #: The camelCase spelling of each field, for the TypeScript coordinator.
 #: ``coretex-memory-v5-worker-client.ts::decodeEvaluation`` reads every rig field through
@@ -450,6 +463,11 @@ def to_micro(value: Any, field: str) -> int:
             f"{field}={value!r} is not exactly representable at 6 decimal places "
             f"(x10^6 = {scaled}); refused rather than rounded")
     return int(scaled)
+
+
+def eval_report_root(report: Mapping[str, Any]) -> str:
+    """SHA-256 identity of a canonical deterministic Benchmark-v2 report."""
+    return receipt_body_hash(report)
 
 
 def receipt_body_hash(body: Mapping[str, Any]) -> str:
@@ -840,11 +858,21 @@ def verify_selection_walk(selection: Mapping[str, Any], *, entropy: Mapping[str,
 # --------------------------------------------------------------------------- #
 # Structural validation (spec §5)
 # --------------------------------------------------------------------------- #
+def artifact_law(artifact: Any) -> str:
+    """Return the authorization law bound by the artifact's own format."""
+    try:
+        return al.law_of_artifact(
+            artifact, families=ARTIFACT_FAMILY_LAWS, what="eval artifact")
+    except al.UnknownLawError as exc:
+        raise ArtifactSchemaError(str(exc)) from exc
+
+
 def validate_artifact(artifact: Any) -> Dict[str, Any]:
     """Fail-closed structural validation. Returns the artifact unchanged; never a copy."""
-    _check_closed(artifact, ARTIFACT_FIELDS, ARTIFACT_FORMAT, OPTIONAL_ARTIFACT_FIELDS)
-    if artifact["format"] != ARTIFACT_FORMAT:
-        raise ArtifactSchemaError(f"format {artifact['format']!r} is not {ARTIFACT_FORMAT!r}")
+    law = artifact_law(artifact)
+    signed_era = law == al.LAW_OFF_CHAIN_SIGNATURE_V1
+    family = ARTIFACT_FORMAT_V1_SIGNED_ERA if signed_era else ARTIFACT_FORMAT
+    _check_closed(artifact, ARTIFACT_FIELDS, family, OPTIONAL_ARTIFACT_FIELDS)
     fr.check_epoch(artifact["epoch"])
     fr.check_root(artifact["counter_resource_law_root"], "counter_resource_law_root")
 
@@ -925,11 +953,17 @@ def validate_artifact(artifact: Any) -> Dict[str, Any]:
                 _check_str(name, f"{where}.objectives_micro key")
                 _check_int(value, f"{where}.objectives_micro[{name!r}]")
 
-    rec = _check_closed(artifact["receipt"], RECEIPT_FIELDS, "receipt")
-    for field in ("outputs_hash", "receipt_hash", "wrapper_root"):
-        fr.check_root(rec[field], f"receipt.{field}")
+    if signed_era:
+        rec = _check_closed(
+            artifact["receipt"], RECEIPT_FIELDS_V1_SIGNED_ERA, "receipt")
+        for field in ("outputs_hash", "receipt_hash", "wrapper_root"):
+            fr.check_root(rec[field], f"receipt.{field}")
+        _check_str(rec["signature_key_id"], "receipt.signature_key_id")
+    else:
+        rec = _check_closed(artifact["receipt"], RECEIPT_FIELDS, "receipt")
+        for field in ("eval_report_root", "outputs_hash"):
+            fr.check_root(rec[field], f"receipt.{field}")
     _check_str(rec["measurement_policy"], "receipt.measurement_policy")
-    _check_str(rec["signature_key_id"], "receipt.signature_key_id")
     roots = rec["code_roots"]
     if not isinstance(roots, dict) or not roots:
         raise ArtifactTypeError("receipt.code_roots must be a non-empty object")
@@ -1235,7 +1269,10 @@ def build_artifact(*, epoch: int, parent_manifest: Mapping[str, Any],
                                       or counter_resource_law_root(counter_resource_law)),
         "entropy": entropy,
         "epoch": epoch,
-        "format": ARTIFACT_FORMAT,
+        # This compatibility builder consumes a signed wrapper and therefore can only mint the
+        # closed historical family. Prospective v2 artifacts are produced by the coordinator and
+        # contain an addressed evaluation report instead.
+        "format": ARTIFACT_FORMAT_V1_SIGNED_ERA,
         "frontier": {
             "benchmark_law_root": parent_manifest["benchmark_law_root"],
             "composition_root": transition["resulting_composition_root"],
@@ -1336,6 +1373,14 @@ def _receipt_body(wrapper: Any) -> Dict[str, Any]:
     return body
 
 
+def _eval_report(report: Any) -> Dict[str, Any]:
+    """A prospective signature-free Benchmark-v2 report, structurally identified."""
+    if not isinstance(report, dict) or report.get("format") != EVAL_REPORT_FORMAT:
+        raise ReceiptBindingError(
+            f"evaluation report must be a {EVAL_REPORT_FORMAT!r} object")
+    return report
+
+
 # --------------------------------------------------------------------------- #
 # Verification (spec §11)
 # --------------------------------------------------------------------------- #
@@ -1346,6 +1391,7 @@ def verify_artifact(artifact: Mapping[str, Any], *, expected_parent_root: str,
                     expected_counter_resource_law_root: str,
                     expected_entropy_commitment: str, expected_epoch: int,
                     expected_target_profile: Optional[str] = None,
+                    eval_report: Optional[Mapping[str, Any]] = None,
                     receipt_wrapper: Optional[Mapping[str, Any]] = None,
                     counter_resource_law: Optional[Mapping[str, Any]] = None,
                     store: Optional[pub.ContentStore] = None,
@@ -1380,8 +1426,10 @@ def verify_artifact(artifact: Mapping[str, Any], *, expected_parent_root: str,
     ``work_policy_hash``) are the epoch context the registry itself
     enforces; supplying one checks the artifact against it, omitting one skips only that check.
     """
+    law = artifact_law(artifact)
+    signed_era = law == al.LAW_OFF_CHAIN_SIGNATURE_V1
     validate_artifact(artifact)
-    report: Dict[str, Any] = {"checks": []}
+    report: Dict[str, Any] = {"checks": [], "authority_law": law}
 
     def done(name: str) -> None:
         report["checks"].append(name)
@@ -1532,31 +1580,53 @@ def verify_artifact(artifact: Mapping[str, Any], *, expected_parent_root: str,
     verify_selection_walk(sel, entropy=ent, candidate_hash=cand["candidate_hash"])
     done("selection_walk")
 
-    # ---- 6. the signed deterministic receipt ------------------------------------------------
-    wrapper = receipt_wrapper
-    if wrapper is None:
-        if store is None:
-            raise ReceiptUnavailableError(
-                "verification needs the signed deterministic receipt: pass receipt_wrapper, or a "
-                "store to fetch it from by the artifact's bound wrapper_root. It is never "
-                "skipped — the receipt IS the admission law")
-        wrapper = pub.fetch_json(artifact["receipt"]["wrapper_root"],
-                                 hash_rule=pub.HASH_RULE_BENCHMARK_JSON, store=store)
-    body = _receipt_body(wrapper)
-    fetched_root = fr.sha256_hex(pub.benchmark_canonical_bytes(wrapper))
-    _require(fetched_root == artifact["receipt"]["wrapper_root"], ReceiptBindingError,
-             f"the receipt wrapper hashes to {fetched_root}, not the bound "
-             f"{artifact['receipt']['wrapper_root']}")
-    _require(wrapper["receipt_hash"] == artifact["receipt"]["receipt_hash"],
-             ReceiptBindingError,
-             "receipt.receipt_hash does not match the signed wrapper's self-hash")
-    _require(wrapper["signature"]["key_id"] == artifact["receipt"]["signature_key_id"],
-             ReceiptBindingError, "receipt.signature_key_id does not match the wrapper")
-    if signature_verifier is not None:
-        if signature_verifier(wrapper) is not True:
+    # ---- 6. the deterministic evaluation report, dispatched by the artifact's own law --------
+    if signed_era:
+        if eval_report is not None:
             raise ReceiptBindingError(
-                "the signed receipt's Ed25519 signature did not verify against the pinned key")
-        done("receipt_signature")
+                "a signed-era artifact requires its historical receipt_wrapper, not a v2 "
+                "evaluation report")
+        wrapper = receipt_wrapper
+        if wrapper is None:
+            if store is None:
+                raise ReceiptUnavailableError(
+                    "signed-era replay needs the v1 signed wrapper: pass receipt_wrapper, or a "
+                    "store to fetch it from by the artifact's bound wrapper_root")
+            wrapper = pub.fetch_json(artifact["receipt"]["wrapper_root"],
+                                     hash_rule=pub.HASH_RULE_BENCHMARK_JSON, store=store)
+        body = _receipt_body(wrapper)
+        fetched_root = fr.sha256_hex(pub.benchmark_canonical_bytes(wrapper))
+        _require(fetched_root == artifact["receipt"]["wrapper_root"], ReceiptBindingError,
+                 f"the receipt wrapper hashes to {fetched_root}, not the bound "
+                 f"{artifact['receipt']['wrapper_root']}")
+        _require(wrapper["receipt_hash"] == artifact["receipt"]["receipt_hash"],
+                 ReceiptBindingError,
+                 "receipt.receipt_hash does not match the signed wrapper's self-hash")
+        _require(wrapper["signature"]["key_id"] == artifact["receipt"]["signature_key_id"],
+                 ReceiptBindingError, "receipt.signature_key_id does not match the wrapper")
+        if signature_verifier is not None:
+            if signature_verifier(wrapper) is not True:
+                raise ReceiptBindingError(
+                    "the signed receipt's Ed25519 signature did not verify against the pinned key")
+            done("receipt_signature")
+    else:
+        if receipt_wrapper is not None or signature_verifier is not None:
+            raise ReceiptBindingError(
+                "a v2 chain-committed artifact cannot be authorized by a historical signed "
+                "wrapper or off-chain signature verifier")
+        bound_root = artifact["receipt"]["eval_report_root"]
+        body = eval_report
+        if body is None:
+            if store is None:
+                raise ReceiptUnavailableError(
+                    "verification needs the deterministic evaluation report: pass eval_report, "
+                    "or a store to fetch it by the artifact's bound eval_report_root")
+            body = pub.fetch_json(bound_root, hash_rule=pub.HASH_RULE_BENCHMARK_JSON, store=store)
+        body = _eval_report(body)
+        recomputed = eval_report_root(body)
+        _require(recomputed == bound_root, ReceiptBindingError,
+                 f"the evaluation report's canonical bytes hash to {recomputed}, not the bound "
+                 f"{bound_root}")
     _require(body["candidate"]["candidate_hash"] == cand["candidate_hash"], ReceiptBindingError,
              "receipt candidate_hash != the artifact's semantic candidate hash")
     _require(body["candidate"]["manifest_hash"]
@@ -1727,8 +1797,10 @@ def verify_artifact(artifact: Mapping[str, Any], *, expected_parent_root: str,
         if store is None:
             raise pub.AvailabilityError(
                 "check_availability=True needs a store to read the published objects back from")
-        report["availability"] = pub.verify_availability(artifact["availability"], store=store,
-                                                         required=REQUIRED_AVAILABILITY)
+        required = (REQUIRED_AVAILABILITY_V1_SIGNED_ERA
+                    if signed_era else REQUIRED_AVAILABILITY_V2)
+        report["availability"] = pub.verify_availability(
+            artifact["availability"], store=store, required=required)
         done("availability")
 
     report.update({
@@ -1743,6 +1815,15 @@ def verify_artifact(artifact: Mapping[str, Any], *, expected_parent_root: str,
         "resource_accounting": dict(acct),
     })
     return report
+
+
+def verify_signed_era_artifact(artifact: Mapping[str, Any], *, receipt_wrapper=None,
+                               signature_verifier=None, **kwargs) -> Dict[str, Any]:
+    """Replay a v1 artifact under its closed historical signature law only."""
+    al.require_historical_law(artifact_law(artifact), what="this eval artifact")
+    return verify_artifact(
+        artifact, receipt_wrapper=receipt_wrapper,
+        signature_verifier=signature_verifier, **kwargs)
 
 
 # --------------------------------------------------------------------------- #
@@ -1944,8 +2025,11 @@ def prepare_broadcastable_receipt(artifact: Mapping[str, Any], *, store: pub.Con
     report = verify_artifact(artifact, expected_parent_root=expected_parent_root,
                              expected_new_root=expected_new_root, **verify_kwargs)
     try:
-        available = pub.verify_availability(artifact["availability"], store=store,
-                                            required=REQUIRED_AVAILABILITY)
+        required = (REQUIRED_AVAILABILITY_V1_SIGNED_ERA
+                    if artifact_law(artifact) == al.LAW_OFF_CHAIN_SIGNATURE_V1
+                    else REQUIRED_AVAILABILITY_V2)
+        available = pub.verify_availability(
+            artifact["availability"], store=store, required=required)
     except pub.PublicationError as exc:
         raise PreSignError(
             f"PRE-SIGN REFUSED — artifact availability is not satisfied: {exc}") from exc

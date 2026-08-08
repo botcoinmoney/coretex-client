@@ -685,15 +685,17 @@ LINEAGE_RULE: Dict[str, str] = {
 
 LINEAGE_RULE_V3: Dict[str, str] = {
     "fall_through": ("unserved epochs are SKIPPED, not treated as breaks: a screener-only epoch "
-                     "can never be sealed and is an ordinary gap in the header chain"),
-    "final_root": ("served ? liveStateRoot(N) : epochParentStateRoot(N); epochFinalized(N) "
-                   "freezes liveStateRoot and getHeader carries closing evidence only"),
+                     "can never be sealed (D3) and is a permanent, ordinary gap in the header "
+                     "chain"),
+    "final_root": ("served ? liveStateRoot(N) : epochParentStateRoot(N); when sealed, "
+                   "epochFinalized freezes liveStateRoot and getHeader stores only "
+                   "patchSetRoot/scoreRoot"),
     "on_chain_enforcement": ("NONE — epoch-to-epoch continuity is asserted by the "
-                             "CORETEX_CONTEXT_OPERATOR, not derived on chain. This walk is the "
-                             "off-chain mitigation"),
+                             "CORETEX_CONTEXT_OPERATOR, not derived on chain (design §11 gap 1). "
+                             "This walk is the off-chain mitigation the design names"),
     "sealed": "epochFinalized(N)",
     "served": "transitionCount(N) > 0",
-    "specification": "canonical descriptor-v3 RigCoreTexRegistry lineage",
+    "specification": "RIG-CORETEX-REGISTRY-DESIGN.md §7.5 (normative)",
 }
 
 
@@ -744,14 +746,17 @@ def build_migration_v3(*, registry: str, registry_code_hash: str,
             "verifier_bound_registry": cn.address(verifier_bound_registry,
                                                   "verifier_bound_registry"),
         },
-        "supersedes": list(SUPERSEDED_PROTOCOLS) + [PROTOCOL_ID],
-        "topic0_routing": {
-            "address_scoped": True,
-            "legacy_v2_state_advanced": cn.word(rig.LEGACY_V2_STATE_ADVANCED_TOPIC0,
-                                                 "legacy_v2_state_advanced"),
-            "live_collides_with_legacy_v2": False,
+        "supersedes": list(SUPERSEDED_PROTOCOLS),
+        "topic0_collision": {
+            "collides": False,
+            "note": ("descriptor v3's epochContextRoot changed the live event ABI, so its "
+                     "topic0 is distinct from retired coretex.state.v4. Logs are still filtered "
+                     "by emitting address because a topic identifies a type, not an authorized "
+                     "registry"),
             "registry_state_advanced": cn.word(rig.STATE_ADVANCED_TOPIC0,
                                                "registry_state_advanced"),
+            "retired_v4_state_advanced": cn.word(rig.LEGACY_V2_STATE_ADVANCED_TOPIC0,
+                                                  "retired_v4_state_advanced"),
         },
     }
 
@@ -812,6 +817,32 @@ def build_artifacts(entries: Sequence[Mapping[str, Any]]) -> List[Dict[str, Any]
             item["note"] = str(entry["note"])
         out.append(item)
     return sorted(out, key=lambda item: (item["kind"], item["root"]))
+
+
+def build_transition_artifact_ref_v3(advance: rig.StateAdvanced) -> Dict[str, Any]:
+    """The unresolved artifact named by an authenticated descriptor-v3 event payload."""
+    descriptor = rig.decode_transition_descriptor(
+        advance.compact_patch_bytes,
+        parent_state_root=advance.parent_state_root,
+        new_state_root=advance.new_state_root,
+        expected_patch_hash=advance.patch_hash,
+        transition_format_version=advance.transition_format_version)
+    index = advance.transition_index
+    return {
+        "chain_binding": (
+            f"registry log compactPatchBytes descriptor of transition {index}; the event's "
+            "patchHash authenticates those bytes under keccak256(abi.encodePacked("
+            "\"coretex-transition-descriptor-v3\", compactPatchBytes)), and "
+            "descriptor.patchArtifactHash names this artifact"),
+        "chain_word": cn.word(advance.patch_hash, "patchHash"),
+        "hash_rule": "sha256-frontier-canonical-json",
+        "kind": "coretex.transition-artifact/v3",
+        "location": "",
+        "resolved": False,
+        "note": ("commitment decoded from the authenticated descriptor; transition artifacts "
+                 "are fetched by the validator, not here"),
+        "root": descriptor.patch_artifact_hash,
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -911,76 +942,258 @@ def build_locks(manifest: Mapping[str, Any], runtime_record: Optional[Mapping[st
     return block, findings
 
 
-V3_EPOCH_CONTEXT_LOCKS = (
-    "benchmark_law_root", "runtime_abi_root", "counter_resource_law_root",
-    "selection_law_root")
+# Descriptor-v3's ``coreVersionHash`` is the address of ONE compatibility-lock document.  Keep
+# this schema transcription local to the independent client: importing the coordinator's
+# implementation would make a clean installed-wheel replay depend on a private source checkout.
+COMPATIBILITY_LOCK_SCHEMA = "coretex.compatibility-lock/v1"
+COMPATIBILITY_LOCK_HASH_RULE = "compatibility-lock-root"
+COMPATIBILITY_LOCK_DOMAIN = b"\x19" + COMPATIBILITY_LOCK_SCHEMA.encode("utf-8") + b"\n"
+COMPATIBILITY_LOCK_ROOT_RULES: Dict[str, str] = {
+    "benchmark_law_root": "sha256-bytes",
+    "counter_resource_law_root": "sha256-frontier-canonical-json",
+    "counter_root": "sha256-benchmark-canonical-json",
+    "evaluation_law_root": "sha256-benchmark-canonical-json",
+    "evaluation_law_scorer_root": "sha256-benchmark-canonical-json",
+    "miner_module_abi_root": "sha256-frontier-canonical-json",
+    "renderer_root": "sha256-benchmark-canonical-json",
+    "runtime_artifact_root": "sha256-file-tree",
+    "runtime_protocol_abi_root": "sha256-frontier-canonical-json",
+    "runtime_wheel_root": "sha256-bytes",
+}
+COMPATIBILITY_LOCK_LITERAL_NAMES = (
+    "input_envelope_schema", "module_manifest_schema", "store_schema",
+    "transition_descriptor_schema")
+COMPATIBILITY_LOCK_NAMES = tuple(sorted(
+    tuple(COMPATIBILITY_LOCK_ROOT_RULES) + COMPATIBILITY_LOCK_LITERAL_NAMES))
+COMPATIBILITY_LOCK_NON_LOCK_IDENTITIES = (
+    "portability_runtime_config_root", "portability_support_scope_root")
 
 
-def build_locks_v3(state_manifest: Mapping[str, Any], epoch_context: Mapping[str, Any],
-                   runtime_record: Optional[Mapping[str, Any]], *, core_version_hash: str,
+def _lock_closed(mapping: Any, allowed: Sequence[str], where: str) -> Mapping[str, Any]:
+    if not isinstance(mapping, Mapping):
+        raise ReproductionError(
+            "COMPATIBILITY_LOCK_MALFORMED",
+            f"{where} must be an object, got {type(mapping).__name__}")
+    keys = set(mapping)
+    missing = sorted(set(allowed) - keys)
+    unknown = sorted(keys - set(allowed))
+    if missing or unknown:
+        raise ReproductionError(
+            "COMPATIBILITY_LOCK_MALFORMED",
+            f"{where} is closed: missing={missing}, unexpected={unknown}")
+    return mapping
+
+
+def validate_compatibility_lock(document: Mapping[str, Any], *,
+                                expected_root: str) -> str:
+    """Strictly validate and re-address ``coretex.compatibility-lock/v1``.
+
+    The root is deliberately not a SHA-256 CAS root: it is the domain-separated keccak256 of the
+    canonical body with ``lock_root`` removed.  Both the self-declared root and the chain's
+    ``coreVersionHash`` must equal that recomputation.
+    """
+    from .keccak256 import keccak256_hex
+
+    doc = _lock_closed(document, ("format", "legacy_aliases", "lock_root", "locks"),
+                       "compatibility lock")
+    if doc["format"] != COMPATIBILITY_LOCK_SCHEMA:
+        raise ReproductionError(
+            "COMPATIBILITY_LOCK_SCHEMA_MISMATCH",
+            f"format {doc['format']!r} is not {COMPATIBILITY_LOCK_SCHEMA!r}")
+    locks = _lock_closed(doc["locks"], COMPATIBILITY_LOCK_NAMES,
+                         "compatibility lock.locks")
+    for name, hash_rule in COMPATIBILITY_LOCK_ROOT_RULES.items():
+        entry = _lock_closed(locks[name], ("hash_rule", "kind", "root"),
+                             f"compatibility lock.locks.{name}")
+        if entry["kind"] != "root" or entry["hash_rule"] != hash_rule:
+            raise ReproductionError(
+                "COMPATIBILITY_LOCK_MALFORMED",
+                f"locks.{name} must be kind='root' with hash_rule={hash_rule!r}")
+        try:
+            cn.bare_root(entry["root"], f"locks.{name}.root")
+        except ValueError as exc:
+            raise ReproductionError("COMPATIBILITY_LOCK_MALFORMED", str(exc)) from exc
+    for name in COMPATIBILITY_LOCK_LITERAL_NAMES:
+        entry = _lock_closed(locks[name], ("kind", "schema", "version"),
+                             f"compatibility lock.locks.{name}")
+        if entry["kind"] != "literal" or not isinstance(entry["schema"], str) \
+                or not entry["schema"]:
+            raise ReproductionError(
+                "COMPATIBILITY_LOCK_MALFORMED",
+                f"locks.{name} must be a literal with a non-empty schema")
+        version = entry["version"]
+        if isinstance(version, bool) or not isinstance(version, int) or version < 0:
+            raise ReproductionError(
+                "COMPATIBILITY_LOCK_MALFORMED",
+                f"locks.{name}.version must be a non-negative integer")
+
+    aliases = doc["legacy_aliases"]
+    if not isinstance(aliases, list):
+        raise ReproductionError(
+            "COMPATIBILITY_LOCK_MALFORMED", "compatibility lock.legacy_aliases must be an array")
+    seen = set()
+    identities = set(COMPATIBILITY_LOCK_NAMES) | set(COMPATIBILITY_LOCK_NON_LOCK_IDENTITIES)
+    for index, raw_alias in enumerate(aliases):
+        alias = _lock_closed(raw_alias, ("artifact", "field", "resolves_to"),
+                             f"compatibility lock.legacy_aliases[{index}]")
+        for field_name in ("artifact", "field", "resolves_to"):
+            if not isinstance(alias[field_name], str) or not alias[field_name]:
+                raise ReproductionError(
+                    "COMPATIBILITY_LOCK_MALFORMED",
+                    f"legacy_aliases[{index}].{field_name} must be a non-empty string")
+        if alias["resolves_to"] not in identities:
+            raise ReproductionError(
+                "COMPATIBILITY_LOCK_MALFORMED",
+                f"legacy_aliases[{index}].resolves_to names no compatibility-lock identity")
+        key = (alias["artifact"], alias["field"])
+        if key in seen:
+            raise ReproductionError(
+                "COMPATIBILITY_LOCK_MALFORMED", f"legacy_aliases repeats {key!r}")
+        seen.add(key)
+
+    try:
+        recorded = cn.bare_root(doc["lock_root"], "compatibility lock.lock_root")
+        expected = cn.root_from_word(expected_root, "state.context.core_version_hash")
+        body = {key: value for key, value in doc.items() if key != "lock_root"}
+        computed = keccak256_hex(COMPATIBILITY_LOCK_DOMAIN + cn.canonical_bytes(body))
+    except ValueError as exc:
+        raise ReproductionError("COMPATIBILITY_LOCK_MALFORMED", str(exc)) from exc
+    if recorded != computed or expected != computed:
+        raise ReproductionError(
+            "COMPATIBILITY_LOCK_ROOT_MISMATCH",
+            f"recorded={recorded}, chain={expected}, recomputed={computed}")
+    return computed
+
+
+def verify_compatibility_lock_bytes(data: bytes, *, expected_root: str) -> Dict[str, Any]:
+    """Parse canonical served bytes, then validate and re-address the compatibility lock."""
+    from . import frontier as fr
+
+    if not isinstance(data, (bytes, bytearray, memoryview)):
+        raise ReproductionError(
+            "COMPATIBILITY_LOCK_MALFORMED",
+            f"compatibility-lock CAS returned {type(data).__name__}, not bytes")
+    served = bytes(data)
+    try:
+        document = fr.parse_json(served.decode("utf-8"))
+        canonical = cn.canonical_bytes(document)
+    except (UnicodeDecodeError, fr.FrontierError) as exc:
+        raise ReproductionError("COMPATIBILITY_LOCK_MALFORMED", str(exc)) from exc
+    if served != canonical:
+        raise ReproductionError(
+            "COMPATIBILITY_LOCK_NON_CANONICAL",
+            "served compatibility-lock bytes decode but are not the canonical byte string")
+    validate_compatibility_lock(document, expected_root=expected_root)
+    return dict(document)
+
+
+def build_locks_v3(state_manifest: Mapping[str, Any],
+                   compatibility_lock: Mapping[str, Any],
+                   runtime_record: Optional[Mapping[str, Any]] = None, *,
+                   core_version_hash: str,
                    record_root: Optional[str] = None) -> Tuple[Dict[str, Any], List[str]]:
-    """V3 admission locks, sourced from the separately verified epoch-context manifest."""
-    claimed = record_locks(runtime_record or {}) if runtime_record else {}
-    chain_bound = bool(record_root) and cn.word(record_root, "record_root") == cn.word(
-        core_version_hash, "core_version_hash")
-    locks: Dict[str, Any] = {}
+    """Descriptor-v3 locks from the chain-addressed compatibility-lock document alone.
+
+    ``runtime_record`` and ``record_root`` remain accepted only to avoid breaking callers that
+    share a v1/v2 call shape.  They are intentionally not read: an out-of-band runtime record can
+    neither add nor dispute a v3 chain lock.
+    """
+    del runtime_record, record_root
+    lock_root = validate_compatibility_lock(
+        compatibility_lock, expected_root=core_version_hash)
+    source_locks = compatibility_lock["locks"]
+    locks = {name: {**dict(source_locks[name]), "binding": "chain"}
+             for name in COMPATIBILITY_LOCK_NAMES}
+
+    benchmark = state_manifest.get("benchmark_law_root")
+    if benchmark is None:
+        raise ReproductionError(
+            "V3_MANIFEST_BENCHMARK_LOCK_MISSING",
+            "descriptor-v3 frontier manifest has no benchmark_law_root to cross-check")
+    benchmark_root = cn.bare_root(benchmark, "state_manifest.benchmark_law_root")
+    locked_benchmark = source_locks["benchmark_law_root"]["root"]
+    if benchmark_root != locked_benchmark:
+        raise ReproductionError(
+            "V3_MANIFEST_BENCHMARK_LOCK_MISMATCH",
+            f"manifest benchmark_law_root={benchmark_root}, compatibility lock={locked_benchmark}")
+    cross_checked: List[Dict[str, str]] = [{
+        "manifest_field": "benchmark_law_root",
+        "resolves_to": "benchmark_law_root",
+        "root": benchmark_root,
+    }]
+
     findings: List[str] = []
-    disputes: List[Dict[str, str]] = []
-    for name in V3_EPOCH_CONTEXT_LOCKS:
-        root = cn.bare_root(epoch_context[name], f"epoch_context.{name}")
-        entry: Dict[str, Any] = {"binding": "epoch-context-manifest", "root": root}
-        state_value = state_manifest.get(name)
-        if state_value is not None:
-            state_root = cn.bare_root(state_value, f"state_manifest.{name}")
-            if state_root == root:
-                entry["also_in_live_state_manifest"] = True
-            else:
-                entry["disputed_by_live_state_manifest"] = state_root
-                disputes.append({"authoritative_epoch_context": root, "lock": name,
-                                 "live_state_manifest": state_root})
-                findings.append(
-                    f"LOCK DISPUTE on {name}: epochContextRoot addresses {root}, while the live "
-                    f"state manifest says {state_root}; the epoch-context value governs admission")
-        claimed_value = claimed.get(name)
-        if claimed_value is not None:
-            claimed_root = cn.bare_root(claimed_value, f"runtime_record.{name}")
-            if claimed_root == root:
-                entry["also_in_runtime_record"] = True
-            else:
-                entry["disputed_by_runtime_record"] = claimed_root
-                disputes.append({"authoritative_epoch_context": root, "lock": name,
-                                 "runtime_integration_record": claimed_root})
-                findings.append(
-                    f"LOCK DISPUTE on {name}: epochContextRoot addresses {root}, while the runtime "
-                    f"integration record says {claimed_root}; the epoch-context value governs "
-                    "admission")
-        locks[name] = entry
-    for name in TRANSITIVE_LOCKS:
-        if name in locks or name not in claimed:
-            continue
-        locks[name] = {"binding": "chain-bound" if chain_bound else
-                                  ("disputed" if disputes else "transitive"),
-                       "root": cn.bare_root(claimed[name], name)}
-    if not chain_bound:
+    non_lock_identities: List[Dict[str, Any]] = []
+    explicit = "compatibility_lock_root" in state_manifest
+    if explicit:
+        declared_lock = cn.bare_root(
+            state_manifest["compatibility_lock_root"],
+            "state_manifest.compatibility_lock_root")
+        if declared_lock != lock_root:
+            raise ReproductionError(
+                "V3_MANIFEST_COMPATIBILITY_LOCK_MISMATCH",
+                f"manifest compatibility_lock_root={declared_lock}, chain lock={lock_root}")
+        runtime_abi = state_manifest.get("runtime_abi_root")
+        if runtime_abi is None:
+            raise ReproductionError(
+                "V3_MANIFEST_RUNTIME_ABI_LOCK_MISSING",
+                "an explicit compatibility-lock manifest must carry runtime_abi_root")
+        runtime_root = cn.bare_root(runtime_abi, "state_manifest.runtime_abi_root")
+        miner_abi_root = source_locks["miner_module_abi_root"]["root"]
+        if runtime_root != miner_abi_root:
+            raise ReproductionError(
+                "V3_MANIFEST_RUNTIME_ABI_LOCK_MISMATCH",
+                f"manifest runtime_abi_root={runtime_root}, miner_module_abi_root={miner_abi_root}")
+        cross_checked.append({"manifest_field": "runtime_abi_root",
+                              "resolves_to": "miner_module_abi_root",
+                              "root": runtime_root})
+        binding_note = (
+            "every lock is `chain`-bound: the compatibility-lock document is content-addressed "
+            "by its OWN lock root, the epoch context's coreVersionHash IS that root, and the "
+            "served bytes are re-addressed on arrival. There is one authoritative document, so "
+            "there is no second source to dispute with and no transitive contagion to spread. "
+            "The explicit frontier manifest's compatibility_lock_root and runtime_abi_root are "
+            "cross-checked against that authoritative document")
+    else:
+        runtime_abi = state_manifest.get("runtime_abi_root")
+        if runtime_abi is None:
+            raise ReproductionError(
+                "V3_MANIFEST_RUNTIME_IDENTITY_MISSING",
+                "legacy fieldless descriptor-v3 manifest has no runtime_abi_root identity")
+        runtime_root = cn.bare_root(runtime_abi, "state_manifest.runtime_abi_root")
+        non_lock_identities.append({
+            "binding": "chain-addressed-manifest",
+            "identity": "portability_support_scope_root",
+            "kind": "declared-not-locked",
+            "manifest_field": "runtime_abi_root",
+            "not_compared_to_lock": "miner_module_abi_root",
+            "root": runtime_root,
+        })
         findings.append(
-            "the runtime-integration record is NOT chain-bound for this epoch; only locks marked "
-            "`epoch-context-manifest` are attested by the epochContextRoot chain pin")
+            f"legacy fieldless descriptor-v3 manifest runtime_abi_root {runtime_root} is recorded "
+            "as portability_support_scope_root (declared-not-locked) and was NOT compared with "
+            "the authoritative miner_module_abi_root compatibility lock")
+        binding_note = (
+            "every lock is `chain`-bound: the compatibility-lock document is content-addressed "
+            "by its OWN lock root, the epoch context's coreVersionHash IS that root, and the "
+            "served bytes are re-addressed on arrival. There is one authoritative document, so "
+            "there is no second source to dispute with and no transitive contagion to spread. "
+            "The values the chain-addressed frontier manifest also carries are cross-checked "
+            "under the manifest generation's declared rules, never by matching an ambiguous "
+            "field name. This legacy fieldless descriptor-v3 manifest's runtime_abi_root is "
+            "recorded as the declared-not-locked portability_support_scope_root; it is "
+            "deliberately not compared with the authoritative miner_module_abi_root lock")
+
     block: Dict[str, Any] = {
-        "binding_note": (
-            "`epoch-context-manifest` locks are fields of the canonical bytes addressed by "
-            "registry.epochContextRoot(epoch). `chain-bound` runtime-record locks are addressed "
-            "by coreVersionHash. `transitive` and `disputed` locks must not be treated as chain "
-            "facts"),
+        "binding_note": binding_note,
+        "compatibility_lock_root": lock_root,
+        "cross_checked_against_manifest": cross_checked,
+        "lock_schema": COMPATIBILITY_LOCK_SCHEMA,
         "locks": locks,
-        "runtime_record_chain_bound": chain_bound,
+        "runtime_record_chain_bound": True,
     }
-    if disputes:
-        block["dispute_resolution"] = (
-            "the epoch-context manifest governs admission; conflicting state-manifest or "
-            "runtime-record copies are retained only as disputed evidence")
-        block["disputes"] = sorted(disputes, key=lambda d: d["lock"])
-    if record_root is not None:
-        block["runtime_record_root"] = cn.bare_root(record_root, "runtime_record_root")
+    if non_lock_identities:
+        block["legacy_manifest_non_lock_identities"] = non_lock_identities
     return block, findings
 
 
@@ -1092,7 +1305,8 @@ def reproduce_from_chain(published: Mapping[str, Any], *, rpc_url: str,
         "version": cn.narrow(3 if descriptor_v3 else int(published["version"]), "version"),
         "protocol": rig_mod.PROTOCOL_RIG_EXACT if descriptor_v3 else PROTOCOL_ID,
         "classification": CLASSIFICATION_REHEARSAL, "production_authority": False,
-        "disclosure": constants.DISCLOSURE, "canonicalization": constants.CANONICALIZATION,
+        "disclosure": (constants.DISCLOSURE_V3 if descriptor_v3 else constants.DISCLOSURE),
+        "canonicalization": constants.CANONICALIZATION,
         "derivation": (constants.DERIVATION_V3 if descriptor_v3 else
                        (constants.DERIVATION_V1 if declared_schema == SCHEMA_V1
                         else constants.DERIVATION_V2)),
@@ -1233,6 +1447,8 @@ def reproduce_from_chain(published: Mapping[str, Any], *, rpc_url: str,
     epoch_context_manifest = None
     epoch_context_root = None
     epoch_context_bytes_len = None
+    compatibility_lock = None
+    compatibility_lock_root = None
     if descriptor_v3:
         epoch_context_root = cn.root_from_word(
             built["state"]["context"]["epoch_context_root"], "epoch_context_root")
@@ -1244,19 +1460,26 @@ def reproduce_from_chain(published: Mapping[str, Any], *, rpc_url: str,
         served_context = store.get(epoch_context_root)
         rig_mod.verify_epoch_context_bytes(served_context, expected_root=epoch_context_root)
         epoch_context_bytes_len = len(served_context)
+        compatibility_lock_root = cn.root_from_word(
+            built["state"]["context"]["core_version_hash"], "core_version_hash")
+        # Unlike the ordinary SHA-256 CAS families, a compatibility lock addresses its canonical
+        # BODY under a domain-separated keccak rule. Fetch by the chain word first, then verify
+        # the exact served bytes and both copies of the root before any lock value is consumed.
+        compatibility_lock = verify_compatibility_lock_bytes(
+            store.get(compatibility_lock_root),
+            expected_root=built["state"]["context"]["core_version_hash"])
     head_root = built["state"]["live_state_root"][2:]
     manifest = pub_mod.fetch_json(head_root, hash_rule=pub_mod.HASH_RULE_FRONTIER_JSON,
                                   store=store)
     built["profiles"] = build_profiles(manifest)
     built["composition"] = build_composition(manifest)
 
-    record_root = record_root_of(runtime_record) if runtime_record else None
     if descriptor_v3:
         locks_block, lock_findings = build_locks_v3(
-            manifest, epoch_context_manifest or {}, runtime_record,
-            core_version_hash=built["state"]["context"]["core_version_hash"],
-            record_root=record_root)
+            manifest, compatibility_lock or {},
+            core_version_hash=built["state"]["context"]["core_version_hash"])
     else:
+        record_root = record_root_of(runtime_record) if runtime_record else None
         locks_block, lock_findings = build_locks(
             manifest, runtime_record,
             core_version_hash=built["state"]["context"]["core_version_hash"],
@@ -1283,10 +1506,14 @@ def reproduce_from_chain(published: Mapping[str, Any], *, rpc_url: str,
         refs.append({"chain_binding": f"registry log evalReportHash of transition {index}",
                      "chain_word": cn.word(item.advance.eval_report_hash, "evalReportHash"),
                      "hash_rule": pub_mod.HASH_RULE_FRONTIER_JSON,
-                     "kind": "coretex.memory-eval-artifact.v1", "location": "", "resolved": False,
+                     "kind": ("coretex.memory-eval-artifact.v2" if descriptor_v3 else
+                              "coretex.memory-eval-artifact.v1"),
+                     "location": "", "resolved": False,
                      "note": ("commitment recorded; eval artifacts are fetched by the validator, "
                               "not here"),
                      "root": cn.root_from_word(item.advance.eval_report_hash, "evalReportHash")})
+        if descriptor_v3:
+            refs.append(build_transition_artifact_ref_v3(item.advance))
     refs.append({"chain_binding": "registry.liveStateRoot(epoch) — the confirmed head",
                  "chain_word": built["state"]["live_state_root"],
                  "hash_rule": pub_mod.HASH_RULE_FRONTIER_JSON,
@@ -1294,8 +1521,7 @@ def reproduce_from_chain(published: Mapping[str, Any], *, rpc_url: str,
                  "resolved": True, "root": head_root, "size": len(store.get(head_root))})
     if descriptor_v3 and epoch_context_root is not None:
         refs.append({
-            "chain_binding": ("registry.epochContextRoot(epoch) — receipt/event pin 3; fetched "
-                              "and rehashed separately from liveStateRoot"),
+            "chain_binding": "registry.epochContextRoot(epoch) — the epoch admission context",
             "chain_word": built["state"]["context"]["epoch_context_root"],
             "hash_rule": pub_mod.HASH_RULE_FRONTIER_JSON,
             "kind": rig_mod.EPOCH_CONTEXT_FORMAT,
@@ -1304,7 +1530,18 @@ def reproduce_from_chain(published: Mapping[str, Any], *, rpc_url: str,
             "root": epoch_context_root,
             "size": int(epoch_context_bytes_len or 0),
         })
-    if record_root is not None:
+    if descriptor_v3 and compatibility_lock_root is not None:
+        refs.append({
+            "chain_binding": "epoch context coreVersionHash — the lock root IS the address",
+            "chain_word": built["state"]["context"]["core_version_hash"],
+            "hash_rule": COMPATIBILITY_LOCK_HASH_RULE,
+            "kind": COMPATIBILITY_LOCK_SCHEMA,
+            "location": "",
+            "resolved": False,
+            "note": "fetched and re-addressed; see locks.cross_checked_against_manifest",
+            "root": compatibility_lock_root,
+        })
+    if not descriptor_v3 and record_root is not None:
         refs.append({"chain_binding": ("epoch context coreVersionHash (bound only if the two are "
                                        "equal)"),
                      "chain_word": built["state"]["context"]["core_version_hash"],

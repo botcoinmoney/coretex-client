@@ -346,7 +346,8 @@ def run(*, release_location: str, rpc_url: str,
     # reproduction is delegated to `resolver_snapshot`, which speaks that schema. Building this
     # lane's retired shape and then reporting SCHEMA_UNSUPPORTED against the published one would
     # be this module refusing to do the job it was asked to do.
-    if published_payload is not None and published_payload.get("schema") == rsn.SCHEMA:
+    if (published_payload is not None
+            and published_payload.get("schema") in rsn.SUPPORTED_SCHEMAS):
         try:
             reconstructed, comparison = rsn.reproduce_from_chain(
                 published_payload, rpc_url=rpc_url, store_dir=artifact_dir or "",
@@ -476,8 +477,10 @@ def _admit(selected: jn.JoinedTransition, law: hl.EpochLaw, store: pub.ContentSt
 
     # ── §6.3 "REFUSE, DO NOT DEGRADE" — three outcomes, not one ───────────────────────────────
     #
-    # `fetch_json` -> `read_back` recomputes the root and, under HASH_RULE_FRONTIER_JSON,
-    # re-serialises the parsed document and refuses non-canonical bytes. So the failures it can
+    # `read_back` recomputes the root and, under HASH_RULE_FRONTIER_JSON, parses and re-serialises
+    # the served bytes and refuses non-canonical bytes. The EXACT served bytes then reach
+    # `verify_transition_artifact_bytes`; the validator never verifies a re-encoded in-memory
+    # document in place of what the publication surface actually returned. The failures it can
     # raise are three MATERIALLY DIFFERENT facts, and a single `except pub.PublicationError`
     # collapsed all of them into "could not be fetched" -> BACKLOG, i.e. TRY AGAIN LATER:
     #
@@ -497,8 +500,9 @@ def _admit(selected: jn.JoinedTransition, law: hl.EpochLaw, store: pub.ContentSt
     # residual `PublicationError` FAILS rather than backlogs: an unclassified publication failure
     # is not evidence of availability.
     try:
-        patch_artifact_raw = pub.fetch_json(descriptor.patch_artifact_hash,
-                                            hash_rule=pub.HASH_RULE_FRONTIER_JSON, store=store)
+        patch_artifact_bytes = pub.read_back(
+            descriptor.patch_artifact_hash,
+            hash_rule=pub.HASH_RULE_FRONTIER_JSON, store=store)
     except pub.ObjectNotFoundError as exc:
         return artifact, {
             "outcome": "BACKLOG", "code": rig.TRANSITION_ARTIFACT_UNAVAILABLE,
@@ -529,27 +533,90 @@ def _admit(selected: jn.JoinedTransition, law: hl.EpochLaw, store: pub.ContentSt
                        "that the artifact is merely unavailable")}
 
     try:
-        patch_artifact = rig.check_transition_artifact_binds_descriptor(
-            patch_artifact_raw, descriptor=descriptor,
-            expected_score_delta_ppm=(int(selected.receipt["scoreAfterPpm"])
-                                      - int(selected.receipt["scoreBeforePpm"])))
+        patch_artifact = rig.verify_transition_artifact_bytes(
+            patch_artifact_bytes, descriptor=descriptor,
+            score_delta_ppm=(int(selected.receipt["scoreAfterPpm"])
+                             - int(selected.receipt["scoreBeforePpm"])),
+            epoch_context_root_=selected.advance.epoch_context_root)
     except rig.TransitionArtifactError as exc:
         return artifact, {"outcome": "FAIL", "code": exc.code, "reason": str(exc)}
 
-    # The artifact's transition must agree with the signed receipt about what changed. A patch
-    # artifact that names a different candidate release would be describing an edit the receipt
-    # did not sign.
+    # The full generalized artifact replays from the exact parent manifest addressed by the
+    # confirmed event. This is where stale per-profile priors, dependency closure, law-pin moves
+    # and resulting-root disagreement are evaluated; none may degrade to a one-profile projection.
+    try:
+        parent_manifest = pub.fetch_json(
+            selected.advance.parent_state_root,
+            hash_rule=pub.HASH_RULE_FRONTIER_JSON, store=store)
+    except pub.ObjectNotFoundError as exc:
+        return artifact, {
+            "outcome": "BACKLOG", "code": rig.TRANSITION_ARTIFACT_UNAVAILABLE,
+            "reason": (f"the parent manifest {selected.advance.parent_state_root} is not served "
+                       f"by this publication surface: {exc}. Full transition-artifact replay "
+                       "cannot run without the exact parent state")}
+    except (pub.ReadBackMismatchError, pub.StoreIntegrityError) as exc:
+        return artifact, {
+            "outcome": "FAIL", "code": rig.TRANSITION_ARTIFACT_ADDRESS_MISMATCH,
+            "reason": (f"the store served substituted bytes for parent manifest "
+                       f"{selected.advance.parent_state_root}: {exc}")}
+    except pub.HashRuleError as exc:
+        return artifact, {
+            "outcome": "FAIL", "code": rig.TRANSITION_ARTIFACT_NOT_CANONICAL,
+            "reason": (f"the parent manifest {selected.advance.parent_state_root} is not "
+                       f"canonical JSON: {exc}")}
+    except pub.PublicationError as exc:
+        return artifact, {
+            "outcome": "FAIL", "code": rig.TRANSITION_ARTIFACT_MALFORMED,
+            "reason": (f"fetching parent manifest {selected.advance.parent_state_root} failed "
+                       f"in an unclassified way: {exc}")}
+    try:
+        rig.replay_transition_artifact(parent_manifest, patch_artifact)
+    except rig.TransitionArtifactError as exc:
+        return artifact, {"outcome": "FAIL", "code": exc.code, "reason": str(exc)}
+
+    # The eval artifact and transition artifact are distinct commitments. The receipt signs the
+    # release the evaluator scored; it must equal `candidate.release_root` and, whenever the
+    # generalized transition moves releases, be one of those moved roots. Composition-only moves
+    # legitimately have an empty release-root set and bind through the composition root below.
+    candidate = artifact.get("candidate") if isinstance(artifact, Mapping) else None
+    if not isinstance(candidate, Mapping):
+        return artifact, {"outcome": "FAIL", "code": "MALFORMED_ARTIFACT",
+                          "reason": "the eval artifact carries no candidate block"}
     artifact_hash = str(selected.receipt["artifactHash"]).lower().replace("0x", "")
-    candidate_release = str(patch_artifact["transition"]["new_release_root"]).lower()
+    candidate_release = str(candidate.get("release_root", "")).lower().replace("0x", "")
     if candidate_release != artifact_hash:
         return artifact, {
-            "outcome": "FAIL", "code": "RIG_PATCH_ARTIFACT_MISMATCH",
-            "reason": (f"the canonical patch artifact's transition names candidate release "
-                       f"{candidate_release}, not the signed artifactHash {artifact_hash}; the "
-                       "patch artifact describes a different edit from the one the receipt "
-                       "signed")}
+            "outcome": "FAIL", "code": "RIG_ARTIFACT_HASH_SUBSTITUTION",
+            "reason": (f"the eval artifact scored candidate.release_root "
+                       f"{candidate_release!r}, not the signed artifactHash {artifact_hash}")}
 
-    transition_bytes = fr.canonical_bytes(patch_artifact["transition"])
+    releases = patch_artifact.get("profile_releases") or {}
+    release_roots = tuple(
+        releases[profile_id]["new_release_root"]
+        for profile_id in fr.PROFILE_IDS if profile_id in releases)
+    if release_roots and candidate_release not in release_roots:
+        return artifact, {
+            "outcome": "FAIL", "code": "RIG_ARTIFACT_HASH_SUBSTITUTION",
+            "reason": (f"the eval artifact scored release root {candidate_release!r}, but the "
+                       f"confirmed transition artifact moves {list(release_roots)}")}
+
+    resulting_composition = patch_artifact["resulting_composition_root"]
+    if front.get("composition_root") != resulting_composition:
+        return artifact, {
+            "outcome": "FAIL", "code": "RIG_COMPOSITION_ROOT_SUBSTITUTION",
+            "reason": (f"the eval artifact says composition_root="
+                       f"{front.get('composition_root')!r}, the confirmed transition artifact "
+                       f"resolves to {resulting_composition!r}")}
+
+    # Existing deterministic evaluator replay consumes the evaluator's one-profile projection.
+    # That projection is safe only after the generalized transition above has replayed in full and
+    # the two artifacts have been explicitly joined by release and composition roots.
+    try:
+        transition_bytes = fr.canonical_bytes(front["transition"])
+    except (KeyError, TypeError, fr.FrontierError) as exc:
+        return artifact, {
+            "outcome": "FAIL", "code": "MALFORMED_ARTIFACT",
+            "reason": f"the eval artifact's frontier.transition is unusable: {exc}"}
 
     projected = dp.FrontierAdvanced(
         epoch=selected.advance.epoch,

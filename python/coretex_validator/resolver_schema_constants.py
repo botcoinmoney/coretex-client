@@ -327,46 +327,74 @@ def _descriptor_v3_derivation() -> Dict[str, Any]:
                     "epochBaselineManifestHash", "epochCorpusRoot"):
         fields.pop(retired, None)
     fields["epochContextRoot"] = {
-        "how": ("registry log; signed receipt member; registry.epochContextRoot(epoch); the "
-                "addressed manifest is fetched, canonical-byte checked and rehashed separately"),
-        "source": "A, C, state",
+        "how": "registry.epochContextRoot(epoch) -> content-addressed epoch-context manifest",
+        "source": "state",
     }
     fields["getHeader"] = {
-        "how": ("registry.getHeader(epoch) — exactly patchSetRoot and scoreRoot when sealed; "
-                "epochFinalized is the discriminator and liveStateRoot remains the final root "
-                "accessor"),
+        "how": "registry.getHeader(epoch) -> patchSetRoot/scoreRoot; ZERO-FILLED when unsealed",
         "source": "state",
     }
     fields["transitionFormatVersion"] = {
-        "how": ("registry log transitionFormatVersion == calldata == zero-extension of the "
-                "descriptor byte 0x21"),
+        "how": ("registry log's twelfth parameter (uint16) == calldata. The registry RENAMED "
+                "this slot from `wordCount`; the types are unchanged, so the selector and topic0 "
+                "are too. THAT EQUALITY IS NOT THE BINDING — both sides are the same value from "
+                "the same transaction. The binding is step 8's `transitionFormatVersion == "
+                "descriptorBytes[0]`, against the BYTES, which is the point of the field"),
         "source": "A, C",
     }
+    fields["compactPatchBytes"]["how"] = (
+        "registry log tail, VERBATIM — the 97-byte transition descriptor; required byte-equal "
+        "to the calldata tail (step 6). Unsigned, hence step 8. It is a COMMITMENT: the edit is "
+        "the canonical patch artifact it addresses, which no log carries")
     fields["artifactHash"]["how"] = (
         "CALLDATA ONLY. No event and no registry parameter carries it; bound because it is "
         "signed member 14 of the EIP-712 digest that the step-4 preimage hashes")
+    fields["outcome"]["how"] = (
+        "calldata; in the step-4 preimage. Always 2 here — a screener pass never reaches the "
+        "registry (verifier :258) — and step 8 now READS it rather than assuming it: a screener "
+        "joined to a registry advance is refused, after its own outcome-1 rule has been evaluated")
+    fields["patchHash"]["how"] = (
+        "registry log data word 2; in the step-4 preimage; ALSO re-derived from "
+        "compactPatchBytes (step 8). Under coretex.transition-descriptor/v3 it is a content "
+        "address of the whole EDGE, so this key now DETERMINES newStateRoot — which it did not "
+        "before")
     fields["worldSeed"]["how"] = "calldata; signed member 15, bound via the digest"
     fields["scoreBeforePpm"]["how"] = (
         "calldata; signed member 21, bound via the digest. NOTHING ON CHAIN CHECKS THAT THE "
-        "SCORE IS TRUE — coordinator-attested only")
+        "SCORE IS TRUE — design §3.4")
     fields["scoreAfterPpm"]["how"] = (
-        "calldata; signed member 22, bound via the digest. Same truthfulness caveat")
+        "calldata; signed member 22, bound via the digest. Same §3.4 caveat")
     fields["issuedAt"]["how"] = "calldata; signed member 23, bound via the digest"
     fields["expiresAt"]["how"] = "calldata; signed member 24, bound via the digest"
     fields["rulesVersion"]["how"] = "calldata; signed member 16, bound via the digest"
     fields["workUnitsBps"]["how"] = "mining log data word 3; also signed member 18"
     recipe["steps"] = [
-        "1. find A: registry CoreTexStateAdvanced, filtered by the canonical registry address",
+        "1. find A: live descriptor-v3 registry CoreTexStateAdvanced, filtered BY ADDRESS; the "
+        "retired 13-field rig topic is diagnosed but never decoded as live",
         "2. find B: the next RigCoreTexCreditAccepted in the same transaction; cross-check "
         "epoch, operator and credits",
-        "3. fetch C: the transaction calldata, ABI-decoded as the 26-member receipt",
+        "3. fetch C: the transaction's calldata, ABI-decoded as the 26-member receipt",
         "4. bind C to B: recompute receiptHash over 13 members + the EIP-712 digest and require "
         "equality with B — this alone proves workPolicyHash",
         "5. bind artifactHash: it is signed member 14 of the digest hashed in step 4",
-        "6. bind C to A: epoch/context/core/transition fields and compactPatchBytes byte-for-byte",
+        "6. bind C to A/B: 14 field equalities including epochContextRoot and compactPatchBytes "
+        "byte-for-byte",
         "7. verify the signature: ecrecover(digest, signature) == mining.coordinatorSigner()",
-        "8. verify descriptor-v3: 97 canonical bytes, byte 0 == 0x21, and "
-        "keccak256('coretex-transition-descriptor-v3' || compactPatchBytes) == patchHash",
+        "8. verify the descriptor — ALL descriptor-v3 bindings, not just the hash: (a) "
+        "keccak256('coretex-transition-descriptor-v3' || compactPatchBytes) == patchHash [the "
+        "resolver's own implementation, with all three dead labels named on a mismatch]; then "
+        "DECODE the bytes (validator.dispatch, imported) and require (b) non-empty and "
+        "descriptorBytes[0] == 0x21, with retired 0x20/105 diagnosed before generic semantic "
+        "checks, (c) length == 97 exactly, (d) patchArtifactHash != 0, (e) "
+        "descriptor.parentStateRoot == the advance's parentStateRoot, (f) "
+        "descriptor.newStateRoot == the advance's newStateRoot, and (g) the SIGNED "
+        "transitionFormatVersion == descriptorBytes[0]. The descriptor carries no score delta. "
+        "(g) is the point of the field and is NOT what step 6 checks: step 6 compares the "
+        "calldata's transitionFormatVersion to the registry log's twelfth parameter, which is "
+        "one value arriving twice from one transaction. Only (g) binds it to the BYTES. The "
+        "outcome is read here too: outcome 1 (a screener) is refused against a registry advance, "
+        "and the outcome-1 rule — EMPTY descriptor, zero scores, zero transitionFormatVersion "
+        "and patchHash == bytes32(0) — is evaluated before the contradiction is reported",
     ]
     layout = result["receipt_layout"]
     layout.update({
@@ -374,7 +402,17 @@ def _descriptor_v3_derivation() -> Dict[str, Any]:
         "transition_descriptor_hash_rule": (
             "keccak256(utf8('coretex-transition-descriptor-v3') || compactPatchBytes)"),
         "transition_descriptor_bytes": binding.TRANSITION_DESCRIPTOR_BYTES,
-        "transition_descriptor_version": "0x21",
+        "transition_descriptor_version": binding.TRANSITION_DESCRIPTOR_VERSION,
+        "transition_descriptor_check_order": (
+            "non-empty -> version byte (0x20 gets the dedicated retired-v2 diagnosis) -> exact "
+            "length -> hash -> fields"),
+        "transition_descriptor_dead_labels": [
+            "coretex-transition-descriptor-v2",
+            "coretex-patch-hash-v1",
+            "coretex-memory-transition-hash-v1",
+        ],
+        "transition_descriptor_retired_bytes": 105,
+        "transition_descriptor_retired_version": 32,
         "signed_members": len(binding.CORETEX_RECEIPT_TYPES[
             binding.CORETEX_RECEIPT_PRIMARY_TYPE]),
         "source_commit": "a473f3fd1038a81f8ef456cd4c7ce1f7b9fbef6e",
@@ -384,12 +422,13 @@ def _descriptor_v3_derivation() -> Dict[str, Any]:
         "tuple_members": len(binding.CORETEX_RECEIPT_TUPLE_COMPONENTS),
         "typehash": binding.CORETEX_RECEIPT_TYPEHASH,
         "typehash_string": binding.CORETEX_RECEIPT_TYPEHASH_STRING,
-        "superseded_v2_typehash": binding.RETIRED_CORETEX_RECEIPT_TYPEHASH,
     })
-    layout.pop("retired_typehash", None)
-    layout["superseded_v2_descriptor_hash_rule"] = (
-        "keccak256(utf8('coretex-transition-descriptor-v2') || compactPatchBytes) "
-        "(historical descriptor-v2 only; never live dual-accept)")
+    for retired in ("retired_compact_patch_hash_rule", "retired_typehash"):
+        layout.pop(retired, None)
+    result["reproduction"] = (
+        "Re-run against the same chain_id at the same observation block with the same content "
+        "store and runtime-integration record. The payload's sha256 must match. There is no key, "
+        "no signature and no private input anywhere in this path")
     return result
 
 
@@ -400,6 +439,13 @@ DISCLOSURE = ('MAINNET_REHEARSAL. This snapshot is derived from chain truth alon
  'QUALIFIED REHEARSAL/TEST authority for transport only. It is NOT MAINNET_CANONICAL, it carries '
  'no production authority, and its signature is not a substitute for chain replay: the unsigned '
  "payload below reproduces byte-for-byte from the same chain state without the resolver's key")
+
+DISCLOSURE_V3 = (
+    "MAINNET_REHEARSAL. Derived from chain truth alone. It is NOT MAINNET_CANONICAL and carries "
+    "no production authority. It is UNSIGNED, and that is deliberate: a downloaded copy of this "
+    "document is a CACHE, not an authority. It is authoritative only insofar as you — or any "
+    "independent implementation — reconstruct these exact bytes from the same pinned chain "
+    "state. See the `authority` block")
 
 PRIOR: Dict[str, Any] = {'genesis': True,
  'note': 'no prior snapshot was supplied; this is the first resolution of this lane. A zero hash '

@@ -104,6 +104,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 
+from . import authority_law as al
 from . import eval_artifact as ea
 from . import frontier as fr
 from . import publication as pub
@@ -631,6 +632,116 @@ out["networkless_proof"] = _proof
 print("<<<JSON>>>" + json.dumps(out, sort_keys=True, default=str))
 '''
 
+# A v2 eval artifact addresses the bare deterministic report and deliberately has no signed
+# wrapper. Re-run the same frozen signature-free functions used by benchmark-v2's historical
+# replay entry point and compare the rebuilt report to the artifact-bound content root.
+_SANDBOX_CHILD_V2 = r'''
+import importlib.util, json, shutil, sys, tempfile
+import os as _os, site as _site, sysconfig as _sysconfig
+_allowed = [{bench!r}, {coretex!r}]
+for _key in ("stdlib", "platstdlib"):
+    _p = _sysconfig.get_path(_key)
+    if _p:
+        _allowed.append(_p)
+        _allowed.append(_os.path.join(_p, "lib-dynload"))
+try:
+    _allowed.extend(_site.getsitepackages())
+except AttributeError:
+    pass
+_seen = set()
+sys.path[:] = [p for p in _allowed
+               if p and p not in _seen and not _seen.add(p) and _os.path.isdir(p)]
+for _dependency in ("wasmtime",):
+    try:
+        __import__(_dependency)
+    except ImportError as _exc:
+        print("<<<MISSING_DEPENDENCY>>>" + json.dumps(
+            {{"dependency": _dependency, "detail": str(_exc),
+              "sys_path": list(sys.path)}}))
+        raise SystemExit(97)
+_spec = importlib.util.spec_from_file_location("v5_worker_isolation", {isolation!r})
+_iso = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_iso)
+_install = _iso.apply_networkless()
+_proof = _iso.prove_networkless(install=_install)
+from validator import evaluate as bench_evaluate, receipt as bench_receipt, select as bench_select
+from validator.replay import _burned_set, _minimal_round_rec, _res
+from validator._rt import hash_obj
+
+payload = json.loads(sys.stdin.read())
+body = payload["eval_report"]
+bound_root = payload["bound_eval_report_root"]
+
+
+def _run():
+    try:
+        roots = bench_receipt.code_roots({repo!r})
+    except bench_receipt.ReceiptError as exc:
+        return _res(False, "code_root_unavailable", "code_roots", str(exc))
+    for tree, digest in body["code_roots"].items():
+        if roots.get(tree) != digest:
+            reason = (str(tree) + " tree hash " + str(roots.get(tree))
+                      + " != receipt-bound " + str(digest))
+            return _res(False, "code_root_mismatch", "code_roots", reason, tree=tree)
+
+    burned, err = _burned_set(body, None)
+    if err is not None:
+        return err
+
+    ch = body["candidate"]["candidate_hash"]
+    round_rec = _minimal_round_rec(body)
+    try:
+        re_sel = bench_select.select_for_candidate(round_rec, ch, burned)
+    except bench_select.SelectionError as exc:
+        return _res(False, "selection_error", "selection", str(exc))
+    fields = ("instance_id", "profile_id", "seed", "scale", "derivation_index")
+    for branch in ("gate", "confirm"):
+        got = [dict((k, c[k]) for k in fields) for c in re_sel[branch]]
+        want = [dict((k, c[k]) for k in fields) for c in body["selection"][branch]]
+        if got != want:
+            reason = str(branch) + " re-derivation differs from the eval report"
+            return _res(False, "selection_divergence", "selection", reason, branch=branch,
+                        derived=got, receipt=want)
+
+    work = tempfile.mkdtemp(prefix="v5e-sandbox-v2-")
+    try:
+        ev = bench_evaluate.evaluate_candidate(
+            round_rec, ch, re_sel, work, pool=bench_evaluate.POOL_MAX,
+            bench_v2_dir={bench!r}, portability=body.get("portability"),
+            runtime_config=body.get("runtime_config"))
+        recomputed_incumbent = bench_receipt.expected_incumbent_block(body["profile_id"])
+        rebuilt = bench_receipt.build_receipt_body(
+            round_rec=round_rec, round_hash=body["round_hash"], candidate_hash=ch,
+            incumbent=recomputed_incumbent, selection=re_sel, case_hashes=ev["case_hashes"],
+            evaluation=ev, roots=roots, burned_head=body["burned_head"])
+    except Exception as exc:
+        return _res(False, "reexecution_failed", "evaluate",
+                    type(exc).__name__ + ": " + str(exc))
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+    rebuilt_hash = hash_obj(rebuilt)
+    if rebuilt_hash == bound_root:
+        return _res(True, None, "done",
+                    "eval report reproduced byte-identically through frozen Benchmark-v2",
+                    receipt_hash=rebuilt_hash, body=rebuilt)
+    diverged = [k for k in (
+        "selection", "outputs_hash", "scores", "verdicts", "decision", "code_roots",
+        "replay_check", "incumbent", "entropy", "confirm_entropy", "portability",
+        "evaluation_law") if rebuilt.get(k) != body.get(k)]
+    reason = ("rebuilt report hash " + rebuilt_hash
+              + " != artifact-bound eval_report_root " + str(bound_root)
+              + "; diverging fields: " + str(diverged or ["identity-only"]))
+    return _res(False, "eval_report_root_divergence", "rebuild", reason, diverged=diverged)
+
+
+out = _run()
+if "networkless_proof" in out:
+    raise SystemExit("v2 reconstruction already returns 'networkless_proof'")
+out["networkless_proof"] = _proof
+print("<<<JSON>>>" + json.dumps(out, sort_keys=True, default=str))
+'''
+
 
 class BenchmarkV2Sandbox(CandidateSandbox):
     """The pinned networkless sandbox: benchmark-v2's own receipt replay, in a child interpreter.
@@ -689,15 +800,33 @@ class BenchmarkV2Sandbox(CandidateSandbox):
                 artifact: Mapping[str, Any]) -> Dict[str, Any]:
         if not self.available():
             raise SandboxUnavailable(self.unavailable_reason)
-        src = _SANDBOX_CHILD.format(
-            v5=_PKG_PARENT, validator=_PKG_DIR,
-            coretex=self.coretex_dir, bench=self.bench_v2_dir, repo=self.repo_root,
-            isolation=self.isolation_path)
+        # The interface name is retained for historical test doubles. Under v2 the value is the
+        # bare evaluation report; its shape selects the signature-free reconstruction child.
+        if (isinstance(receipt_wrapper, abc.Mapping)
+                and receipt_wrapper.get("format") == ea.EVAL_REPORT_FORMAT):
+            bound_root = (artifact.get("receipt") or {}).get("eval_report_root")
+            if not isinstance(bound_root, str) or not bound_root:
+                raise SandboxUnavailable(
+                    "a v2 report has no artifact.receipt.eval_report_root binding")
+            src = _SANDBOX_CHILD_V2.format(
+                v5=_PKG_PARENT, validator=_PKG_DIR,
+                coretex=self.coretex_dir, bench=self.bench_v2_dir, repo=self.repo_root,
+                isolation=self.isolation_path)
+            child_payload = {
+                "eval_report": receipt_wrapper,
+                "bound_eval_report_root": bound_root,
+            }
+        else:
+            src = _SANDBOX_CHILD.format(
+                v5=_PKG_PARENT, validator=_PKG_DIR,
+                coretex=self.coretex_dir, bench=self.bench_v2_dir, repo=self.repo_root,
+                isolation=self.isolation_path)
+            child_payload = {"wrapper": receipt_wrapper, "pin_path": self.pin_path}
         env = dict(os.environ)
         for key in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"):
             env.pop(key, None)
         env["NO_PROXY"] = "*"
-        payload = json.dumps({"wrapper": receipt_wrapper, "pin_path": self.pin_path})
+        payload = json.dumps(child_payload)
         try:
             proc = subprocess.run([sys.executable, "-c", src], input=payload,
                                   cwd=(self.repo_root or None), capture_output=True, text=True,
@@ -1079,15 +1208,18 @@ def replay_advance(event: dp.FrontierAdvanced, *, store: pub.ContentStore,
     # The deterministic verdict is taken from the CANARY-FREE artifact, here, before any
     # auxiliary evidence is even looked at. Everything downstream reads THIS.
     deterministic = ea.deterministic_verdict(ea.strip_canary(artifact))
+    signed_era = ea.artifact_law(artifact) == al.LAW_OFF_CHAIN_SIGNATURE_V1
 
     # ---- fetch the two objects verification must not be allowed to "skip" --------------------
+    receipt_root = (artifact["receipt"]["wrapper_root"] if signed_era
+                    else artifact["receipt"]["eval_report_root"])
     try:
-        receipt_wrapper = pub.fetch_json(artifact["receipt"]["wrapper_root"],
-                                         hash_rule=pub.HASH_RULE_BENCHMARK_JSON, store=store)
+        receipt_or_report = pub.fetch_json(
+            receipt_root, hash_rule=pub.HASH_RULE_BENCHMARK_JSON, store=store)
     except pub.ObjectNotFoundError as exc:
         return _backlog("receipt", bl.receipt_unavailable(
-            f"signed receipt {artifact['receipt']['wrapper_root']} is not published: {exc}",
-            event=event, subject=artifact["receipt"]["wrapper_root"], observed_at=observed_at),
+            f"{'signed receipt' if signed_era else 'evaluation report'} {receipt_root} is not "
+            f"published: {exc}", event=event, subject=receipt_root, observed_at=observed_at),
             checks=checks, new_manifest=new_manifest, **ident)
     except pub.PublicationError as exc:
         return _fail("receipt", "receipt_corrupt", str(exc), checks=checks,
@@ -1106,6 +1238,9 @@ def replay_advance(event: dp.FrontierAdvanced, *, store: pub.ContentStore,
 
     # ---- 7. EVERY binding, against values the CHAIN asserts ----------------------------------
     try:
+        verification_evidence = ({"receipt_wrapper": receipt_or_report,
+                                  "signature_verifier": signature_verifier}
+                                 if signed_era else {"eval_report": receipt_or_report})
         report = ea.verify_artifact(
             artifact,
             expected_parent_root=event.parent_frontier_root,
@@ -1118,10 +1253,9 @@ def replay_advance(event: dp.FrontierAdvanced, *, store: pub.ContentStore,
             expected_entropy_commitment=epoch_pins.entropy_commitment,
             expected_epoch=event.epoch,
             expected_target_profile=target_profile,
-            receipt_wrapper=receipt_wrapper,
             counter_resource_law=counter_law,
             store=store,
-            signature_verifier=signature_verifier)
+            **verification_evidence)
     except (ea.EvalArtifactError, fr.FrontierError) as exc:
         return _fail("bindings", type(exc).__name__, str(exc), checks=checks,
                      new_manifest=new_manifest, **ident)
@@ -1212,7 +1346,7 @@ def replay_advance(event: dp.FrontierAdvanced, *, store: pub.ContentStore,
                 f"sandbox {getattr(runner, 'name', type(runner).__name__)!r}: "
                 + getattr(runner, "unavailable_reason",
                           "reports itself unavailable on this host"))
-        execution = runner.execute(receipt_wrapper=receipt_wrapper, artifact=artifact)
+        execution = runner.execute(receipt_wrapper=receipt_or_report, artifact=artifact)
     except SandboxDependencyError as exc:
         # A DETERMINATION, not a backlog: the environment is wrong and the reader can fix it.
         return _fail("sandbox", "missing_dependency", str(exc), checks=checks,
@@ -1261,10 +1395,12 @@ def replay_advance(event: dp.FrontierAdvanced, *, store: pub.ContentStore,
                      f"the candidate did not reproduce the signed receipt in the pinned sandbox: "
                      f"{execution.get('code')}: {execution.get('reason')}", checks=checks,
                      new_manifest=new_manifest, **ident)
-    if execution.get("receipt_hash") not in (None, artifact["receipt"]["receipt_hash"]):
+    bound_report_root = (artifact["receipt"]["receipt_hash"] if signed_era
+                         else artifact["receipt"]["eval_report_root"])
+    if execution.get("receipt_hash") not in (None, bound_report_root):
         return _fail("sandbox", "sandbox_receipt_hash_mismatch",
                      f"the sandbox rebuilt receipt {execution['receipt_hash']}, the artifact binds "
-                     f"{artifact['receipt']['receipt_hash']}", checks=checks,
+                     f"{bound_report_root}", checks=checks,
                      new_manifest=new_manifest, **ident)
     done("sandbox")
 
@@ -1272,7 +1408,8 @@ def replay_advance(event: dp.FrontierAdvanced, *, store: pub.ContentStore,
     # The sandbox either returns the body it rebuilt, or — as ``benchmark-v2``'s replay does —
     # proves byte-identical reproduction and returns only the hash. In the second case the SIGNED
     # body IS the executed body, because reproducing its hash is what was just demonstrated.
-    body = execution.get("body") or receipt_wrapper["receipt"]
+    body = execution.get("body") or (
+        receipt_or_report["receipt"] if signed_era else receipt_or_report)
     measured_from = ("sandbox-rebuilt body" if execution.get("body")
                      else "signed body the sandbox reproduced byte-identically")
     try:

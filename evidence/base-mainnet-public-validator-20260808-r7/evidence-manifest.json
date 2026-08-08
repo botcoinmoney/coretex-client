@@ -1,0 +1,178 @@
+{
+  "format": "coretex.public-validator-evidence-manifest/v1",
+  "date_utc": "2026-08-08",
+  "classification": "MAINNET_REHEARSAL",
+  "scope": {
+    "chain_id": 8453,
+    "epoch": 8,
+    "transition_index": 0,
+    "from_block": 49708835,
+    "to_block": 49709494,
+    "confirmation_depth": 64,
+    "transaction_hash": "a3d8d52a4d9d64e98847be4673b1f83f437a2b84c6a9c14be7d35d8d8da6ab5e",
+    "receipt_hash": "17bb01774affb7b6419949d80ca8fd0c51b4b9790ec01886bf37e7a724c9e090",
+    "parent_state_root": "14fb22cd67c13b811860dcb590931ebac4058f95aabfcfee5f2e8ea9a24c352f",
+    "live_state_root": "bc61b3b6042872ed6583ac3de1966f611e18f2a0d1a30307a2d651a8760a71ee",
+    "core_version_hash": "684152133d6900e43eff7edd799f6d97710f55fe995304185edd15d83c9b1354",
+    "epoch_context_root": "8e282d2a64f6a7fcee45f0abca7cb12242eed70db4fde2f939d4b635d494be44",
+    "transition_artifact_root": "f01ef652e00f1abc2387294c332b08c17348616da1fa51cf8eb4b61ff16d1ad2"
+  },
+  "remote": {
+    "host": "185.189.46.79",
+    "hostname": "precise-reindeer",
+    "work_directory": "/opt/coretex-public-validator-20260808-r7-g8uhxF",
+    "source_tree_outside_environment": true
+  },
+  "constraints": {
+    "public_rpc_only": true,
+    "public_rpc": "https://mainnet.base.org",
+    "private_rpc_used": false,
+    "public_artifacts_only": true,
+    "source_checkout_imported": false,
+    "editable_install_used": false,
+    "production_modified": false
+  },
+  "inputs": {
+    "validator_wheel": {
+      "bytes": 296994,
+      "sha256": "3c5b9662e0c774d18d9ede485fcb86103b15d463fa8c49469b3431991b6880da"
+    },
+    "runtime_wheel": {
+      "bytes": 215557,
+      "sha256": "7c304fca98809fe756d6d1143a00de9689237af88f5df7d23b92aca904c299a6"
+    },
+    "wasmtime": "46.0.1",
+    "release": {
+      "bytes": 1268,
+      "sha256": "625ae2f237e1f20ace474f25fea0bb9a47c56fc7745e895ff4fdc777dc263e0c"
+    },
+    "snapshot": {
+      "bytes": 28471,
+      "sha256": "49dac6c1237c49430b07b89aa7ef13e8af0487157c24cd781450cfeb21e60e3f"
+    },
+    "replay_trees_tar": {
+      "bytes": 8202240,
+      "sha256": "154f1338dadc86d514588d195e301b854f34e39c01c1e3bf0fd48f38ba4a764a",
+      "entries": 514,
+      "top_level": [
+        "benchmark-v2",
+        "coretex-memory"
+      ]
+    },
+    "accepted_transition_object_count": 27,
+    "download_count_including_snapshot_release_and_trees": 30,
+    "public_download_inventory_sha256": "3d72b15e95f86ec11d5bddf72a7e5c40cf30d2f7eb8ba6f6c3683bc0c83bc4aa"
+  },
+  "pinned_replay": {
+    "image": "python:3.10-slim@sha256:c1e4e6c01eb489c422288b2de34b0761ca316f7a2d98e2c33f47659a73ed108a",
+    "python": "3.10.20",
+    "cpu_flags": [
+      "--cpuset-cpus=0-3",
+      "--cpus=4"
+    ],
+    "networkless_candidate_proved": true,
+    "bound_eval_report_root": "6f2cf67d10122263d0733cf5e262819ccd7544abe14624be9257db168b08d565",
+    "rebuilt_eval_report_root": "6f2cf67d10122263d0733cf5e262819ccd7544abe14624be9257db168b08d565",
+    "outcome": "PASS",
+    "stages": {
+      "discover_release": "PASS",
+      "verify_deployment": "PASS",
+      "receipt_continuity": "PASS",
+      "join_transition": "PASS",
+      "deterministic_admission": "PASS",
+      "historical_law": "PASS",
+      "resolver_snapshot": "PASS",
+      "export": "PASS"
+    },
+    "unverified": [],
+    "export_root": "b3d7c340f28615d0001e11a0cfbcc0e928e47c03a590b5257d57dee81442b436"
+  },
+  "compatibility_control": {
+    "python": "3.12.3",
+    "cpu_affinity": "0-3",
+    "bound_eval_report_root": "6f2cf67d10122263d0733cf5e262819ccd7544abe14624be9257db168b08d565",
+    "rebuilt_eval_report_root": "19656b1d214afd84d39366cb4a4d42618487767cadbefa0eb2fc7f9981e2b85b",
+    "outcome": "FAIL_CLOSED",
+    "diverging_fields": [
+      "outputs_hash",
+      "scores",
+      "verdicts"
+    ],
+    "export_produced": false
+  },
+  "local_exact_outputs": {
+    "resolver_snapshot": {
+      "path": "/tmp/coretex-public-replay-evidence-r7-Lq0bHU/reports/reproduced-snapshot.json",
+      "canonical_alias": "/tmp/coretex-resolver-snapshot-epoch8-20260808.json",
+      "byte_identical": true,
+      "bytes": 28471,
+      "sha256": "49dac6c1237c49430b07b89aa7ef13e8af0487157c24cd781450cfeb21e60e3f"
+    },
+    "unsigned_activation_export": {
+      "path": "evidence/base-mainnet-public-validator-20260808-r7/unsigned-activation-proof.json",
+      "bytes": 33811,
+      "sha256": "d2547c81e612f2ce5473738b8abf5eb6b4cea5d1e0b11cdf243554104f59936e"
+    }
+  },
+  "evidence_files": [
+    {
+      "path": "README.md",
+      "bytes": 5690,
+      "sha256": "bf967051318b08d91dfede27263421798f1997358e5556d6a3fe88e4ff311218"
+    },
+    {
+      "path": "public-downloads.json",
+      "bytes": 16732,
+      "sha256": "3d72b15e95f86ec11d5bddf72a7e5c40cf30d2f7eb8ba6f6c3683bc0c83bc4aa"
+    },
+    {
+      "path": "replay-tree-extraction.json",
+      "bytes": 555,
+      "sha256": "e710d30da54c63c7836443e097048d90abf000f862f1af3f05cf5fbf7dc9b82e"
+    },
+    {
+      "path": "sandbox-detail-py310-4cpu.json",
+      "bytes": 47772,
+      "sha256": "4e857abed5b3ea0ab7966b1e989295092eb0f5c9348830de9a6c792841e8cf34"
+    },
+    {
+      "path": "sandbox-detail-py312-4cpu.json",
+      "bytes": 49538,
+      "sha256": "3b97fc72c818e825c892bef7262cca51ecbe3b15cd7d844440c30a56a0642f67"
+    },
+    {
+      "path": "snapshot-reproduction.json",
+      "bytes": 4236,
+      "sha256": "e603756bb035e16786532b31b3b7b1a3cd59b5b2c7b06c48f6cabc515705fff3"
+    },
+    {
+      "path": "unsigned-activation-proof.json",
+      "bytes": 33811,
+      "sha256": "d2547c81e612f2ce5473738b8abf5eb6b4cea5d1e0b11cdf243554104f59936e"
+    },
+    {
+      "path": "validator-release.json",
+      "bytes": 1268,
+      "sha256": "625ae2f237e1f20ace474f25fea0bb9a47c56fc7745e895ff4fdc777dc263e0c"
+    },
+    {
+      "path": "validator-run-py310.json",
+      "bytes": 42660,
+      "sha256": "07668749f9e37c6cf80dc3dbe1bfb1c2bcf6e37188127de444047dd5d344985f"
+    },
+    {
+      "path": "validator-run-py312-fail-closed.json",
+      "bytes": 12199,
+      "sha256": "9b537314820533c2c4921b68f6faa2154ea545086737321ab7e441978e747f59"
+    }
+  ],
+  "non_material_invocations": [
+    {
+      "description": "A first pinned-container invocation added snapshot-only --min-interval to reproduce; argparse rejected it before any RPC or replay work. The supported command in README was then run.",
+      "stdout_bytes": 0,
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_bytes": 239,
+      "stderr_sha256": "94f85e88813be92607bc30d0793e172e027d0581e698975d127ab0870da636dd"
+    }
+  ]
+}

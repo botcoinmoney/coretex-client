@@ -76,6 +76,11 @@ STEP5_ARTIFACT_HASH_BOUND = "step5_artifact_hash_bound_via_digest"
 STEP6_CALLDATA_BOUND_TO_LOGS = "step6_calldata_bound_to_logs"
 STEP7_COORDINATOR_SIGNATURE = "step7_coordinator_signature_verified"
 STEP8_PATCH_HASH_VERIFIED = "step8_patch_hash_verified"
+STEP8_DESCRIPTOR_HASH_VERIFIED = "step8_descriptor_hash_verified"
+STEP8_DESCRIPTOR_DECODED = "step8_descriptor_decoded"
+STEP8_DESCRIPTOR_ROOTS_BOUND = "step8_descriptor_roots_bound"
+STEP8_DESCRIPTOR_FORMAT_VERSION_BOUND = \
+    "step8_transition_format_version_bound_to_descriptor_byte"
 #: The SCREENER-only counterpart of step 8. A screener has no advance and therefore no descriptor
 #: to hash, so its step 8 is the OUTCOME-1 DISCIPLINE instead: empty ``compactPatchBytes``, a ZERO
 #: ``patchHash``, and zero ``transitionFormatVersion``/``scoreBeforePpm``/``scoreAfterPpm``. Wired
@@ -88,6 +93,11 @@ STEP8_SCREENER_DISCIPLINE = "step8_screener_outcome1_discipline"
 JOIN_STEPS = (STEP1_ADVANCE_DECODED, STEP2_CREDIT_EVENT_JOINED, STEP3_CALLDATA_DECODED,
               STEP4_RECEIPT_HASH_BOUND, STEP5_ARTIFACT_HASH_BOUND, STEP6_CALLDATA_BOUND_TO_LOGS,
               STEP7_COORDINATOR_SIGNATURE, STEP8_PATCH_HASH_VERIFIED)
+JOIN_STEPS_V3 = (STEP1_ADVANCE_DECODED, STEP2_CREDIT_EVENT_JOINED, STEP3_CALLDATA_DECODED,
+                 STEP4_RECEIPT_HASH_BOUND, STEP5_ARTIFACT_HASH_BOUND,
+                 STEP6_CALLDATA_BOUND_TO_LOGS, STEP7_COORDINATOR_SIGNATURE,
+                 STEP8_DESCRIPTOR_HASH_VERIFIED, STEP8_DESCRIPTOR_DECODED,
+                 STEP8_DESCRIPTOR_ROOTS_BOUND, STEP8_DESCRIPTOR_FORMAT_VERSION_BOUND)
 
 
 class JoinError(Exception):
@@ -560,7 +570,17 @@ def join_advance(advance: rig.StateAdvanced, credit: rig.CoreTexCreditAccepted,
     except rig.TransitionDescriptorError as exc:
         raise JoinError("JOIN_ADVANCE_PATCH_HASH_ZERO", exc.message) from exc
     rig.check_patch_hash(advance)
-    checks.append(STEP8_PATCH_HASH_VERIFIED)
+    checks.append(STEP8_DESCRIPTOR_HASH_VERIFIED)
+    try:
+        rig.decode_transition_descriptor(
+            advance.compact_patch_bytes,
+            parent_state_root=advance.parent_state_root,
+            new_state_root=advance.new_state_root,
+            transition_format_version=receipt["transitionFormatVersion"])
+    except rig.TransitionDescriptorError as exc:
+        raise JoinError("JOIN_DESCRIPTOR_BINDING_INVALID", exc.message) from exc
+    checks.extend((STEP8_DESCRIPTOR_DECODED, STEP8_DESCRIPTOR_ROOTS_BOUND,
+                   STEP8_DESCRIPTOR_FORMAT_VERSION_BOUND))
 
     if int(receipt["outcome"]) != OUTCOME_STATE_ADVANCE:
         raise JoinError("JOIN_FIELD_MISMATCH",

@@ -1185,28 +1185,65 @@ def check_state_advance_patch_hash(patch_hash: Any) -> None:
             "keccak output and can never be zero, so this receipt commits to no transition at all")
 
 
-# --------------------------------------------------------------------------- #
-# The canonical patch artifact (spec §5) — SCOPED to the T-1/T-2 shape
-# --------------------------------------------------------------------------- #
-# The full spec allows one artifact to move an arbitrary number of profile releases and/or the
-# composition root in a single transition (spec §8, T-3/T-4/T-5), because the chain no longer
-# bounds breadth. Expressing that here would mean widening :mod:`.frontier`'s transition/manifest
-# model past its documented one-profile-per-transition law
-# (``frontier.apply_transition``'s single ``target_profile``), and :mod:`.frontier` is
-# DELIBERATELY OUT OF SCOPE for this migration (it is not one of the files the migration touches;
-# widening it is a frontier-law change, not a rig-lane wire-format change). So the artifact
-# envelope below is the STRICT SUPERSET FLOOR: it gives every real advance this repo can produce
-# today (T-1/T-2 — the only shapes the mainnet rehearsal ever used, per spec §8) the v2
-# commitment discipline — a patchArtifactHash-addressed, fetched, rehashed and replayed edit — and
-# leaves T-3/T-4/T-5 breadth as a documented gap rather than a silent one. See
-# ``docs/V5-RIG-VALIDATOR.md`` for the operator-facing note.
-TRANSITION_ARTIFACT_FORMAT = "coretex.transition-artifact/v2"
-#: CLOSED schema, scoped to one :mod:`.frontier` transition per artifact (see the note above).
+#: The canonical patch artifact's family (spec §5.1). It is addressed by
+#: ``sha256(canonical_bytes(artifact))`` under the repo's ONE canonical-JSON law, IMPORTED from
+#: ``frontier`` and never restated here.
+#:
+#: THE FAMILY MOVED TO ``v3`` ALONGSIDE THE DESCRIPTOR, and it moved for three reasons at once
+#: (spec §5.1): it gains §5.5's sorted dependency-closure declaration
+#: (``affected_profiles`` / ``shared_components``), it gains ``epoch_context_root`` — the epoch's
+#: pin 3 — and it gains ``byte_length``, which §5.5.4 places in the artifact and NEVER on chain.
+#: Its ``score_delta_ppm`` clause now binds the SIGNED receipt members rather than a descriptor
+#: field that no longer exists. Three changes to what the document must contain is a format change,
+#: and a format change takes a version: a ``coretex.transition-artifact/v2`` document lacks the
+#: declaration entirely and is REFUSED here rather than read with defaults.
+TRANSITION_ARTIFACT_FORMAT = "coretex.transition-artifact/v3"
+#: CLOSED schema. An unknown field is an error, exactly as every other closed family in this repo.
 TRANSITION_ARTIFACT_FIELDS: Tuple[str, ...] = (
-    "format", "parent_state_root", "new_state_root", "score_delta_ppm", "transition")
+    "affected_profiles", "availability", "byte_length", "derived_state", "epoch",
+    "epoch_context_root", "format", "new_state_root", "parent_state_root", "profile_releases",
+    "resulting_composition_root", "resulting_frontier_manifest", "score_delta_ppm",
+    "shared_components")
+#: The two SORTED, STRICTLY INCREASING declaration lists (spec §5.5.1). BOTH are mandatory: an
+#: empty list is written ``[]`` and means "none", and OMISSION IS NOT PERMITTED, because "absent"
+#: and "empty" would then be two spellings of one fact — which is precisely what the canonical-JSON
+#: law forbids when it rejects ``null``.
+TRANSITION_ARTIFACT_CLOSURE_FIELDS: Tuple[str, ...] = ("affected_profiles", "shared_components")
+#: One ``profile_releases`` entry (spec §5.1). CLOSED.
+TRANSITION_ARTIFACT_RELEASE_FIELDS: Tuple[str, ...] = (
+    "expected_prior_release_root", "hooks", "new_release_root")
+#: The SIX slot ids a release manifest's ``hooks`` block may name (spec §8, slot layer M1–M6), in
+#: write-path-then-read-path order. An absent export gets the reference behaviour, so a miner may
+#: improve exactly one slot and still submit — which is why the set is closed but never required.
+TRANSITION_ARTIFACT_HOOKS: Tuple[str, ...] = (
+    "m1_ingest_transform", "m2_organize", "m3_consolidate",
+    "m4_candidates", "m5_rank", "m6_pack")
+#: The law pins EVERY mined transition carries forward unchanged (spec §8, T-6). Moving one moves
+#: ``coreVersionHash``, which the epoch context pins and the registry equality-checks, so it is an
+#: EPOCH-CONTEXT operation performed by ``CORETEX_CONTEXT_OPERATOR`` — never a mined transition, and
+#: no descriptor can express it.
+TRANSITION_ARTIFACT_LAW_PINS: Tuple[str, ...] = (
+    "benchmark_law_root", "runtime_abi_root", "compatibility_lock_root")
 
-# ── Off-chain refusals (spec §6.3), spelled exactly as the spec tables them, plus one structural
-#    code the spec's table does not name ──────────────────────────────────────────────────────
+
+class TransitionArtifactError(RigEventError):
+    """An OFF-CHAIN refusal about the canonical patch artifact the descriptor addresses.
+
+    A separate class from :class:`TransitionDescriptorError` because the two answer different
+    questions. A descriptor refusal says "the chain would not have accepted these bytes"; an
+    artifact refusal says "the chain accepted the commitment and the thing it commits to is
+    unavailable, substituted, non-canonical or does not replay". The chain adjudicates neither of
+    the latter — §6.3 names where each is enforced, and REFUSE-DO-NOT-DEGRADE is the rule: "the
+    artifact did not mention it" MUST NOT become a way to avoid publishing it, and "we could not
+    fetch it" MUST NOT become a way to accept it.
+    """
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(f"{code}: {message}")
+        self.code = code
+
+
+# ── The SEVEN off-chain refusal codes (spec §6.3), spelled exactly as the spec tables them ─────
 TRANSITION_ARTIFACT_UNAVAILABLE = "TRANSITION_ARTIFACT_UNAVAILABLE"
 TRANSITION_ARTIFACT_ADDRESS_MISMATCH = "TRANSITION_ARTIFACT_ADDRESS_MISMATCH"
 TRANSITION_ARTIFACT_NOT_CANONICAL = "TRANSITION_ARTIFACT_NOT_CANONICAL"
@@ -1214,38 +1251,86 @@ TRANSITION_PARENT_MISMATCH = "TRANSITION_PARENT_MISMATCH"
 TRANSITION_REPLAY_ROOT_MISMATCH = "TRANSITION_REPLAY_ROOT_MISMATCH"
 TRANSITION_SCORE_DELTA_MISMATCH = "TRANSITION_SCORE_DELTA_MISMATCH"
 TRANSITION_DESCRIPTOR_VERSION_UNSUPPORTED = "TRANSITION_DESCRIPTOR_VERSION_UNSUPPORTED"
-#: The artifact document is not a well-formed member of its family. Distinct from NOT_CANONICAL,
-#: which is about the SERIALIZATION of a document that does parse.
-TRANSITION_ARTIFACT_MALFORMED = "TRANSITION_ARTIFACT_MALFORMED"
 
+#: The seven §6.3 codes, IN THE SPEC'S TABLE ORDER. A validator refuses with one of these and
+#: NEVER degrades.
 OFFCHAIN_TRANSITION_REFUSALS: Tuple[str, ...] = (
     TRANSITION_ARTIFACT_UNAVAILABLE, TRANSITION_ARTIFACT_ADDRESS_MISMATCH,
     TRANSITION_ARTIFACT_NOT_CANONICAL, TRANSITION_PARENT_MISMATCH,
     TRANSITION_REPLAY_ROOT_MISMATCH, TRANSITION_SCORE_DELTA_MISMATCH,
     TRANSITION_DESCRIPTOR_VERSION_UNSUPPORTED)
+
+# ── Three artifact refusals the spec's table does not name, kept typed rather than folded ──────
+#: The artifact document is not a well-formed member of its family (wrong ``format``, an absent or
+#: unknown closed-schema field, a wrongly-typed value). Distinct from NOT_CANONICAL, which is about
+#: the SERIALIZATION of a document that does parse.
+TRANSITION_ARTIFACT_MALFORMED = "TRANSITION_ARTIFACT_MALFORMED"
+#: A ``profile_releases`` entry's ``expected_prior_release_root`` is not what the parent manifest
+#: holds — the candidate was built against a superseded frontier. Its own code because "stale
+#: parent" and "replay produced another root" are different facts for an operator.
+TRANSITION_RELEASE_PRIOR_MISMATCH = "TRANSITION_RELEASE_PRIOR_MISMATCH"
+#: Spec §8 T-6, made enforceable: a law pin moved. That is an EPOCH-CONTEXT operation, not a mined
+#: transition, and no descriptor can express it — so it is refused HERE by name rather than
+#: surfacing later as an unattributable replay mismatch.
+TRANSITION_LAW_PIN_CHANGE = "TRANSITION_LAW_PIN_CHANGE"
+#: ``newStateRoot == parentStateRoot``: the artifact expresses no state change and the registry
+#: would revert ``NoOpAdvance``.
+#:
+#: GAP-1 (recorded, not worked around). Spec §8 T-5 — a derived-state-only improvement — is
+#: STRUCTURALLY expressible but COMMITS NOTHING. ``derived_state`` is carried by the artifact, and
+#: the resulting manifest's ``parent_frontier_root`` advances to the parent's root, so the state
+#: root does move and this refusal does not fire. But the resulting state is a
+#: ``coretex.memory-frontier.v1`` manifest whose schema is CLOSED and has no derived-state field,
+#: so two artifacts with completely different ``derived_state`` produce the SAME ``newStateRoot``
+#: and replay cannot refute a substituted derived state. Closing that is a FRONTIER-LAW change (a
+#: new manifest field plus a version), which is outside this migration.
+TRANSITION_NO_OP = "TRANSITION_NO_OP"
+#: The artifact's ``epoch_context_root`` is not the epoch's pin 3 (spec §5.1). Its own code because
+#: "this artifact was written for a different epoch's admission law" is a different fact from "the
+#: parent is wrong" and from "the replay produced another root".
+TRANSITION_EPOCH_CONTEXT_MISMATCH = "TRANSITION_EPOCH_CONTEXT_MISMATCH"
+
+# ── The FOUR dependency-closure refusals (spec §5.5.2), one per row of its table ────────────────
+#: Either list is absent, is not an array, is not all strings, or is not STRICTLY INCREASING by
+#: Unicode code point. A non-increasing list is a REFUSAL and is NEVER sorted on receipt: sorting on
+#: receipt would let two byte strings address one artifact, and the artifact is content-addressed.
+TRANSITION_CLOSURE_MALFORMED = "TRANSITION_CLOSURE_MALFORMED"
+#: ``affected_profiles`` omits a profile the artifact's OWN ``profile_releases`` / composition move
+#: touches. The DIRECT half of the rule, derivable from the artifact alone.
+TRANSITION_CLOSURE_UNDERDECLARED = "TRANSITION_CLOSURE_UNDERDECLARED"
+#: The validator's INDEPENDENTLY-DERIVED closure is not contained in what the coordinator declared.
+#: The TRANSITIVE half: a shared-component change implies every profile that references it is
+#: re-evaluated, and that fan-out is computed against the PARENT STATE, never taken from the
+#: coordinator.
+TRANSITION_CLOSURE_MISMATCH = "TRANSITION_CLOSURE_MISMATCH"
+#: A declared id is not a profile / component of the parent state. Distinct from MALFORMED because
+#: a well-formed list of ids that do not exist is a different defect from a list that is not a list.
+TRANSITION_CLOSURE_UNKNOWN_ID = "TRANSITION_CLOSURE_UNKNOWN_ID"
+
+#: The four closure refusals, in the spec's table order.
+TRANSITION_CLOSURE_REFUSALS: Tuple[str, ...] = (
+    TRANSITION_CLOSURE_MALFORMED, TRANSITION_CLOSURE_UNDERDECLARED, TRANSITION_CLOSURE_MISMATCH,
+    TRANSITION_CLOSURE_UNKNOWN_ID)
+
+#: Every artifact-level refusal this module can raise.
 TRANSITION_ARTIFACT_REFUSALS: Tuple[str, ...] = OFFCHAIN_TRANSITION_REFUSALS + (
-    TRANSITION_ARTIFACT_MALFORMED,)
+    TRANSITION_ARTIFACT_MALFORMED, TRANSITION_RELEASE_PRIOR_MISMATCH, TRANSITION_LAW_PIN_CHANGE,
+    TRANSITION_NO_OP, TRANSITION_EPOCH_CONTEXT_MISMATCH) + TRANSITION_CLOSURE_REFUSALS
 
 
-class TransitionArtifactError(RigEventError):
-    """An OFF-CHAIN refusal about the canonical patch artifact the descriptor addresses.
-
-    Distinct from :class:`TransitionDescriptorError`: a descriptor refusal says "the chain would
-    not have accepted these bytes"; an artifact refusal says "the chain accepted the commitment
-    and the thing it commits to is unavailable, substituted, non-canonical or does not replay".
-    REFUSE, NEVER DEGRADE (spec §6.3): "the artifact did not mention it" MUST NOT become a way to
-    avoid publishing it, and "we could not fetch it" MUST NOT become a way to accept it.
-    """
-
-    def __init__(self, code: str, message: str) -> None:
-        super().__init__(f"{code}: {message}")
-        self.code = code
-        self.message = message
-
-
+# ── The canonical patch artifact (spec §5) ─────────────────────────────────────────────────────
+#
+# ONE DOCUMENT — the miner's COMPLETE output for one improvement. Not chunked, not truncated, and
+# not bounded in size by anything in the specification: the descriptor stays 97 bytes whether the
+# artifact is 400 bytes or 40 MB, which is the whole point of addressing it instead of carrying it.
+#
+# ``canonical_bytes`` is IMPORTED from ``frontier``, never restated: UTF-8 JSON, keys sorted
+# ascending by code point, separators ``(",", ":")``, ``ensure_ascii=True``, arrays keep their order
+# (order is data), floats REJECTED, ``null`` REJECTED, duplicate keys REJECTED on parse. Roots
+# render as BARE lowercase 64-hex — uppercase and ``0x`` are REJECTED, never normalized, because
+# normalizing lets two byte strings address one root.
 def transition_artifact_bytes(artifact: Mapping[str, Any]) -> bytes:
-    """The canonical bytes a ``patchArtifactHash`` addresses — the repo's ONE canonical-JSON law,
-    imported from :mod:`.frontier`, never restated."""
+    """The canonical bytes a ``patchArtifactHash`` addresses. The repo's ONE canonical-JSON law."""
     try:
         return fr.canonical_bytes(artifact)
     except fr.FrontierError as exc:
@@ -1258,91 +1343,560 @@ def transition_artifact_bytes(artifact: Mapping[str, Any]) -> bytes:
 def transition_artifact_root(artifact: Mapping[str, Any]) -> str:
     """``sha256(canonical_bytes(artifact))`` — the content address, as bare lowercase hex.
 
-    sha256, not keccak (spec §4.3): ``patchHash`` is keccak because it is a ``bytes32`` a Solidity
-    verifier compares; ``patchArtifactHash`` is sha256 because it is how the object is FETCHED, and
-    every content-addressed object in this system is addressed by sha256.
+    sha256 and NOT keccak, on purpose (spec §4.3): ``patchHash`` is keccak because a Solidity
+    verifier compares it as a ``bytes32``; ``patchArtifactHash`` is sha256 because it is how the
+    object is FETCHED, and every object in this system is addressed by sha256.
     """
     return fr.sha256_hex(transition_artifact_bytes(artifact))
 
 
-def validate_transition_artifact(artifact: Any) -> Dict[str, Any]:
-    """Structural validation of one ``coretex.transition-artifact/v2`` document. CLOSED schema.
+def _artifact_require(condition: Any, code: str, message: str) -> None:
+    if not condition:
+        raise TransitionArtifactError(code, message)
 
-    Scoped to the single-:mod:`.frontier`-transition shape (see the section note above): T-1 (one
-    profile, one hook) and T-2 (one profile, all six hooks) are both expressible here because
-    :mod:`.frontier` already treats "which hooks moved" as internal to the release manifest a
-    transition names, not as a field of the transition itself.
-    """
-    if not isinstance(artifact, Mapping):
-        raise TransitionArtifactError(
-            TRANSITION_ARTIFACT_MALFORMED,
-            f"a transition artifact must be an object, got {type(artifact).__name__}")
-    if artifact.get("format") != TRANSITION_ARTIFACT_FORMAT:
-        raise TransitionArtifactError(
-            TRANSITION_ARTIFACT_MALFORMED,
-            f"format {artifact.get('format')!r} is not {TRANSITION_ARTIFACT_FORMAT!r}")
-    unknown = sorted(set(artifact) - set(TRANSITION_ARTIFACT_FIELDS))
-    if unknown:
-        raise TransitionArtifactError(TRANSITION_ARTIFACT_MALFORMED,
-                                      f"unknown field(s) {unknown} — the schema is CLOSED")
-    missing = sorted(set(TRANSITION_ARTIFACT_FIELDS) - set(artifact))
-    if missing:
-        raise TransitionArtifactError(TRANSITION_ARTIFACT_MALFORMED,
-                                      f"required field(s) {missing} are absent")
+
+def _artifact_root(document: Mapping[str, Any], field: str, where: str) -> str:
     try:
-        parent_root = fr.check_root(artifact["parent_state_root"], "artifact.parent_state_root")
-        new_root = fr.check_root(artifact["new_state_root"], "artifact.new_state_root")
+        return fr.check_root(document[field], f"{where}.{field}")
+    except KeyError:
+        raise TransitionArtifactError(
+            TRANSITION_ARTIFACT_MALFORMED, f"{where}.{field} is absent") from None
     except fr.FrontierError as exc:
         raise TransitionArtifactError(TRANSITION_ARTIFACT_MALFORMED, str(exc)) from exc
+
+
+def _check_sorted_id_list(artifact: Mapping[str, Any], field: str) -> Tuple[str, ...]:
+    """One §5.5.1 declaration list: present, an array of strings, STRICTLY INCREASING.
+
+    Strictly increasing by Unicode code point, which makes duplicates structurally impossible. A
+    list that is not is a REFUSAL and is NEVER sorted on receipt: the artifact is content-addressed
+    and array order is DATA (§5.2 — arrays keep their order), so sorting on receipt would let two
+    byte strings address one artifact. Two miners who declare the same closure must produce the same
+    bytes, or the same transition has two addresses.
+
+    Absence is a refusal too, and separately: ``[]`` means "none", and if omission were also legal
+    then "absent" and "empty" would be two spellings of one fact — the thing the canonical-JSON law
+    already forbids when it rejects ``null``.
+    """
+    if field not in artifact:
+        raise TransitionArtifactError(
+            TRANSITION_CLOSURE_MALFORMED,
+            f"artifact.{field} is absent. BOTH declaration lists are MANDATORY: an empty list is "
+            "written [] and means 'none', and omission is NOT permitted because absent and empty "
+            "would then be two spellings of one fact")
+    value = artifact[field]
+    if not isinstance(value, list):
+        raise TransitionArtifactError(
+            TRANSITION_CLOSURE_MALFORMED,
+            f"artifact.{field} must be an array, got {type(value).__name__}")
+    for index, item in enumerate(value):
+        if not isinstance(item, str) or not item:
+            raise TransitionArtifactError(
+                TRANSITION_CLOSURE_MALFORMED,
+                f"artifact.{field}[{index}]={item!r} must be a non-empty string id")
+    for index in range(1, len(value)):
+        if value[index] <= value[index - 1]:
+            raise TransitionArtifactError(
+                TRANSITION_CLOSURE_MALFORMED,
+                f"artifact.{field} is not STRICTLY INCREASING at index {index}: "
+                f"{value[index - 1]!r} then {value[index]!r}. Sorted ascending by Unicode code "
+                "point, strictly, so duplicates are structurally impossible — and it is REFUSED "
+                "rather than sorted here, because sorting on receipt would let two byte strings "
+                "address one artifact")
+    return tuple(value)
+
+
+def validate_transition_artifact(artifact: Any) -> Dict[str, Any]:
+    """Structural validation of one ``coretex.transition-artifact/v3`` document. CLOSED schema."""
+    _artifact_require(isinstance(artifact, Mapping), TRANSITION_ARTIFACT_MALFORMED,
+                      f"a transition artifact must be an object, got "
+                      f"{type(artifact).__name__}")
+    _artifact_require(artifact.get("format") == TRANSITION_ARTIFACT_FORMAT,
+                      TRANSITION_ARTIFACT_MALFORMED,
+                      f"format {artifact.get('format')!r} is not {TRANSITION_ARTIFACT_FORMAT!r}. "
+                      "A coretex.transition-artifact/v2 document lacks §5.5's dependency-closure "
+                      "declaration, epoch_context_root and byte_length entirely; it is REFUSED "
+                      "here rather than read with defaults, because defaulting an absent "
+                      "declaration is exactly the under-declaration §5.5 exists to catch")
+    unknown = sorted(set(artifact) - set(TRANSITION_ARTIFACT_FIELDS))
+    _artifact_require(not unknown, TRANSITION_ARTIFACT_MALFORMED,
+                      f"unknown field(s) {unknown} — the schema is CLOSED")
+    # THE TWO DECLARATION LISTS GET THEIR OWN CODE, AND THEY GET IT FIRST. Folding them into the
+    # generic missing-field complaint below would report `TRANSITION_ARTIFACT_MALFORMED` for a
+    # condition §5.5.2 gives `TRANSITION_CLOSURE_MALFORMED`, and a negative control asserting the
+    # SPECIFIC refusal would then pass on the wrong one.
+    for field in TRANSITION_ARTIFACT_CLOSURE_FIELDS:
+        _check_sorted_id_list(artifact, field)
+    missing = sorted(set(TRANSITION_ARTIFACT_FIELDS) - set(artifact))
+    _artifact_require(not missing, TRANSITION_ARTIFACT_MALFORMED,
+                      f"required field(s) {missing} are absent")
+
+    _artifact_root(artifact, "parent_state_root", "artifact")
+    _artifact_root(artifact, "new_state_root", "artifact")
+    _artifact_root(artifact, "resulting_composition_root", "artifact")
+    # PIN 3, RESTATED BY THE ARTIFACT. Checked for SHAPE here and for VALUE against the epoch's own
+    # pin wherever that pin is in scope (:func:`check_transition_epoch_context`): this function
+    # takes no epoch, so it can only refuse a malformed root, never a wrong one.
+    _artifact_root(artifact, "epoch_context_root", "artifact")
+    # §5.5.4 — the artifact's byte length lives HERE, in the artifact/transition manifest, beside
+    # the availability record that already carries {"bytes": N, ...}. It is NEVER a descriptor field
+    # and NEVER a chain cell: the chain cannot verify a length it never sees, so a lying length on
+    # chain would be a SIGNED assertion with no authority behind it. Here it can be checked against
+    # the bytes it describes, which is the only place a length can be checked at all.
+    byte_length = artifact["byte_length"]
+    _artifact_require(isinstance(byte_length, int) and not isinstance(byte_length, bool)
+                      and byte_length > 0,
+                      TRANSITION_ARTIFACT_MALFORMED,
+                      f"byte_length {byte_length!r} must be a positive int — the length of this "
+                      "artifact's own canonical bytes (§5.5.4)")
     delta = artifact["score_delta_ppm"]
-    if (not isinstance(delta, int) or isinstance(delta, bool)
-            or not (TRANSITION_DESCRIPTOR_MIN_SCORE_DELTA_PPM <= delta
-                    <= TRANSITION_DESCRIPTOR_MAX_SCORE_DELTA_PPM)):
+    _artifact_require(isinstance(delta, int) and not isinstance(delta, bool)
+                      and TRANSITION_DESCRIPTOR_MIN_SCORE_DELTA_PPM <= delta
+                      <= TRANSITION_DESCRIPTOR_MAX_SCORE_DELTA_PPM,
+                      TRANSITION_ARTIFACT_MALFORMED,
+                      f"score_delta_ppm {delta!r} must be an int in "
+                      f"{TRANSITION_DESCRIPTOR_MIN_SCORE_DELTA_PPM}.."
+                      f"{TRANSITION_DESCRIPTOR_MAX_SCORE_DELTA_PPM}")
+    try:
+        fr.check_epoch(artifact["epoch"], "artifact.epoch")
+    except fr.FrontierError as exc:
+        raise TransitionArtifactError(TRANSITION_ARTIFACT_MALFORMED, str(exc)) from exc
+
+    releases = artifact["profile_releases"]
+    _artifact_require(isinstance(releases, Mapping), TRANSITION_ARTIFACT_MALFORMED,
+                      f"profile_releases must be an object, got {type(releases).__name__}")
+    # ZERO OR MORE entries. Empty is LEGAL and is exactly what a composition-only change looks like
+    # (spec §8, T-4) — the retired model refused `wordCount == 0` outright, which made an entire
+    # class of legitimate improvement unmineable and said so nowhere.
+    for pid, move in releases.items():
+        _artifact_require(pid in fr.PROFILE_IDS, TRANSITION_ARTIFACT_MALFORMED,
+                          f"profile_releases[{pid!r}] is not one of {list(fr.PROFILE_IDS)}")
+        _artifact_require(isinstance(move, Mapping), TRANSITION_ARTIFACT_MALFORMED,
+                          f"profile_releases[{pid!r}] must be an object")
+        move_unknown = sorted(set(move) - set(TRANSITION_ARTIFACT_RELEASE_FIELDS))
+        _artifact_require(not move_unknown, TRANSITION_ARTIFACT_MALFORMED,
+                          f"profile_releases[{pid!r}] has unknown field(s) {move_unknown}")
+        move_missing = sorted(set(TRANSITION_ARTIFACT_RELEASE_FIELDS) - set(move))
+        _artifact_require(not move_missing, TRANSITION_ARTIFACT_MALFORMED,
+                          f"profile_releases[{pid!r}] is missing {move_missing}")
+        _artifact_root(move, "expected_prior_release_root", f"profile_releases[{pid!r}]")
+        _artifact_root(move, "new_release_root", f"profile_releases[{pid!r}]")
+        hooks = move["hooks"]
+        _artifact_require(isinstance(hooks, list) and hooks, TRANSITION_ARTIFACT_MALFORMED,
+                          f"profile_releases[{pid!r}].hooks must be a non-empty array")
+        unknown_hooks = [h for h in hooks if h not in TRANSITION_ARTIFACT_HOOKS]
+        _artifact_require(not unknown_hooks, TRANSITION_ARTIFACT_MALFORMED,
+                          f"profile_releases[{pid!r}].hooks names {unknown_hooks}, which are not "
+                          f"slots; the closed set is {list(TRANSITION_ARTIFACT_HOOKS)}")
+        _artifact_require(len(set(hooks)) == len(hooks), TRANSITION_ARTIFACT_MALFORMED,
+                          f"profile_releases[{pid!r}].hooks repeats a slot")
+
+    manifest = artifact["resulting_frontier_manifest"]
+    try:
+        fr.validate_manifest(manifest)
+    except fr.FrontierError as exc:
         raise TransitionArtifactError(
             TRANSITION_ARTIFACT_MALFORMED,
-            f"score_delta_ppm {delta!r} must be an int in "
-            f"{TRANSITION_DESCRIPTOR_MIN_SCORE_DELTA_PPM}.."
-            f"{TRANSITION_DESCRIPTOR_MAX_SCORE_DELTA_PPM}")
-    try:
-        fr.validate_transition(artifact["transition"])
-    except fr.FrontierError as exc:
-        raise TransitionArtifactError(TRANSITION_ARTIFACT_MALFORMED,
-                                      f"transition is not a valid frontier transition: {exc}"
-                                      ) from exc
+            f"resulting_frontier_manifest is not a valid frontier manifest: {exc}") from exc
+    for name in ("derived_state", "availability"):
+        _artifact_require(isinstance(artifact[name], Mapping), TRANSITION_ARTIFACT_MALFORMED,
+                          f"{name} must be an object, got {type(artifact[name]).__name__}")
     transition_artifact_bytes(artifact)      # fail closed before anyone addresses it
-    return {"format": artifact["format"], "parent_state_root": parent_root,
-            "new_state_root": new_root, "score_delta_ppm": delta,
-            "transition": dict(artifact["transition"])}
+    return dict(artifact)
 
 
-def check_transition_artifact_binds_descriptor(artifact: Mapping[str, Any], *,
-                                               descriptor: "TransitionDescriptor",
-                                               expected_score_delta_ppm: Optional[int] = None
-                                               ) -> Dict[str, Any]:
-    """Validate + check the two off-chain bindings the artifact can prove WITHOUT the parent state.
+# ── §5.5.4: the artifact's own byte length, which is a FIXED POINT ─────────────────────────────
+#
+# ``byte_length`` states the length of the artifact's own canonical bytes, and it is INSIDE those
+# bytes, so writing it changes the number it states. That is a fixed point, not a circularity: the
+# canonical rendering of an integer has one spelling, so the length is ``C + digits(n)`` for a
+# constant ``C``, and iterating converges in one or two steps.
+#
+# It is solved rather than avoided because the alternative — omitting the field, or letting it mean
+# something other than what §5.5.4 says — would put a number in a signed, content-addressed document
+# that nobody can check against the thing it describes. A fetcher that bounds a download by this
+# value must be able to trust it, and the only place a length CAN be checked is beside the bytes.
+#
+# THE ONE DEGENERATE CASE IS NAMED AND REFUSED. If ``C`` sits exactly on a power-of-ten boundary the
+# equation can have two solutions (e.g. ``C = 9995`` admits both ``9999`` and ``10000``), and two
+# solutions means two byte strings for one artifact. :func:`finalize_transition_artifact_byte_length`
+# refuses that rather than picking one.
+def finalize_transition_artifact_byte_length(artifact: Mapping[str, Any]) -> Dict[str, Any]:
+    """Return ``artifact`` with ``byte_length`` set to the length of its own canonical bytes.
 
-    Everything else — does the artifact re-hash to ``descriptor.patch_artifact_hash``, and does
-    replaying ``transition`` from the real parent manifest actually reach ``newStateRoot`` — needs
-    the fetch and the parent manifest, which the pipeline/chain-first callers already own; this
-    function is the pure part.
+    The PRODUCER's half of §5.5.4. A validator never calls this — it checks the served bytes against
+    the served number (:func:`verify_transition_artifact_bytes`) and refuses a disagreement.
+    """
+    document = dict(artifact)
+    solutions = []
+    # Two candidate widths bracket every real case: the length written with the digit count the
+    # previous iterate had, and the one it grows into. Both are TRIED, so an ambiguity is DETECTED
+    # rather than resolved by iteration order.
+    document["byte_length"] = 1
+    seed = len(fr.canonical_bytes(document)) - 1              # the constant C
+    for digits in range(1, 21):
+        candidate = seed + digits
+        if len(str(candidate)) != digits:
+            continue
+        document["byte_length"] = candidate
+        if len(fr.canonical_bytes(document)) == candidate:
+            solutions.append(candidate)
+    if len(solutions) != 1:
+        raise TransitionArtifactError(
+            TRANSITION_ARTIFACT_MALFORMED,
+            f"byte_length has {len(solutions)} fixed point(s) {solutions} for this artifact. "
+            "§5.5.4's length is stated INSIDE the bytes it measures, so it is a fixed point; zero "
+            "solutions or two would mean this document has no canonical spelling or two of them, "
+            "and it is refused rather than resolved by picking one")
+    document["byte_length"] = solutions[0]
+    return document
+
+
+# ── §5.5: the profile / dependency-closure declaration ──────────────────────────────────────────
+#
+# THE RULE: *a shared component change implies every profile that references it is re-evaluated.*
+#
+# ``affected_profiles`` is the DECLARATION; the CLOSURE is
+# ``affected_profiles ∪ { p : p references some c ∈ shared_components }``, computed against the
+# PARENT STATE's composition. The coordinator derives it; the validator derives it AGAIN, from the
+# parent state and the artifact, and NEVER from the coordinator.
+#
+# SUPERSET CHECK, NOT EQUALITY, IN ONE DIRECTION ONLY: the declaration must CONTAIN the derived
+# closure. Over-declaring a profile is legal — it costs the miner evaluation, not correctness —
+# and under-declaring is fatal. The failure this exists to catch is a shared-component change that
+# quietly skips re-evaluating a profile that depends on it, and there is no honest reason to
+# under-declare. (Spec §5.5.2 tables this row as "the validator's derived closure ⊅ the
+# coordinator's"; the direction implemented here is the one its own prose states twice — *"superset
+# check, not equality... over-declaring is legal, under-declaring is fatal"* — i.e. DECLARED ⊇
+# DERIVED. Read the other way the row could never fire, because the closure contains the
+# declaration by construction.)
+#
+# WHAT THE CHAIN DOES ABOUT ANY OF THIS: NOTHING, ON PURPOSE (§5.5.3). No parameter, no event field,
+# no storage, and explicitly NO on-chain bitmap — a chain-legible scope tag the chain cannot
+# corroborate against the artifact is a claim, not a check. The receipt already commits the artifact
+# hash, so a substituted declaration is caught by address.
+#
+# THE COMPONENT VOCABULARY IS NOT DERIVABLE FROM THIS REPO'S PARENT STATE — recorded, not worked
+# around. A parent state here is a ``coretex.memory-frontier.v1`` manifest, whose schema is CLOSED
+# and carries a ``profiles`` map and NO component registry and NO profile→component reference
+# relation. So the profile half of the closure is fully derivable and the SHARED-COMPONENT half is
+# not, and adding one would be a FRONTIER-LAW change (a new manifest field plus a version), which
+# is out of this migration's scope for exactly the reason GAP-1 is.
+#
+# It is therefore FAIL-CLOSED rather than assumed: ``component_references`` is an explicit argument,
+# and when a caller has no independent statement of the relation it passes ``None``, which makes the
+# component vocabulary EMPTY. An empty ``shared_components`` proceeds (it asserts nothing about a
+# vocabulary); a NON-EMPTY one is refused ``TRANSITION_CLOSURE_UNKNOWN_ID`` — never silently
+# accepted with an empty fan-out, which would be the under-declaration this rule exists to catch,
+# committed by the validator itself.
+def derive_transition_closure(parent_manifest: Mapping[str, Any], artifact: Mapping[str, Any], *,
+                              component_references: Optional[Mapping[str, Any]] = None
+                              ) -> Dict[str, Any]:
+    """Derive the dependency closure INDEPENDENTLY, from the parent state and the artifact.
+
+    ``component_references`` maps a shared-component id to the profile ids that reference it, as the
+    PARENT state composes them. ``None`` means "this caller has no independent statement of the
+    relation", which is not the same as "no component references anything": see the section note
+    above for why the difference is a refusal rather than an empty set.
+
+    Returns ``{"direct": frozenset, "closure": frozenset, "components": frozenset}`` — ``direct`` is
+    the artifact-only half (what §5.5.2 calls under-declaration when it is omitted), ``closure`` is
+    ``direct`` plus the shared-component fan-out.
+    """
+    profiles = parent_manifest.get("profiles")
+    if not isinstance(profiles, Mapping):
+        raise TransitionArtifactError(
+            TRANSITION_ARTIFACT_MALFORMED,
+            "the parent manifest carries no `profiles` map, so no closure can be derived against it")
+    releases = artifact.get("profile_releases") or {}
+    # THE DIRECT HALF, from the artifact alone: one entry per `profile_releases` key.
+    #
+    # "plus any profile whose composition entry moves" (§5.5.1) is the SAME SET under this repo's
+    # frontier law rather than a second one: `frontier.apply_transition` requires
+    # `resulting_composition_root != default_composition_root` whenever a release moves, so a
+    # release move and a composition-entry move are one event with one profile. The case the law
+    # does NOT resolve is T-4 — a composition-only advance with zero `profile_releases`, where the
+    # two composition ROOTS differ and nothing in either root says WHICH entries moved. That half
+    # is not derivable here and is recorded rather than guessed at; see the section note.
+    direct = frozenset(str(pid) for pid in releases)
+    components = frozenset(artifact.get("shared_components") or ())
+    fanout: set = set()
+    if components:
+        table = component_references or {}
+        for component in sorted(components):
+            referencing = table.get(component)
+            if referencing is None:
+                continue
+            fanout.update(str(pid) for pid in referencing)
+    return {"direct": direct, "closure": direct | frozenset(fanout), "components": components}
+
+
+def check_transition_closure(parent_manifest: Mapping[str, Any], artifact: Mapping[str, Any], *,
+                             component_references: Optional[Mapping[str, Any]] = None
+                             ) -> Dict[str, Any]:
+    """The four §5.5.2 refusals, in the spec's table order. Superset check, not equality.
+
+    ``TRANSITION_CLOSURE_MALFORMED`` is already raised by :func:`validate_transition_artifact` — the
+    lists have to be well-formed before anything can be derived from them — so this function owns
+    the other three.
+    """
+    declared = tuple(artifact["affected_profiles"])
+    components = tuple(artifact["shared_components"])
+    known_profiles = frozenset(parent_manifest.get("profiles") or {})
+    known_components = frozenset(component_references or {})
+
+    for pid in declared:
+        if pid not in known_profiles:
+            raise TransitionArtifactError(
+                TRANSITION_CLOSURE_UNKNOWN_ID,
+                f"affected_profiles names {pid!r}, which is not a profile of the parent state "
+                f"({sorted(known_profiles)}). A declaration is checked against the state it claims "
+                "to be about, never against a vocabulary it supplies itself")
+    for cid in components:
+        if cid not in known_components:
+            raise TransitionArtifactError(
+                TRANSITION_CLOSURE_UNKNOWN_ID,
+                f"shared_components names {cid!r}, which is not a component of the parent state "
+                f"({sorted(known_components)})."
+                + ("" if component_references is not None else
+                   " This caller supplied NO component-reference table, so the parent state's "
+                   "component vocabulary here is EMPTY: a coretex.memory-frontier.v1 manifest has "
+                   "a `profiles` map and no component registry, so the profile→component reference "
+                   "relation §5.5.2 computes the fan-out from is not derivable from it. Refusing "
+                   "is the fail-closed answer — accepting with an empty fan-out would let a "
+                   "shared-component change skip every profile that depends on it, which is "
+                   "exactly the under-declaration this rule exists to catch."))
+
+    derived = derive_transition_closure(parent_manifest, artifact,
+                                        component_references=component_references)
+    declared_set = frozenset(declared)
+    # UNDER-DECLARATION first: the DIRECT half is derivable from the artifact alone, so "you did not
+    # name a profile your own profile_releases moves" is the earliest true statement and gets the
+    # more specific code. It is a subset of the MISMATCH condition below and is checked first for
+    # exactly that reason.
+    missing_direct = sorted(derived["direct"] - declared_set)
+    if missing_direct:
+        raise TransitionArtifactError(
+            TRANSITION_CLOSURE_UNDERDECLARED,
+            f"affected_profiles omits {missing_direct}, which this artifact's own profile_releases "
+            f"move. Declared: {list(declared)}")
+    missing_closure = sorted(derived["closure"] - declared_set)
+    if missing_closure:
+        raise TransitionArtifactError(
+            TRANSITION_CLOSURE_MISMATCH,
+            f"the independently-derived closure is not contained in the declaration: "
+            f"{missing_closure} reference a shared component this transition changes "
+            f"({list(components)}) and are not declared. A shared-component change implies every "
+            "profile that references it is re-evaluated; over-declaring is legal, under-declaring "
+            "is fatal")
+    return {"declared": declared, "shared_components": components,
+            "derived_closure": tuple(sorted(derived["closure"])),
+            "over_declared": tuple(sorted(declared_set - derived["closure"]))}
+
+
+def check_transition_epoch_context(artifact: Mapping[str, Any], *, epoch_context_root_: str) -> str:
+    """``artifact.epoch_context_root`` MUST equal the epoch's pin 3 (spec §5.1).
+
+    Its own refusal because "this artifact was written against a different epoch's admission law" is
+    a different fact for an operator from a parent mismatch or a replay mismatch, and only one of
+    the three is fixed by re-mining against the current head.
+    """
+    try:
+        pin = fr.check_root(epoch_context_root_, "epoch_context_root")
+    except fr.FrontierError as exc:
+        raise TransitionArtifactError(TRANSITION_ARTIFACT_MALFORMED, str(exc)) from exc
+    stated = artifact["epoch_context_root"]
+    _artifact_require(stated == pin, TRANSITION_EPOCH_CONTEXT_MISMATCH,
+                      f"the artifact states epoch_context_root {stated}, the epoch pins {pin}. Pin "
+                      "3 names the corpus, the selection law, the baseline and the thresholds this "
+                      "epoch admits against; an artifact naming another one was scored under "
+                      "another epoch's law")
+    return pin
+
+
+def check_transition_artifact_self_consistency(artifact: Mapping[str, Any]) -> Dict[str, Any]:
+    """Validate + check every binding the artifact can check WITHOUT the parent state.
+
+    ``newStateRoot`` is the frontier root of the resulting manifest (spec §5.3), so "deterministic
+    replay" is a closed statement rather than an aspiration: the artifact CONTAINS the resulting
+    manifest, the root is a pure function of it, and the descriptor commits to the root.
     """
     document = validate_transition_artifact(artifact)
-    if document["parent_state_root"] != descriptor.parent_state_root:
+    manifest = document["resulting_frontier_manifest"]
+    _artifact_require(manifest["parent_frontier_root"] == document["parent_state_root"],
+                      TRANSITION_PARENT_MISMATCH,
+                      f"resulting_frontier_manifest.parent_frontier_root "
+                      f"{manifest['parent_frontier_root']} is not the artifact's parent_state_root "
+                      f"{document['parent_state_root']}")
+    _artifact_require(manifest["epoch"] == document["epoch"], TRANSITION_ARTIFACT_MALFORMED,
+                      f"resulting_frontier_manifest.epoch {manifest['epoch']} is not the "
+                      f"artifact's epoch {document['epoch']}")
+    _artifact_require(manifest["default_composition_root"] == document[
+                          "resulting_composition_root"],
+                      TRANSITION_ARTIFACT_MALFORMED,
+                      "resulting_frontier_manifest.default_composition_root disagrees with "
+                      "resulting_composition_root; they are one fact published twice")
+    _artifact_require(document["new_state_root"] != document["parent_state_root"], TRANSITION_NO_OP,
+                      "the artifact's new_state_root equals its parent_state_root, so it expresses "
+                      "no state change and the registry would revert NoOpAdvance")
+    derived = fr.frontier_root(manifest)
+    _artifact_require(derived == document["new_state_root"], TRANSITION_REPLAY_ROOT_MISMATCH,
+                      f"the resulting manifest hashes to {derived}, the artifact claims "
+                      f"new_state_root {document['new_state_root']}")
+    return document
+
+
+def replay_transition_artifact(parent_manifest: Mapping[str, Any],
+                               artifact: Mapping[str, Any], *,
+                               component_references: Optional[Mapping[str, Any]] = None
+                               ) -> Dict[str, Any]:
+    """DETERMINISTIC REPLAY: ``(parentStateRoot, artifact) -> exactly one resulting manifest``.
+
+    THE ARTIFACT PLUS THE PARENT STATE IS THE AUTHORITY; THE CHAIN IS THE CLOCK (spec §5.4). This
+    is a PURE FUNCTION. It takes no input from the transaction, the block, the miner's identity, the
+    wall clock or any unpinned network resource, so two honest validators replaying the same pair
+    MUST agree — and disagreeing with the descriptor's ``newStateRoot`` is a PUBLICLY PROVABLE
+    refutation requiring nothing but chain data and the addressed bytes.
+
+    Breadth is UNBOUNDED and safe without a ceiling (spec §8.1). What constrains the edge is not a
+    size limit: the parent must be the exact current head (registry CAS), the resulting root must be
+    reproducible from that head and the addressed artifact, and the score delta must be attested by
+    the evaluation artifact. A broad transition is neither more likely to be accepted than a narrow
+    one nor less refutable.
+    """
+    document = check_transition_artifact_self_consistency(artifact)
+    try:
+        fr.validate_manifest(parent_manifest)
+        parent_root = fr.frontier_root(parent_manifest)
+    except fr.FrontierError as exc:
         raise TransitionArtifactError(
-            TRANSITION_PARENT_MISMATCH,
-            f"artifact.parent_state_root {document['parent_state_root']} != descriptor's "
-            f"{descriptor.parent_state_root}")
-    if document["new_state_root"] != descriptor.new_state_root:
+            TRANSITION_ARTIFACT_MALFORMED,
+            f"the parent manifest is not a valid frontier manifest: {exc}") from exc
+    _artifact_require(parent_root == document["parent_state_root"], TRANSITION_PARENT_MISMATCH,
+                      f"the supplied parent manifest hashes to {parent_root}, the artifact commits "
+                      f"to parent_state_root {document['parent_state_root']}")
+
+    # §5.5 — THE CLOSURE IS DERIVED HERE, because here is the first point the PARENT STATE is in
+    # scope, and the parent state is what the closure is computed against. A validator reaching this
+    # line has fetched the artifact by address and the parent by root; it derives the closure again
+    # from those two and never from the coordinator that wrote the declaration.
+    check_transition_closure(parent_manifest, document,
+                             component_references=component_references)
+
+    profiles = dict(parent_manifest["profiles"])
+    for pid, move in document["profile_releases"].items():
+        _artifact_require(profiles[pid] == move["expected_prior_release_root"],
+                          TRANSITION_RELEASE_PRIOR_MISMATCH,
+                          f"profile_releases[{pid!r}].expected_prior_release_root "
+                          f"{move['expected_prior_release_root']} is not the parent's "
+                          f"{profiles[pid]}; the candidate was built against a superseded frontier")
+        profiles[pid] = move["new_release_root"]
+
+    replayed = dict(parent_manifest)
+    replayed["epoch"] = document["epoch"]
+    replayed["parent_frontier_root"] = parent_root
+    replayed["profiles"] = profiles
+    replayed["default_composition_root"] = document["resulting_composition_root"]
+
+    # THE LAW PINS ARE CARRIED FORWARD BY CONSTRUCTION (they are copied from the parent above and
+    # never touched). Checking the artifact's own resulting manifest against them is what makes
+    # spec §8's T-6 refusal NAMEABLE rather than an unattributable root mismatch.
+    stated = document["resulting_frontier_manifest"]
+    for pin in TRANSITION_ARTIFACT_LAW_PINS:
+        if pin in replayed or pin in stated:
+            _artifact_require(stated.get(pin) == replayed.get(pin), TRANSITION_LAW_PIN_CHANGE,
+                              f"the artifact's resulting manifest moves the law pin {pin!r} from "
+                              f"{replayed.get(pin)!r} to {stated.get(pin)!r}. Law pins are carried "
+                              "forward by EVERY mined transition; moving one moves coreVersionHash, "
+                              "which is an epoch-context operation performed by "
+                              "CORETEX_CONTEXT_OPERATOR and which NO descriptor can express "
+                              "(spec §8, T-6)")
+
+    replayed_root = fr.frontier_root(replayed)
+    _artifact_require(replayed_root == document["new_state_root"], TRANSITION_REPLAY_ROOT_MISMATCH,
+                      f"replaying (parentStateRoot {parent_root}, artifact) produces "
+                      f"{replayed_root}; the descriptor commits to {document['new_state_root']}. "
+                      "The chain does not adjudicate this — a disagreement here is a publicly "
+                      "provable refutation")
+    # The edge-level no-op was already refused by `check_transition_artifact_self_consistency`
+    # above. Re-checked here as a fail-closed statement rather than an assumption: a replay that
+    # reproduced the parent root would mean the manifest hashed to a value it contains, which is
+    # not reachable, and "not reachable" is exactly the kind of claim that should be checked.
+    _artifact_require(replayed_root != parent_root, TRANSITION_NO_OP,  # pragma: no cover
+                      "the replay reproduces the parent root exactly")
+    return replayed
+
+
+def verify_transition_artifact_bytes(served: bytes, *, descriptor: TransitionDescriptor,
+                                     score_delta_ppm: Optional[int] = None,
+                                     epoch_context_root_: Optional[str] = None) -> Dict[str, Any]:
+    """The §6.3 validator rule over BYTES SOMEONE SERVED, in the spec's table order.
+
+    ``served`` MUST be what a fetch returned. Rehashing a copy still in local memory proves nothing
+    about what a validator will be served, which is the entire reason step 4 of the publish
+    discipline is load-bearing.
+
+    ``score_delta_ppm`` IS NOW THE ONLY SOURCE OF THE DELTA CROSS-CHECK, and that is the change. The
+    descriptor used to carry a copy and the artifact was compared to it; that copy is gone (spec
+    §3.1a), so the comparison is against what the caller supplies — the SIGNED
+    ``scoreAfterPpm - scoreBeforePpm``, or the evaluation artifact's attested delta. Nothing was
+    lost: the descriptor's copy was unsigned and could only ever disagree with the signed members,
+    while ``TRANSITION_SCORE_DELTA_MISMATCH`` still binds the artifact to the evidence.
+
+    ``epoch_context_root_`` is the epoch's pin 3. It is optional in the SIGNATURE only: a validator
+    that has resolved the epoch's context passes it, and one that has not cannot claim to have
+    checked §5.1's ``epoch_context_root`` clause.
+    """
+    if descriptor.version != TRANSITION_DESCRIPTOR_VERSION:      # pragma: no cover - fail closed
         raise TransitionArtifactError(
-            TRANSITION_REPLAY_ROOT_MISMATCH,
-            f"artifact.new_state_root {document['new_state_root']} != descriptor's "
-            f"{descriptor.new_state_root}")
-    if (expected_score_delta_ppm is not None
-            and document["score_delta_ppm"] != int(expected_score_delta_ppm)):
+            TRANSITION_DESCRIPTOR_VERSION_UNSUPPORTED,
+            f"descriptor version 0x{descriptor.version:02x} is not one this validator implements "
+            f"(0x{TRANSITION_DESCRIPTOR_VERSION:02x})")
+    data = bytes(served)
+    _artifact_require(data, TRANSITION_ARTIFACT_UNAVAILABLE,
+                      f"nothing is served at patchArtifactHash {descriptor.patch_artifact_hash}")
+    served_root = fr.sha256_hex(data)
+    _artifact_require(served_root == descriptor.patch_artifact_hash,
+                      TRANSITION_ARTIFACT_ADDRESS_MISMATCH,
+                      f"the served bytes re-hash to {served_root}, the descriptor addresses "
+                      f"{descriptor.patch_artifact_hash}")
+    try:
+        document = fr.parse_json(data.decode("utf-8"))
+    except (UnicodeDecodeError, fr.FrontierError) as exc:
         raise TransitionArtifactError(
-            TRANSITION_SCORE_DELTA_MISMATCH,
-            f"artifact.score_delta_ppm {document['score_delta_ppm']} != signed receipt delta "
-            f"{int(expected_score_delta_ppm)}")
+            TRANSITION_ARTIFACT_NOT_CANONICAL,
+            f"the served bytes are not parseable canonical JSON: {exc}") from exc
+    document = validate_transition_artifact(document)
+    _artifact_require(transition_artifact_bytes(document) == data,
+                      TRANSITION_ARTIFACT_NOT_CANONICAL,
+                      "the served bytes decode but RE-SERIALIZE differently; they are not the "
+                      "canonical byte string this root names")
+    # §5.5.4 — the declared length against THE BYTES THAT WERE SERVED. This is the only place the
+    # two can be compared, which is precisely why the length belongs here and never on chain: the
+    # chain never sees the artifact, so a length there would be a signed assertion with nothing
+    # behind it.
+    _artifact_require(document["byte_length"] == len(data), TRANSITION_ARTIFACT_MALFORMED,
+                      f"artifact.byte_length {document['byte_length']} is not the served length "
+                      f"{len(data)}")
+    _artifact_require(document["parent_state_root"] == descriptor.parent_state_root,
+                      TRANSITION_PARENT_MISMATCH,
+                      f"artifact.parent_state_root {document['parent_state_root']} is not the "
+                      f"descriptor's {descriptor.parent_state_root}")
+    _artifact_require(document["new_state_root"] == descriptor.new_state_root,
+                      TRANSITION_REPLAY_ROOT_MISMATCH,
+                      f"artifact.new_state_root {document['new_state_root']} is not the "
+                      f"descriptor's {descriptor.new_state_root}")
+    if score_delta_ppm is not None:
+        _artifact_require(document["score_delta_ppm"] == int(score_delta_ppm),
+                          TRANSITION_SCORE_DELTA_MISMATCH,
+                          f"artifact.score_delta_ppm {document['score_delta_ppm']} is not the "
+                          f"{int(score_delta_ppm)} ppm the evaluation attests. The descriptor no "
+                          "longer carries a copy to compare against (spec §3.1a); the SIGNED score "
+                          "members and the evaluation artifact are the authority, and this is the "
+                          "off-chain check that was never on chain to lose")
+    if epoch_context_root_ is not None:
+        check_transition_epoch_context(document, epoch_context_root_=epoch_context_root_)
+    check_transition_artifact_self_consistency(document)
     return document
 
 

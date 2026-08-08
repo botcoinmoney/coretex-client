@@ -1,0 +1,29 @@
+{
+  "format": "coretex.rig-rehearsal-release/v1",
+  "classification": "MAINNET_REHEARSAL",
+  "chain_id": 8453,
+  "network": "base-mainnet-disposable",
+  "addresses": {
+    "registry": "0x2e422942db84C64cB9de97E2634aa243dAEbcAD7",
+    "mining": "0x9f3722e99CB3a147816b2acfb9DE1deE84553643",
+    "verifier": "0x9A2f4Ab168081da5FEd45142fb02ece6658eFCBE"
+  },
+  "runtime_code_hashes": {
+    "registry": "0a4bc54383ba8865e55436331be1e69b59310fb9d94a3c73474319f7701e79a5",
+    "mining": "ecfc93ca1eacc377c85aab018937871ecdd438e4600635a0e443797e9b940cb5",
+    "verifier": "0247421348c1df40d49bde234ec9a26860ade684c9fec65f2eab86d06b282374"
+  },
+  "deploy_block": 49667406,
+  "observation_block": 49709494,
+  "source": {
+    "repo": "https://github.com/botcoinmoney/botcoin-mining-rigs",
+    "commit": "a473f3fd1038a81f8ef456cd4c7ce1f7b9fbef6e",
+    "paths": [
+      "contracts/rig/mining",
+      "contracts/rig/interfaces"
+    ],
+    "publicly_fetchable": true
+  },
+  "artifact_base_url": "https://coretex-launch-artifacts-429971482539-us-east-2-an.s3.us-east-2.amazonaws.com/coretex/launch/v16/coretex-v5/rehearsals/base-mainnet/20260807-descriptor-v3/content-addressed/sha256",
+  "runtime_packet_sha256": "4f575e8b4d621dfa8981e53a38d38d9a596a766edc1611285549fe599a03cd0c"
+}
