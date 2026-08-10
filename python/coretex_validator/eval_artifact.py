@@ -191,6 +191,13 @@ CANARY_FIELDS = ("candidate_hash", "code_identity", "consensus_critical", "entro
 COUNTER_LAW_FIELDS = ("branch", "format", "resource_axes", "resource_ppm_max", "utility_axis",
                       "utility_ppm_max")
 RESOURCE_AXIS_FIELDS = ("id", "integer_axis", "source", "unit", "weight_ppm")
+# Wall-clock and candidate-side self-reported compute counters remain diagnostic evidence. They
+# are deliberately forbidden as admission axes: only trusted-parent deterministic counters,
+# logical durable storage and rendered output cost may price a candidate.
+NON_AUTHORITATIVE_ADMISSION_SOURCES = frozenset({
+    "compute", "compute_ms", "compute_micro", "latency", "latency_ms", "latency_micro",
+    "resource.hook_compute_fuel",
+})
 
 # --------------------------------------------------------------------------- #
 # The RIG-PROTOCOL receipt fields (V5 rig-keyed integration, step 6)
@@ -606,6 +613,10 @@ def validate_counter_resource_law(law: Any) -> Dict[str, Any]:
     _check_int(law["utility_ppm_max"], "utility_ppm_max", minimum=1, maximum=MAX_UINT32)
     util = _check_closed(law["utility_axis"], ("scale_max", "source"), "utility_axis")
     _check_str(util["source"], "utility_axis.source")
+    if util["source"] != "composite":
+        raise CounterResourceLawError(
+            "utility_axis.source must be 'composite'; candidate-reported compute/latency is "
+            "diagnostic and cannot become admission authority")
     _check_int(util["scale_max"], "utility_axis.scale_max", minimum=1)
     axes = law["resource_axes"]
     if not isinstance(axes, list) or not axes:
@@ -616,6 +627,10 @@ def validate_counter_resource_law(law: Any) -> Dict[str, Any]:
         _check_closed(axis, RESOURCE_AXIS_FIELDS, f"resource_axes[{i}]")
         _check_str(axis["id"], f"resource_axes[{i}].id")
         _check_str(axis["source"], f"resource_axes[{i}].source")
+        if axis["source"] in NON_AUTHORITATIVE_ADMISSION_SOURCES:
+            raise CounterResourceLawError(
+                f"resource axis source {axis['source']!r} is candidate-side diagnostic data, "
+                "not an admission authority")
         _check_str(axis["unit"], f"resource_axes[{i}].unit")
         _check_bool(axis["integer_axis"], f"resource_axes[{i}].integer_axis")
         total += _check_int(axis["weight_ppm"], f"resource_axes[{i}].weight_ppm",
@@ -935,6 +950,10 @@ def validate_artifact(artifact: Any) -> Dict[str, Any]:
     burned = _check_closed(sel["burned_head"], ("record_hash", "records"), "selection.burned_head")
     fr.check_root(burned["record_hash"], "selection.burned_head.record_hash")
     _check_int(burned["records"], "selection.burned_head.records")
+    if not signed_era and burned != {"record_hash": "0" * 64, "records": 0}:
+        raise ArtifactValueError(
+            "prospective evaluation disables cross-attempt burn state; burned_head remains only "
+            "as a frozen compatibility field and must be its canonical zero value")
     _check_closed(sel["counts"], SELECTION_LABELS, "selection.counts")
     _check_closed(sel["base_sha256"], SELECTION_LABELS, "selection.base_sha256")
     _check_closed(sel["cases"], SELECTION_LABELS, "selection.cases")

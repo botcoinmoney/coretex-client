@@ -1,5 +1,11 @@
 # SPDX-License-Identifier: UNLICENSED
-"""Frontier event SYNC: confirmation depth, ordering, contiguity, gaps (Cut V5-E, §17.236).
+"""Historical pre-rig frontier sync model retained only for regression fixtures.
+
+This module's genesis-inheritance model is not used by the production descriptor-v3 command.
+Production continuity is reconstructed from confirmed verifier epoch-context parents by
+``rig_events.context_parent_continuity``.
+
+Frontier event SYNC: confirmation depth, ordering, contiguity, gaps (Cut V5-E, §17.236).
 
 Pure functions over SUPPLIED log dicts. There is no RPC client here and no network call anywhere
 in the module: a log source is INJECTED (:class:`LogSource`), which is why every property below is

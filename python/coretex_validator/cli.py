@@ -112,23 +112,13 @@ def _cmd_reproduce_snapshot(args: argparse.Namespace) -> int:
 
 
 def _cmd_topics(args: argparse.Namespace) -> int:
-    from . import dispatch as dp
     from . import rig_events as rig
 
     _emit({
-        "v4": {t: dp._SIGNATURES[t][1] for t in dp.V4_TOPICS},              # noqa: SLF001
-        "rig_deployed": {t: rig.EVENT_NAMES[t] for t in rig.RIG_LOG_TOPICS},
-        "rig_staged_never_deployed": {
-            t: dp._SIGNATURES[t][1] for t in dp.RIG_TOPICS                 # noqa: SLF001
-            if dp._SIGNATURES[t][0] == dp.PROTOCOL_RIG},                    # noqa: SLF001
-        "advance_topic0_collision": {
-            "v4": dp.V4_STATE_ADVANCED_TOPIC0,
-            "rig": rig.STATE_ADVANCED_TOPIC0,
-            "identical": dp.V4_STATE_ADVANCED_TOPIC0 == rig.STATE_ADVANCED_TOPIC0,
-            "consequence": ("descriptor-v3 has a distinct topic0; routing remains scoped by "
-                            "deployment address so historical V4/v2 logs can never enter the "
-                            "production stream"),
-        },
+        "production_descriptor_v3": {
+            t: rig.EVENT_NAMES[t] for t in rig.RIG_LOG_TOPICS},
+        "scope": ("only the canonical deployed rig-NFT descriptor-v3 lane; no V4, staking, "
+                  "word-patch, staged, or descriptor-v2 subscription is exposed"),
     }, pretty=not args.compact)
     return 0
 

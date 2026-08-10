@@ -147,12 +147,14 @@ def legacy_v2_advance_log(*, address: str = REGISTRY):
             "transactionHash": "0x" + "ab" * 32}
 
 
-def epoch_context_log(*, address: str = VERIFIER, epoch: int = 7):
+def epoch_context_log(*, address: str = VERIFIER, epoch: int = 7,
+                      parent: str = "aa" * 32, context_root: str = "cc" * 32,
+                      core_version: str = "ee" * 32, block: int = 15):
     return {
         "address": address,
         "topics": ["0x" + rig.EPOCH_CONTEXT_SET_TOPIC0, topic_uint(epoch)],
-        "data": "0x" + "".join([word("aa" * 32), word("cc" * 32), word("ee" * 32)]),
-        "blockNumber": "0xf", "logIndex": "0x0", "transactionHash": "0x" + "ac" * 32,
+        "data": "0x" + "".join([word(parent), word(context_root), word(core_version)]),
+        "blockNumber": hex(block), "logIndex": "0x0", "transactionHash": "0x" + "ac" * 32,
     }
 
 
@@ -184,6 +186,24 @@ class TestEventSurface:
         assert decoded.epoch_context_root == "cc" * 32
         assert decoded.core_version_hash == "ee" * 32
         assert rig.scan([epoch_context_log()], DEPLOYMENT).contexts == [decoded]
+
+    def test_operational_state_begins_at_context_parent_not_constructor_genesis(self):
+        # No constructor root is supplied anywhere: the deployed registry reads this value from
+        # the verifier until transition 0 initializes its live-state cell.
+        decoded = rig.scan([epoch_context_log(parent="aa" * 32, context_root="11" * 32),
+                            advance_log(parent="aa" * 32)],
+                           DEPLOYMENT)
+        report = rig.context_parent_continuity(decoded)
+        assert report["problems"] == []
+        assert report["operational_context_parents"] == {"7": "aa" * 32}
+        assert report["constructor_genesis_used_as_state_authority"] is False
+
+    def test_first_advance_must_build_on_confirmed_context_parent(self):
+        decoded = rig.scan([epoch_context_log(parent="99" * 32, context_root="11" * 32),
+                            advance_log(parent="aa" * 32)],
+                           DEPLOYMENT)
+        report = rig.context_parent_continuity(decoded)
+        assert any("confirmed context parent" in problem for problem in report["problems"])
 
     def test_the_staged_rig_events_are_not_what_any_contract_emits(self):
         staged = {dp.RIG_STATE_ADVANCED_TOPIC0, dp.RIG_SCREENER_PASS_TOPIC0,

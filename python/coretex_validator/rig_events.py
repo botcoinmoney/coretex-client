@@ -586,6 +586,75 @@ class DecodedLogs:
         return found[-1] if found else None
 
 
+def context_parent_continuity(decoded: DecodedLogs) -> Dict[str, Any]:
+    """Reconstruct each served epoch from its confirmed verifier context parent.
+
+    ``RigCoreTexRegistry.liveStateRoot(epoch)`` returns the verifier's
+    ``coreTexParentStateRoot(epoch)`` until the first accepted transition.  The constructor's
+    ``GENESIS_STATE_ROOT`` is therefore an immutable deployment fact and diagnostic only; it is
+    never an input to this reconstruction.  This mirrors the deployed contract exactly.
+    """
+    problems: List[str] = []
+    parents: Dict[str, str] = {}
+    by_epoch: Dict[int, List[StateAdvanced]] = {}
+    for advance in decoded.advances:
+        by_epoch.setdefault(advance.epoch, []).append(advance)
+    for epoch, group in sorted(by_epoch.items()):
+        ordered = sorted(group, key=lambda item: item.transition_index)
+        contexts = sorted((ctx for ctx in decoded.contexts if ctx.epoch == epoch),
+                          key=lambda item: item.provenance.position)
+        if not contexts:
+            problems.append(
+                f"epoch {epoch} has accepted transitions but no confirmed CoreTexEpochContextSet")
+            continue
+        first = ordered[0]
+        before = [ctx for ctx in contexts if ctx.provenance.position < first.provenance.position]
+        if not before:
+            problems.append(
+                f"epoch {epoch}'s context was not confirmed before its first transition")
+            continue
+        context = before[-1]
+        parents[str(epoch)] = context.parent_state_root
+        after = [ctx for ctx in contexts if ctx.provenance.position > first.provenance.position]
+        if after:
+            problems.append(
+                f"epoch {epoch} published a replacement context after state activity began")
+        if first.transition_index != 0:
+            problems.append(
+                f"epoch {epoch}'s first observed transition is index {first.transition_index}, "
+                "not index 0; a deployment-block scan must not invent the missing prefix")
+        if first.parent_state_root != context.parent_state_root:
+            problems.append(
+                f"epoch {epoch}'s first transition builds on {first.parent_state_root}, but its "
+                f"confirmed context parent is {context.parent_state_root}")
+        expected_parent = context.parent_state_root
+        expected_index = 0
+        for advance in ordered:
+            if advance.transition_index != expected_index:
+                problems.append(
+                    f"epoch {epoch} transition index {advance.transition_index} follows "
+                    f"{expected_index - 1}; the accepted history is not dense")
+                expected_index = advance.transition_index
+            if advance.parent_state_root != expected_parent:
+                problems.append(
+                    f"epoch {epoch} transition {advance.transition_index} builds on "
+                    f"{advance.parent_state_root}, expected live root {expected_parent}")
+            if advance.epoch_context_root != context.epoch_context_root:
+                problems.append(
+                    f"epoch {epoch} transition {advance.transition_index} carries epoch context "
+                    f"{advance.epoch_context_root}, confirmed context is "
+                    f"{context.epoch_context_root}")
+            if advance.core_version_hash != context.core_version_hash:
+                problems.append(
+                    f"epoch {epoch} transition {advance.transition_index} carries core version "
+                    f"{advance.core_version_hash}, confirmed context is "
+                    f"{context.core_version_hash}")
+            expected_parent = advance.new_state_root
+            expected_index = advance.transition_index + 1
+    return {"operational_context_parents": parents, "problems": problems,
+            "constructor_genesis_used_as_state_authority": False}
+
+
 def scan(logs: Iterable[Mapping[str, Any]], deployment: RigDeployment) -> DecodedLogs:
     out = DecodedLogs([], [], [], [], [], [], [], [])
     buckets = {

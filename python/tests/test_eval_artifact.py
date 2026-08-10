@@ -561,6 +561,19 @@ def test_counter_law_weights_must_sum_to_one_million():
         ea.validate_counter_resource_law(broken)
 
 
+def test_candidate_reported_compute_is_diagnostic_not_admission_authority():
+    law = ea.load_counter_resource_law()
+    broken = copy.deepcopy(law)
+    broken["resource_axes"][1]["source"] = "resource.hook_compute_fuel"
+    with pytest.raises(ea.CounterResourceLawError, match="not an admission authority"):
+        ea.validate_counter_resource_law(broken)
+
+    broken = copy.deepcopy(law)
+    broken["utility_axis"]["source"] = "compute_micro"
+    with pytest.raises(ea.CounterResourceLawError, match="diagnostic"):
+        ea.validate_counter_resource_law(broken)
+
+
 def test_counter_law_refuses_a_zero_incumbent_baseline(built):
     artifact, parts, _ = built
     branch = parts["law"]["branch"]

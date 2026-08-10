@@ -968,8 +968,11 @@ def walk_lineage(views, *, from_epoch: int, back_to: int) -> Tuple[List[LineageS
                 f"most recent SERVED epoch {epoch} ends at {final_root} ({source})")
         steps.append(step)
         return steps, problems
-    steps.append(LineageStep(epoch=int(back_to) - 1, sealed=False, served=False,
-                             final_root=expected, source="registry_genesis",
-                             note="no served epoch at or above the registry's floor: this is the "
-                                  "genesis of this registry's history, not a fault"))
+    steps.append(LineageStep(
+        epoch=int(back_to) - 1, sealed=False, served=False,
+        final_root=expected, source="operational_context_parent",
+        note=("no earlier served epoch exists in the scanned registry history. The remaining "
+              "root is the confirmed verifier context parent for the served epoch; the "
+              "registry constructor GENESIS_STATE_ROOT is a deployment diagnostic and is not "
+              "used as operational state authority")))
     return steps, problems

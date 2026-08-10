@@ -114,7 +114,7 @@ def _fixture(*, candidate_release: str = "cd" * 32,
 
 
 def _install_pure_port_spies(monkeypatch, fixture):
-    calls = SimpleNamespace(verify=[], replay=[], projected=[])
+    calls = SimpleNamespace(verify=[], replay=[], materialized=[], projected=[])
 
     def verify(served, *, descriptor, score_delta_ppm=None, epoch_context_root_=None):
         calls.verify.append((served, descriptor, score_delta_ppm, epoch_context_root_))
@@ -123,6 +123,12 @@ def _install_pure_port_spies(monkeypatch, fixture):
     def replay(parent, artifact, *, component_references=None):
         calls.replay.append((parent, artifact, component_references))
         return copy.deepcopy(fixture.resulting)
+
+    def materialize(*, releases, composition_root, expected_candidate_hashes, store):
+        calls.materialized.append((dict(releases), composition_root,
+                                   dict(expected_candidate_hashes), store))
+        return {"composition": {},
+                "releases": {profile: {} for profile in fr.PROFILE_IDS}}
 
     class UnavailableSandbox:
         bench_v2_dir = None
@@ -144,6 +150,7 @@ def _install_pure_port_spies(monkeypatch, fixture):
 
     monkeypatch.setattr(rig, "verify_transition_artifact_bytes", verify, raising=False)
     monkeypatch.setattr(rig, "replay_transition_artifact", replay, raising=False)
+    monkeypatch.setattr(pipeline.rg, "verify_materializable_release_state", materialize)
     monkeypatch.setattr(pipeline.rp, "default_sandbox", lambda: UnavailableSandbox())
     monkeypatch.setattr(pipeline.rp, "default_oracle_screen", lambda: UnavailableScreen())
     monkeypatch.setattr(pipeline.rp, "replay_advance", replay_advance)
@@ -175,6 +182,13 @@ def test_v3_admission_passes_exact_served_bytes_through_full_parent_replay(monke
     assert parent == fixture.parent
     assert patch == fixture.patch_document
     assert component_references is None
+    releases, composition, candidates, store = calls.materialized[0]
+    assert releases == fixture.resulting["profiles"]
+    assert composition == fixture.composition
+    # This focused orchestration double omits the full eval-artifact candidate block; the real
+    # production shape supplies it and release_graph tests cover the binding itself.
+    assert candidates == {}
+    assert store is fixture.store
     projected = calls.projected[0]
     assert projected.candidate_release_root == fixture.signed_release
     assert projected.composition_root == fixture.composition

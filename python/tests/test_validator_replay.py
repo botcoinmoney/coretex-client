@@ -214,6 +214,14 @@ def test_a_sealed_artifact_rehashes_then_backlogs_until_the_chain_reveal(scenari
     assert "entropy_expansion" in replayed.checks
 
 
+def test_prospective_artifact_keeps_only_the_zero_legacy_burned_head(scenario):
+    artifact, _ = publish_sealed_v2(scenario)
+    tampered = copy.deepcopy(artifact)
+    tampered["selection"]["burned_head"] = {"record_hash": "1" * 64, "records": 1}
+    with pytest.raises(ea.ArtifactValueError, match="cross-attempt burn state"):
+        ea.validate_artifact(tampered)
+
+
 def test_a_sealed_artifact_with_the_wrong_chain_commitment_fails_before_reveal(scenario):
     _, artifact_hash = publish_sealed_v2(scenario)
     event = scenario.event(eval_report_hash=artifact_hash)

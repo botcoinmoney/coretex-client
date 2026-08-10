@@ -1728,7 +1728,11 @@ def replay_stream(events: Sequence[dp.FrontierAdvanced], *, store: pub.ContentSt
                   genesis_frontier_root: Optional[str] = None,
                   finalizations: Sequence[dp.MemoryEpochFinalized] = (),
                   **replay_kwargs) -> StreamResult:
-    """Replay an ordered stream, threading the live root through each epoch.
+    """Replay a historical pre-rig frontier stream, threading its root through each epoch.
+
+    This helper is not called by the production descriptor-v3 pipeline. Production epoch
+    bootstrap comes from the confirmed verifier context parent and is checked in
+    :func:`rig_events.context_parent_continuity`.
 
     Continuity is the off-chain twin of the registry's CAS: within an epoch, advance *n*'s
     ``parentFrontierRoot`` must be advance *n-1*'s ``newFrontierRoot``. A wrong-parent event stops

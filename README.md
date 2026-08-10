@@ -13,14 +13,20 @@ signature and exact production signer, mining, verifier, registry, genesis, cuto
 descriptor-v3 receipt typehash, and EIP-712 domain. It then independently reads runtime bytecode,
 immutable wiring, and the coordinator signer from Base.
 
+The recorded genesis root is only the registry constructor's immutable deployment fact. It is not
+the operational bootstrap authority. For every served epoch, the validator reads the verifier's
+confirmed `CoreTexEpochContextSet.parentStateRoot` and reconstructs transition 0 from that root.
+This allows the intentionally bare schema-v3 production bootstrap to differ from the constructor
+diagnostic without inventing a migration transition.
+
 Canonical Base contracts:
 
 - mining: `0xB61BC7487424172CB9fa9dD381a9eC06C7067dCd`
 - verifier: `0x82384E4DA334a4e3E1d8d2623359dC8c4d931Ed4`
 - registry: `0xa4d8a7Bb3Ba2D023af29Bf77601A61673ED89ad3`
 
-Historical V4 and descriptor-v2 readers remain explicit decoders for already-recorded evidence.
-They are not production defaults and cannot be selected by a production release.
+The production command follows only the deployed descriptor-v3 rig lane. It does not select a V4,
+staking, word-patch, or descriptor-v2 replay path.
 
 ## Production quick start
 
@@ -76,6 +82,12 @@ Missing transition artifacts, an unavailable deterministic evaluator tree, or an
 snapshot are reported as explicit unverified/backlog results. They never become a pass. Use
 `--require-complete` when an incomplete verification must fail the command.
 
+For schema-v3 state, “available” means the complete graph: the composition manifest, all three
+profile release manifests, and every module file each manifest binds. A missing object is BACKLOG
+(publication may be repaired); a malformed, substituted, partially scoped, or wrongly delegated
+graph is FAIL. Prospective Python releases conservatively declare the full M1–M6 may-affect roster.
+Candidate-reported compute and wall-clock figures remain diagnostics and are not admission axes.
+
 ## Exit codes
 
 | code | meaning |
@@ -86,5 +98,4 @@ snapshot are reported as explicit unverified/backlog results. They never become 
 
 ## More
 
-See [docs/V5-RIG-VALIDATOR.md](docs/V5-RIG-VALIDATOR.md) for descriptor-v3 wire details and explicit
-historical decoder boundaries.
+See [docs/V5-RIG-VALIDATOR.md](docs/V5-RIG-VALIDATOR.md) for descriptor-v3 wire details.

@@ -16,22 +16,10 @@ accident of packaging: a validator whose answer depends on a wheel it downloaded
 whose answer depends on whoever published that wheel. ``pyproject.toml`` declares ZERO runtime
 dependencies and a clean-install test asserts it.
 
-THE TWO LANES, AND WHY THEY ARE SEPARATE MODULES.
-
-* **V4** (``coretex.state.v4``) is frozen. Its decoder dispatches on the ``CoreTexStateAdvanced``
-  topic0 and reads fixed ABI word offsets. Nothing here changes it, and
-  ``test_v4_decode_is_byte_for_byte`` pins it.
-* **The rig lane** (``coretex.rig-state.v1``) is new. It is NOT a variant of V4 with a flag: it is
-  a different registry, a different receipt shape, a rig id instead of a miner address, and an
-  epoch context that lives on the VERIFIER rather than the registry.
-
-They coexist by ADDRESS, not by topic0 — and that is forced rather than chosen. The exact rig
-registry emits an advance event whose topic0 is BYTE-IDENTICAL to V4's (see :mod:`.rig_events`
-and ``docs/V5-RIG-VALIDATOR.md``), so topic0 is not an identity and any dispatch that treats it as
-one silently mixes the two lanes' logs.
-
-CLASSIFICATION. Production is derived only from the authenticated canonical release and exact
-chain identity. Historical V4/v2 readers remain explicit decoders, never production defaults.
+PRODUCTION LANE. The public command subscribes only to the canonical descriptor-v3 rig contracts.
+Its state bootstrap is the confirmed verifier epoch-context parent, never the registry constructor
+genesis. Historical decoder modules remain internal regression evidence and are not selectable by
+the production command.
 """
 from __future__ import annotations
 
@@ -51,6 +39,7 @@ __all__ = [
     "publication",
     "receipt_chain",
     "release",
+    "release_graph",
     "replay",
     "rig_events",
     "rpc",
@@ -61,4 +50,4 @@ __all__ = [
 
 #: Independent of the npm package version on purpose: the two ship together but are versioned by
 #: what they each promise. Bumped when a check is added, removed or changed in meaning.
-__version__ = "0.2.2"
+__version__ = "0.2.3"

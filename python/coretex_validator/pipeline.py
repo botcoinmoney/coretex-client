@@ -45,6 +45,7 @@ from . import join as jn
 from . import publication as pub
 from . import receipt_chain as rc
 from . import release as rel
+from . import release_graph as rg
 from . import replay as rp
 from . import resolver_snapshot as rsn
 from . import rig_events as rig
@@ -228,9 +229,12 @@ def run(*, release_location: str, rpc_url: str,
 
     # -- 3. receipt continuity ---------------------------------------------- #
     chains = rc.replay_all(decoded, views=views)
-    chain_problems = [p for result in chains.values() for p in result.problems]
+    context_continuity = rig.context_parent_continuity(decoded)
+    chain_problems = ([p for result in chains.values() for p in result.problems]
+                      + list(context_continuity["problems"]))
     record("receipt_continuity", "PASS" if not chain_problems else "FAIL",
            {"rigs": {str(k): v.as_dict() for k, v in sorted(chains.items())},
+            "coretex_state_continuity": context_continuity,
             "scanned_blocks": [scan_from, scan_to], "logs_seen": len(logs),
             "logs_ignored": decoded.ignored}, chain_problems)
     if chain_problems:
@@ -620,6 +624,35 @@ def _admit(selected: jn.JoinedTransition, law: hl.EpochLaw, store: pub.ContentSt
                        f"{front.get('composition_root')!r}, the confirmed transition artifact "
                        f"resolves to {resulting_composition!r}")}
 
+    # A reproducible frontier root is not yet an installable state. Follow the complete schema-v3
+    # graph now: composition, all three profile manifests, and every module byte string each one
+    # binds. The target profile's composition binding must name the exact candidate code the
+    # evaluator scored. Missing bytes are retryable publication backlog; malformed or substituted
+    # bytes are a permanent refusal.
+    resulting_manifest = patch_artifact.get("resulting_frontier_manifest")
+    if not isinstance(resulting_manifest, Mapping):
+        return artifact, {
+            "outcome": "FAIL", "code": "RELEASE_STATE_INVALID",
+            "reason": "the transition artifact carries no resulting frontier manifest"}
+    target_profile = str(candidate.get("target_profile", ""))
+    candidate_hash = candidate.get("candidate_hash")
+    expected_candidates = ({target_profile: candidate_hash}
+                           if target_profile in fr.PROFILE_IDS
+                           and isinstance(candidate_hash, str) else {})
+    try:
+        materialized = rg.verify_materializable_release_state(
+            releases=resulting_manifest.get("profiles", {}),
+            composition_root=resulting_composition,
+            expected_candidate_hashes=expected_candidates,
+            store=store)
+    except pub.ObjectNotFoundError as exc:
+        return artifact, {
+            "outcome": "BACKLOG", "code": "RELEASE_STATE_UNAVAILABLE",
+            "reason": f"resulting schema-v3 release graph is not fully published: {exc}"}
+    except (pub.PublicationError, rg.ReleaseGraphError, fr.FrontierError) as exc:
+        return artifact, {
+            "outcome": "FAIL", "code": "RELEASE_STATE_INVALID", "reason": str(exc)}
+
     # Existing deterministic evaluator replay consumes the evaluator's one-profile projection.
     # That projection is safe only after the generalized transition above has replayed in full and
     # the two artifacts have been explicitly joined by release and composition roots.
@@ -673,6 +706,8 @@ def _admit(selected: jn.JoinedTransition, law: hl.EpochLaw, store: pub.ContentSt
     report: Dict[str, Any] = {"outcome": str(result.outcome), "reason": result.reason,
                               "checks": list(result.checks),
                               "transition_descriptor": descriptor.as_dict(),
+                              "materialized_release_profiles": sorted(
+                                  materialized["releases"]),
                               "admission_trees": admission_trees}
     if result.code is not None:
         report["code"] = result.code
