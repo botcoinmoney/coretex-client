@@ -160,8 +160,13 @@ CANDIDATE_FIELDS = ("candidate_hash", "prior_release_root", "release_root", "tar
 FRONTIER_FIELDS = ("benchmark_law_root", "composition_root", "new_frontier_root",
                    "parent_frontier_root", "runtime_abi_root", "transition",
                    "transition_bytes_len", "transition_hash_keccak256", "transition_id_sha256")
-ENTROPY_FIELDS = ("commitment", "commitment_scheme", "confirm_value", "derivation_domain",
-                  "gate_value", "revealed_secret")
+# Live-epoch production artifacts publish only the commitment and derivation law. Publishing the
+# opening (or its reusable gate/confirm expansions) before ``EpochSecretRevealed`` would disclose
+# the coordinator-private selection entropy. The complete open shape remains valid for every
+# historical artifact already addressed by an on-chain ``evalReportHash``.
+ENTROPY_SEALED_FIELDS = ("commitment", "commitment_scheme", "derivation_domain")
+ENTROPY_OPEN_FIELDS = ENTROPY_SEALED_FIELDS + ("confirm_value", "gate_value", "revealed_secret")
+ENTROPY_FIELDS = ENTROPY_OPEN_FIELDS
 SELECTION_FIELDS = ("base_sha256", "burned_head", "cases", "counts", "domain", "profile_id",
                     "round_id", "scales", "season_root")
 CASE_FIELDS = ("derivation_index", "instance_hash", "instance_id", "profile_id", "scale", "seed")
@@ -316,6 +321,15 @@ class EpochPinMismatchError(BindingMismatchError):
 
 class EntropyMismatchError(BindingMismatchError):
     """The entropy commitment, the revealed secret, or a derived selection entropy is wrong."""
+
+
+class EntropyOpeningUnavailableError(EvalArtifactError):
+    """A sealed artifact cannot be replayed until its chain opening is available.
+
+    This is deliberately not a binding mismatch: the artifact remains structurally valid and
+    hash-verifiable. A public validator records it as unresolved work and retries after observing
+    ``EpochSecretRevealed``.
+    """
 
 
 class SelectionMismatchError(BindingMismatchError):
@@ -891,9 +905,21 @@ def validate_artifact(artifact: Any) -> Dict[str, Any]:
     _check_int(front["transition_bytes_len"], "frontier.transition_bytes_len", minimum=1,
                maximum=fr.MAX_TRANSITION_BYTES)
 
-    ent = _check_closed(artifact["entropy"], ENTROPY_FIELDS, "entropy")
-    for field in ("commitment", "confirm_value", "gate_value", "revealed_secret"):
-        fr.check_root(ent[field], f"entropy.{field}")
+    ent = artifact["entropy"]
+    if not isinstance(ent, dict):
+        raise ArtifactTypeError("entropy must be an object")
+    entropy_fields = set(ent)
+    if entropy_fields not in (set(ENTROPY_SEALED_FIELDS), set(ENTROPY_OPEN_FIELDS)):
+        missing = sorted(set(ENTROPY_SEALED_FIELDS) - entropy_fields)
+        unknown = sorted(entropy_fields - set(ENTROPY_OPEN_FIELDS))
+        partial = sorted(entropy_fields & {"confirm_value", "gate_value", "revealed_secret"})
+        raise ArtifactSchemaError(
+            "entropy must be either the closed sealed shape or the complete historical open "
+            f"shape (missing={missing}, unknown={unknown}, partial_opening={partial})")
+    fr.check_root(ent["commitment"], "entropy.commitment")
+    if entropy_fields == set(ENTROPY_OPEN_FIELDS):
+        for field in ("confirm_value", "gate_value", "revealed_secret"):
+            fr.check_root(ent[field], f"entropy.{field}")
     _check_str(ent["commitment_scheme"], "entropy.commitment_scheme")
     _check_str(ent["derivation_domain"], "entropy.derivation_domain")
 
@@ -1400,7 +1426,8 @@ def verify_artifact(artifact: Mapping[str, Any], *, expected_parent_root: str,
                     expected_epoch_context_root: Optional[str] = None,
                     expected_core_version_hash: Optional[str] = None,
                     expected_work_policy_hash: Optional[str] = None,
-                    signature_verifier=None) -> Dict[str, Any]:
+                    signature_verifier=None,
+                    revealed_entropy_secret: Optional[str] = None) -> Dict[str, Any]:
     """Verify EVERY binding of ``artifact`` against the values a confirmed chain state asserts.
 
     The expected roots come from the chain (the registry's live root and epoch pins, the receipt's
@@ -1552,20 +1579,38 @@ def verify_artifact(artifact: Mapping[str, Any], *, expected_parent_root: str,
              EntropyMismatchError,
              f"artifact entropy commitment {ent['commitment']} != the on-chain commitment "
              f"{expected_entropy_commitment}")
-    opened = entropy_commitment_of(ent["revealed_secret"])
+    embedded_opening = ent.get("revealed_secret")
+    if revealed_entropy_secret is not None:
+        fr.check_root(revealed_entropy_secret, "revealed_entropy_secret")
+    if embedded_opening is not None and revealed_entropy_secret is not None:
+        _require(embedded_opening == revealed_entropy_secret, EntropyMismatchError,
+                 "the external chain opening disagrees with the artifact's historical embedded "
+                 "opening")
+    opening = revealed_entropy_secret or embedded_opening
+    if opening is None:
+        raise EntropyOpeningUnavailableError(
+            "the eval artifact is sealed and EpochSecretRevealed has not supplied its opening")
+    opened = entropy_commitment_of(opening)
     _require(opened == ent["commitment"], EntropyMismatchError,
              f"the revealed epoch secret opens to {opened}, not the bound commitment "
              f"{ent['commitment']} — keccak256(abi.encodePacked(bytes32 secret))")
     for label in SELECTION_LABELS:
         field = f"{label}_value"
-        expected = derive_entropy_value(revealed_secret=ent["revealed_secret"],
+        expected = derive_entropy_value(revealed_secret=opening,
                                         epoch=artifact["epoch"],
                                         parent_frontier_root=front["parent_frontier_root"],
                                         label=label)
-        _require(ent[field] == expected, EntropyMismatchError,
-                 f"entropy.{field} {ent[field]} is not the committed secret expanded under "
-                 f"{ENTROPY_DOMAIN}|{label}")
-    _require(ent["gate_value"] != ent["confirm_value"], EntropyMismatchError,
+        if field in ent:
+            _require(ent[field] == expected, EntropyMismatchError,
+                     f"entropy.{field} {ent[field]} is not the committed secret expanded under "
+                     f"{ENTROPY_DOMAIN}|{label}")
+    expanded_entropy = dict(ent)
+    for label in SELECTION_LABELS:
+        expanded_entropy[f"{label}_value"] = derive_entropy_value(
+            revealed_secret=opening, epoch=artifact["epoch"],
+            parent_frontier_root=front["parent_frontier_root"], label=label)
+    _require(expanded_entropy["gate_value"] != expanded_entropy["confirm_value"],
+             EntropyMismatchError,
              "the gate and confirmation entropies are equal; the two selections must draw from "
              "independent values so no single input co-steers both")
     done("entropy_commitment")
@@ -1577,7 +1622,7 @@ def verify_artifact(artifact: Mapping[str, Any], *, expected_parent_root: str,
     _require(sel["profile_id"] == cand["target_profile"], SelectionMismatchError,
              f"selection profile {sel['profile_id']!r} != the target profile "
              f"{cand['target_profile']!r}")
-    verify_selection_walk(sel, entropy=ent, candidate_hash=cand["candidate_hash"])
+    verify_selection_walk(sel, entropy=expanded_entropy, candidate_hash=cand["candidate_hash"])
     done("selection_walk")
 
     # ---- 6. the deterministic evaluation report, dispatched by the artifact's own law --------
@@ -1647,10 +1692,10 @@ def verify_artifact(artifact: Mapping[str, Any], *, expected_parent_root: str,
     _require(body["profile_id"] == cand["target_profile"], ReceiptBindingError,
              f"receipt profile {body['profile_id']!r} != the target profile "
              f"{cand['target_profile']!r}")
-    _require(body["entropy"]["value"] == ent["gate_value"], EntropyMismatchError,
+    _require(body["entropy"]["value"] == expanded_entropy["gate_value"], EntropyMismatchError,
              "the receipt's gate entropy value is not the chain-committed entropy expanded for "
              "the gate label — the scored instances did not come from the committed entropy")
-    _require(body["confirm_entropy"]["value"] == ent["confirm_value"], EntropyMismatchError,
+    _require(body["confirm_entropy"]["value"] == expanded_entropy["confirm_value"], EntropyMismatchError,
              "the receipt's confirmation entropy value is not the chain-committed entropy "
              "expanded for the confirm label")
     _require(body["season_root"] == sel["season_root"] and body["round_id"] == sel["round_id"]
@@ -1832,7 +1877,8 @@ def verify_signed_era_artifact(artifact: Mapping[str, Any], *, receipt_wrapper=N
 def verify_canary_block(artifact: Mapping[str, Any],
                         sealed_transcript: Optional[Mapping[str, Any]] = None, *,
                         store: Optional[pub.ContentStore] = None,
-                        expected_code_identity: Optional[Mapping[str, Any]] = None
+                        expected_code_identity: Optional[Mapping[str, Any]] = None,
+                        revealed_entropy_secret: Optional[str] = None,
                         ) -> Dict[str, Any]:
     """Validate the SEALED canary bindings without regenerating a single model token.
 
@@ -1950,7 +1996,15 @@ def verify_canary_block(artifact: Mapping[str, Any],
     entropy_block = sealed.get("entropy")
     if not isinstance(entropy_block, dict):
         return report(False, "malformed_transcript", "sealed transcript carries no entropy block")
-    art_entropy = artifact["entropy"]["gate_value"]
+    art_entropy = artifact["entropy"].get("gate_value")
+    if art_entropy is None:
+        if revealed_entropy_secret is None:
+            return report(False, "entropy_opening_unavailable",
+                          "the artifact's canary entropy cannot be checked until the sealed "
+                          "epoch opening is supplied from EpochSecretRevealed")
+        art_entropy = derive_entropy_value(
+            revealed_secret=revealed_entropy_secret, epoch=artifact["epoch"],
+            parent_frontier_root=artifact["frontier"]["parent_frontier_root"], label="gate")
     if block["entropy_hex"] != art_entropy or entropy_block.get("hex") != art_entropy:
         return report(False, "entropy_binding_mismatch",
                       f"canary entropy binding: artifact gate entropy={art_entropy}, "

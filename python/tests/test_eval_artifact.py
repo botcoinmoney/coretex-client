@@ -116,6 +116,38 @@ def test_the_schema_is_closed(built):
         ea.validate_artifact(dict(artifact, extra_evidence={"x": 1}))
 
 
+def test_entropy_accepts_only_complete_open_or_closed_sealed_shapes(built):
+    artifact, _, _ = built
+    sealed = copy.deepcopy(artifact)
+    sealed["entropy"] = {
+        key: value for key, value in artifact["entropy"].items()
+        if key in ea.ENTROPY_SEALED_FIELDS
+    }
+    assert ea.validate_artifact(sealed) is sealed
+    assert ea.eval_report_hash(sealed) == fr.sha256_hex(ea.artifact_canonical_bytes(sealed))
+
+    partial = copy.deepcopy(sealed)
+    partial["entropy"]["revealed_secret"] = artifact["entropy"]["revealed_secret"]
+    with pytest.raises(ea.ArtifactSchemaError, match="complete historical open shape"):
+        ea.validate_artifact(partial)
+
+
+def test_a_sealed_artifact_needs_an_external_opening_for_binding_verification(built):
+    artifact, parts, _ = built
+    sealed = copy.deepcopy(artifact)
+    sealed["entropy"] = {
+        key: value for key, value in artifact["entropy"].items()
+        if key in ea.ENTROPY_SEALED_FIELDS
+    }
+    kwargs = verify_kwargs(sealed, parts)
+    with pytest.raises(ea.EntropyOpeningUnavailableError):
+        ea.verify_artifact(sealed, **kwargs)
+    report = ea.verify_artifact(
+        sealed, revealed_entropy_secret=parts["secret"], **kwargs)
+    assert report["ok"] is True
+    assert "entropy_commitment" in report["checks"]
+
+
 def test_floats_cannot_enter_the_artifact(built):
     artifact, _, _ = built
     with pytest.raises(fr.CanonicalizationError):

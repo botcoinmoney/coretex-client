@@ -69,6 +69,29 @@ class SubstitutingStore(pub.InMemoryCAS):
         return super().get(root)
 
 
+def publish_sealed_v2(scenario):
+    """Project the historical fixture into the prospective sealed artifact family."""
+    artifact = copy.deepcopy(scenario.artifact)
+    report = scenario.wrapper["receipt"]
+    report_item = pub.publish_item(report, hash_rule=pub.HASH_RULE_BENCHMARK_JSON,
+                                   store=scenario.store)
+    artifact["format"] = ea.ARTIFACT_FORMAT
+    artifact["receipt"] = {
+        "code_roots": dict(report["code_roots"]),
+        "eval_report_root": report_item["root"],
+        "measurement_policy": report["measurement_policy"],
+        "outputs_hash": report["outputs_hash"],
+    }
+    artifact["availability"].pop("receipt_wrapper")
+    artifact["availability"]["eval_report"] = report_item
+    artifact["entropy"] = {
+        key: value for key, value in artifact["entropy"].items()
+        if key in ea.ENTROPY_SEALED_FIELDS
+    }
+    artifact_hash = ea.publish_artifact(artifact, store=scenario.store)
+    return artifact, artifact_hash
+
+
 # --------------------------------------------------------------------------- #
 # happy path
 # --------------------------------------------------------------------------- #
@@ -172,6 +195,48 @@ def test_the_chain_revealed_secret_is_cross_checked(scenario):
     assert good.outcome is bl.PASS and "chain_revealed_secret" in good.checks
     bad = scenario.replay(pins=scenario.resolver(reveal=True, revealed_secret="a" * 64))
     assert bad.outcome is bl.FAIL and bad.code == "revealed_secret_mismatch"
+
+
+def test_a_sealed_artifact_rehashes_then_backlogs_until_the_chain_reveal(scenario):
+    artifact, artifact_hash = publish_sealed_v2(scenario)
+    event = scenario.event(eval_report_hash=artifact_hash)
+
+    pending = scenario.replay(event=event, pins=scenario.resolver(reveal=False))
+    assert pending.outcome is bl.BACKLOG
+    assert pending.backlog_entry.reason == bl.ENTROPY_OPENING_UNAVAILABLE
+    assert "artifact_rehash" in pending.checks
+    assert pending.backlog_entry.subject == f"epoch:{scenario.epoch}"
+    assert "revealed_secret" not in artifact["entropy"]
+
+    replayed = scenario.replay(event=event, pins=scenario.resolver(reveal=True))
+    assert replayed.outcome is bl.PASS
+    assert "chain_revealed_secret" in replayed.checks
+    assert "entropy_expansion" in replayed.checks
+
+
+def test_a_sealed_artifact_with_the_wrong_chain_commitment_fails_before_reveal(scenario):
+    _, artifact_hash = publish_sealed_v2(scenario)
+    event = scenario.event(eval_report_hash=artifact_hash)
+    result = scenario.replay(
+        event=event,
+        pins=scenario.resolver(reveal=False, entropy_commitment="0" * 63 + "4"),
+    )
+    assert result.outcome is bl.FAIL
+    assert result.stage == "bindings"
+    assert result.code == "EntropyMismatchError"
+    assert "commitment" in result.reason
+
+
+def test_a_wrong_chain_opening_fails_a_sealed_artifact(scenario):
+    _, artifact_hash = publish_sealed_v2(scenario)
+    event = scenario.event(eval_report_hash=artifact_hash)
+    result = scenario.replay(
+        event=event,
+        pins=scenario.resolver(reveal=True, revealed_secret="a" * 64),
+    )
+    assert result.outcome is bl.FAIL
+    assert result.stage == "bindings"
+    assert "commitment" in result.reason
 
 
 # --------------------------------------------------------------------------- #

@@ -116,6 +116,7 @@ ORACLE_SCREEN_UNAVAILABLE = "oracle_screen_unavailable"
 RECEIPT_UNAVAILABLE = "receipt_unavailable"
 COUNTER_LAW_UNAVAILABLE = "counter_law_unavailable"
 EPOCH_PINS_UNAVAILABLE = "epoch_pins_unavailable"
+ENTROPY_OPENING_UNAVAILABLE = "entropy_opening_unavailable"
 
 REASONS: Dict[str, str] = {
     MISSING_ARTIFACT:
@@ -142,6 +143,10 @@ REASONS: Dict[str, str] = {
     EPOCH_PINS_UNAVAILABLE:
         "no pins are known for this event's OWN epoch (context/commit events not in the synced "
         "window). Another epoch's pins are never substituted.",
+    ENTROPY_OPENING_UNAVAILABLE:
+        "the eval artifact is published and hash-verifiable, but its epoch entropy remains sealed. "
+        "Wait for the confirmed EpochSecretRevealed event, extend the chain scan through that "
+        "event, and retry deterministic replay.",
 }
 
 #: Identity fields: two entries with the same values are the same unresolved item.
@@ -455,4 +460,11 @@ def epoch_pins_unavailable(detail: str, *, event=None, subject: Optional[str] = 
                            stage: str = "epoch_pins",
                            observed_at: Optional[int] = None) -> BacklogEntry:
     return _entry(EPOCH_PINS_UNAVAILABLE, detail, event=event, stage=stage, subject=subject,
+                  observed_at=observed_at)
+
+
+def entropy_opening_unavailable(detail: str, *, event=None, subject: Optional[str] = None,
+                                stage: str = "entropy_opening",
+                                observed_at: Optional[int] = None) -> BacklogEntry:
+    return _entry(ENTROPY_OPENING_UNAVAILABLE, detail, event=event, stage=stage, subject=subject,
                   observed_at=observed_at)

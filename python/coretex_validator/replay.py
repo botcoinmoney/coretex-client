@@ -34,9 +34,11 @@ flag anywhere in this module that converts an unreachable binding into a pass.
     REQUIRED (it is read from the confirmed ``EpochCommitSet`` log), it is passed to
     ``eval_artifact.verify_artifact`` as ``expected_entropy_commitment``, the artifact's commitment
     must equal it, and the revealed secret must OPEN it under
-    ``keccak256(abi.encodePacked(bytes32 secret))``. When the chain also revealed the secret
-    (``EpochSecretRevealed``), the artifact's ``revealed_secret`` must be that exact value. A
-    missing commitment pin is a BACKLOG entry, never a skipped check.
+    ``keccak256(abi.encodePacked(bytes32 secret))``. Production artifacts intentionally omit that
+    opening during the live epoch; replay rehashes them and records a BACKLOG until the confirmed
+    ``EpochSecretRevealed`` supplies it. Historical artifacts that embed ``revealed_secret`` keep
+    working, and when both forms are available they must be byte-identical. A missing commitment
+    pin or unavailable opening is a BACKLOG entry, never a skipped check.
 
     The V4 defect is registered as data in :data:`V4_DEAD_PATH_DEFECT` so it lands in the PRE_V5_ARM
     packet rather than living only in a comment. Fixing V4 is a canonical-``/root/coretex`` change
@@ -976,6 +978,7 @@ def _ident(event: dp.FrontierAdvanced) -> Dict[str, Any]:
 def canary_evidence(artifact: Mapping[str, Any], *, store: Optional[pub.ContentStore] = None,
                     sealed_transcript: Optional[Mapping[str, Any]] = None,
                     expected_code_identity: Optional[Mapping[str, Any]] = None,
+                    revealed_entropy_secret: Optional[str] = None,
                     event: Optional[dp.FrontierAdvanced] = None) -> Dict[str, Any]:
     """The auxiliary external-model block. ``consensus_critical: false``, structurally.
 
@@ -1005,7 +1008,8 @@ def canary_evidence(artifact: Mapping[str, Any], *, store: Optional[pub.ContentS
         block["transition_index"] = event.transition_index
     try:
         report = ea.verify_canary_block(artifact, sealed_transcript, store=store,
-                                        expected_code_identity=expected_code_identity)
+                                        expected_code_identity=expected_code_identity,
+                                        revealed_entropy_secret=revealed_entropy_secret)
     except ea.CanaryConsensusError as exc:
         # The ONE canary condition that is a real violation: a block claiming consensus authority.
         # It is surfaced here as evidence AND rejected by verify_artifact, so it can never pass.
@@ -1210,6 +1214,34 @@ def replay_advance(event: dp.FrontierAdvanced, *, store: pub.ContentStore,
     deterministic = ea.deterministic_verdict(ea.strip_canary(artifact))
     signed_era = ea.artifact_law(artifact) == al.LAW_OFF_CHAIN_SIGNATURE_V1
 
+    # The opening is not needed to check that the published artifact binds the commitment from
+    # this event's own confirmed epoch. Refuse a mismatched commitment immediately instead of
+    # misclassifying an already-provable binding failure as work waiting on the future reveal.
+    if artifact["entropy"]["commitment"] != epoch_pins.entropy_commitment:
+        return _fail(
+            "bindings", "EntropyMismatchError",
+            f"artifact entropy commitment {artifact['entropy']['commitment']} != the on-chain "
+            f"commitment {epoch_pins.entropy_commitment}",
+            checks=checks, new_manifest=new_manifest, **ident)
+
+    # A production artifact is intentionally hash-verifiable while its selection entropy remains
+    # sealed. Deterministic replay cannot begin until the chain publishes the opening. This is
+    # unresolved work, not a failed transition and never a pass inferred from the artifact's
+    # carried verdict. Historical artifacts embed their opening and continue through unchanged.
+    if "revealed_secret" not in artifact["entropy"] and epoch_pins.revealed_secret is None:
+        return _backlog("entropy_opening", bl.entropy_opening_unavailable(
+            f"eval artifact {event.eval_report_hash} rehashed successfully, but epoch "
+            f"{event.epoch} has no confirmed EpochSecretRevealed opening yet",
+            event=event, subject=f"epoch:{event.epoch}", observed_at=observed_at),
+            checks=checks, new_manifest=new_manifest, **ident)
+    embedded_opening = artifact["entropy"].get("revealed_secret")
+    if epoch_pins.revealed_secret is not None and embedded_opening is not None \
+            and embedded_opening != epoch_pins.revealed_secret:
+        return _fail("bindings", "revealed_secret_mismatch",
+                     f"the artifact opens the epoch commitment with {embedded_opening}, but "
+                     f"EpochSecretRevealed put {epoch_pins.revealed_secret} on chain",
+                     checks=checks, new_manifest=new_manifest, **ident)
+
     # ---- fetch the two objects verification must not be allowed to "skip" --------------------
     receipt_root = (artifact["receipt"]["wrapper_root"] if signed_era
                     else artifact["receipt"]["eval_report_root"])
@@ -1255,6 +1287,7 @@ def replay_advance(event: dp.FrontierAdvanced, *, store: pub.ContentStore,
             expected_target_profile=target_profile,
             counter_resource_law=counter_law,
             store=store,
+            revealed_entropy_secret=epoch_pins.revealed_secret,
             **verification_evidence)
     except (ea.EvalArtifactError, fr.FrontierError) as exc:
         return _fail("bindings", type(exc).__name__, str(exc), checks=checks,
@@ -1268,18 +1301,19 @@ def replay_advance(event: dp.FrontierAdvanced, *, store: pub.ContentStore,
     # above via expected_entropy_commitment, and here against the CHAIN-REVEALED secret when the
     # reveal is in the synced window.
     if epoch_pins.revealed_secret is not None:
-        if artifact["entropy"]["revealed_secret"] != epoch_pins.revealed_secret:
-            return _fail("bindings", "revealed_secret_mismatch",
-                         f"the artifact opens the epoch commitment with "
-                         f"{artifact['entropy']['revealed_secret']}, but EpochSecretRevealed put "
-                         f"{epoch_pins.revealed_secret} on chain", checks=checks,
-                         new_manifest=new_manifest, **ident)
         done("chain_revealed_secret")
 
     # ---- 8. the fresh selection, re-derived from the COMMITTED entropy ------------------------
-    entropy = artifact["entropy"]
+    opening = epoch_pins.revealed_secret or embedded_opening
+    if opening is None:
+        # Defensive reachability guard: sealed artifacts without a chain opening return above.
+        return _backlog("entropy_opening", bl.entropy_opening_unavailable(
+            f"epoch {event.epoch} has no entropy opening for deterministic replay",
+            event=event, subject=f"epoch:{event.epoch}", observed_at=observed_at),
+            checks=checks, new_manifest=new_manifest, **ident)
+    entropy = dict(artifact["entropy"])
     try:
-        recomputed = {label: expand_entropy(revealed_secret=entropy["revealed_secret"],
+        recomputed = {label: expand_entropy(revealed_secret=opening,
                                             epoch=event.epoch,
                                             parent_frontier_root=event.parent_frontier_root,
                                             label=label) for label in ENTROPY_LABELS}
@@ -1290,12 +1324,13 @@ def replay_advance(event: dp.FrontierAdvanced, *, store: pub.ContentStore,
         return _fail("entropy_expansion", "entropy_invalid", str(exc), checks=checks,
                      new_manifest=new_manifest, **ident)
     for label in ENTROPY_LABELS:
-        if entropy[f"{label}_value"] != recomputed[label]:
+        if f"{label}_value" in entropy and entropy[f"{label}_value"] != recomputed[label]:
             return _fail("entropy_expansion", "entropy_value_mismatch",
                          f"entropy.{label}_value {entropy[f'{label}_value']} is not the "
                          f"chain-committed secret expanded under {ENTROPY_DOMAIN}|{label} "
                          f"({recomputed[label]})", checks=checks, new_manifest=new_manifest,
                          **ident)
+        entropy[f"{label}_value"] = recomputed[label]
     done("entropy_expansion")
 
     # ---- 9. COMPLETE the selection check V5-C left partial ------------------------------------
@@ -1485,6 +1520,7 @@ def replay_advance(event: dp.FrontierAdvanced, *, store: pub.ContentStore,
     }
     result.auxiliary = canary_evidence(artifact, store=store, sealed_transcript=sealed_transcript,
                                        expected_code_identity=expected_canary_code_identity,
+                                       revealed_entropy_secret=opening,
                                        event=event)
     # DEFENSIVE, and the whole point of the separation: the deterministic verdict must be
     # identical with and without the auxiliary block. If a future edit ever let the canary leak
