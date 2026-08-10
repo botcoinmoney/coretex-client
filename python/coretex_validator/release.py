@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Step 1-2: discover a rehearsal release, and verify the deployed bytecode against it.
+"""Step 1-2: discover a rig release, and verify the deployed bytecode against it.
 
 THE TWO AUTHORITIES, WHICH ARE NOT THE SAME THING AND MUST NEVER BE COLLAPSED.
 
@@ -27,6 +27,7 @@ fail for boring reasons and train operators to ignore it.
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import urllib.request
 from dataclasses import dataclass
@@ -38,6 +39,30 @@ from . import rig_events as rig
 from .keccak256 import keccak256_hex
 
 RELEASE_FORMAT = "coretex.rig-rehearsal-release/v1"
+PRODUCTION_RELEASE_FORMAT = "botcoin-rig-release/v1"
+BUILTIN_PRODUCTION_RELEASE_FORMAT = "coretex.canonical-production-release/v1"
+DEFAULT_PRODUCTION_RELEASE_URL = "builtin:base-mainnet"
+PRODUCTION_COORDINATOR = "0x6463f89F102e9f53168ABe557173f53c0bBbF635"
+PRODUCTION_CONTRACTS = {
+    "registry": "0xa4d8a7Bb3Ba2D023af29Bf77601A61673ED89ad3",
+    "mining": "0xB61BC7487424172CB9fa9dD381a9eC06C7067dCd",
+    "verifier": "0x82384E4DA334a4e3E1d8d2623359dC8c4d931Ed4",
+}
+PRODUCTION_GENESIS_STATE_ROOT = (
+    "8f2455e5cbf49cd4bb5e1b148c1828a9c79aa7fd27d3db7035fe7fb5e0287788")
+PRODUCTION_CUTOVER_EPOCH = 171
+PRODUCTION_SOURCE_COMMIT = "1f8ba5c11b6fc4bc97e4e23000e9fefea5ba6252"
+PRODUCTION_DEPLOY_BLOCK = 49773104
+PRODUCTION_RELEASE_PAYLOAD_HASH = (
+    "959ab7028bc90fd71995fcfc6f7498e8912c18d66de5a454f98fd0660b9632ba")
+PRODUCTION_RELEASE_SIGNATURE = (
+    "0xbae09cdb7b623f1cfd8574eded6bd507888f6808fb2ad183f78f48d63ec1e2e0"
+    "36e2a014f2d8f1595215eff5446d7e4e1fc9b2fadf224e733c87c5560f32201a1b")
+PRODUCTION_CODE_HASHES = {
+    "registry": "c38537574e711e069118f9ade2e92a04df768ed0ad3d59f813ce144fbed04c25",
+    "mining": "61b768d6678405bf286757dcfd931bde1586e089871d6cbc906454d263d3039d",
+    "verifier": "a27ea294e4acf6062f7cc1cf57fb02bb372c628b7ccd40255fad0a21cb213d7b",
+}
 
 #: The ONLY classification this package will produce a snapshot under. Stated here as well as in
 #: :mod:`.export` because it is a property of the release, not only of the output.
@@ -45,6 +70,7 @@ CLASSIFICATION_REHEARSAL = "MAINNET_REHEARSAL"
 #: Named so it can be REFUSED by name. A release that claims it is rejected: this package has
 #: never been through the process that would justify the claim.
 CLASSIFICATION_CANONICAL = "MAINNET_CANONICAL"
+CLASSIFICATION_PRODUCTION = "CANONICAL_PRODUCTION"
 
 #: The three contracts a rig lane is. Every one of them must be pinned by the release, because
 #: verifying two of three leaves the unverified one free to be anything.
@@ -101,6 +127,7 @@ class Release:
     #: The resolver's signing address. TRANSPORT authentication only — see :mod:`.snapshot`.
     resolver_signer: Optional[str]
     raw: Mapping[str, Any]
+    production_authority: bool = False
 
     @property
     def deployment(self) -> rig.RigDeployment:
@@ -115,6 +142,20 @@ class Release:
         bytecode on chain was proved to be a build of the pinned source — it was not, and the
         release is the only thing that says what was deployed.
         """
+        if self.production_authority:
+            signature = self.raw.get("operatorSignature", {})
+            return {
+                "deployment_authority": "operator_signed_canonical_release",
+                "production_authority": True,
+                "release_payload_sha256": signature.get("payloadHash"),
+                "release_signer": signature.get("signer"),
+                "source_interface_authority": {
+                    "repo": self.source.repo, "commit": self.source.commit,
+                    "publicly_fetchable": self.source.public},
+                "note": ("the canonical deployment artifact is authenticated by its production "
+                         "coordinator signature; runtime bytecode and immutable wiring are still "
+                         "read independently from the pinned chain block"),
+            }
         return {
             "deployment_authority": "release_artifact",
             "source_interface_authority": {"repo": self.source.repo, "commit": self.source.commit,
@@ -138,6 +179,10 @@ def parse_release(document: Mapping[str, Any]) -> Release:
     if not isinstance(document, Mapping):
         raise ReleaseError("RELEASE_MALFORMED", "a release is a JSON object")
     fmt = _require(document, "format")
+    if fmt == BUILTIN_PRODUCTION_RELEASE_FORMAT:
+        return _parse_builtin_production_release(document)
+    if fmt == PRODUCTION_RELEASE_FORMAT:
+        return _parse_production_release(document)
     if fmt != RELEASE_FORMAT:
         raise ReleaseError("RELEASE_FORMAT_UNKNOWN",
                            f"format {fmt!r} is not {RELEASE_FORMAT!r}; refusing to guess")
@@ -204,6 +249,207 @@ def parse_release(document: Mapping[str, Any]) -> Release:
         resolver_signer=document.get("resolver_signer"), raw=dict(document))
 
 
+def _require_address(value: Any, field: str) -> str:
+    if not isinstance(value, str) or not value.startswith("0x") or len(value) != 42:
+        raise ReleaseError("RELEASE_INCOMPLETE",
+                           f"{field} must be a 0x-prefixed address, got {value!r}")
+    try:
+        int(value[2:], 16)
+    except ValueError as exc:
+        raise ReleaseError("RELEASE_MALFORMED", f"{field} is not hex") from exc
+    return value
+
+
+def _production_payload_bytes(document: Mapping[str, Any]) -> bytes:
+    """Exact mirror of sign-canonical-deployment.mjs payloadDocument + JSON.stringify.
+
+    JSON object insertion order is retained by Python's parser.  ``ensure_ascii=False`` matches
+    JavaScript's UTF-8 JSON.stringify output; compact separators remove Python-only whitespace.
+    """
+    payload = {key: value for key, value in document.items()
+               if key not in ("signature", "operatorSignature")}
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+
+
+def _verify_production_signature(document: Mapping[str, Any]) -> str:
+    block = _require(document, "operatorSignature")
+    if not isinstance(block, Mapping):
+        raise ReleaseError("PRODUCTION_SIGNATURE_INVALID", "operatorSignature must be an object")
+    if (block.get("status") != "SIGNED" or
+            block.get("algorithm") != "secp256k1-eip191-personal_sign"):
+        raise ReleaseError("PRODUCTION_SIGNATURE_INVALID",
+                           "the canonical release has no supported signed operator signature")
+    payload_hash = hashlib.sha256(_production_payload_bytes(document)).digest()
+    if str(block.get("payloadHash", "")).removeprefix("0x").lower() != payload_hash.hex():
+        raise ReleaseError("PRODUCTION_SIGNATURE_INVALID",
+                           "operatorSignature.payloadHash does not match the release contents")
+    signature_hex = str(block.get("signature", ""))
+    try:
+        signature = bytes.fromhex(signature_hex.removeprefix("0x"))
+    except ValueError as exc:
+        raise ReleaseError("PRODUCTION_SIGNATURE_INVALID", "operator signature is not hex") from exc
+    # ethers.signMessage(getBytes(payloadHash)): EIP-191 over an exact 32-byte message.
+    from .keccak256 import keccak256
+    from .secp256k1 import ecrecover, addresses_equal, SignatureError
+    digest = keccak256(b"\x19Ethereum Signed Message:\n32" + payload_hash)
+    try:
+        recovered = ecrecover(digest, signature)
+    except SignatureError as exc:
+        raise ReleaseError("PRODUCTION_SIGNATURE_INVALID", str(exc)) from exc
+    coordinator = _require_address(document.get("coordinatorSigner"), "coordinatorSigner")
+    signer = _require_address(block.get("signer"), "operatorSignature.signer")
+    if not addresses_equal(recovered, coordinator) or not addresses_equal(recovered, signer):
+        raise ReleaseError(
+            "PRODUCTION_SIGNATURE_INVALID",
+            f"operator signature recovers {recovered}, not coordinator {coordinator}")
+    if not addresses_equal(recovered, PRODUCTION_COORDINATOR):
+        raise ReleaseError("PRODUCTION_AUTHORITY_INVALID",
+                           f"release signer {recovered} is not the canonical production signer")
+    return recovered
+
+
+def _recover_production_signature(payload_hash_hex: str, signature_hex: str) -> str:
+    from .keccak256 import keccak256
+    from .secp256k1 import ecrecover, addresses_equal, SignatureError
+    try:
+        payload_hash = bytes.fromhex(payload_hash_hex.removeprefix("0x"))
+        signature = bytes.fromhex(signature_hex.removeprefix("0x"))
+    except ValueError as exc:
+        raise ReleaseError("PRODUCTION_SIGNATURE_INVALID", "production signature pin is not hex") from exc
+    if len(payload_hash) != 32:
+        raise ReleaseError("PRODUCTION_SIGNATURE_INVALID", "production payload hash is not bytes32")
+    digest = keccak256(b"\x19Ethereum Signed Message:\n32" + payload_hash)
+    try:
+        recovered = ecrecover(digest, signature)
+    except SignatureError as exc:
+        raise ReleaseError("PRODUCTION_SIGNATURE_INVALID", str(exc)) from exc
+    if not addresses_equal(recovered, PRODUCTION_COORDINATOR):
+        raise ReleaseError("PRODUCTION_SIGNATURE_INVALID",
+                           f"pinned release signature recovers {recovered}")
+    return recovered
+
+
+def _builtin_production_document() -> Dict[str, Any]:
+    return {
+        "format": BUILTIN_PRODUCTION_RELEASE_FORMAT,
+        "classification": CLASSIFICATION_PRODUCTION,
+        "productionAllowed": True,
+        "chain_id": 8453,
+        "network": "base-mainnet",
+        "addresses": dict(PRODUCTION_CONTRACTS),
+        "runtime_code_hashes": dict(PRODUCTION_CODE_HASHES),
+        "deploy_block": PRODUCTION_DEPLOY_BLOCK,
+        "genesis_state_root": PRODUCTION_GENESIS_STATE_ROOT,
+        "cutover_epoch": PRODUCTION_CUTOVER_EPOCH,
+        "source": {"repo": "https://github.com/botcoinmoney/botcoin-mining-rigs",
+                   "commit": PRODUCTION_SOURCE_COMMIT, "publicly_fetchable": False},
+        "operatorSignature": {
+            "status": "SIGNED", "algorithm": "secp256k1-eip191-personal_sign",
+            "payloadHash": PRODUCTION_RELEASE_PAYLOAD_HASH,
+            "signer": PRODUCTION_COORDINATOR, "signature": PRODUCTION_RELEASE_SIGNATURE},
+        "authority_note": ("minimal public identity extracted from the signed canonical release; "
+                           "all identity fields are pinned in validator code and re-read on chain"),
+    }
+
+
+def _parse_builtin_production_release(document: Mapping[str, Any]) -> Release:
+    expected = _builtin_production_document()
+    if dict(document) != expected:
+        raise ReleaseError("PRODUCTION_IDENTITY_MISMATCH",
+                           "builtin production identity was modified")
+    recovered = _recover_production_signature(PRODUCTION_RELEASE_PAYLOAD_HASH,
+                                              PRODUCTION_RELEASE_SIGNATURE)
+    source = SourcePin(repo=expected["source"]["repo"], commit=PRODUCTION_SOURCE_COMMIT,
+                       paths=("contracts/rig/mining",), public=False)
+    return Release(
+        format=BUILTIN_PRODUCTION_RELEASE_FORMAT, classification=CLASSIFICATION_PRODUCTION,
+        chain_id=8453, network="base-mainnet", addresses=dict(PRODUCTION_CONTRACTS),
+        runtime_code_hashes=dict(PRODUCTION_CODE_HASHES), deploy_block=PRODUCTION_DEPLOY_BLOCK,
+        observation_block=None, source=source, artifact_base_url=None,
+        runtime_packet_sha256=None, resolver_signer=None, raw=dict(expected),
+        production_authority=True)
+
+
+def _parse_production_release(document: Mapping[str, Any]) -> Release:
+    classification = _require(document, "classification")
+    if not isinstance(classification, Mapping):
+        raise ReleaseError("CLASSIFICATION_UNKNOWN", "production classification must be an object")
+    if (classification.get("productionAllowed") is not True or
+            classification.get("status") != CLASSIFICATION_PRODUCTION or
+            classification.get("lane") != "rig-coretex-descriptor-v3"):
+        raise ReleaseError("CLASSIFICATION_REFUSED",
+                           "the rig release is not canonical descriptor-v3 production")
+    _verify_production_signature(document)
+
+    chain_id = _require(document, "chainId")
+    if chain_id != 8453:
+        raise ReleaseError("RELEASE_MALFORMED",
+                           f"canonical production is Base chain 8453, not {chain_id!r}")
+    contracts = _require(document, "contracts")
+    hashes = _require(document, "codeHashes")
+    if not isinstance(contracts, Mapping) or not isinstance(hashes, Mapping):
+        raise ReleaseError("RELEASE_MALFORMED", "contracts/codeHashes must be objects")
+    aliases = {"registry": "coreTexRegistry", "mining": "mining",
+               "verifier": "coreTexVerifier"}
+    addresses = {role: _require_address(contracts.get(alias), f"contracts.{alias}")
+                 for role, alias in aliases.items()}
+    for role, expected in PRODUCTION_CONTRACTS.items():
+        if addresses[role].lower() != expected.lower():
+            raise ReleaseError("PRODUCTION_IDENTITY_MISMATCH",
+                               f"{role} {addresses[role]} is not canonical {expected}")
+    code_hashes: Dict[str, str] = {}
+    for role, alias in aliases.items():
+        try:
+            value = hashes.get(alias)
+            if isinstance(value, str):
+                value = value.removeprefix("0x")
+            code_hashes[role] = fr.check_root(value, f"codeHashes.{alias}")
+        except fr.FrontierError as exc:
+            raise ReleaseError("RELEASE_INCOMPLETE", str(exc)) from exc
+
+    git = _require(document, "git")
+    if not isinstance(git, Mapping) or git.get("workingTreeDirty") is not False:
+        raise ReleaseError("SOURCE_PIN_MISSING", "canonical release source tree is absent or dirty")
+    commit = str(git.get("commit", ""))
+    if len(commit) != 40:
+        raise ReleaseError("SOURCE_PIN_MISSING", "git.commit must be a full commit")
+    source = SourcePin(repo="https://github.com/botcoinmoney/botcoin-mining-rigs",
+                       commit=commit, paths=("contracts/rig/mining",), public=True)
+
+    deployment = _require(document, "deployment")
+    deploy_block = deployment.get("firstBlock") if isinstance(deployment, Mapping) else None
+    if not isinstance(deploy_block, int) or isinstance(deploy_block, bool) or deploy_block < 0:
+        raise ReleaseError("RELEASE_MALFORMED", "deployment.firstBlock is invalid")
+    genesis_value = _require(document, "genesisStateRoot")
+    if isinstance(genesis_value, str):
+        genesis_value = genesis_value.removeprefix("0x")
+    genesis = fr.check_root(genesis_value, "genesisStateRoot")
+    cutover = _require(document, "cutoverEpoch")
+    if not isinstance(cutover, int) or isinstance(cutover, bool) or cutover < 0:
+        raise ReleaseError("RELEASE_MALFORMED", "cutoverEpoch is invalid")
+    if genesis != PRODUCTION_GENESIS_STATE_ROOT or cutover != PRODUCTION_CUTOVER_EPOCH:
+        raise ReleaseError("PRODUCTION_IDENTITY_MISMATCH",
+                           "canonical production genesis/cutover identity does not match")
+
+    from .rig_receipt_binding import CORETEX_RECEIPT_TYPEHASH
+    if str(document.get("receiptTypehashes", {}).get("coreTex", "")).lower() != \
+            CORETEX_RECEIPT_TYPEHASH.lower():
+        raise ReleaseError("INTERFACE_PIN_MISMATCH",
+                           "canonical release CoreTex receipt typehash differs from this client")
+    domain = document.get("eip712Domain", {})
+    if (domain.get("chainId") != chain_id or
+            str(domain.get("verifyingContract", "")).lower() != addresses["mining"].lower()):
+        raise ReleaseError("INTERFACE_PIN_MISMATCH", "canonical EIP-712 domain is not the mining contract")
+
+    return Release(
+        format=PRODUCTION_RELEASE_FORMAT, classification=CLASSIFICATION_PRODUCTION,
+        chain_id=chain_id, network="base-mainnet", addresses=addresses,
+        runtime_code_hashes=code_hashes, deploy_block=deploy_block,
+        observation_block=None, source=source, artifact_base_url=None,
+        runtime_packet_sha256=None, resolver_signer=None, raw=dict(document),
+        production_authority=True)
+
+
 def discover(location: str, *, timeout: float = 30.0) -> Release:
     """Load a release from a path or an ``http(s)`` url.
 
@@ -211,6 +457,8 @@ def discover(location: str, *, timeout: float = 30.0) -> Release:
     then verifies everything the release says against the chain. There is no registry lookup that
     would make the location itself trusted, and pretending otherwise would just move the trust.
     """
+    if location == DEFAULT_PRODUCTION_RELEASE_URL:
+        return parse_release(_builtin_production_document())
     if location.startswith("http://") or location.startswith("https://"):
         with urllib.request.urlopen(location, timeout=timeout) as response:  # noqa: S310
             raw = response.read().decode("utf-8")
@@ -286,6 +534,7 @@ def verify_deployment(release: Release, rpc, *, block: int) -> DeploymentVerific
         wiring["registry.coreTexVerifier"] = views.core_tex_verifier()
         wiring["verifier.coreTexRegistry"] = views.verifier_registry()
         wiring["verifier.mining"] = views.verifier_mining()
+        wiring["mining.coordinatorSigner"] = views.coordinator_signer()
         # THREE FIELDS IDENTIFY A REGISTRY, NOT TWO. Address and code hash are not sufficient: a
         # SUCCESSOR registry deployed from the same source has an IDENTICAL code hash, and on
         # arrival it inherits every epoch's context and answers the pin getters identically. So
@@ -318,6 +567,13 @@ def verify_deployment(release: Release, rpc, *, block: int) -> DeploymentVerific
                 failures.append(
                     f"{name} = {wiring[name]}, the release names {expected_address}. The three "
                     f"contracts do not form one lane.{extra}")
+        if release.production_authority:
+            expected_signer = str(release.raw.get("coordinatorSigner") or
+                                  release.raw.get("operatorSignature", {}).get("signer", ""))
+            if str(wiring["mining.coordinatorSigner"]).lower() != expected_signer.lower():
+                failures.append(
+                    f"mining.coordinatorSigner = {wiring['mining.coordinatorSigner']}, signed "
+                    f"canonical release names {expected_signer}")
         wiring["consistent"] = not failures
 
     return DeploymentVerification(ok=not failures, block=block, contracts=contracts,

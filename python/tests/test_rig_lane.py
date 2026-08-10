@@ -449,6 +449,18 @@ def release_document(**overrides):
 
 
 class TestClassification:
+    def test_production_snapshot_requires_separately_authenticated_release_authority(self):
+        from coretex_validator import resolver_snapshot as rsn
+
+        payload = {k: {} for k in rsn.TOP_LEVEL_KEYS_V3}
+        payload.update({"schema": rsn.SCHEMA_V3,
+                        "classification": rsn.CLASSIFICATION_PRODUCTION,
+                        "production_authority": True})
+        with pytest.raises(rsn.ReproductionError) as excinfo:
+            rsn.check_shape(payload)
+        assert excinfo.value.code == "PRODUCTION_AUTHORITY_REQUIRED"
+        rsn.check_shape(payload, production_authority=True)
+
     def test_a_canonical_release_is_refused_by_name(self):
         with pytest.raises(rel.ReleaseError) as excinfo:
             rel.parse_release(release_document(classification="MAINNET_CANONICAL"))
@@ -2166,5 +2178,7 @@ def test_the_documented_patch_type_table_is_the_whole_key_set():
 def pathlib_read_spec():
     import pathlib
 
-    return (pathlib.Path(__file__).resolve().parents[2] / "specs" / "patch_format.md").read_text(
-        encoding="utf-8")
+    path = pathlib.Path(__file__).resolve().parents[2] / "specs" / "patch_format.md"
+    if not path.is_file():
+        pytest.skip("source-only retired patch-format prose is not shipped in the clean wheel")
+    return path.read_text(encoding="utf-8")

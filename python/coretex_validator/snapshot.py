@@ -98,7 +98,9 @@ class ChainObservation:
 def build_unsigned(*, transition: jn.JoinedTransition, law: hl.EpochLaw,
                    observation: ChainObservation,
                    artifact_roots: Mapping[str, str],
-                   lineage: Sequence[jn.LineageStep] = ()) -> Dict[str, Any]:
+                   lineage: Sequence[jn.LineageStep] = (),
+                   classification: str = CLASSIFICATION_REHEARSAL,
+                   production_authority: bool = False) -> Dict[str, Any]:
     """The canonical UNSIGNED payload, from chain-derived facts only.
 
     Every value here is either read from a confirmed log, read from the pinned block's state,
@@ -110,7 +112,7 @@ def build_unsigned(*, transition: jn.JoinedTransition, law: hl.EpochLaw,
     credit = transition.credit
     payload: Dict[str, Any] = {
         "format": SNAPSHOT_FORMAT,
-        "classification": CLASSIFICATION_REHEARSAL,
+        "classification": classification,
         "chain": {
             "chain_id": observation.chain_id,
             "block_number": observation.block_number,
@@ -178,6 +180,8 @@ def build_unsigned(*, transition: jn.JoinedTransition, law: hl.EpochLaw,
             ("log_index", advance.provenance.log_index)) if value is not None},
         "checks": sorted(set(transition.checks)),
     }
+    if production_authority:
+        payload["production_authority"] = True
     if lineage:
         payload["lineage"] = [
             {"epoch": step.epoch, "served": step.served, "sealed": step.sealed,

@@ -14,10 +14,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "coretex-validator"
-version = "0.1.0"
-description = "Public CoreTex validator: legacy V4 replay plus V5 rig-lane dispatch, chain-first."
+version = "0.2.0"
+description = "Public CoreTex descriptor-v3 production validator, chain-first."
 readme = "README.md"
-license = { text = "Apache-2.0" }
+license = "Apache-2.0"
 requires-python = ">=3.9"
 dependencies = []
 keywords = ["coretex", "botcoin", "base", "validator", "replay"]

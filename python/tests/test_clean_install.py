@@ -143,6 +143,9 @@ def test_the_cli_entry_point_resolves():
     # published interface and must not drift silently.
     reproduce = parser.parse_args(["reproduce", "--release", "r.json", "--rpc", "http://x"])
     assert reproduce.release == "r.json" and reproduce.rpc == "http://x"
+    production = parser.parse_args(["reproduce", "--rpc", "http://x"])
+    from coretex_validator.release import DEFAULT_PRODUCTION_RELEASE_URL
+    assert production.release == DEFAULT_PRODUCTION_RELEASE_URL
 
 
 def test_the_counter_resource_law_ships_with_the_package():

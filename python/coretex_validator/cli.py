@@ -3,7 +3,8 @@
 
 FOUR SUBCOMMANDS, AND THE FIRST ONE IS THE POINT:
 
-    coretex-validator reproduce --release R --rpc URL     steps 1-8, one command
+    coretex-validator reproduce --rpc URL                 production, steps 1-8
+    coretex-validator reproduce --release R --rpc URL     explicit historical release
     coretex-validator verify-release --release R --rpc URL   steps 1-2 only
     coretex-validator topics                              the dispatch table, V4 and rig
     coretex-validator selftest                            keccak/ecrecover/canonical-JSON vectors
@@ -124,9 +125,9 @@ def _cmd_topics(args: argparse.Namespace) -> int:
             "v4": dp.V4_STATE_ADVANCED_TOPIC0,
             "rig": rig.STATE_ADVANCED_TOPIC0,
             "identical": dp.V4_STATE_ADVANCED_TOPIC0 == rig.STATE_ADVANCED_TOPIC0,
-            "consequence": ("topic0 is NOT an identity in this protocol: the rig registry emits "
-                            "the same event signature as the V4 lane, so logs can only be "
-                            "attributed by EMITTING ADDRESS"),
+            "consequence": ("descriptor-v3 has a distinct topic0; routing remains scoped by "
+                            "deployment address so historical V4/v2 logs can never enter the "
+                            "production stream"),
         },
     }, pretty=not args.compact)
     return 0
@@ -189,6 +190,7 @@ def _cmd_selftest(args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
+    from .release import DEFAULT_PRODUCTION_RELEASE_URL
     parser = argparse.ArgumentParser(
         prog="coretex-validator", description=__doc__.splitlines()[0])
     parser.add_argument("--version", action="version", version=__version__)
@@ -196,7 +198,9 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     reproduce = sub.add_parser("reproduce", help="steps 1-8 against a live endpoint")
-    reproduce.add_argument("--release", required=True, help="path or url of the release artifact")
+    reproduce.add_argument("--release", default=DEFAULT_PRODUCTION_RELEASE_URL,
+                           help="path or url of the release artifact (default: signed canonical "
+                                "Base production release at its immutable git commit)")
     reproduce.add_argument("--rpc", required=True, help="JSON-RPC endpoint")
     reproduce.add_argument("--epoch", type=int, default=None)
     reproduce.add_argument("--transition-index", type=int, default=None)
@@ -222,7 +226,7 @@ def build_parser() -> argparse.ArgumentParser:
     reproduce.set_defaults(func=_cmd_reproduce)
 
     verify = sub.add_parser("verify-release", help="steps 1-2 only")
-    verify.add_argument("--release", required=True)
+    verify.add_argument("--release", default=DEFAULT_PRODUCTION_RELEASE_URL)
     verify.add_argument("--rpc", required=True)
     verify.add_argument("--confirmation-depth", type=int, default=15)
     verify.set_defaults(func=_cmd_verify_release)

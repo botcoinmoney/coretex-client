@@ -28,6 +28,7 @@ from . import snapshot as snap
 EXPORT_FORMAT = "coretex.rig-activation-export/v1"
 CLASSIFICATION_REHEARSAL = "MAINNET_REHEARSAL"
 CLASSIFICATION_CANONICAL = "MAINNET_CANONICAL"
+CLASSIFICATION_PRODUCTION = "CANONICAL_PRODUCTION"
 
 
 def drop_nulls(value: Any) -> Any:
@@ -94,14 +95,27 @@ def build_export(*, snapshot_payload: Mapping[str, Any],
                  admission: Mapping[str, Any],
                  unverified: Sequence[Mapping[str, Any]],
                  classification: str = CLASSIFICATION_REHEARSAL) -> Export:
-    """Assemble the export. Refuses a canonical classification and an unreproduced snapshot."""
+    """Assemble an export from a reproduced snapshot.
+
+    Production cannot be selected by a string: the supplied release document must itself pass
+    the canonical release signature and classification checks.
+    """
     if classification == CLASSIFICATION_CANONICAL:
         raise ExportError(
             "CLASSIFICATION_REFUSED",
             "MAINNET_CANONICAL is not something this tool can mint. A canonical snapshot is the "
             "output of a governance process, not of a command-line flag; exporting one here "
             "would launder a rehearsal into a canonical claim")
-    if classification != CLASSIFICATION_REHEARSAL:
+    if classification == CLASSIFICATION_PRODUCTION:
+        from . import release as rel
+        try:
+            parsed = rel.parse_release(release_document)
+        except rel.ReleaseError as exc:
+            raise ExportError("PRODUCTION_AUTHORITY_INVALID", exc.message) from exc
+        if not parsed.production_authority:
+            raise ExportError("PRODUCTION_AUTHORITY_INVALID",
+                              "production export requires an authenticated canonical release")
+    elif classification != CLASSIFICATION_REHEARSAL:
         raise ExportError("CLASSIFICATION_UNKNOWN", f"unsupported classification {classification!r}")
     if not reproduction.reproduced:
         raise ExportError(

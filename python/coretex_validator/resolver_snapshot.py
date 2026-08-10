@@ -73,6 +73,7 @@ PROTOCOL_ID = "coretex.rig-state.v1"
 SUPERSEDED_PROTOCOLS = ("coretex.memory-frontier.v1", "coretex.state.v4")
 CLASSIFICATION_REHEARSAL = "MAINNET_REHEARSAL"
 CLASSIFICATION_CANONICAL_FORBIDDEN = "MAINNET_CANONICAL"
+CLASSIFICATION_PRODUCTION = "CANONICAL_PRODUCTION"
 
 #: 23 top-level keys in BOTH versions. A payload with 22 or 24 is neither.
 #:
@@ -603,13 +604,9 @@ def schema_of(payload: Mapping[str, Any]) -> str:
     return str(declared)
 
 
-def check_shape(payload: Mapping[str, Any]) -> None:
+def check_shape(payload: Mapping[str, Any], *, production_authority: bool = False) -> None:
     """Refuse a document that is not a schema this package implements, before comparing anything."""
     declared = schema_of(payload)
-    if payload.get("classification") == CLASSIFICATION_CANONICAL_FORBIDDEN:
-        raise ReproductionError(
-            "CLASSIFICATION_REFUSED",
-            "MAINNET_CANONICAL is not a classification this package will process")
     expected = KEYS_BY_SCHEMA[declared]
     observed = tuple(sorted(payload))
     if observed != expected:
@@ -619,6 +616,18 @@ def check_shape(payload: Mapping[str, Any]) -> None:
             "SCHEMA_SHAPE_MISMATCH",
             f"{declared} has exactly {len(expected)} top-level keys; missing={missing}, "
             f"unexpected={extra}")
+    if payload.get("classification") == CLASSIFICATION_CANONICAL_FORBIDDEN:
+        raise ReproductionError(
+            "CLASSIFICATION_REFUSED",
+            "MAINNET_CANONICAL is not a classification this package will process")
+    if payload.get("classification") == CLASSIFICATION_PRODUCTION:
+        if not production_authority or payload.get("production_authority") is not True:
+            raise ReproductionError(
+                "PRODUCTION_AUTHORITY_REQUIRED",
+                "CANONICAL_PRODUCTION requires a separately authenticated canonical release")
+    elif payload.get("classification") != CLASSIFICATION_REHEARSAL:
+        raise ReproductionError("CLASSIFICATION_UNKNOWN",
+                                f"unsupported classification {payload.get('classification')!r}")
 
 
 # --------------------------------------------------------------------------- #
@@ -1249,7 +1258,8 @@ def record_root_of(runtime_record: Mapping[str, Any]) -> Optional[str]:
 def reproduce_from_chain(published: Mapping[str, Any], *, rpc_url: str,
                          store_dir: str, runtime_record: Optional[Mapping[str, Any]] = None,
                          chunk_blocks: int = 2000,
-                         min_interval: float = 0.7) -> Tuple[Dict[str, Any], ComparisonResult]:
+                         min_interval: float = 0.7,
+                         production_authority: bool = False) -> Tuple[Dict[str, Any], ComparisonResult]:
     """Rebuild a published snapshot from chain truth, and compare. NO KEY IS TOUCHED.
 
     Everything the rebuild needs that is not on the chain is read from the PUBLISHED payload's own
@@ -1270,7 +1280,7 @@ def reproduce_from_chain(published: Mapping[str, Any], *, rpc_url: str,
     from .keccak256 import keccak256_hex as _kh
     from .rpc import JsonRpc, RigViews, selector as _sel, _encode_uint as _enc
 
-    check_shape(published)
+    check_shape(published, production_authority=production_authority)
     declared_schema = schema_of(published)
     descriptor_v3 = declared_schema == SCHEMA_V3
     chain_id = int(published["chain"]["chain_id"])
@@ -1304,8 +1314,11 @@ def reproduce_from_chain(published: Mapping[str, Any], *, rpc_url: str,
         "schema": declared_schema,
         "version": cn.narrow(3 if descriptor_v3 else int(published["version"]), "version"),
         "protocol": rig_mod.PROTOCOL_RIG_EXACT if descriptor_v3 else PROTOCOL_ID,
-        "classification": CLASSIFICATION_REHEARSAL, "production_authority": False,
-        "disclosure": (constants.DISCLOSURE_V3 if descriptor_v3 else constants.DISCLOSURE),
+        "classification": (CLASSIFICATION_PRODUCTION if production_authority
+                           else CLASSIFICATION_REHEARSAL),
+        "production_authority": bool(production_authority),
+        "disclosure": (published["disclosure"] if production_authority else
+                       (constants.DISCLOSURE_V3 if descriptor_v3 else constants.DISCLOSURE)),
         "canonicalization": constants.CANONICALIZATION,
         "derivation": (constants.DERIVATION_V3 if descriptor_v3 else
                        (constants.DERIVATION_V1 if declared_schema == SCHEMA_V1
@@ -1552,5 +1565,6 @@ def reproduce_from_chain(published: Mapping[str, Any], *, rpc_url: str,
                      "root": record_root})
     built["artifacts"] = build_artifacts(refs)
     comparison = compare(built, published)
-    comparison.adopted_blocks = [identity_key]
+    comparison.adopted_blocks = ([identity_key, "disclosure"] if production_authority
+                                 else [identity_key])
     return built, comparison

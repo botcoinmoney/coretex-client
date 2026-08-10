@@ -13,7 +13,7 @@
 # Optional extras for the live leg:
 #   --snapshot FILE     a published resolver snapshot to reproduce BYTE FOR BYTE
 #   --artifact-dir DIR  a local content-addressed artifact store
-#   --export FILE       write the MAINNET_REHEARSAL activation export here
+#   --export FILE       write the reproduced activation export here
 #   --confirmation-depth N   how deep a block must be to count as settled (default 15).
 #                            Lower it only for a local test chain; on a real chain this is the
 #                            difference between reading confirmed state and reading a guess.
@@ -71,9 +71,10 @@ echo "== 5. run the test suite against the INSTALLED package =================="
 cp -R "$HERE/tests" "$OUTSIDE/tests"
 ( cd "$OUTSIDE" && "$WORK/clean/bin/python" -m pytest tests -q )
 
-if [ -n "$RPC" ] && [ -n "$RELEASE" ]; then
+if [ -n "$RPC" ]; then
   echo "== 6. replay the chain, steps 1-8 ======================================"
-  ARGS=(reproduce --release "$RELEASE" --rpc "$RPC")
+  ARGS=(reproduce --rpc "$RPC")
+  [ -n "$RELEASE" ] && ARGS+=(--release "$RELEASE")
   [ -n "$SNAPSHOT" ] && ARGS+=(--snapshot "$SNAPSHOT")
   [ -n "$ARTIFACT_DIR" ] && ARGS+=(--artifact-dir "$ARTIFACT_DIR")
   [ -n "$EXPORT_TO" ] && ARGS+=(--export "$EXPORT_TO")
@@ -81,7 +82,7 @@ if [ -n "$RPC" ] && [ -n "$RELEASE" ]; then
   ( cd "$OUTSIDE" && "$WORK/clean/bin/coretex-validator" "${ARGS[@]}" )
 else
   echo "== 6. chain replay SKIPPED =============================================="
-  echo "   no --rpc/--release given. The offline legs above prove the package installs"
+  echo "   no --rpc given. The offline legs above prove the package installs"
   echo "   and runs clean; they prove nothing about any deployment."
 fi
 

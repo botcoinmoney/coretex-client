@@ -351,7 +351,8 @@ def run(*, release_location: str, rpc_url: str,
         try:
             reconstructed, comparison = rsn.reproduce_from_chain(
                 published_payload, rpc_url=rpc_url, store_dir=artifact_dir or "",
-                runtime_record=runtime_record)
+                runtime_record=runtime_record,
+                production_authority=release.production_authority)
         except Exception as exc:                           # noqa: BLE001 - reported, not raised
             record("resolver_snapshot", "FAIL", {"code": "RESOLVER_SCHEMA_REBUILD_FAILED"},
                    [str(exc)])
@@ -364,7 +365,9 @@ def run(*, release_location: str, rpc_url: str,
             byte_length=comparison.reproduced_length)
     else:
         reconstructed = snap.build_unsigned(transition=selected, law=law, observation=observation,
-                                            artifact_roots=artifact_roots, lineage=lineage)
+                                            artifact_roots=artifact_roots, lineage=lineage,
+                                            classification=release.classification,
+                                            production_authority=release.production_authority)
         reproduction = snap.reproduce(reconstructed, published_payload)
     # NO SIGNATURE CHECK. A downloaded snapshot is a cache; what makes it true is that the bytes
     # reconstruct from chain truth. See export.build_export for the full reasoning.
@@ -396,7 +399,8 @@ def run(*, release_location: str, rpc_url: str,
             source_divergence=release.source_divergence(),
             deployment_verification=verification.as_dict(),
             receipt_chains={k: v.as_dict() for k, v in chains.items()},
-            admission=admission, unverified=unverified)
+            admission=admission, unverified=unverified,
+            classification=release.classification)
     except ex.ExportError as exc:
         record("export", "FAIL", {"code": exc.code}, [exc.message])
         return stop()

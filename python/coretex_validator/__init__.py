@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""The public CoreTex validator: legacy V4 replay, and the V5 rig lane beside it.
+"""The public CoreTex validator for the canonical descriptor-v3 rig lane.
 
 WHAT THIS PACKAGE IS FOR. A CoreTex state transition is a claim, and the whole point of the
 protocol is that the claim is checkable by someone who trusts nobody in it. This package is that
@@ -30,9 +30,8 @@ registry emits an advance event whose topic0 is BYTE-IDENTICAL to V4's (see :mod
 and ``docs/V5-RIG-VALIDATOR.md``), so topic0 is not an identity and any dispatch that treats it as
 one silently mixes the two lanes' logs.
 
-CLASSIFICATION. Snapshots this package produces for the rehearsal deployment are
-``MAINNET_REHEARSAL`` and never ``MAINNET_CANONICAL``. The distinction is enforced in
-:mod:`.export`, not left to a convention.
+CLASSIFICATION. Production is derived only from the authenticated canonical release and exact
+chain identity. Historical V4/v2 readers remain explicit decoders, never production defaults.
 """
 from __future__ import annotations
 
@@ -62,4 +61,4 @@ __all__ = [
 
 #: Independent of the npm package version on purpose: the two ship together but are versioned by
 #: what they each promise. Bumped when a check is added, removed or changed in meaning.
-__version__ = "0.1.0"
+__version__ = "0.2.0"
