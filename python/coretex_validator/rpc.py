@@ -20,9 +20,11 @@ produces a partial answer that looks like an empty one.
 """
 from __future__ import annotations
 
+import base64
 import json
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence
@@ -121,7 +123,25 @@ class JsonRpc:
                  min_interval: float = 0.7) -> None:
         if not isinstance(url, str) or not url:
             raise RpcError("an RPC url is required")
-        self.url = url
+        try:
+            parsed = urllib.parse.urlsplit(url)
+            if parsed.scheme not in ("http", "https") or not parsed.hostname:
+                raise ValueError("RPC url must use http or https and include a hostname")
+            host = parsed.hostname
+            if ":" in host and not host.startswith("["):
+                host = f"[{host}]"
+            if parsed.port is not None:
+                host = f"{host}:{parsed.port}"
+            self.url = urllib.parse.urlunsplit(
+                (parsed.scheme, host, parsed.path, parsed.query, parsed.fragment))
+            self._authorization: Optional[str] = None
+            if parsed.username is not None or parsed.password is not None:
+                user = urllib.parse.unquote(parsed.username or "")
+                password = urllib.parse.unquote(parsed.password or "")
+                encoded = base64.b64encode(f"{user}:{password}".encode("utf-8")).decode("ascii")
+                self._authorization = f"Basic {encoded}"
+        except (ValueError, UnicodeError) as exc:
+            raise RpcError(f"the RPC url is malformed: {exc}") from exc
         self.timeout = timeout
         self.retries = max(1, int(retries))
         self.chunk_blocks = max(1, int(chunk_blocks))
@@ -142,10 +162,11 @@ class JsonRpc:
     def call(self, method: str, params: Sequence[Any]) -> Any:
         payload = json.dumps({"jsonrpc": "2.0", "id": self.calls + 1, "method": method,
                               "params": list(params)}).encode("utf-8")
-        request = urllib.request.Request(
-            self.url, data=payload,
-            headers={"content-type": "application/json", "accept": "application/json",
-                     "user-agent": self.user_agent})
+        headers = {"content-type": "application/json", "accept": "application/json",
+                   "user-agent": self.user_agent}
+        if self._authorization is not None:
+            headers["authorization"] = self._authorization
+        request = urllib.request.Request(self.url, data=payload, headers=headers)
         last: Optional[Exception] = None
         for attempt in range(self.retries):
             gap = time.monotonic() - self._last_request

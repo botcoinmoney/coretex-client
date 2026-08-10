@@ -256,9 +256,17 @@ def run(*, release_location: str, rpc_url: str,
                          coordinator_signer=coordinator_signer,
                          verify_signature=verify_signatures)
     if not joined.transitions:
-        record("join_transition", "FAIL", joined.as_dict(),
-               ["no advance could be joined; there is no transition to verify"])
-        return stop()
+        if joined.unresolved:
+            record("join_transition", "FAIL", joined.as_dict(),
+                   ["accepted CoreTex activity exists, but no state advance could be joined"])
+            return stop()
+        reason = ("no accepted CoreTex state advance exists in the scanned production range; "
+                  "deployment and receipt-chain checks passed, but transition replay and "
+                  "activation export are not available until the first advance")
+        unverified.append({"step": "join_transition", "code": "NO_ACCEPTED_TRANSITION",
+                           "reason": reason})
+        record("join_transition", "UNVERIFIED", joined.as_dict(), [reason])
+        return stop(report_ok=True)
     selected = _select(joined.transitions, epoch=epoch, transition_index=transition_index)
     if selected is None:
         record("join_transition", "FAIL", joined.as_dict(),

@@ -211,3 +211,10 @@ def test_pipeline_delegates_every_supported_resolver_schema():
     source = inspect.getsource(pipeline.run)
     assert 'published_payload.get("schema") in rsn.SUPPORTED_SCHEMAS' in source
     assert rsn.SCHEMA_V3 in rsn.SUPPORTED_SCHEMAS
+
+
+def test_prelaunch_without_an_accepted_transition_is_unverified_not_a_chain_failure():
+    source = inspect.getsource(pipeline.run)
+    assert '"code": "NO_ACCEPTED_TRANSITION"' in source
+    assert 'record("join_transition", "UNVERIFIED"' in source
+    assert "return stop(report_ok=True)" in source

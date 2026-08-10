@@ -61,4 +61,4 @@ __all__ = [
 
 #: Independent of the npm package version on purpose: the two ship together but are versioned by
 #: what they each promise. Bumped when a check is added, removed or changed in meaning.
-__version__ = "0.2.0"
+__version__ = "0.2.1"
