@@ -52,6 +52,36 @@ coretex-validator reproduce --rpc "$BASE_RPC_URL" \
 Pass `--release` only to audit an explicit historical or alternate release. A file that merely
 claims production is refused; production is not selectable with a CLI flag.
 
+## Commands
+
+| command | what it does |
+|---------|--------------|
+| `sync-law --mirror URL` | fetches the six published admission trees by publication root, re-derives every address from the bytes that arrived, materializes a verified law cache under `~/.local/share/coretex/law/<root>/`, and pins it for every later command |
+| `reproduce --rpc URL` | the eight steps against a live endpoint; picks up the law cache automatically |
+| `verify-release --release R --rpc URL` | steps 1–2: authenticate the release and read the deployment |
+| `reproduce-snapshot --snapshot F --rpc URL --artifacts DIR` | rebuild a published resolver snapshot from chain truth, byte for byte |
+| `replay-advance --logs F --artifacts DIR` | replay confirmed frontier advances; `PASS`/`FAIL`/`BACKLOG` per advance, verbatim |
+| `verify-receipt RECEIPT.json` | replay a signed Benchmark-v2 receipt through the law cache, in a networkless child |
+| `topics` | the dispatch table for both lanes |
+| `selftest` | known-answer vectors for keccak256, ecrecover and canonical JSON |
+
+### The law cache, in one command
+
+Deterministic admission (step 5) needs six code trees. They are published as content-addressed
+objects, addressed by the **same** tree-hash rule the signed receipt's `code_roots` binds, so
+`sync-law` can fetch them from any mirror and check them against the chain-bound identity rather
+than against the courier:
+
+```bash
+coretex-validator sync-law --mirror https://<coordinator-or-mirror>
+coretex-validator reproduce --rpc "$BASE_RPC_URL"        # step 5 now runs the real admission
+```
+
+Every object is rehashed from the bytes that arrived; a mismatch, a truncation, an oversize
+response, a tar carrying anything the hash rule does not cover, or a missing tree refuses outright
+and installs nothing. `--print-export` emits `export VAR=...` lines instead, for a shell that
+wants the three pins directly.
+
 ## Descriptor-v3 validator
 
 ```bash

@@ -9,8 +9,14 @@
 #
 #   ./reproduce.sh                          # offline: build, install clean, run the test suite
 #   ./reproduce.sh --rpc URL --release R    # ...then replay a live chain end to end
+#   ./reproduce.sh --law-mirror URL         # ...having first fetched + VERIFIED the admission law
 #
 # Optional extras for the live leg:
+#   --law-mirror URL    a mirror of the published admission law. `sync-law` fetches the six code
+#                       trees by publication root, re-derives every address from the bytes that
+#                       arrived, and pins the verified cache for the replay below. This is what
+#                       removes step 5's BACKLOG on a machine that started with nothing.
+#   --law-root ROOT     the publication root to fetch (default: the epoch-180 admission closure)
 #   --snapshot FILE     a published resolver snapshot to reproduce BYTE FOR BYTE
 #   --artifact-dir DIR  a local content-addressed artifact store
 #   --export FILE       write the reproduced activation export here
@@ -19,9 +25,10 @@
 #                            difference between reading confirmed state and reading a guess.
 #
 # EXIT CODES mirror the CLI: 0 = nothing was contradicted, 1 = a check ran and disagreed,
-# 2 = the run could not start. A 0 with a non-empty "unverified" list is the NORMAL clean-machine
-# outcome, because deterministic Benchmark-v2 admission needs trees that are not published — see
-# docs/V5-RIG-VALIDATOR.md. Pass --require-complete to the CLI if you want that to be a failure.
+# 2 = the run could not start. A 0 with a non-empty "unverified" list is the normal outcome when no
+# law mirror was given, because deterministic Benchmark-v2 admission needs the six published trees
+# — see docs/V5-RIG-VALIDATOR.md. Pass --law-mirror to remove that, and --require-complete to the
+# CLI if you want any remaining gap to be a failure.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -31,6 +38,7 @@ OUTSIDE="$(mktemp -d "${TMPDIR:-/tmp}/coretex-validator-outside.XXXXXX")"
 trap 'rm -rf "$WORK" "$OUTSIDE"' EXIT
 
 RPC=""; RELEASE=""; SNAPSHOT=""; ARTIFACT_DIR=""; EXPORT_TO=""; DEPTH=""
+LAW_MIRROR=""; LAW_ROOT=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --rpc) RPC="$2"; shift 2 ;;
@@ -39,7 +47,9 @@ while [ $# -gt 0 ]; do
     --artifact-dir) ARTIFACT_DIR="$2"; shift 2 ;;
     --export) EXPORT_TO="$2"; shift 2 ;;
     --confirmation-depth) DEPTH="$2"; shift 2 ;;
-    -h|--help) sed -n '2,26p' "$0"; exit 0 ;;
+    --law-mirror) LAW_MIRROR="$2"; shift 2 ;;
+    --law-root) LAW_ROOT="$2"; shift 2 ;;
+    -h|--help) sed -n '2,32p' "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -71,9 +81,26 @@ echo "== 5. run the test suite against the INSTALLED package =================="
 cp -R "$HERE/tests" "$OUTSIDE/tests"
 ( cd "$OUTSIDE" && "$WORK/clean/bin/python" -m pytest tests -q )
 
+LAW_ARGS=()
+if [ -n "$LAW_MIRROR" ]; then
+  echo "== 6. fetch + VERIFY the published admission law ========================"
+  # The cache goes inside the throwaway work dir, so this leg proves what a machine that started
+  # with NOTHING can do — not what a machine with a warm ~/.local/share/coretex happens to have.
+  LAW_CACHE="$WORK/law"
+  SYNC=(sync-law --mirror "$LAW_MIRROR" --cache-dir "$LAW_CACHE")
+  [ -n "$LAW_ROOT" ] && SYNC+=(--root "$LAW_ROOT")
+  ( cd "$OUTSIDE" && "$WORK/clean/bin/coretex-validator" "${SYNC[@]}" )
+  LAW_ARGS=(--law-cache "$LAW_CACHE")
+  [ -n "$LAW_ROOT" ] && LAW_ARGS+=(--law-root "$LAW_ROOT")
+else
+  echo "== 6. law sync SKIPPED =================================================="
+  echo "   no --law-mirror given. Deterministic admission will BACKLOG rather"
+  echo "   than run; that is honest, not broken. See docs/V5-RIG-VALIDATOR.md F4."
+fi
+
 if [ -n "$RPC" ]; then
-  echo "== 6. replay the chain, steps 1-8 ======================================"
-  ARGS=(reproduce --rpc "$RPC")
+  echo "== 7. replay the chain, steps 1-8 ======================================"
+  ARGS=(reproduce --rpc "$RPC" "${LAW_ARGS[@]+"${LAW_ARGS[@]}"}")
   [ -n "$RELEASE" ] && ARGS+=(--release "$RELEASE")
   [ -n "$SNAPSHOT" ] && ARGS+=(--snapshot "$SNAPSHOT")
   [ -n "$ARTIFACT_DIR" ] && ARGS+=(--artifact-dir "$ARTIFACT_DIR")
@@ -81,7 +108,7 @@ if [ -n "$RPC" ]; then
   [ -n "$DEPTH" ] && ARGS+=(--confirmation-depth "$DEPTH")
   ( cd "$OUTSIDE" && "$WORK/clean/bin/coretex-validator" "${ARGS[@]}" )
 else
-  echo "== 6. chain replay SKIPPED =============================================="
+  echo "== 7. chain replay SKIPPED =============================================="
   echo "   no --rpc given. The offline legs above prove the package installs"
   echo "   and runs clean; they prove nothing about any deployment."
 fi

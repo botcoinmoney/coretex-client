@@ -14,7 +14,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "coretex-validator"
-version = "0.2.3"
+version = "0.3.0"
 description = "Public CoreTex descriptor-v3 production validator, chain-first."
 readme = "README.md"
 license = "Apache-2.0"

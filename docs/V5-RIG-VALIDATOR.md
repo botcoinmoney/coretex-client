@@ -119,6 +119,41 @@ needed by the runtime tree; the validator itself still declares zero runtime dep
 Publishing the trees did not, on its own, make step 5 pass — two defects in THIS package sat in
 front of them. See K1 and K2 below.
 
+**Since 0.3.0 those three variables are no longer something a human sets.** `sync-law` fetches the
+publication set by root, verifies it, materializes `<dest>` and applies the pins itself:
+
+```bash
+coretex-validator sync-law --mirror https://<coordinator-or-mirror>
+coretex-validator reproduce --rpc "$BASE_RPC_URL"
+```
+
+What "verifies" means here, precisely, because it is the whole value of the command:
+
+* the MANIFEST is accepted only if its bytes hash to the publication root the caller named — under
+  `sha256` of the bytes, or of the bytes minus one trailing newline, which is the rule the
+  published epoch-180 set records. Which rule matched is written into the cache receipt, so it is
+  never a guess;
+* each object is fetched under a byte ceiling and checked against BOTH the container digest the
+  manifest binds AND, after unpacking, the **tree hash its own name is** — the same
+  `sha256`-over-sorted-`<relpath> NUL <filesha>`-lines rule
+  `benchmark-v2/validator/receipt.py::code_roots` binds into every signed receipt. The client
+  reimplements that rule on the standard library (it cannot import UNLICENSED trees, and a tree
+  that vouched for itself would vouch for anything); the two implementations are pinned to each
+  other by golden vectors generated from the canonical function and committed byte-identically in
+  both repositories (`python/tests/test_tree_hash_golden.py`);
+* a tar carrying anything the hash rule does **not** cover is refused, because such a file is
+  invisible to the address and would still land in the cache — the obvious way to smuggle code past
+  a content check. The only tolerated exception is a documented key-material path, and its use is
+  recorded;
+* symlinks, hard links, devices, absolute paths, `..` components, duplicate names, member/size
+  ceilings, an object spanning two destinations, a missing required tree: all refuse, and refuse
+  before anything is written. A publication set is installed whole or not at all;
+* the cache is re-verified **when it is loaded**, not only when it is written. A cache that was
+  edited afterwards is an error naming the tree that moved — never a silent re-sync.
+
+The mirror is therefore *used* and never *trusted*, and the address a tree is fetched under is the
+chain-bound identity rather than a new scheme invented for distribution.
+
 ### F5 — The rig contract source repository is also private
 
 `github.com/botcoinmoney/botcoin-mining-rigs` (pinned at `cdb91d21`) is **not** anonymously
@@ -207,10 +242,44 @@ Eight steps, in order, stopping at the first outright failure and recording the 
 | 2 | verify contract bytecode + wiring | `release` | against the RELEASE, not a rebuild |
 | 3 | per-rig receipt continuity | `receipt_chain` | CoreTex **and** standard receipts share one chain |
 | 4 | reconstruct the transition | `join` | design §7.2, keyed on `(epoch, parentStateRoot, patchHash)` |
-| 5 | deterministic admission | `replay` | BACKLOGs on a clean machine — see F4 |
+| 5 | deterministic admission | `replay` | runs for real once `sync-law` has run; BACKLOGs otherwise — see F4 |
 | 6 | artifacts + HISTORICAL law | `historical_law` | the law at that transition, never today's |
 | 7 | reproduce the resolver snapshot | `snapshot` | unsigned payload FIRST, signature separately |
 | 8 | export for portable activation | `export` | `MAINNET_REHEARSAL` only |
+
+Two commands sit alongside the eight, driving the same machinery without a chain in front of it:
+`replay-advance` (one confirmed advance, from a supplied log feed and artifact store) and
+`verify-receipt` (a signed Benchmark-v2 receipt, which is self-contained from `receipt + trees`).
+Both use the law cache exactly as step 5 does, and both surface `PASS` / `FAIL` / `BACKLOG`
+verbatim — there is no flag on either that turns an unreachable binding into a pass.
+
+### What the clean machine can and cannot do, after `sync-law`
+
+The honest ceilings do **not** move because the law is now fetchable. Stated again so the new
+capability is not read as more than it is:
+
+* **`sync-law` removes step 5's BACKLOG; it does not make anything production-authoritative.**
+  Nothing this package reproduces carries `production_authority: true`. `release.py` refuses a
+  release declaring `MAINNET_CANONICAL` by name and `export.build_export` cannot emit that
+  classification, by construction rather than by policy.
+* **The receipt signing key is still a TEST key.** `validator/keys/validator_pin.json` — which now
+  arrives inside the verified law cache like everything else — pins `g4-validator-test-1`. A
+  signature that verifies against it proves the receipt was issued by whoever holds a *test* seed.
+  Real Ed25519 key custody does not exist yet and no key-ceremony plumbing exists to create it, so
+  no receipt this command validates claims production authority, however cleanly it replays.
+* **F5 is unchanged.** `github.com/botcoinmoney/botcoin-mining-rigs` at `cdb91d21…` is still not
+  anonymously clonable. The *deployment* remains verifiable without it — bytecode is checked
+  against the release artifact's recorded runtime hashes — but the event signatures, tuple layouts
+  and typehashes this package transcribes from that source remain uncheckable by an outside
+  reviewer against the original.
+* **A wheel cannot create an OS sandbox.** The receipt replay runs in a child that installs a
+  seccomp-BPF filter and then *proves* it with a real `socket(2)` attempt; if the filter cannot be
+  installed the child exits and the result is a BACKLOG, never an unconfined run. That is a
+  process-level control on a host the validator does not own. The fully-locked shape is the
+  digest-pinned runner image.
+* **The law cache is content-addressed, not authorized.** `sync-law` proves the trees are the ones
+  the receipt's `code_roots` names. It says nothing about whether that publication root is the one
+  an operator *should* be replaying against; that binding comes from the chain, at step 5.
 
 ### The two authorities, never collapsed
 
