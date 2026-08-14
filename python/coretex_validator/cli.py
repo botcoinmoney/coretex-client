@@ -1,11 +1,15 @@
 # SPDX-License-Identifier: Apache-2.0
 """``coretex-validator`` — the command an external agent actually runs.
 
-FOUR SUBCOMMANDS, AND THE FIRST ONE IS THE POINT:
+SEVEN SUBCOMMANDS, AND THE FIRST ONE IS THE POINT:
 
     coretex-validator reproduce --rpc URL                 production, steps 1-8
     coretex-validator reproduce --release R --rpc URL     explicit historical release
     coretex-validator verify-release --release R --rpc URL   steps 1-2 only
+    coretex-validator reproduce-snapshot --snapshot F --rpc URL --artifacts DIR
+    coretex-validator sync-law --mirror URL               fetch + VERIFY the admission law
+    coretex-validator replay-advance --logs F --artifacts DIR   one confirmed advance, replayed
+    coretex-validator verify-receipt RECEIPT.json         Benchmark-v2 receipt replay
     coretex-validator topics                              the dispatch table, V4 and rig
     coretex-validator selftest                            keccak/ecrecover/canonical-JSON vectors
 
@@ -16,10 +20,23 @@ EXIT CODES ARE PART OF THE INTERFACE, because a CI job reads them and a human re
     2  the run could not start (bad arguments, unreachable endpoint, unparseable release)
 
 Note what 0 does NOT mean. It does not mean everything was verified; it means nothing was
-contradicted. A clean-machine run will normally exit 0 with a non-empty ``unverified`` list,
-because deterministic admission needs trees that are not published. ``--require-complete`` turns
-any unverified step into exit 1 for callers that want the stricter reading, and it is opt-in
-rather than default so that "I could not check X" never silently becomes "X is broken".
+contradicted. ``--require-complete`` turns any unverified step into exit 1 for callers that want
+the stricter reading, and it is opt-in rather than default so that "I could not check X" never
+silently becomes "X is broken".
+
+THE LAW CACHE, AND WHY IT IS APPLIED BEFORE ANY IMPORT
+=====================================================
+``sync-law`` fetches the six published admission trees by publication root, verifies every one
+against the same tree-hash rule the signed receipt's ``code_roots`` binds, and materializes them
+under ``~/.local/share/coretex/law/<root>/``. ``reproduce``, ``replay-advance`` and
+``verify-receipt`` then pick that cache up automatically — which is what removes step 5's BACKLOG
+on a clean machine.
+
+The pins are applied by :func:`_activate_law` BEFORE the module that reads them is imported, and
+that ordering is load-bearing rather than tidy: ``replay.py`` reads the three env vars at IMPORT
+time (they become the sandbox's and the oracle screen's default arguments), so pins set afterwards
+are a no-op that looks like it worked — the run would BACKLOG with a verified law cache sitting
+right there. ``law.activate`` refuses that ordering out loud rather than shrugging.
 """
 from __future__ import annotations
 
@@ -44,7 +61,39 @@ def _emit(payload: Any, *, pretty: bool) -> None:
     sys.stdout.write("\n")
 
 
+def _activate_law(args: argparse.Namespace) -> Optional[Dict[str, Any]]:
+    """Apply a verified law cache's env pins, and say in the report which one was used.
+
+    MUST run before ``pipeline``/``replay`` is imported — see the module docstring. Returns the
+    block the command reports under ``law``, or ``None`` when no cache is available (in which case
+    the run proceeds exactly as it did before this feature existed: honest BACKLOGs at step 5).
+
+    An explicitly-named ``--law-root`` that is NOT present is an error, never a silent fallback to
+    "no law": a caller who named a publication meant that publication.
+    """
+    from . import law as law_mod
+
+    cache_dir = getattr(args, "law_cache", None)
+    root = getattr(args, "law_root", None)
+    if getattr(args, "no_law_cache", False):
+        return {"used": False, "reason": "--no-law-cache: the law cache was not consulted"}
+    if root:
+        cache = law_mod.load_cache(root, cache_dir=cache_dir)   # raises if absent or tampered
+    else:
+        cache = law_mod.find_cache(cache_dir=cache_dir)
+    if cache is None:
+        return {"used": False,
+                "reason": ("no verified law cache was found; deterministic admission will BACKLOG. "
+                           "Run `coretex-validator sync-law --mirror URL` to remove it"),
+                "cache_dir": cache_dir or law_mod.default_cache_dir()}
+    pins = law_mod.activate(cache)
+    return {"used": True, "publication_root": cache.publication_root,
+            "cache_dir": cache.root_dir, "env": pins,
+            "trees": cache.receipt["trees"], "mirror": cache.receipt.get("mirror")}
+
+
 def _cmd_reproduce(args: argparse.Namespace) -> int:
+    law_block = _activate_law(args)                            # BEFORE the import below
     from . import pipeline
 
     report = pipeline.run(
@@ -55,7 +104,9 @@ def _cmd_reproduce(args: argparse.Namespace) -> int:
         confirmation_depth=args.confirmation_depth, from_block=args.from_block,
         to_block=args.to_block, verify_signatures=not args.no_signature_checks,
         allow_test_doubles=args.allow_test_doubles, export_path=args.export)
-    _emit(report.as_dict(), pretty=not args.compact)
+    payload = report.as_dict()
+    payload["law"] = law_block
+    _emit(payload, pretty=not args.compact)
     if any(step.status == "FAIL" for step in report.steps):
         return 1
     if args.require_complete and (report.unverified
@@ -109,6 +160,149 @@ def _cmd_reproduce_snapshot(args: argparse.Namespace) -> int:
         result["written_to"] = args.out
     _emit(result, pretty=not args.compact)
     return 0 if comparison.identical else 1
+
+
+def _cmd_sync_law(args: argparse.Namespace) -> int:
+    """Fetch, VERIFY and materialize the published admission law (spec §9.3).
+
+    The verdict is binary and there is no partial success: either every object reproduced the
+    address it was fetched under and every required tree is present, or nothing is installed.
+    """
+    from . import law as law_mod
+
+    cache = law_mod.sync_law(args.root, mirror=args.mirror, cache_dir=args.cache_dir,
+                             force=args.force, timeout=args.timeout,
+                             max_object_bytes=args.max_object_bytes)
+    if args.print_export:
+        # Shell-only output, deliberately NOT mixed with the JSON: `eval "$(... --print-export)"`.
+        for line in cache.export_lines():
+            sys.stdout.write(line + "\n")
+        return 0
+    _emit({"law": cache.as_dict(),
+           "verified": ("every object was rehashed under benchmark-v2/validator/receipt.py's "
+                        "tree-hash rule from the bytes that arrived; the mirror was used, never "
+                        "trusted"),
+           "next": ("reproduce / replay-advance / verify-receipt now pick this cache up "
+                    "automatically; nothing else needs setting")},
+          pretty=not args.compact)
+    return 0
+
+
+def _load_logs(path: str) -> List[Dict[str, Any]]:
+    """Raw chain logs from a file: either a bare list or ``{"logs": [...]}``."""
+    document = _load_json(path)
+    logs = document.get("logs") if isinstance(document, dict) else document
+    if not isinstance(logs, list):
+        raise ValueError(f"{path} carries no logs list (expected a JSON list, or an object with "
+                         "a 'logs' key)")
+    return logs
+
+
+def _cmd_replay_advance(args: argparse.Namespace) -> int:
+    """Replay confirmed frontier advances against a law cache and a local artifact store.
+
+    PASS / FAIL / BACKLOG are surfaced VERBATIM, one result per advance. Nothing here collapses a
+    BACKLOG into either of the other two, and there is no flag that does — the whole point of the
+    third outcome is that "I could not check that" is a distinct fact.
+    """
+    law_block = _activate_law(args)                            # BEFORE the imports below
+    from . import backlog as bl
+    from . import publication as pub
+    from . import replay as rp
+    from . import sync as sy
+
+    logs = _load_logs(args.logs)
+    synced = sy.sync_logs(logs, latest_block=args.latest_block,
+                          confirmation_depth=args.confirmation_depth,
+                          genesis_frontier_root=args.genesis_root)
+    events = list(synced.events)
+    if args.epoch is not None:
+        events = [e for e in events if e.epoch == args.epoch]
+    if args.transition_index is not None:
+        events = [e for e in events if e.transition_index == args.transition_index]
+
+    store = pub.FilesystemCAS(os.path.expanduser(args.artifacts))
+    screen = rp.default_oracle_screen()
+    sandbox = rp.default_sandbox()
+    burned = _load_json(args.burned) if args.burned else None
+    pins = synced.pin_resolver()                               # per-epoch, assembled once
+    results = [
+        rp.replay_advance(event, store=store, pins=pins, screen=screen, sandbox=sandbox,
+                          credit_event=synced.credit_for(event), burned=burned,
+                          live_root=args.live_root,
+                          allow_test_doubles=args.allow_test_doubles)
+        for event in events]
+
+    payload = {
+        "law": law_block,
+        "feed": synced.summary(),
+        "screen": {"name": getattr(screen, "name", type(screen).__name__),
+                   "available": bool(screen.available())},
+        "sandbox": {"name": getattr(sandbox, "name", type(sandbox).__name__),
+                    "available": bool(sandbox.available())},
+        "replayed": [r.as_dict() for r in results],
+        "outcomes": {name: sum(1 for r in results if str(r.outcome) == name)
+                     for name in ("PASS", "FAIL", "BACKLOG")},
+    }
+    if not events:
+        payload["note"] = ("the supplied feed carries no confirmed advance matching the filters; "
+                           "nothing was replayed and nothing is claimed")
+    _emit(payload, pretty=not args.compact)
+
+    if any(r.outcome == bl.FAIL for r in results):
+        return 1
+    unresolved = [r for r in results if r.outcome == bl.BACKLOG]
+    if not events:
+        return 2
+    if args.require_complete and unresolved:
+        sys.stderr.write(
+            "--require-complete: nothing was contradicted, but these advances could not be "
+            "checked:\n" + "".join(f"  - {r.stage}: {r.reason}\n" for r in unresolved))
+        return 1
+    return 0
+
+
+def _cmd_verify_receipt(args: argparse.Namespace) -> int:
+    """Drive ``benchmark-v2/validator/replay.replay_receipt`` through the law cache.
+
+    Same pattern as ``reproduce``'s step 5, exposed on its own so a receipt can be checked without
+    a chain at all: the receipt is self-contained from ``receipt + trees``. The frozen replay runs
+    in a child interpreter that installs and PROVES a networkless seccomp filter before executing
+    the candidate; a host where that cannot be installed BACKLOGs rather than running it unconfined.
+    """
+    law_block = _activate_law(args)                            # BEFORE the import below
+    from . import replay as rp
+
+    wrapper = _load_json(args.receipt)
+    artifact = _load_json(args.artifact) if args.artifact else {}
+    sandbox = rp.BenchmarkV2Sandbox() if args.repo_root is None else rp.BenchmarkV2Sandbox(
+        repo_root=args.repo_root,
+        bench_v2_dir=os.path.join(args.repo_root, "benchmark-v2"),
+        coretex_dir=os.path.join(args.repo_root, "coretex-memory"))
+
+    base = {"law": law_block, "sandbox": {"name": sandbox.name,
+                                          "available": bool(sandbox.available())}}
+    try:
+        result = sandbox.execute(receipt_wrapper=wrapper, artifact=artifact)
+    except rp.SandboxDependencyError as exc:
+        # An ENVIRONMENT fault, and deliberately a FAIL: the reader's next move is one `pip
+        # install`, not a re-read of our documentation. Conflating it with "unavailable" is the
+        # single most misleading thing this command could do.
+        base.update({"outcome": "FAIL", "code": "MISSING_DEPENDENCY",
+                     "dependency": exc.dependency, "reason": str(exc), "remedy": exc.remedy})
+        _emit(base, pretty=not args.compact)
+        return 1
+    except rp.SandboxUnavailable as exc:
+        base.update({"outcome": "BACKLOG", "code": "SANDBOX_UNAVAILABLE", "reason": str(exc)})
+        _emit(base, pretty=not args.compact)
+        if args.require_complete:
+            sys.stderr.write(f"--require-complete: the receipt was not replayed: {exc}\n")
+            return 1
+        return 0
+
+    base.update({"outcome": "PASS" if result["reproduced"] else "FAIL", "replay": result})
+    _emit(base, pretty=not args.compact)
+    return 0 if result["reproduced"] else 1
 
 
 def _cmd_topics(args: argparse.Namespace) -> int:
@@ -179,7 +373,20 @@ def _cmd_selftest(args: argparse.Namespace) -> int:
     return 0 if ok else 1
 
 
+def _add_law_arguments(parser: argparse.ArgumentParser) -> None:
+    """The law-cache selection every admission-driving command shares."""
+    parser.add_argument("--law-root", default=None,
+                        help="publication root of the verified law cache to use (default: the "
+                             "one sync-law wrote, when exactly one is unambiguous)")
+    parser.add_argument("--law-cache", default=None,
+                        help="law cache directory (default: ~/.local/share/coretex/law)")
+    parser.add_argument("--no-law-cache", action="store_true",
+                        help="ignore any law cache; deterministic admission then BACKLOGs exactly "
+                             "as it did before sync-law existed")
+
+
 def build_parser() -> argparse.ArgumentParser:
+    from .law import DEFAULT_PUBLICATION_ROOT, MAX_OBJECT_BYTES
     from .release import DEFAULT_PRODUCTION_RELEASE_URL
     parser = argparse.ArgumentParser(
         prog="coretex-validator", description=__doc__.splitlines()[0])
@@ -213,7 +420,68 @@ def build_parser() -> argparse.ArgumentParser:
     reproduce.add_argument("--allow-test-doubles", action="store_true",
                            help="let a declared non-consensus-grade sandbox/screen count. Visible "
                                 "on the command line on purpose")
+    _add_law_arguments(reproduce)
     reproduce.set_defaults(func=_cmd_reproduce)
+
+    lawp = sub.add_parser(
+        "sync-law",
+        help="fetch + verify the published admission trees, and pin them for later commands")
+    lawp.add_argument("--mirror", required=True,
+                      help="http(s) url, file:// url or local directory serving the publication "
+                           "set (a coordinator's /coretex/v5/object route, a bare CAS, or a "
+                           "published evidence directory — the layout is discovered)")
+    lawp.add_argument("--root", default=DEFAULT_PUBLICATION_ROOT,
+                      help="publication root to fetch (default: the epoch-180 admission closure)")
+    lawp.add_argument("--cache-dir", default=None,
+                      help="where to materialize (default: ~/.local/share/coretex/law)")
+    lawp.add_argument("--force", action="store_true",
+                      help="re-materialize even if a verified cache is already present")
+    lawp.add_argument("--timeout", type=float, default=30.0)
+    lawp.add_argument("--max-object-bytes", type=int, default=MAX_OBJECT_BYTES,
+                      help="per-object download ceiling; a mirror serving more is abandoned")
+    lawp.add_argument("--print-export", action="store_true",
+                      help="print `export VAR=...` lines instead of JSON, for "
+                           "`eval \"$(coretex-validator sync-law --mirror URL --print-export)\"`")
+    lawp.set_defaults(func=_cmd_sync_law)
+
+    advance = sub.add_parser(
+        "replay-advance", help="replay confirmed frontier advances (PASS/FAIL/BACKLOG, verbatim)")
+    advance.add_argument("--logs", required=True,
+                         help="JSON file of raw chain logs (a list, or {\"logs\": [...]})")
+    advance.add_argument("--artifacts", required=True,
+                         help="directory of content-addressed objects the advance points at")
+    advance.add_argument("--epoch", type=int, default=None)
+    advance.add_argument("--transition-index", type=int, default=None)
+    advance.add_argument("--latest-block", type=int, default=None,
+                         help="chain head; without it the feed is taken as already confirmed by "
+                              "the caller's own policy, and that is reported rather than assumed")
+    advance.add_argument("--confirmation-depth", type=int, default=15)
+    advance.add_argument("--genesis-root", default=None,
+                         help="deployment genesis frontier root; without it the first epoch's "
+                              "inheritance is UNVERIFIED rather than assumed")
+    advance.add_argument("--live-root", default=None,
+                         help="the confirmed live root the advance must build on")
+    advance.add_argument("--burned", default=None, help="JSON list of burned instance ids")
+    advance.add_argument("--require-complete", action="store_true",
+                         help="exit 1 when any advance BACKLOGs")
+    advance.add_argument("--allow-test-doubles", action="store_true",
+                         help="let a declared non-consensus-grade screen/sandbox count. Visible "
+                              "on the command line on purpose")
+    _add_law_arguments(advance)
+    advance.set_defaults(func=_cmd_replay_advance)
+
+    receipt = sub.add_parser(
+        "verify-receipt", help="replay a signed Benchmark-v2 receipt through the law cache")
+    receipt.add_argument("receipt", help="path to a signed receipt wrapper JSON")
+    receipt.add_argument("--artifact", default=None,
+                         help="the V5 eval artifact that binds it (needed for a v2 report)")
+    receipt.add_argument("--repo-root", default=None,
+                         help="use these trees instead of the law cache — the directory that "
+                              "CONTAINS benchmark-v2 and coretex-memory")
+    receipt.add_argument("--require-complete", action="store_true",
+                         help="exit 1 when the receipt could not be replayed at all")
+    _add_law_arguments(receipt)
+    receipt.set_defaults(func=_cmd_verify_receipt)
 
     verify = sub.add_parser("verify-release", help="steps 1-2 only")
     verify.add_argument("--release", default=DEFAULT_PRODUCTION_RELEASE_URL)
