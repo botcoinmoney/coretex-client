@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: UNLICENSED
+# SPDX-License-Identifier: Apache-2.0
 """Cut V5-C — ARTIFACT AVAILABILITY: publish, fetch back, rehash, fail closed.
 
 The property under test is narrow and load-bearing: a root in a signed receipt must name bytes a

@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: UNLICENSED
+# SPDX-License-Identifier: Apache-2.0
 """Cut V5-E — PROTOCOL AND DEPLOYMENT DISPATCH.
 
 The property under test: a validator handed a mixed log feed routes every line to the RIGHT law,

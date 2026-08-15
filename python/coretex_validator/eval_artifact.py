@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: UNLICENSED
+# SPDX-License-Identifier: Apache-2.0
 """Reference implementation of ``coretex.memory-eval-artifact.v1`` (Cut V5-C, ledger §17.236).
 
 The normative text is ``v5/spec/EVAL-ARTIFACT-V1.md``. This module is its executable form: build,

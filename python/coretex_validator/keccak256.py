@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: UNLICENSED
+# SPDX-License-Identifier: Apache-2.0
 """Keccak-256 (the ETHEREUM hash), pure stdlib, for the V5 eval-artifact bindings.
 
 WHY THIS EXISTS. V5-C must check two values that are computed ON-CHAIN with ``keccak256``:

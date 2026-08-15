@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: UNLICENSED
+# SPDX-License-Identifier: Apache-2.0
 """The RIG chain-first envelope's own refusals (§10).
 
 WHAT THIS FILE IS FOR. ``validate_rig_chain_first`` is a THIN trust wrapper: the deterministic

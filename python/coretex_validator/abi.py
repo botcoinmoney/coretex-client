@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: UNLICENSED
+# SPDX-License-Identifier: Apache-2.0
 """The minimum Solidity ABI encoding V5-G needs, over this lane's own stdlib Keccak.
 
 DELIBERATELY NOT A LIBRARY. Cut V5-G must produce (a) the EIP-712 digest the deployed

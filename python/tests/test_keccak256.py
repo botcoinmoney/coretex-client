@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: UNLICENSED
+# SPDX-License-Identifier: Apache-2.0
 """Cut V5-C — the stdlib Keccak-256 the on-chain bindings need.
 
 Two values in a V5 receipt are computed with Ethereum's ``keccak256``: the signed

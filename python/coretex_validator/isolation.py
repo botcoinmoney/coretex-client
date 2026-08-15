@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: UNLICENSED
+# SPDX-License-Identifier: Apache-2.0
 """Candidate-execution isolation for the V5 evaluator worker (directive §7B).
 
 WHAT §7B DEMANDS, VERBATIM

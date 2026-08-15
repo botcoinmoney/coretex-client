@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: UNLICENSED
+# SPDX-License-Identifier: Apache-2.0
 """V5 protocol / deployment DETECTION and log decoding (Cut V5-E, ledger §17.236).
 
 This module answers exactly one question per log line: *which protocol does this belong to, and

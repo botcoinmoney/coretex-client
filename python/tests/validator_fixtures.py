@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: UNLICENSED
+# SPDX-License-Identifier: Apache-2.0
 """Shared fixtures for the Cut V5-E validator tests.
 
 A SCENARIO here is a complete, self-consistent slice of confirmed chain truth plus the

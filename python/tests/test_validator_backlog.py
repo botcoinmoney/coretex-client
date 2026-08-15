@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: UNLICENSED
+# SPDX-License-Identifier: Apache-2.0
 """Cut V5-E — THE BACKLOG: a third outcome, persisted, never dropped.
 
 §17.236: "unresolved artifact/context work is PERSISTED as a typed backlog entry […] never

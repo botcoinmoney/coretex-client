@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: UNLICENSED
+# SPDX-License-Identifier: Apache-2.0
 """Cut V5-E — THE CONSENSUS-CRITICAL REPLAY.
 
 §17.236's walk, executed and attacked: read confirmed event -> fetch parent manifest + verify its

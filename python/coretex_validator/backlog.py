@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: UNLICENSED
+# SPDX-License-Identifier: Apache-2.0
 """The validator BACKLOG: unresolved work is persisted, never passed and never dropped.
 
 §17.236's V5-E line is "unresolved work persisted as a BACKLOG rather than falsely passing", and

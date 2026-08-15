@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: UNLICENSED
+# SPDX-License-Identifier: Apache-2.0
 """The CONSENSUS-CRITICAL public replay of a V5 memory-frontier advance (Cut V5-E, §17.236).
 
 No secret corpus. No coordinator key. No hosted-model API. §17.236 states the walk verbatim and

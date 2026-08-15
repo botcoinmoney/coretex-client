@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: UNLICENSED
+# SPDX-License-Identifier: Apache-2.0
 """ARTIFACT AVAILABILITY for the V5 memory lane (Cut V5-C, ledger §17.236).
 
 A confirmed ``CoreTexMemoryFrontierAdvanced`` event is only replayable if the objects it points

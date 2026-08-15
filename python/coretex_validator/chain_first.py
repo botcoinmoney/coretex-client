@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: UNLICENSED
+# SPDX-License-Identifier: Apache-2.0
 """Chain-first, content-addressed validator admission envelope.
 
 This is deliberately a thin trust wrapper around :func:`replay.replay_advance`.  The deterministic

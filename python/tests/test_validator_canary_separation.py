@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: UNLICENSED
+# SPDX-License-Identifier: Apache-2.0
 """Cut V5-E — HAIKU / EXTERNAL-MODEL EVIDENCE IS REPORTED SEPARATELY.
 
 §17.236, binding: the deterministic Benchmark-v2 result is the SOLE mining admission and

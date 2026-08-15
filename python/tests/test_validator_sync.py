@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: UNLICENSED
+# SPDX-License-Identifier: Apache-2.0
 """Cut V5-E — FRONTIER SYNC: confirmation depth, ordering, contiguity, gaps.
 
 The properties under test are the ones a validator gets wrong quietly: sorting a per-epoch

@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: UNLICENSED
+# SPDX-License-Identifier: Apache-2.0
 """Epoch head: LAZY INHERITANCE + finalization (spec §8, operator ruling §17.237).
 
 WHAT CHANGED AND WHY (this file previously proved `carry_forward`).

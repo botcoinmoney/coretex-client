@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: UNLICENSED
+# SPDX-License-Identifier: Apache-2.0
 """Reference implementation of ``coretex.memory-frontier.v1`` (Cut V5-A, ledger §17.236).
 
 The normative text is ``v5/spec/MEMORY-FRONTIER-V1.md``; this module is the executable form of

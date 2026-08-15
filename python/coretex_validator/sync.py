@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: UNLICENSED
+# SPDX-License-Identifier: Apache-2.0
 """Historical pre-rig frontier sync model retained only for regression fixtures.
 
 This module's genesis-inheritance model is not used by the production descriptor-v3 command.

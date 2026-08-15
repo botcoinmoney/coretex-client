@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: UNLICENSED
+# SPDX-License-Identifier: Apache-2.0
 """CANONICALIZATION cannot be gamed (spec §2/§3/§4).
 
 Every test here answers one question: can two DIFFERENT documents end up addressing the SAME

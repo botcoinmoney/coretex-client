@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: UNLICENSED
+# SPDX-License-Identifier: Apache-2.0
 """Transition law: shape, size bound, staleness, no-ops, purity, rollback (spec §6/§7/§9)."""
 from __future__ import annotations
 

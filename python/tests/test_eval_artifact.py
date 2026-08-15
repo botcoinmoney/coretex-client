@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: UNLICENSED
+# SPDX-License-Identifier: Apache-2.0
 """Cut V5-C — the canonical deterministic evaluation artifact.
 
 Everything a confirmed ``CoreTexMemoryFrontierAdvanced`` event points at, proven to be bound:
