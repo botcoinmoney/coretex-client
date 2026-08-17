@@ -208,6 +208,30 @@ def test_apply_transition_carries_pins_and_siblings_forward(manifest):
     assert child["format"] == fr.MANIFEST_FORMAT
 
 
+def test_explicit_epoch_pin_adoption_requires_both_verified_frontier_pins(manifest):
+    with pytest.raises(fr.FrontierError):
+        fr.apply_transition(
+            manifest, _t(),
+            epoch_pins={"benchmark_law_root": manifest["benchmark_law_root"]})
+    with pytest.raises(fr.FrontierTypeError):
+        fr.apply_transition(manifest, _t(), epoch_pins="not-a-verified-context")
+
+
+def test_explicit_epoch_pins_cannot_reanchor_or_retire_a_lock_same_epoch(manifest):
+    with pytest.raises(fr.FrontierValueError):
+        fr.apply_transition(
+            manifest, _t(), epoch=manifest["epoch"],
+            epoch_pins={"benchmark_law_root": manifest["benchmark_law_root"],
+                        "runtime_abi_root": "8" * 64})
+
+    locked = dict(manifest, compatibility_lock_root="7" * 64)
+    with pytest.raises(fr.FrontierValueError):
+        fr.apply_transition(
+            locked, _t(), epoch=locked["epoch"],
+            epoch_pins={"benchmark_law_root": locked["benchmark_law_root"],
+                        "runtime_abi_root": locked["runtime_abi_root"]})
+
+
 def test_child_is_a_valid_manifest_and_never_carries_the_genesis_sentinel(manifest):
     child = fr.apply_transition(manifest, _t())
     fr.validate_manifest(child)

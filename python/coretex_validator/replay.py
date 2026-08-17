@@ -1158,8 +1158,13 @@ def replay_advance(event: dp.FrontierAdvanced, *, store: pub.ContentStore,
     try:
         # The epoch comes from the CONFIRMED EVENT's own topic — the contract's mapping key —
         # never from the transition payload, which is epoch-neutral by construction (spec §6.3).
-        replayed = fr.verify_transition(parent_manifest, transition, event.new_frontier_root,
-                                        epoch=event.epoch)
+        replayed = fr.verify_transition(
+            parent_manifest, transition, event.new_frontier_root,
+            epoch=event.epoch,
+            epoch_pins={
+                "benchmark_law_root": epoch_pins.benchmark_law_root,
+                "runtime_abi_root": epoch_pins.runtime_abi_root,
+            })
     except fr.RootMismatchError as exc:
         return _fail("frontier_replay", "new_root_mismatch", str(exc), checks=checks, **ident)
     except fr.FrontierError as exc:
@@ -1287,6 +1292,10 @@ def replay_advance(event: dp.FrontierAdvanced, *, store: pub.ContentStore,
             expected_target_profile=target_profile,
             counter_resource_law=counter_law,
             store=store,
+            epoch_pins={
+                "benchmark_law_root": epoch_pins.benchmark_law_root,
+                "runtime_abi_root": epoch_pins.runtime_abi_root,
+            },
             revealed_entropy_secret=epoch_pins.revealed_secret,
             **verification_evidence)
     except (ea.EvalArtifactError, fr.FrontierError) as exc:

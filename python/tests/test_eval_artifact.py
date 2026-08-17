@@ -22,8 +22,10 @@ import pytest
 import eval_artifact as ea
 import frontier as fr
 import publication as pub
-from conftest import (EPOCH, NEW_RELEASE_ROOT, V5_DIR, make_artifact, make_parts,
-                      publish_required, verify_kwargs)
+from conftest import (CANDIDATE_HASH, ENTROPY_SECRET, EPOCH, NEW_RELEASE_ROOT, ROOT_B,
+                      ROOT_COMP2, ROOT_LAW, SCALES, SEASON_ROOT, TARGET_PROFILE, V5_DIR,
+                      make_artifact, make_manifest, make_parts, make_receipt_wrapper,
+                      publish_required, selection_cases, verify_kwargs)
 
 
 @pytest.fixture()
@@ -52,6 +54,78 @@ def _permute(obj):
     return obj
 
 
+def _reanchored_artifact(*, parent_epoch):
+    """A fully replayable artifact whose child adopts a verified runtime pin."""
+    artifact_epoch = 8
+    old_runtime = "91" * 32
+    new_runtime = "92" * 32
+    parent = make_manifest(
+        epoch=parent_epoch, runtime_abi_root=old_runtime,
+        compatibility_lock_root="93" * 32)
+    transition = fr.make_transition(
+        target_profile=TARGET_PROFILE,
+        expected_prior_release_root=ROOT_B,
+        new_release_root=NEW_RELEASE_ROOT,
+        resulting_composition_root=ROOT_COMP2)
+    parent_root = fr.frontier_root(parent)
+    entropy_values = {
+        label: ea.derive_entropy_value(
+            revealed_secret=ENTROPY_SECRET, epoch=artifact_epoch,
+            parent_frontier_root=parent_root, label=label)
+        for label in ea.SELECTION_LABELS
+    }
+    bases = {
+        label: ea.selection_base(
+            label=label, entropy_value=entropy_values[label],
+            candidate_hash=CANDIDATE_HASH, season_root=SEASON_ROOT,
+            profile_id=TARGET_PROFILE, round_id="round-0001")
+        for label in ea.SELECTION_LABELS
+    }
+    cases = {
+        label: selection_cases(bases[label], (0, 1, 2), scales=SCALES)
+        for label in ea.SELECTION_LABELS
+    }
+    wrapper = make_receipt_wrapper(
+        gate_entropy=entropy_values["gate"], confirm_entropy=entropy_values["confirm"],
+        gate_cases=cases["gate"], confirm_cases=cases["confirm"])
+    law = ea.load_counter_resource_law()
+    parts = {"parent": parent, "wrapper": wrapper, "law": law}
+    store = pub.InMemoryCAS()
+    artifact = ea.build_artifact(
+        epoch=artifact_epoch, parent_manifest=parent, transition=transition,
+        candidate_hash=CANDIDATE_HASH, receipt_wrapper=wrapper,
+        revealed_entropy_secret=ENTROPY_SECRET, counter_resource_law=law,
+        availability=publish_required(parts, store))
+    epoch_pins = {"benchmark_law_root": ROOT_LAW, "runtime_abi_root": new_runtime}
+    if parent_epoch < artifact_epoch:
+        child = fr.apply_transition(
+            parent, transition, epoch=artifact_epoch, epoch_pins=epoch_pins)
+    else:
+        # Construct the claimed bad child directly: the public transition constructor correctly
+        # refuses this same-epoch re-anchor before eval-artifact verification ever sees it.
+        child = fr.apply_transition(parent, transition, epoch=artifact_epoch)
+        child["runtime_abi_root"] = new_runtime
+        child.pop("compatibility_lock_root", None)
+    artifact["frontier"]["runtime_abi_root"] = new_runtime
+    artifact["frontier"]["new_frontier_root"] = fr.frontier_root(child)
+    kwargs = {
+        "expected_parent_root": parent_root,
+        "expected_new_root": fr.frontier_root(child),
+        "expected_release_root": NEW_RELEASE_ROOT,
+        "expected_composition_root": ROOT_COMP2,
+        "expected_runtime_abi_root": new_runtime,
+        "expected_benchmark_law_root": ROOT_LAW,
+        "expected_counter_resource_law_root": artifact["counter_resource_law_root"],
+        "expected_entropy_commitment": ea.entropy_commitment_of(ENTROPY_SECRET),
+        "expected_epoch": artifact_epoch,
+        "expected_target_profile": TARGET_PROFILE,
+        "receipt_wrapper": wrapper,
+        "counter_resource_law": law,
+        "epoch_pins": epoch_pins,
+    }
+    return artifact, kwargs
+
+
 # --------------------------------------------------------------------------- #
 # round trip + canonical hash
 # --------------------------------------------------------------------------- #
@@ -61,6 +135,28 @@ def test_a_freshly_built_artifact_verifies(built):
     assert report["ok"] is True
     assert report["eval_report_hash"] == ea.eval_report_hash(artifact)
     assert "receipt_bindings" in report["checks"] and "selection_walk" in report["checks"]
+
+
+def test_eval_artifact_accepts_verified_pin_adoption_from_an_earlier_epoch_parent():
+    artifact, kwargs = _reanchored_artifact(parent_epoch=7)
+    report = ea.verify_artifact(artifact, **kwargs)
+
+    assert report["ok"] is True
+    assert artifact["replay_inputs"]["parent_manifest"]["runtime_abi_root"] == "91" * 32
+    assert artifact["frontier"]["runtime_abi_root"] == "92" * 32
+
+
+def test_eval_artifact_refuses_the_same_pin_change_for_a_same_epoch_parent():
+    artifact, kwargs = _reanchored_artifact(parent_epoch=8)
+    with pytest.raises(ea.EpochPinMismatchError):
+        ea.verify_artifact(artifact, **kwargs)
+
+
+def test_eval_artifact_refuses_reanchor_without_verified_epoch_pins():
+    artifact, kwargs = _reanchored_artifact(parent_epoch=7)
+    kwargs.pop("epoch_pins")
+    with pytest.raises(ea.EpochPinMismatchError):
+        ea.verify_artifact(artifact, **kwargs)
 
 
 def test_artifact_round_trips_through_canonical_bytes(built):

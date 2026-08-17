@@ -16,6 +16,7 @@ import json
 import os
 import subprocess
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -2063,7 +2064,26 @@ class TestPatchArtifactFailuresAreClassified:
                              "runtime_abi_root": "13" * 32},
                 "counter_resource_law_root": "14" * 32}
 
-    def _selected(self, patch_root):
+    def _epoch_context(self):
+        return {
+            "format": rig.EPOCH_CONTEXT_FORMAT,
+            "epoch": 9,
+            "corpus_root": "15" * 32,
+            "active_frontier_root": self.PARENT,
+            "baseline_manifest_hash": "16" * 32,
+            "benchmark_law_root": "12" * 32,
+            "runtime_abi_root": "13" * 32,
+            "counter_resource_law_root": "14" * 32,
+            "selection_law_root": "17" * 32,
+            "admission_thresholds_ppm": {"minimum_improvement": 1},
+            "seed_commitment": {
+                "scheme": "keccak256",
+                "binding_rule": "confirmed-epoch-context",
+                "commitment_source": "EpochCommitSet",
+            },
+        }
+
+    def _selected(self, patch_root, epoch_context_root):
         descriptor = rig.encode_transition_descriptor(
             patch_artifact_hash=patch_root, parent_state_root=self.PARENT,
             new_state_root=self.NEW)
@@ -2072,7 +2092,7 @@ class TestPatchArtifactFailuresAreClassified:
             parent_state_root=self.PARENT, new_state_root=self.NEW,
             patch_hash=rig.transition_descriptor_hash(descriptor),
             eval_report_hash=fr.sha256_hex(fr.canonical_bytes(self._eval_artifact())),
-            core_version_hash="ee" * 32, epoch_context_root="cc" * 32,
+            core_version_hash="ee" * 32, epoch_context_root=epoch_context_root,
             improvement_credits=1, transition_format_version=0x21,
             compact_patch_bytes=descriptor, provenance=dp.LogProvenance())
 
@@ -2089,7 +2109,9 @@ class TestPatchArtifactFailuresAreClassified:
         from coretex_validator import pipeline
 
         patch_root = fr.sha256_hex(fr.canonical_bytes(self._patch_artifact()))
-        return pipeline._admit(self._selected(patch_root), None, store,
+        context_root = rig.epoch_context_root(self._epoch_context())
+        law = SimpleNamespace(epoch_context_root=context_root)
+        return pipeline._admit(self._selected(patch_root, context_root), law, store,
                                allow_test_doubles=False)[1], patch_root
 
     class _Serving(pub.ContentStore):
@@ -2115,7 +2137,11 @@ class TestPatchArtifactFailuresAreClassified:
 
     def _base_objects(self):
         artifact = self._eval_artifact()
-        return {fr.sha256_hex(fr.canonical_bytes(artifact)): fr.canonical_bytes(artifact)}
+        context = self._epoch_context()
+        return {
+            fr.sha256_hex(fr.canonical_bytes(artifact)): fr.canonical_bytes(artifact),
+            rig.epoch_context_root(context): fr.canonical_bytes(context),
+        }
 
     def test_an_unavailable_artifact_is_the_ONLY_backlog(self):
         report, _ = self._run(self._Serving(self._base_objects()))

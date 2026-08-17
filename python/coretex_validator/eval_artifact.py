@@ -1446,7 +1446,8 @@ def verify_artifact(artifact: Mapping[str, Any], *, expected_parent_root: str,
                     expected_core_version_hash: Optional[str] = None,
                     expected_work_policy_hash: Optional[str] = None,
                     signature_verifier=None,
-                    revealed_entropy_secret: Optional[str] = None) -> Dict[str, Any]:
+                    revealed_entropy_secret: Optional[str] = None,
+                    epoch_pins: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
     """Verify EVERY binding of ``artifact`` against the values a confirmed chain state asserts.
 
     The expected roots come from the chain (the registry's live root and epoch pins, the receipt's
@@ -1471,6 +1472,12 @@ def verify_artifact(artifact: Mapping[str, Any], *, expected_parent_root: str,
     The three ``expected_*`` rig pins (``epoch_context_root``, ``core_version_hash``,
     ``work_policy_hash``) are the epoch context the registry itself
     enforces; supplying one checks the artifact against it, omitting one skips only that check.
+
+    ``epoch_pins`` is optional only to preserve exact historical replay. When supplied it is the
+    independently verified current epoch context's frontier-pin projection. An inherited parent
+    from an EARLIER epoch may carry the previous epoch's pins; the child adopts these exact
+    verified values. A same-epoch parent must already carry them, so an arbitrary pin change is
+    still refused.
     """
     law = artifact_law(artifact)
     signed_era = law == al.LAW_OFF_CHAIN_SIGNATURE_V1
@@ -1575,18 +1582,52 @@ def verify_artifact(artifact: Mapping[str, Any], *, expected_parent_root: str,
     _require(parent["epoch"] <= artifact["epoch"], EpochPinMismatchError,
              f"parent manifest epoch {parent['epoch']} is later than artifact epoch "
              f"{artifact['epoch']}; epochs never move backwards")
-    _require(parent["benchmark_law_root"] == front["benchmark_law_root"], EpochPinMismatchError,
-             "parent manifest benchmark_law_root != the artifact's bound pin")
-    _require(parent["runtime_abi_root"] == front["runtime_abi_root"], EpochPinMismatchError,
-             "parent manifest runtime_abi_root != the artifact's bound pin")
+    verified_frontier_pins: Optional[Dict[str, str]] = None
+    if epoch_pins is not None:
+        if not isinstance(epoch_pins, Mapping):
+            raise EpochPinMismatchError(
+                "epoch_pins must be an independently verified epoch-context mapping")
+        try:
+            verified_frontier_pins = {
+                "benchmark_law_root": fr.check_root(
+                    epoch_pins.get("benchmark_law_root"),
+                    "epoch_pins.benchmark_law_root"),
+                "runtime_abi_root": fr.check_root(
+                    epoch_pins.get("runtime_abi_root"),
+                    "epoch_pins.runtime_abi_root"),
+            }
+        except fr.FrontierError as exc:
+            raise EpochPinMismatchError(str(exc)) from exc
+        _require(
+            verified_frontier_pins["benchmark_law_root"] == front["benchmark_law_root"],
+            EpochPinMismatchError,
+            "the independently verified epoch benchmark_law_root does not equal the "
+            "artifact's bound pin")
+        _require(
+            verified_frontier_pins["runtime_abi_root"] == front["runtime_abi_root"],
+            EpochPinMismatchError,
+            "the independently verified epoch runtime_abi_root does not equal the artifact's "
+            "bound pin")
+
+    inherited = parent["epoch"] < artifact["epoch"]
+    for pin in fr.EPOCH_PINNED_MANIFEST_FIELDS:
+        if verified_frontier_pins is None or not inherited:
+            _require(parent[pin] == front[pin], EpochPinMismatchError,
+                     f"parent manifest {pin} != the artifact's bound pin")
+    if verified_frontier_pins is not None and not inherited:
+        _require(
+            "compatibility_lock_root" not in parent, EpochPinMismatchError,
+            "a same-epoch transition cannot retire compatibility_lock_root; only the first edge "
+            "from an inherited prior-epoch parent retires that historical manifest copy")
     _require(parent["profiles"][cand["target_profile"]] == cand["prior_release_root"],
              ReleaseRootMismatchError,
              "the parent frontier does not serve the candidate's prior release root for the "
              "target profile — this candidate was built against a superseded frontier")
     # The artifact's own epoch drives the replay, so an artifact built for epoch N can never be
     # re-presented as evidence for epoch N+1 against the same parent: the reproduced root differs.
-    fr.verify_transition(parent, transition, front["new_frontier_root"],
-                         epoch=artifact["epoch"])                          # raises on divergence
+    fr.verify_transition(
+        parent, transition, front["new_frontier_root"], epoch=artifact["epoch"],
+        epoch_pins=verified_frontier_pins)                                 # raises on divergence
     done("frontier_replay")
 
     # ---- 4. entropy: commitment opening + the two derived selection values -----------------

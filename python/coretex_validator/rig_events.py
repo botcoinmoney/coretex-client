@@ -1287,10 +1287,9 @@ TRANSITION_ARTIFACT_RELEASE_FIELDS: Tuple[str, ...] = (
 TRANSITION_ARTIFACT_HOOKS: Tuple[str, ...] = (
     "m1_ingest_transform", "m2_organize", "m3_consolidate",
     "m4_candidates", "m5_rank", "m6_pack")
-#: The law pins EVERY mined transition carries forward unchanged (spec §8, T-6). Moving one moves
-#: ``coreVersionHash``, which the epoch context pins and the registry equality-checks, so it is an
-#: EPOCH-CONTEXT operation performed by ``CORETEX_CONTEXT_OPERATOR`` — never a mined transition, and
-#: no descriptor can express it.
+#: Manifest law identities that historical replay carries unchanged. A verified current epoch
+#: context may re-anchor the first two only on an inherited first edge; that edge also retires the
+#: historical compatibility-lock copy. Without that external authority, every change remains T-6.
 TRANSITION_ARTIFACT_LAW_PINS: Tuple[str, ...] = (
     "benchmark_law_root", "runtime_abi_root", "compatibility_lock_root")
 
@@ -1817,7 +1816,8 @@ def check_transition_artifact_self_consistency(artifact: Mapping[str, Any]) -> D
 
 def replay_transition_artifact(parent_manifest: Mapping[str, Any],
                                artifact: Mapping[str, Any], *,
-                               component_references: Optional[Mapping[str, Any]] = None
+                               component_references: Optional[Mapping[str, Any]] = None,
+                               epoch_pins: Optional[Mapping[str, Any]] = None
                                ) -> Dict[str, Any]:
     """DETERMINISTIC REPLAY: ``(parentStateRoot, artifact) -> exactly one resulting manifest``.
 
@@ -1826,6 +1826,12 @@ def replay_transition_artifact(parent_manifest: Mapping[str, Any],
     wall clock or any unpinned network resource, so two honest validators replaying the same pair
     MUST agree — and disagreeing with the descriptor's ``newStateRoot`` is a PUBLICLY PROVABLE
     refutation requiring nothing but chain data and the addressed bytes.
+
+    ``epoch_pins`` is the independently fetched and root-verified epoch context. It is optional
+    only for historical pin-carrying artifacts. When supplied it must name this artifact's exact
+    epoch and ``epoch_context_root`` as well as both frontier law pins. That permits only the
+    inherited first edge of a new epoch to adopt operator-committed law; it never lets an artifact
+    choose its own pins.
 
     Breadth is UNBOUNDED and safe without a ceiling (spec §8.1). What constrains the edge is not a
     size limit: the parent must be the exact current head (registry CAS), the resulting root must be
@@ -1844,6 +1850,32 @@ def replay_transition_artifact(parent_manifest: Mapping[str, Any],
     _artifact_require(parent_root == document["parent_state_root"], TRANSITION_PARENT_MISMATCH,
                       f"the supplied parent manifest hashes to {parent_root}, the artifact commits "
                       f"to parent_state_root {document['parent_state_root']}")
+
+    pinned: Optional[Dict[str, Any]] = None
+    if epoch_pins is not None:
+        _artifact_require(isinstance(epoch_pins, Mapping), TRANSITION_ARTIFACT_MALFORMED,
+                          "epoch_pins must be an independently verified epoch-context mapping")
+        try:
+            pinned = {
+                "epoch": fr.check_epoch(epoch_pins.get("epoch"), "epoch_pins.epoch"),
+                "epoch_context_root": fr.check_root(
+                    epoch_pins.get("epoch_context_root"), "epoch_pins.epoch_context_root"),
+                **{
+                    field: fr.check_root(epoch_pins.get(field), f"epoch_pins.{field}")
+                    for field in fr.EPOCH_PINNED_MANIFEST_FIELDS
+                },
+            }
+        except fr.FrontierError as exc:
+            raise TransitionArtifactError(TRANSITION_ARTIFACT_MALFORMED, str(exc)) from exc
+        _artifact_require(
+            pinned["epoch"] == document["epoch"], TRANSITION_EPOCH_CONTEXT_MISMATCH,
+            f"the verified epoch context is for epoch {pinned['epoch']}, the artifact is for "
+            f"epoch {document['epoch']}")
+        _artifact_require(
+            pinned["epoch_context_root"] == document["epoch_context_root"],
+            TRANSITION_EPOCH_CONTEXT_MISMATCH,
+            f"the verified epoch context root is {pinned['epoch_context_root']}, the artifact "
+            f"binds {document['epoch_context_root']}")
 
     # §5.5 — THE CLOSURE IS DERIVED HERE, because here is the first point the PARENT STATE is in
     # scope, and the parent state is what the closure is computed against. A validator reaching this
@@ -1867,19 +1899,57 @@ def replay_transition_artifact(parent_manifest: Mapping[str, Any],
     replayed["profiles"] = profiles
     replayed["default_composition_root"] = document["resulting_composition_root"]
 
-    # THE LAW PINS ARE CARRIED FORWARD BY CONSTRUCTION (they are copied from the parent above and
-    # never touched). Checking the artifact's own resulting manifest against them is what makes
-    # spec §8's T-6 refusal NAMEABLE rather than an unattributable root mismatch.
+    # An older parent is the lazily inherited prior-era head. It may differ from this epoch's
+    # independently verified pins; its child adopts those exact pins. A same-epoch parent is
+    # already under this context, so any mismatch remains a mined T-6 law change. With no verified
+    # context, historical carry-forward semantics remain unchanged.
     stated = document["resulting_frontier_manifest"]
-    for pin in TRANSITION_ARTIFACT_LAW_PINS:
-        if pin in replayed or pin in stated:
-            _artifact_require(stated.get(pin) == replayed.get(pin), TRANSITION_LAW_PIN_CHANGE,
-                              f"the artifact's resulting manifest moves the law pin {pin!r} from "
-                              f"{replayed.get(pin)!r} to {stated.get(pin)!r}. Law pins are carried "
-                              "forward by EVERY mined transition; moving one moves coreVersionHash, "
-                              "which is an epoch-context operation performed by "
-                              "CORETEX_CONTEXT_OPERATOR and which NO descriptor can express "
-                              "(spec §8, T-6)")
+    inherited = document["epoch"] > parent_manifest["epoch"]
+    _artifact_require(document["epoch"] >= parent_manifest["epoch"],
+                      TRANSITION_ARTIFACT_MALFORMED,
+                      f"the artifact regresses epoch {parent_manifest['epoch']} to "
+                      f"{document['epoch']}")
+    if pinned is not None:
+        for pin in fr.EPOCH_PINNED_MANIFEST_FIELDS:
+            expected = pinned[pin]
+            parent_value = parent_manifest.get(pin)
+            _artifact_require(
+                stated.get(pin) == expected, TRANSITION_LAW_PIN_CHANGE,
+                f"the artifact's resulting manifest states law pin {pin!r}="
+                f"{stated.get(pin)!r}, but the independently verified epoch context pins "
+                f"{expected!r}. A transition may adopt the epoch's law; it may not choose one "
+                "(spec §8, T-6)")
+            _artifact_require(
+                parent_value == expected or inherited, TRANSITION_LAW_PIN_CHANGE,
+                f"the same-epoch parent states law pin {pin!r}={parent_value!r}, while the "
+                f"epoch pins {expected!r}. Only an inherited head from an EARLIER epoch may "
+                "differ; otherwise this is a mined law change (spec §8, T-6)")
+            replayed[pin] = expected
+
+        # The manifest copy of ``coreVersionHash`` is retired from a pinned-era child. Only an
+        # inherited prior-era parent may lose that legacy field; same-epoch removal is still an
+        # arbitrary manifest mutation and is refused.
+        parent_has_lock = "compatibility_lock_root" in parent_manifest
+        stated_has_lock = "compatibility_lock_root" in stated
+        _artifact_require(
+            not stated_has_lock, TRANSITION_LAW_PIN_CHANGE,
+            "a child under explicit epoch pins must omit compatibility_lock_root; its authority "
+            "is the on-chain coreVersionHash, not a miner-authored manifest copy (spec §8, T-6)")
+        _artifact_require(
+            not parent_has_lock or inherited, TRANSITION_LAW_PIN_CHANGE,
+            "a same-epoch transition may not remove compatibility_lock_root from its parent. "
+            "Only the inherited first edge of a pinned era retires that legacy copy "
+            "(spec §8, T-6)")
+        replayed.pop("compatibility_lock_root", None)
+    else:
+        for pin in TRANSITION_ARTIFACT_LAW_PINS:
+            if pin in replayed or pin in stated:
+                _artifact_require(
+                    stated.get(pin) == replayed.get(pin), TRANSITION_LAW_PIN_CHANGE,
+                    f"the artifact's resulting manifest moves the law pin {pin!r} from "
+                    f"{replayed.get(pin)!r} to {stated.get(pin)!r}. No independently verified "
+                    "epoch pins authorize this edge, so law pins must be carried forward "
+                    "unchanged (spec §8, T-6)")
 
     replayed_root = fr.frontier_root(replayed)
     _artifact_require(replayed_root == document["new_state_root"], TRANSITION_REPLAY_ROOT_MISMATCH,

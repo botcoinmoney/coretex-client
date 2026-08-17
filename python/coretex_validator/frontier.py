@@ -27,7 +27,7 @@ import hashlib
 import json
 import os
 import re
-from typing import Any, Dict, Iterable, Mapping, Tuple
+from typing import Any, Dict, Iterable, Mapping, Optional, Tuple
 
 # --------------------------------------------------------------------------- #
 # Identity constants
@@ -69,6 +69,12 @@ MANIFEST_FIELDS: Tuple[str, ...] = (
     "benchmark_law_root", "default_composition_root", "epoch", "format",
     "parent_frontier_root", "profiles", "runtime_abi_root",
 )
+
+#: Historical production genesis carries this lock copy, while children produced under an
+#: explicitly verified epoch context retire it in favour of the on-chain ``coreVersionHash``.
+#: It is optional so both immutable historical roots and the prospective seven-field child shape
+#: remain addressable under one decoder; every other unknown field is still refused.
+MANIFEST_OPTIONAL_FIELDS: Tuple[str, ...] = ("compatibility_lock_root",)
 
 #: Required transition fields (CLOSED).
 TRANSITION_FIELDS: Tuple[str, ...] = (
@@ -331,7 +337,8 @@ def check_epoch(value: Any, field: str = "epoch") -> int:
     return value
 
 
-def _check_closed_fields(document: Any, fields: Iterable[str], family: str) -> None:
+def _check_closed_fields(document: Any, fields: Iterable[str], family: str,
+                         optional: Iterable[str] = ()) -> None:
     if not isinstance(document, dict):
         raise FrontierSchemaError(
             f"{family} must be a JSON object, got {type(document).__name__}")
@@ -339,7 +346,7 @@ def _check_closed_fields(document: Any, fields: Iterable[str], family: str) -> N
     missing = [f for f in fields if f not in document]
     if missing:
         raise FrontierSchemaError(f"{family} missing required field(s): {missing}")
-    unknown = sorted(set(document) - set(fields))
+    unknown = sorted(set(document) - set(fields) - set(optional))
     if unknown:
         raise FrontierSchemaError(
             f"{family} carries unknown field(s) {unknown}; the schema is CLOSED so an unknown "
@@ -354,13 +361,15 @@ def validate_manifest(manifest: Any) -> Dict[str, Any]:
 
     Returns the manifest unchanged on success (never a copy, never a normalized version).
     """
-    _check_closed_fields(manifest, MANIFEST_FIELDS, MANIFEST_FORMAT)
+    _check_closed_fields(manifest, MANIFEST_FIELDS, MANIFEST_FORMAT, MANIFEST_OPTIONAL_FIELDS)
     if manifest["format"] != MANIFEST_FORMAT:
         raise FrontierSchemaError(
             f"format {manifest['format']!r} is not {MANIFEST_FORMAT!r}")
     check_epoch(manifest["epoch"])
     check_root(manifest["benchmark_law_root"], "benchmark_law_root")
     check_root(manifest["runtime_abi_root"], "runtime_abi_root")
+    if "compatibility_lock_root" in manifest:
+        check_root(manifest["compatibility_lock_root"], "compatibility_lock_root")
     check_root(manifest["default_composition_root"], "default_composition_root")
     check_root(manifest["parent_frontier_root"], "parent_frontier_root")
 
@@ -399,8 +408,13 @@ def parse_manifest_json(text: str) -> Dict[str, Any]:
 
 def new_manifest(*, epoch: int, parent_frontier_root: str, benchmark_law_root: str,
                  runtime_abi_root: str, default_composition_root: str,
-                 profiles: Mapping[str, str]) -> Dict[str, Any]:
-    """Construct + validate a manifest (the only sanctioned way to mint one by hand)."""
+                 profiles: Mapping[str, str],
+                 compatibility_lock_root: Any = None) -> Dict[str, Any]:
+    """Construct + validate a manifest (the only sanctioned way to mint one by hand).
+
+    ``None`` means the optional historical ``compatibility_lock_root`` is absent. Passing a root
+    preserves it byte-for-byte; passing any malformed value is refused by :func:`validate_manifest`.
+    """
     if not isinstance(profiles, Mapping):
         raise FrontierTypeError(
             f"profiles must be a mapping, got {type(profiles).__name__}")
@@ -413,6 +427,8 @@ def new_manifest(*, epoch: int, parent_frontier_root: str, benchmark_law_root: s
         "profiles": {pid: profiles[pid] for pid in sorted(profiles)},
         "runtime_abi_root": runtime_abi_root,
     }
+    if compatibility_lock_root is not None:
+        manifest["compatibility_lock_root"] = compatibility_lock_root
     return validate_manifest(manifest)
 
 
@@ -523,8 +539,26 @@ def max_transition_bytes() -> int:
 # --------------------------------------------------------------------------- #
 # The state transition (spec §7)
 # --------------------------------------------------------------------------- #
+#: Manifest fields owned by the independently verified epoch context. A child adopts these
+#: values; a miner never chooses them.
+EPOCH_PINNED_MANIFEST_FIELDS = ("benchmark_law_root", "runtime_abi_root")
+
+
+def _verified_epoch_pins(epoch_pins: Any) -> Optional[Dict[str, str]]:
+    """Validate the complete frontier-pin projection, or select historical carry semantics."""
+    if epoch_pins is None:
+        return None
+    if not isinstance(epoch_pins, Mapping):
+        raise FrontierTypeError(
+            f"epoch_pins must be a mapping, got {type(epoch_pins).__name__}")
+    return {
+        field: check_root(epoch_pins.get(field), f"epoch_pins.{field}")
+        for field in EPOCH_PINNED_MANIFEST_FIELDS
+    }
+
+
 def apply_transition(manifest: Mapping[str, Any], transition: Mapping[str, Any], *,
-                     epoch: Any = None) -> Dict[str, Any]:
+                     epoch: Any = None, epoch_pins: Any = None) -> Dict[str, Any]:
     """Apply ``transition`` to ``manifest``, returning a NEW manifest. Pure, total, fail-closed.
 
     ``manifest`` is never mutated — the returned document is built fresh, so a caller holding the
@@ -556,18 +590,36 @@ def apply_transition(manifest: Mapping[str, Any], transition: Mapping[str, Any],
     comes from the confirmed event's own ``epoch`` topic, i.e. from the contract's mapping key —
     which is exactly where §17.237 puts the authority.
 
-    Carried forward UNCHANGED: ``benchmark_law_root``, ``runtime_abi_root``, and every non-target
-    profile's release root. ``parent_frontier_root`` becomes the parent's root, which is what
-    makes the manifest chain a total order (spec §9).
+    ``epoch_pins`` is optional for historical replay. When present it contains the independently
+    verified current epoch context and the child adopts its ``benchmark_law_root`` and
+    ``runtime_abi_root``. This is the only constructible first edge after an epoch-boundary law
+    change: the inherited parent is immutable historical data and still carries its prior-era
+    values. The legacy ``compatibility_lock_root`` copy is omitted from a pinned-era child because
+    its authority is the on-chain ``coreVersionHash``. With no pins, every historical field is
+    carried exactly as before.
     """
     validate_manifest(manifest)
     validate_transition(transition)
+    verified_pins = _verified_epoch_pins(epoch_pins)
     child_epoch = manifest["epoch"] if epoch is None else check_epoch(epoch, "epoch")
     if child_epoch < manifest["epoch"]:
         raise EpochRegressionError(
             f"transition names epoch {child_epoch} but its parent manifest is already at epoch "
             f"{manifest['epoch']}; epochs only move forward, and a closed epoch's head is "
             "immutable once a later epoch has inherited from it")
+    inherited = child_epoch > manifest["epoch"]
+    if verified_pins is not None:
+        for pin in EPOCH_PINNED_MANIFEST_FIELDS:
+            if manifest[pin] != verified_pins[pin] and not inherited:
+                raise FrontierValueError(
+                    f"same-epoch transition cannot change {pin} from {manifest[pin]} to "
+                    f"{verified_pins[pin]}; only an inherited parent from an earlier epoch may "
+                    "adopt independently verified current-epoch pins")
+        if "compatibility_lock_root" in manifest and not inherited:
+            raise FrontierValueError(
+                "same-epoch transition cannot retire compatibility_lock_root; only the first "
+                "edge from an inherited prior-epoch parent retires that historical manifest "
+                "copy in favour of the on-chain coreVersionHash")
 
     target = transition["target_profile"]
     prior = manifest["profiles"][target]
@@ -588,14 +640,19 @@ def apply_transition(manifest: Mapping[str, Any], transition: Mapping[str, Any],
     return new_manifest(
         epoch=child_epoch,
         parent_frontier_root=frontier_root(manifest),
-        benchmark_law_root=manifest["benchmark_law_root"],
-        runtime_abi_root=manifest["runtime_abi_root"],
+        benchmark_law_root=(manifest["benchmark_law_root"] if verified_pins is None
+                            else verified_pins["benchmark_law_root"]),
+        runtime_abi_root=(manifest["runtime_abi_root"] if verified_pins is None
+                          else verified_pins["runtime_abi_root"]),
         default_composition_root=transition["resulting_composition_root"],
-        profiles=profiles)
+        profiles=profiles,
+        compatibility_lock_root=(None if verified_pins is not None
+                                 else manifest.get("compatibility_lock_root")))
 
 
 def verify_transition(parent_manifest: Mapping[str, Any], transition: Mapping[str, Any],
-                      claimed_new_root: str, *, epoch: Any = None) -> Dict[str, Any]:
+                      claimed_new_root: str, *, epoch: Any = None,
+                      epoch_pins: Any = None) -> Dict[str, Any]:
     """Public-replay check: reproduce the child manifest and confirm ``claimed_new_root``.
 
     Raises :class:`RootMismatchError` (or the specific structural error) rather than returning
@@ -612,7 +669,7 @@ def verify_transition(parent_manifest: Mapping[str, Any], transition: Mapping[st
     """
     check_root(claimed_new_root, "claimed_new_root")
     parent_root = frontier_root(parent_manifest)
-    child = apply_transition(parent_manifest, transition, epoch=epoch)
+    child = apply_transition(parent_manifest, transition, epoch=epoch, epoch_pins=epoch_pins)
     computed = frontier_root(child)
     if computed != claimed_new_root:
         raise RootMismatchError(

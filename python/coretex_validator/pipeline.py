@@ -471,6 +471,53 @@ def _admit(selected: jn.JoinedTransition, law: hl.EpochLaw, store: pub.ContentSt
                 "reason": f"the fetched artifact says {name}={artifact_value!r}, the confirmed "
                           f"advance says {event_value!r}"}
 
+    # Resolve the two frontier law pins from the separately content-addressed epoch context, not
+    # from the eval or transition artifact. The root is independently recovered from the
+    # verifier's confirmed context event by ``historical_law``; bytes at that root are then fetched,
+    # rehashed, canonicalized and closed-schema validated before they can authorize adoption.
+    if selected.advance.epoch_context_root != law.epoch_context_root:
+        return artifact, {
+            "outcome": "FAIL", "code": rig.TRANSITION_EPOCH_CONTEXT_MISMATCH,
+            "reason": (f"the advance carries epochContextRoot "
+                       f"{selected.advance.epoch_context_root}, but the independently recovered "
+                       f"epoch law pins {law.epoch_context_root}")}
+    try:
+        epoch_context_bytes = pub.read_back(
+            law.epoch_context_root,
+            hash_rule=pub.HASH_RULE_FRONTIER_JSON,
+            store=store)
+    except pub.ObjectNotFoundError as exc:
+        return artifact, {
+            "outcome": "BACKLOG", "code": rig.EPOCH_CONTEXT_UNAVAILABLE,
+            "reason": (f"the epoch-context manifest {law.epoch_context_root} is not served: "
+                       f"{exc}. No artifact field may substitute for independently verified "
+                       "epoch pins")}
+    except (pub.ReadBackMismatchError, pub.StoreIntegrityError, pub.HashRuleError) as exc:
+        return artifact, {
+            "outcome": "FAIL", "code": rig.EPOCH_CONTEXT_ADDRESS_MISMATCH,
+            "reason": (f"the bytes served for epoch-context root {law.epoch_context_root} are "
+                       f"substituted or non-canonical: {exc}")}
+    except pub.PublicationError as exc:
+        return artifact, {
+            "outcome": "FAIL", "code": rig.EPOCH_CONTEXT_MALFORMED,
+            "reason": f"fetching the epoch context failed in an unclassified way: {exc}"}
+    try:
+        epoch_context = rig.verify_epoch_context_bytes(
+            epoch_context_bytes, expected_root=law.epoch_context_root)
+    except rig.EpochContextError as exc:
+        return artifact, {"outcome": "FAIL", "code": exc.code, "reason": str(exc)}
+    if epoch_context["epoch"] != selected.advance.epoch:
+        return artifact, {
+            "outcome": "FAIL", "code": rig.TRANSITION_EPOCH_CONTEXT_MISMATCH,
+            "reason": (f"the verified epoch context is for epoch {epoch_context['epoch']}, the "
+                       f"advance is for epoch {selected.advance.epoch}")}
+    epoch_pins = {
+        "epoch": epoch_context["epoch"],
+        "epoch_context_root": law.epoch_context_root,
+        "benchmark_law_root": epoch_context["benchmark_law_root"],
+        "runtime_abi_root": epoch_context["runtime_abi_root"],
+    }
+
     # ── THE EDIT: coretex.transition-descriptor/v3 — a commitment, not the edit ────────────────
     #
     # The rig lane's `compactPatchBytes` is now a FIXED 97-byte commitment (version,
@@ -586,7 +633,8 @@ def _admit(selected: jn.JoinedTransition, law: hl.EpochLaw, store: pub.ContentSt
             "reason": (f"fetching parent manifest {selected.advance.parent_state_root} failed "
                        f"in an unclassified way: {exc}")}
     try:
-        rig.replay_transition_artifact(parent_manifest, patch_artifact)
+        rig.replay_transition_artifact(
+            parent_manifest, patch_artifact, epoch_pins=epoch_pins)
     except rig.TransitionArtifactError as exc:
         return artifact, {"outcome": "FAIL", "code": exc.code, "reason": str(exc)}
 
@@ -678,9 +726,9 @@ def _admit(selected: jn.JoinedTransition, law: hl.EpochLaw, store: pub.ContentSt
         provenance=selected.advance.provenance)
     pins = dp.pins_from_mapping({selected.advance.epoch: dp.EpochPins(
         epoch=selected.advance.epoch,
-        runtime_abi_root=projected.runtime_abi_root,
-        benchmark_law_root=projected.benchmark_law_root,
-        counter_resource_law_root=str(artifact.get("counter_resource_law_root")),
+        runtime_abi_root=str(epoch_context["runtime_abi_root"]),
+        benchmark_law_root=str(epoch_context["benchmark_law_root"]),
+        counter_resource_law_root=str(epoch_context["counter_resource_law_root"]),
         entropy_commitment=law.entropy_commitment,
         revealed_secret=law.revealed_secret)})
     # WIRE THE REAL ADMISSION WHEN THE TREES ARE THERE, and say so when they are not.

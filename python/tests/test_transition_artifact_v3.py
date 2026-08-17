@@ -29,6 +29,91 @@ ARTIFACT_BYTES = b"""{"affected_profiles":["event.schema.v1"],"availability":{"c
 
 PARENT_BYTES = b"""{"benchmark_law_root":"a9e7fc72744c4f91be13c943c71d5b48ef4d0e13a0b205bd76fbcf2d40bb4bdb","default_composition_root":"159596b813dd262bca81d086cfddd06ed0fea943b8cd8d35d64765b945d2f9c7","epoch":0,"format":"coretex.memory-frontier.v1","parent_frontier_root":"0000000000000000000000000000000000000000000000000000000000000000","profiles":{"conv.pref.v1":"86deac65e365619c3601655b6768b6ef1738943ab620f67d62368089d727919b","doc.tool.v1":"4e81744ee61fd58602c04b23210b8ac7dad66cc126986ac82db2af66200dbe9c","event.schema.v1":"c85857242b434cec35ae2cb0b67bd33f96d1f0f425bc6265fec3758321e98ce5"},"runtime_abi_root":"8f17abc43f6dd14a9ab828b999d48f7adc967d7c68a14a8b21007ace47e9aa30"}"""
 
+# Exact chain-current production genesis and epoch-179 runtime pin. The former is immutable chain
+# history and deliberately carries the retired compatibility-lock copy; the latter is adopted
+# only from a separately verified epoch context on the inherited first edge.
+PRODUCTION_GENESIS_ROOT = "8f2455e5cbf49cd4bb5e1b148c1828a9c79aa7fd27d3db7035fe7fb5e0287788"
+PRODUCTION_GENESIS_RUNTIME = "d83638ae0819f49eb447d730978949f66f0e1bc1e4cdacaa3ed8e7029ef9c82a"
+PRODUCTION_COMPATIBILITY_LOCK = "684152133d6900e43eff7edd799f6d97710f55fe995304185edd15d83c9b1354"
+EPOCH_179_RUNTIME = "b6cc91e115597e1059cda9b3c5a57ed9a0a7ee3f34feb35ec0301a69f35f78c0"
+
+
+def _production_genesis():
+    return {
+        "benchmark_law_root":
+            "a9e7fc72744c4f91be13c943c71d5b48ef4d0e13a0b205bd76fbcf2d40bb4bdb",
+        "compatibility_lock_root": PRODUCTION_COMPATIBILITY_LOCK,
+        "default_composition_root":
+            "159596b813dd262bca81d086cfddd06ed0fea943b8cd8d35d64765b945d2f9c7",
+        "epoch": 0,
+        "format": fr.MANIFEST_FORMAT,
+        "parent_frontier_root": fr.ZERO_ROOT,
+        "profiles": {
+            "conv.pref.v1":
+                "86deac65e365619c3601655b6768b6ef1738943ab620f67d62368089d727919b",
+            "doc.tool.v1":
+                "4e81744ee61fd58602c04b23210b8ac7dad66cc126986ac82db2af66200dbe9c",
+            "event.schema.v1":
+                "c85857242b434cec35ae2cb0b67bd33f96d1f0f425bc6265fec3758321e98ce5",
+        },
+        "runtime_abi_root": PRODUCTION_GENESIS_RUNTIME,
+    }
+
+
+def _epoch_pins(*, epoch=179, context_root="91" * 32, runtime=EPOCH_179_RUNTIME):
+    return {
+        "epoch": epoch,
+        "epoch_context_root": context_root,
+        "benchmark_law_root":
+            "a9e7fc72744c4f91be13c943c71d5b48ef4d0e13a0b205bd76fbcf2d40bb4bdb",
+        "runtime_abi_root": runtime,
+    }
+
+
+def _first_advance_artifact(*, parent=None, epoch=179, pins=None):
+    parent = copy.deepcopy(parent or _production_genesis())
+    pins = dict(pins or _epoch_pins(epoch=epoch))
+    prior = parent["profiles"]["event.schema.v1"]
+    release = "92" * 32
+    composition = "93" * 32
+    transition = fr.make_transition(
+        target_profile="event.schema.v1",
+        expected_prior_release_root=prior,
+        new_release_root=release,
+        resulting_composition_root=composition)
+    if epoch > parent["epoch"]:
+        child = fr.apply_transition(parent, transition, epoch=epoch, epoch_pins=pins)
+    else:
+        # Manufacture the invalid claim without weakening the public constructor, which itself
+        # refuses same-epoch pin adoption / compatibility-lock retirement.
+        child = fr.apply_transition(parent, transition, epoch=epoch)
+        for pin in fr.EPOCH_PINNED_MANIFEST_FIELDS:
+            child[pin] = pins[pin]
+        child.pop("compatibility_lock_root", None)
+    artifact = {
+        "affected_profiles": ["event.schema.v1"],
+        "availability": {},
+        "byte_length": 1,
+        "derived_state": {},
+        "epoch": epoch,
+        "epoch_context_root": pins["epoch_context_root"],
+        "format": rig.TRANSITION_ARTIFACT_FORMAT,
+        "new_state_root": fr.frontier_root(child),
+        "parent_state_root": fr.frontier_root(parent),
+        "profile_releases": {
+            "event.schema.v1": {
+                "expected_prior_release_root": prior,
+                "hooks": ["m6_pack"],
+                "new_release_root": release,
+            },
+        },
+        "resulting_composition_root": composition,
+        "resulting_frontier_manifest": child,
+        "score_delta_ppm": 1,
+        "shared_components": [],
+    }
+    return rig.finalize_transition_artifact_byte_length(artifact), pins
+
 
 def _artifact():
     return fr.parse_json(ARTIFACT_BYTES.decode("utf-8"))
@@ -147,4 +232,86 @@ def test_dependency_closure_refusals_are_distinct_and_fail_closed():
     _assert_refusal(
         rig.TRANSITION_CLOSURE_UNKNOWN_ID,
         lambda: rig.replay_transition_artifact(_parent(), unknown_component),
+    )
+
+
+def test_production_genesis_first_advance_adopts_only_verified_epoch_179_pins():
+    parent = _production_genesis()
+    artifact, pins = _first_advance_artifact(parent=parent)
+
+    assert fr.frontier_root(parent) == PRODUCTION_GENESIS_ROOT
+    assert parent["runtime_abi_root"] == PRODUCTION_GENESIS_RUNTIME
+    replayed = rig.replay_transition_artifact(parent, artifact, epoch_pins=pins)
+
+    assert replayed == artifact["resulting_frontier_manifest"]
+    assert replayed["epoch"] == 179
+    assert replayed["runtime_abi_root"] == EPOCH_179_RUNTIME
+    assert replayed["benchmark_law_root"] == pins["benchmark_law_root"]
+    assert "compatibility_lock_root" not in replayed
+    assert fr.frontier_root(replayed) == artifact["new_state_root"]
+
+
+def test_first_advance_reanchor_without_verified_context_is_refused():
+    artifact, _pins = _first_advance_artifact()
+    _assert_refusal(
+        rig.TRANSITION_LAW_PIN_CHANGE,
+        lambda: rig.replay_transition_artifact(_production_genesis(), artifact),
+    )
+
+
+def test_same_epoch_parent_cannot_use_context_to_change_a_law_pin():
+    parent = _production_genesis()
+    parent["epoch"] = 179
+    artifact, pins = _first_advance_artifact(parent=parent, epoch=179)
+    _assert_refusal(
+        rig.TRANSITION_LAW_PIN_CHANGE,
+        lambda: rig.replay_transition_artifact(parent, artifact, epoch_pins=pins),
+    )
+
+
+def test_artifact_cannot_choose_a_pin_that_differs_from_verified_context():
+    artifact, pins = _first_advance_artifact()
+    artifact["resulting_frontier_manifest"]["runtime_abi_root"] = "94" * 32
+    artifact["new_state_root"] = fr.frontier_root(artifact["resulting_frontier_manifest"])
+    artifact = rig.finalize_transition_artifact_byte_length(artifact)
+    _assert_refusal(
+        rig.TRANSITION_LAW_PIN_CHANGE,
+        lambda: rig.replay_transition_artifact(
+            _production_genesis(), artifact, epoch_pins=pins),
+    )
+
+
+@pytest.mark.parametrize("changed", ["epoch", "epoch_context_root"])
+def test_verified_context_must_bind_the_artifact_epoch_and_context_root(changed):
+    artifact, pins = _first_advance_artifact()
+    wrong = dict(pins)
+    wrong[changed] = 180 if changed == "epoch" else "95" * 32
+    _assert_refusal(
+        rig.TRANSITION_EPOCH_CONTEXT_MISMATCH,
+        lambda: rig.replay_transition_artifact(
+            _production_genesis(), artifact, epoch_pins=wrong),
+    )
+
+
+def test_pinned_child_cannot_retain_the_retired_compatibility_lock_copy():
+    artifact, pins = _first_advance_artifact()
+    artifact["resulting_frontier_manifest"][
+        "compatibility_lock_root"] = PRODUCTION_COMPATIBILITY_LOCK
+    artifact["new_state_root"] = fr.frontier_root(artifact["resulting_frontier_manifest"])
+    artifact = rig.finalize_transition_artifact_byte_length(artifact)
+    _assert_refusal(
+        rig.TRANSITION_LAW_PIN_CHANGE,
+        lambda: rig.replay_transition_artifact(
+            _production_genesis(), artifact, epoch_pins=pins),
+    )
+
+
+def test_same_epoch_transition_cannot_retire_a_compatibility_lock_copy():
+    parent = _production_genesis()
+    parent["epoch"] = 179
+    parent["runtime_abi_root"] = EPOCH_179_RUNTIME
+    artifact, pins = _first_advance_artifact(parent=parent, epoch=179)
+    _assert_refusal(
+        rig.TRANSITION_LAW_PIN_CHANGE,
+        lambda: rig.replay_transition_artifact(parent, artifact, epoch_pins=pins),
     )

@@ -34,7 +34,6 @@ def _fixture(*, candidate_release: str = "cd" * 32,
     benchmark = "12" * 32
     runtime = "13" * 32
     counter = "14" * 32
-    epoch_context = "15" * 32
     moved_release = moved_release or signed_release
     eval_composition = eval_composition or composition
 
@@ -45,6 +44,26 @@ def _fixture(*, candidate_release: str = "cd" * 32,
         profiles={"conv.pref.v1": "03" * 32, "doc.tool.v1": "04" * 32,
                   "event.schema.v1": prior_release})
     parent_root = fr.frontier_root(parent)
+    epoch_context_document = {
+        "format": rig.EPOCH_CONTEXT_FORMAT,
+        "epoch": 9,
+        "corpus_root": "15" * 32,
+        "active_frontier_root": parent_root,
+        "baseline_manifest_hash": "16" * 32,
+        "benchmark_law_root": benchmark,
+        "runtime_abi_root": runtime,
+        "counter_resource_law_root": counter,
+        "selection_law_root": "17" * 32,
+        "admission_thresholds_ppm": {"minimum_improvement": 1},
+        "seed_commitment": {
+            "scheme": "keccak256",
+            "binding_rule": "confirmed-epoch-context",
+            "commitment_source": "EpochCommitSet",
+        },
+    }
+    epoch_context_bytes = fr.canonical_bytes(
+        rig.validate_epoch_context(epoch_context_document))
+    epoch_context = rig.epoch_context_root(epoch_context_document)
     resulting = fr.new_manifest(
         epoch=9, parent_frontier_root=parent_root,
         benchmark_law_root=benchmark, runtime_abi_root=runtime,
@@ -104,13 +123,15 @@ def _fixture(*, candidate_release: str = "cd" * 32,
     store = RecordingStore()
     for root, data in ((eval_root, eval_bytes),
                        (patch_root, served_patch),
-                       (parent_root, fr.canonical_bytes(parent))):
+                       (parent_root, fr.canonical_bytes(parent)),
+                       (epoch_context, epoch_context_bytes)):
         store.put(root, data)
     return SimpleNamespace(
         selected=selected, store=store, patch_document=patch_document,
         served_patch=served_patch, patch_root=patch_root, parent=parent,
         parent_root=parent_root, resulting=resulting, composition=composition,
-        epoch_context=epoch_context, signed_release=signed_release)
+        epoch_context=epoch_context, epoch_context_document=epoch_context_document,
+        signed_release=signed_release)
 
 
 def _install_pure_port_spies(monkeypatch, fixture):
@@ -120,8 +141,8 @@ def _install_pure_port_spies(monkeypatch, fixture):
         calls.verify.append((served, descriptor, score_delta_ppm, epoch_context_root_))
         return copy.deepcopy(fixture.patch_document)
 
-    def replay(parent, artifact, *, component_references=None):
-        calls.replay.append((parent, artifact, component_references))
+    def replay(parent, artifact, *, component_references=None, epoch_pins=None):
+        calls.replay.append((parent, artifact, component_references, epoch_pins))
         return copy.deepcopy(fixture.resulting)
 
     def materialize(*, releases, composition_root, expected_candidate_hashes, store):
@@ -159,7 +180,8 @@ def _install_pure_port_spies(monkeypatch, fixture):
 
 def _admit(monkeypatch, fixture):
     calls = _install_pure_port_spies(monkeypatch, fixture)
-    law = SimpleNamespace(entropy_commitment="17" * 32, revealed_secret=None)
+    law = SimpleNamespace(epoch_context_root=fixture.epoch_context,
+                          entropy_commitment="18" * 32, revealed_secret=None)
     artifact, report = pipeline._admit(
         fixture.selected, law, fixture.store, allow_test_doubles=False)
     return artifact, report, calls
@@ -173,15 +195,22 @@ def test_v3_admission_passes_exact_served_bytes_through_full_parent_replay(monke
     assert report["outcome"] == "PASS"
     assert fixture.patch_root in fixture.store.reads
     assert fixture.parent_root in fixture.store.reads
+    assert fixture.epoch_context in fixture.store.reads
     served, descriptor, delta, context_root = calls.verify[0]
     assert served == fixture.served_patch
     assert descriptor.patch_artifact_hash == fixture.patch_root
     assert delta == 100
     assert context_root == fixture.epoch_context
-    parent, patch, component_references = calls.replay[0]
+    parent, patch, component_references, epoch_pins = calls.replay[0]
     assert parent == fixture.parent
     assert patch == fixture.patch_document
     assert component_references is None
+    assert epoch_pins == {
+        "epoch": 9,
+        "epoch_context_root": fixture.epoch_context,
+        "benchmark_law_root": fixture.epoch_context_document["benchmark_law_root"],
+        "runtime_abi_root": fixture.epoch_context_document["runtime_abi_root"],
+    }
     releases, composition, candidates, store = calls.materialized[0]
     assert releases == fixture.resulting["profiles"]
     assert composition == fixture.composition
@@ -219,6 +248,44 @@ def test_eval_composition_must_equal_v3_resulting_composition(monkeypatch):
     assert report["outcome"] == "FAIL"
     assert report["code"] == "RIG_COMPOSITION_ROOT_SUBSTITUTION"
     assert calls.projected == []
+
+
+def test_epoch_context_must_be_available_before_transition_replay(monkeypatch):
+    fixture = _fixture()
+    fixture.store._objects.pop(fixture.epoch_context)
+    artifact, report, calls = _admit(monkeypatch, fixture)
+
+    assert artifact["candidate"]["release_root"] == fixture.signed_release
+    assert report["outcome"] == "BACKLOG"
+    assert report["code"] == rig.EPOCH_CONTEXT_UNAVAILABLE
+    assert calls.replay == []
+
+
+def test_substituted_epoch_context_bytes_fail_before_transition_replay(monkeypatch):
+    fixture = _fixture()
+    substituted = dict(fixture.epoch_context_document)
+    substituted["runtime_abi_root"] = "99" * 32
+    fixture.store.put(fixture.epoch_context, fr.canonical_bytes(substituted))
+    artifact, report, calls = _admit(monkeypatch, fixture)
+
+    assert artifact["candidate"]["release_root"] == fixture.signed_release
+    assert report["outcome"] == "FAIL"
+    assert report["code"] == rig.EPOCH_CONTEXT_ADDRESS_MISMATCH
+    assert calls.replay == []
+
+
+def test_confirmed_advance_and_historical_law_must_name_one_context(monkeypatch):
+    fixture = _fixture()
+    calls = _install_pure_port_spies(monkeypatch, fixture)
+    law = SimpleNamespace(epoch_context_root="99" * 32,
+                          entropy_commitment="18" * 32, revealed_secret=None)
+    artifact, report = pipeline._admit(
+        fixture.selected, law, fixture.store, allow_test_doubles=False)
+
+    assert artifact["candidate"]["release_root"] == fixture.signed_release
+    assert report["outcome"] == "FAIL"
+    assert report["code"] == rig.TRANSITION_EPOCH_CONTEXT_MISMATCH
+    assert calls.replay == []
 
 
 def test_pipeline_delegates_every_supported_resolver_schema():
