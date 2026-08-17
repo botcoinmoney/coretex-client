@@ -1,11 +1,20 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Fail-closed verification of a prospective schema-v3 CoreTex release graph.
+"""Fail-closed verification of the prospective CoreTex release graph.
 
-The frontier root is only the first content address.  A usable state also requires its
-composition, all three profile release manifests, and every module byte string named by those
-manifests.  This module follows that complete graph without importing the CoreTex runtime: the
-public validator remains a zero-dependency package and treats runtime execution as a separate,
-pinned replay stage.
+Prospective state has one release shape: schema 4, direct wrapper format 3, and a two-file bundle
+(``manifest.json`` plus ``module.py``). The module object is byte-for-byte the admitted miner
+submission; there is no generated adapter and ``source_provenance.base_modules`` is exactly the
+empty object. A usable state requires its composition, all three profile release manifests, and
+the module bytes named by each manifest.
+
+This module follows that complete graph without importing the CoreTex runtime. The public
+validator remains a zero-dependency package and treats analyzer/evaluator execution as a separate,
+pinned replay stage. It can therefore verify that the admission report, analyzer ruleset and
+inferred-capability commitments are present and internally well-shaped here; the later
+deterministic-admission stage re-executes the committed law.
+
+Schema 3 is retained only in :func:`validate_historical_schema3_release` for explicit historical
+inspection. Prospective materialization never calls it and always refuses a schema-3 release.
 """
 from __future__ import annotations
 
@@ -15,15 +24,32 @@ from . import frontier as fr
 from . import publication as pub
 
 
-CONTENT_ADDRESSED_RELEASE_SCHEMA = 3
+SANDBOXED_RELEASE_SCHEMA = 4
+DIRECT_WRAPPER_FORMAT = 3
+HISTORICAL_CONTENT_ADDRESSED_RELEASE_SCHEMA = 3
 CONTENT_AUTHORITY = "ONCHAIN_COMMITTED_ROOT"
 COMPOSITION_FORMAT = "coretex-memory/deployment-content-addressed/v2"
+BUNDLE_FILES = frozenset(("manifest.json", "module.py"))
 MAY_AFFECT_HOOKS: Tuple[str, ...] = (
     "m1_ingest_transform", "m2_organize", "m3_consolidate",
     "m4_candidates", "m5_rank", "m6_pack",
 )
 CAPABILITY_IDS: Tuple[str, ...] = ("cap.text.v1", "cap.lexicon.v1")
 LEGACY_PROFILE_ID = "legacy.structured.v1"
+
+_COMMON_REQUIRED_FIELDS: Tuple[str, ...] = (
+    "schema", "manifest_schema_version", "policy_id", "module_sha256",
+    "source_provenance", "abi_version", "runtime_version_min", "runtime_version_max",
+    "candidate_provider", "counter", "store_schema_version", "deployment_profile",
+    "rollback_id", "manifest_self_sha256",
+)
+_V4_REQUIRED_FIELDS: Tuple[str, ...] = (
+    "hooks", "capabilities", "capabilities_used", "content_authority",
+    "admission_report_hash", "analyzer_ruleset_root", "wrapper_format",
+)
+_OFFCHAIN_AUTHORIZATION_FIELDS: Tuple[str, ...] = (
+    "operator_key_id", "operator_signature", "approval",
+)
 
 
 class ReleaseGraphError(ValueError):
@@ -43,57 +69,95 @@ def _root(value: Any, where: str) -> str:
         raise ReleaseGraphError(str(exc)) from exc
 
 
+def _unique_known_list(value: Any, *, where: str, known: Tuple[str, ...]) -> Tuple[str, ...]:
+    if not isinstance(value, list):
+        raise ReleaseGraphError(f"{where} must be a list")
+    if any(not isinstance(item, str) for item in value):
+        raise ReleaseGraphError(f"{where} entries must be strings")
+    if len(set(value)) != len(value):
+        raise ReleaseGraphError(f"{where} contains duplicates")
+    unknown = sorted(set(value) - set(known))
+    if unknown:
+        raise ReleaseGraphError(f"{where} names unknown values {unknown}")
+    return tuple(value)
+
+
 def bundle_file_bindings(manifest: Mapping[str, Any]) -> Dict[str, str]:
-    """Return every file root a schema-v3 release manifest binds."""
-    files = {"module.py": _root(manifest.get("module_sha256"), "module_sha256")}
+    """Return the sole non-manifest file bound by a prospective schema-4 release.
+
+    The manifest itself is fetched by its release root. An explicitly empty ``base_modules`` map
+    means the resulting directory shape is exactly ``manifest.json`` + ``module.py``.
+    """
     provenance = _mapping(manifest.get("source_provenance"), "source_provenance")
-    base_modules = _mapping(provenance.get("base_modules"),
-                            "source_provenance.base_modules")
-    if "miner_module.py" not in base_modules:
+    if "base_modules" not in provenance:
+        raise ReleaseGraphError("source_provenance.base_modules must be explicitly present")
+    base_modules = provenance.get("base_modules")
+    if not isinstance(base_modules, Mapping) or dict(base_modules) != {}:
         raise ReleaseGraphError(
-            "source_provenance.base_modules must bind miner_module.py; the evaluated module "
-            "cannot be reconstructed otherwise")
-    for name, digest in base_modules.items():
-        if not isinstance(name, str) or not name or name.startswith(("/", "\\")):
-            raise ReleaseGraphError(f"base module path {name!r} is not a safe relative path")
-        parts = name.replace("\\", "/").split("/")
-        if any(part in ("", ".", "..") for part in parts) or ":" in name:
-            raise ReleaseGraphError(f"base module path {name!r} traverses its release bundle")
-        if name in ("manifest.json", "module.py"):
-            raise ReleaseGraphError(f"base module {name!r} collides with a reserved bundle file")
-        files[name] = _root(digest, f"base_modules[{name!r}]")
-    return files
+            "source_provenance.base_modules must be exactly the empty object {}; "
+            "schema-4 bundles contain only manifest.json and module.py")
+    return {"module.py": _root(manifest.get("module_sha256"), "module_sha256")}
 
 
-def validate_schema3_release(manifest: Any, *, expected_root: str,
+def validate_schema4_release(manifest: Any, *, expected_root: str,
                              profile_id: str) -> Dict[str, Any]:
-    """Validate the prospective content-authority and conservative M1--M6 declaration."""
+    """Validate the one prospective release shape without executing miner code."""
     document = dict(_mapping(manifest, f"release[{profile_id}]"))
-    if document.get("manifest_schema_version") != CONTENT_ADDRESSED_RELEASE_SCHEMA:
+    schema_version = document.get("manifest_schema_version")
+    if type(schema_version) is not int or schema_version != SANDBOXED_RELEASE_SCHEMA:
         raise ReleaseGraphError(
-            f"release[{profile_id}] is schema {document.get('manifest_schema_version')!r}; "
-            "prospective production state requires schema 3")
+            f"release[{profile_id}] is schema {schema_version!r}; prospective production state "
+            f"requires the exact integer {SANDBOXED_RELEASE_SCHEMA}")
+    missing = [field for field in _COMMON_REQUIRED_FIELDS + _V4_REQUIRED_FIELDS
+               if field not in document]
+    if missing:
+        raise ReleaseGraphError(
+            f"release[{profile_id}] is missing required schema-4 fields {missing}")
+    if document.get("schema") != "coretex-memory/release-manifest":
+        raise ReleaseGraphError(f"release[{profile_id}] has an unknown release schema")
     if document.get("content_authority") != CONTENT_AUTHORITY:
         raise ReleaseGraphError(
             f"release[{profile_id}] does not declare {CONTENT_AUTHORITY} authority")
-    if any(field in document for field in
-           ("operator_key_id", "operator_signature", "approval")):
+    if any(field in document for field in _OFFCHAIN_AUTHORIZATION_FIELDS):
         raise ReleaseGraphError(
             f"release[{profile_id}] carries a second off-chain authorization path")
     if document.get("manifest_self_sha256") != expected_root:
         raise ReleaseGraphError(
             f"release[{profile_id}] self root {document.get('manifest_self_sha256')!r} != "
             f"frontier-bound root {expected_root}")
-    expected_hooks = {name: "1" for name in MAY_AFFECT_HOOKS}
-    if document.get("hooks") != expected_hooks:
+    wrapper_format = document.get("wrapper_format")
+    if type(wrapper_format) is not int or wrapper_format != DIRECT_WRAPPER_FORMAT:
         raise ReleaseGraphError(
-            f"release[{profile_id}] must conservatively declare the complete M1-M6 may-affect "
-            "roster; an arbitrary Python module cannot prove a narrower behavioral scope")
-    capabilities = document.get("capabilities")
-    if capabilities != list(CAPABILITY_IDS):
+            f"release[{profile_id}] wrapper_format must be the exact integer "
+            f"{DIRECT_WRAPPER_FORMAT}; got {wrapper_format!r}")
+
+    hooks = document.get("hooks")
+    if not isinstance(hooks, Mapping) or not hooks:
         raise ReleaseGraphError(
-            f"release[{profile_id}] must declare the full frozen capability roster "
-            f"{list(CAPABILITY_IDS)}")
+            f"release[{profile_id}].hooks must be a non-empty exact hook map")
+    unknown_hooks = sorted(set(hooks) - set(MAY_AFFECT_HOOKS))
+    if unknown_hooks:
+        raise ReleaseGraphError(
+            f"release[{profile_id}].hooks names unknown hooks {unknown_hooks}")
+    bad_versions = sorted(name for name, version in hooks.items()
+                          if not isinstance(version, str) or not version)
+    if bad_versions:
+        raise ReleaseGraphError(
+            f"release[{profile_id}].hooks has invalid ABI versions for {bad_versions}")
+
+    capabilities = _unique_known_list(
+        document.get("capabilities"), where=f"release[{profile_id}].capabilities",
+        known=CAPABILITY_IDS)
+    capabilities_used = _unique_known_list(
+        document.get("capabilities_used"),
+        where=f"release[{profile_id}].capabilities_used", known=CAPABILITY_IDS)
+    extra = sorted(set(capabilities_used) - set(capabilities))
+    if extra:
+        raise ReleaseGraphError(
+            f"release[{profile_id}].capabilities_used {extra} are not granted by capabilities")
+    for field in ("admission_report_hash", "analyzer_ruleset_root"):
+        _root(document.get(field), f"release[{profile_id}].{field}")
+
     provenance = _mapping(document.get("source_provenance"),
                           f"release[{profile_id}].source_provenance")
     if provenance.get("profile_id") != profile_id:
@@ -103,15 +167,46 @@ def validate_schema3_release(manifest: Any, *, expected_root: str,
     return document
 
 
+def validate_historical_schema3_release(manifest: Any, *, expected_root: str,
+                                        profile_id: str) -> Dict[str, Any]:
+    """Inspect a historical schema-3 release; never authorize prospective materialization.
+
+    This preserves auditability of already-addressed evidence. It is intentionally not called by
+    :func:`verify_materializable_release_state` and does not turn schema 3 into a supported live
+    mint, serve, or activation path.
+    """
+    document = dict(_mapping(manifest, f"historical release[{profile_id}]"))
+    if document.get("manifest_schema_version") != HISTORICAL_CONTENT_ADDRESSED_RELEASE_SCHEMA:
+        raise ReleaseGraphError(
+            f"historical release[{profile_id}] is not schema "
+            f"{HISTORICAL_CONTENT_ADDRESSED_RELEASE_SCHEMA}")
+    if document.get("content_authority") != CONTENT_AUTHORITY:
+        raise ReleaseGraphError(
+            f"historical release[{profile_id}] does not declare {CONTENT_AUTHORITY} authority")
+    if any(field in document for field in _OFFCHAIN_AUTHORIZATION_FIELDS):
+        raise ReleaseGraphError(
+            f"historical release[{profile_id}] carries a second off-chain authorization path")
+    if document.get("manifest_self_sha256") != expected_root:
+        raise ReleaseGraphError(
+            f"historical release[{profile_id}] self root does not match its addressed root")
+    provenance = _mapping(document.get("source_provenance"),
+                          f"historical release[{profile_id}].source_provenance")
+    if provenance.get("profile_id") != profile_id:
+        raise ReleaseGraphError(
+            f"historical release[{profile_id}] provenance names "
+            f"{provenance.get('profile_id')!r}")
+    return document
+
+
 def verify_materializable_release_state(
         *, releases: Mapping[str, str], composition_root: str, store: pub.ContentStore,
         expected_candidate_hashes: Optional[Mapping[str, str]] = None) -> Dict[str, Any]:
-    """Fetch and verify every byte needed to activate the resulting state.
+    """Fetch and verify every byte needed to activate the resulting schema-4 state.
 
     Missing bytes raise :class:`publication.ObjectNotFoundError` so a caller can distinguish a
-    temporary publication backlog from a malformed/substituted graph.  Every other discrepancy
+    temporary publication backlog from a malformed/substituted graph. Every other discrepancy
     raises :class:`ReleaseGraphError` or another :class:`publication.PublicationError` and is a
-    permanent refusal.
+    permanent refusal. Historical schema-3 releases are always refused here.
     """
     expected_candidate_hashes = dict(expected_candidate_hashes or {})
     profile_ids = set(fr.PROFILE_IDS)
@@ -130,8 +225,7 @@ def verify_materializable_release_state(
             or composition.get("manifest_self_sha256") != composition_root):
         raise ReleaseGraphError(
             "composition is not a self-addressed, on-chain-authorized v2 deployment manifest")
-    if any(field in composition for field in
-           ("operator_key_id", "operator_signature", "approval")):
+    if any(field in composition for field in _OFFCHAIN_AUTHORIZATION_FIELDS):
         raise ReleaseGraphError("composition carries a second off-chain authorization path")
 
     bindings = _mapping(composition.get("profile_bindings"), "composition.profile_bindings")
@@ -161,9 +255,12 @@ def verify_materializable_release_state(
         release_root = _root(releases[profile_id], f"release[{profile_id}]")
         manifest = pub.fetch_json(
             release_root, hash_rule=pub.HASH_RULE_SIGNED_MANIFEST_BODY, store=store)
-        document = validate_schema3_release(
+        document = validate_schema4_release(
             manifest, expected_root=release_root, profile_id=profile_id)
         binding = _mapping(bindings.get(profile_id), f"profile_bindings[{profile_id!r}]")
+        if binding.get("is_baseline") is not False:
+            raise ReleaseGraphError(
+                f"composition binding for {profile_id} must install a non-baseline release")
         if (binding.get("release_id") != release_root
                 or binding.get("bundle_manifest_sha256") != release_root
                 or binding.get("bundle_dir") != bundles.get(profile_id)
@@ -181,13 +278,18 @@ def verify_materializable_release_state(
                 f"composition candidate for {profile_id} is {candidate_hash}, evaluated code is "
                 f"{expected}")
         files = bundle_file_bindings(document)
-        if binding.get("miner_sha256") != files["miner_module.py"]:
-            raise ReleaseGraphError(
-                f"composition miner_sha256 for {profile_id} does not bind miner_module.py")
-        if binding.get("module_sha256") != files["module.py"]:
+        module_root = files["module.py"]
+        if binding.get("module_sha256") != module_root:
             raise ReleaseGraphError(
                 f"composition module_sha256 for {profile_id} does not bind module.py")
-        for _filename, digest in sorted(files.items()):
-            pub.read_back(digest, hash_rule=pub.HASH_RULE_BYTES, store=store)
-        verified[profile_id] = {"manifest": document, "files": files}
+        if binding.get("miner_sha256") != module_root:
+            raise ReleaseGraphError(
+                f"composition miner_sha256 for {profile_id} does not equal module.py; "
+                "schema-4 miner bytes must be the executed module bytes")
+        pub.read_back(module_root, hash_rule=pub.HASH_RULE_BYTES, store=store)
+        verified[profile_id] = {
+            "manifest": document,
+            "files": files,
+            "bundle_files": tuple(sorted(BUNDLE_FILES)),
+        }
     return {"composition": composition, "releases": verified}

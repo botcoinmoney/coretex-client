@@ -16,8 +16,9 @@ immutable wiring, and the coordinator signer from Base.
 The recorded genesis root is only the registry constructor's immutable deployment fact. It is not
 the operational bootstrap authority. For every served epoch, the validator reads the verifier's
 confirmed `CoreTexEpochContextSet.parentStateRoot` and reconstructs transition 0 from that root.
-This allows the intentionally bare schema-v3 production bootstrap to differ from the constructor
-diagnostic without inventing a migration transition.
+This allows the epoch-context production bootstrap to differ from the constructor diagnostic
+without inventing a migration transition. Prospective activation requires that bootstrap and every
+later resulting state to use the one schema-4 release shape.
 
 Canonical Base contracts:
 
@@ -112,10 +113,13 @@ Missing transition artifacts, an unavailable deterministic evaluator tree, or an
 snapshot are reported as explicit unverified/backlog results. They never become a pass. Use
 `--require-complete` when an incomplete verification must fail the command.
 
-For schema-v3 state, “available” means the complete graph: the composition manifest, all three
-profile release manifests, and every module file each manifest binds. A missing object is BACKLOG
-(publication may be repaired); a malformed, substituted, partially scoped, or wrongly delegated
-graph is FAIL. Prospective Python releases conservatively declare the full M1–M6 may-affect roster.
+For prospective schema-v4 state, “available” means the complete graph: the composition manifest,
+all three profile release manifests, and each release's direct ``module.py`` bytes. Every bundle is
+exactly ``manifest.json`` + ``module.py``; ``base_modules`` is explicitly empty, miner bytes equal
+module bytes, wrapper format is 3, and the admission report, analyzer ruleset, and inferred
+``capabilities_used`` are bound. A missing object is BACKLOG (publication may be repaired); a
+malformed, substituted, schema-3, wrapper-2, split miner/adapter, partially scoped, or wrongly
+delegated graph is FAIL. Historical schema-3 inspection cannot authorize prospective activation.
 Candidate-reported compute and wall-clock figures remain diagnostics and are not admission axes.
 
 ## Exit codes

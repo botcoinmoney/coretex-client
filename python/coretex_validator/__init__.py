@@ -52,9 +52,8 @@ __all__ = [
 #: Independent of the npm package version on purpose: the two ship together but are versioned by
 #: what they each promise. Bumped when a check is added, removed or changed in meaning.
 #:
-#: 0.3.0 COLLAPSES A THREE-WAY SKEW. Up to 0.2.x this package had three live versions at once —
-#: source 0.2.3, a built wheel 0.2.2, and an agent extra pinning ``==0.2.1`` — which meant nobody
-#: could say which checks a given "coretex-validator" performed. Spec §8 requires ONE released
-#: version, pinned exactly, and this is it. What is new in it: ``sync-law`` (fetch + verify the
-#: published admission law and pin it), ``replay-advance`` and ``verify-receipt``.
-__version__ = "0.3.0"
+#: 0.4.0 is the one-shape law break. Prospective materialization accepts only schema 4, direct
+#: wrapper format 3, explicit empty ``base_modules``, and byte-identical miner/module content with
+#: admission-report, analyzer-ruleset, and ``capabilities_used`` commitments. Schema 3 remains
+#: available only through an explicitly historical inspection function and cannot activate state.
+__version__ = "0.4.0"

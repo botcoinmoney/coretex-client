@@ -7,8 +7,9 @@ classification is accepted only after its signature and exact contract/genesis i
 verified, followed by independent Base bytecode and wiring reads.
 
 The constructor genesis is verified as an immutable deployment fact only. Operational state begins
-at the parent root in the confirmed epoch context. Schema-v3 validation then requires the complete
-content-addressed composition, all three profile releases, and every bound module file.
+at the parent root in the confirmed epoch context. Prospective schema-v4 validation then requires
+the complete content-addressed composition, all three profile releases, and each release's direct
+``module.py`` bytes. Schema 3 is historical inspection only and cannot materialize live state.
 
 Deterministic admission needs six code trees. They are published as content-addressed objects,
 addressed by the same tree-hash rule the signed receipt's `code_roots` binds, so a clean machine

@@ -624,11 +624,11 @@ def _admit(selected: jn.JoinedTransition, law: hl.EpochLaw, store: pub.ContentSt
                        f"{front.get('composition_root')!r}, the confirmed transition artifact "
                        f"resolves to {resulting_composition!r}")}
 
-    # A reproducible frontier root is not yet an installable state. Follow the complete schema-v3
-    # graph now: composition, all three profile manifests, and every module byte string each one
-    # binds. The target profile's composition binding must name the exact candidate code the
-    # evaluator scored. Missing bytes are retryable publication backlog; malformed or substituted
-    # bytes are a permanent refusal.
+    # A reproducible frontier root is not yet an installable state. Follow the complete one-shape
+    # schema-v4 graph now: composition, all three profile manifests, and the direct module bytes
+    # each one binds. The target profile's composition binding must name the exact candidate code
+    # the evaluator scored. Missing bytes are retryable publication backlog; malformed,
+    # substituted, schema-v3, wrapper-2, or split miner/adapter bytes are a permanent refusal.
     resulting_manifest = patch_artifact.get("resulting_frontier_manifest")
     if not isinstance(resulting_manifest, Mapping):
         return artifact, {
@@ -648,7 +648,7 @@ def _admit(selected: jn.JoinedTransition, law: hl.EpochLaw, store: pub.ContentSt
     except pub.ObjectNotFoundError as exc:
         return artifact, {
             "outcome": "BACKLOG", "code": "RELEASE_STATE_UNAVAILABLE",
-            "reason": f"resulting schema-v3 release graph is not fully published: {exc}"}
+            "reason": f"resulting schema-v4 release graph is not fully published: {exc}"}
     except (pub.PublicationError, rg.ReleaseGraphError, fr.FrontierError) as exc:
         return artifact, {
             "outcome": "FAIL", "code": "RELEASE_STATE_INVALID", "reason": str(exc)}

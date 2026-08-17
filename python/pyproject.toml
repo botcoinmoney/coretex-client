@@ -14,8 +14,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "coretex-validator"
-version = "0.3.0"
-description = "Public CoreTex descriptor-v3 production validator, chain-first."
+version = "0.4.0"
+description = "Public CoreTex descriptor-v3, one-shape schema-4 production validator."
 readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.9"
