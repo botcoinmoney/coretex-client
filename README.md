@@ -5,6 +5,15 @@ authenticates the canonical deployment, reads chain state at a confirmed block, 
 receipt continuity, reconstructs transition descriptors and artifacts, reruns deterministic
 admission, and exports reproduced state for portable activation.
 
+The installable package is `coretex-validator` **0.4.0** (zero runtime dependencies). Git tag
+`v0.4.0` is this 0.4.0 line, including the inherited-pin adoption needed to replay production
+genesis into a re-anchored epoch context. The live coordinator kit still serves wheel
+`coretex_validator-0.4.0-py3-none-any.whl` sha256
+`adb52e32de9a565a1e80d9a18750255ccf82c76b75ab01b686ee03e4b9be0f47`, which is the same 0.4.0
+package bytes at commit `adf81c26c2585462d66af3aca3d7acdb16ac7172` (one-shape schema 4, before
+that pin-adoption commit). Both are version 0.4.0; use this repository's HEAD / `v0.4.0` to
+replay inherited production advances.
+
 ## Production authority
 
 The validator defaults to the operator-signed canonical Base production release at an immutable

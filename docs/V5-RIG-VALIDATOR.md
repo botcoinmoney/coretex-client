@@ -4,10 +4,22 @@ This document records what the rig-lane validator in `python/coretex_validator` 
 importantly — the things that were found to be **wrong or missing** while building it. The
 findings are first because they change what anyone should believe about the staged design.
 
-Status: the offline and local-chain legs are proven. **The mainnet-rehearsal leg is UNPROVEN**:
-no rehearsal transition exists on Base yet (Phase 4/5 are blocked on operator keys), so nothing
-here has been run against a real deployment. No mainnet snapshot and no signature has been
-fabricated to stand in for one.
+Status (checked 2026-08-19 against Base, chainId 8453): the offline and local-chain legs are
+proven. **The mainnet-rehearsal UNPROVEN claim below is obsolete.** Canonical production is
+live at mining `0xB61BC7487424172CB9fa9dD381a9eC06C7067dCd`, verifier
+`0x82384E4DA334a4e3E1d8d2623359dC8c4d931Ed4`, registry
+`0xa4d8a7Bb3Ba2D023af29Bf77601A61673ED89ad3` (descriptor-v3, schema-4, wrapper-3). A 2026-08-18
+rehearsal produced the first production-genesis advance on epoch 179 (`8f2455e5…` →
+`803c90ce…`; validator-reproduced). Production epoch 180 is the current unsealed epoch
+(`transitionCount` 2, live root
+`0x06bcdca6a8c02aafc13217baa6c40665264485d3a3bf8e780999acf0541366ad`).
+`coretex-validator verify-release --rpc https://mainnet.base.org` authenticates that
+deployment from a clean wheel install.
+
+**The files `evidence/full-replay-e180-*.json` are not current production epoch 180.** They
+are dated 2026-08-04 and record the *legacy-era rehearsal* at the retired rehearsal registry
+`0x9ec799e8…`, whose epoch numbering collides with today's production epoch. See §4
+(era-bound) and `evidence/README.md`.
 
 ---
 
@@ -643,14 +655,14 @@ transitions on Base mainnet (T0 and T1, epoch 180) have now been replayed end to
 eight steps, from a clean wheel-only install (F4 closed at `8ca6015`, both K1 and K2 fixed;
 full stage table at `356f2ee`). What is listed below is what that work did **not** establish.
 
-* **Production authority.** Nothing reproduced here has `production_authority: true`, and
-  nothing ever will by accident: `release.py` refuses a release that declares
-  `MAINNET_CANONICAL` by name, and `export.build_export` cannot emit that classification
-  either. Every address, every deployment and the one signature that was ever checked
-  (`0xd1446157…`, labelled `REHEARSAL_TEST_ONLY` in the release document) belong to the
-  rehearsal deployment. A production genesis, production contract addresses and a production
-  signing key do not exist yet, so there is nothing to run any of this against beyond what
-  §4/§5 already cover.
+* **`MAINNET_CANONICAL` as a minted classification.** Production addresses, genesis, and the
+  operator-signed canonical release now exist (see the status paragraph). `verify-release`
+  against the builtin release reports `production_authority: true` after signature + bytecode
+  + wiring checks. What this section still does not claim is that every historical §4/§5
+  replay was a production replay: those runs used the retired rehearsal deployment and the
+  `REHEARSAL_TEST_ONLY` resolver key `0xd1446157…`. `release.py` still refuses a release that
+  declares `MAINNET_CANONICAL` by name; authenticated production exports use
+  `CANONICAL_PRODUCTION` only after the signed canonical release verifies.
 * **Independent review of the rig contract source** (F5, unchanged by any of the above).
   `github.com/botcoinmoney/botcoin-mining-rigs` at `cdb91d21…` is still not publicly
   fetchable. The *deployment* is verifiable without it — bytecode is checked against the
