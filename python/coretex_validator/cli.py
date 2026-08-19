@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """``coretex-validator`` — the command an external agent actually runs.
 
-SEVEN SUBCOMMANDS, AND THE FIRST ONE IS THE POINT:
-
+    coretex-validator setup                               install-time: verify, kit packages, chain head
     coretex-validator reproduce --rpc URL                 production, steps 1-8
     coretex-validator reproduce --release R --rpc URL     explicit historical release
     coretex-validator verify-release --release R --rpc URL   steps 1-2 only
@@ -117,6 +116,17 @@ def _cmd_reproduce(args: argparse.Namespace) -> int:
                       for item in report.unverified))
         return 1
     return 0
+
+
+def _cmd_setup(args: argparse.Namespace) -> int:
+    from . import setup as su
+
+    payload = su.run(
+        rpc_url=args.rpc, coordinator=args.coordinator, release=args.release,
+        confirmation_depth=args.confirmation_depth, packages_dir=args.packages_dir,
+        skip_packages=args.skip_packages)
+    _emit(payload, pretty=not args.compact)
+    return 0 if payload["ok"] else 1
 
 
 def _cmd_verify_release(args: argparse.Namespace) -> int:
@@ -388,6 +398,7 @@ def _add_law_arguments(parser: argparse.ArgumentParser) -> None:
 def build_parser() -> argparse.ArgumentParser:
     from .law import DEFAULT_PUBLICATION_ROOT, MAX_OBJECT_BYTES
     from .release import DEFAULT_PRODUCTION_RELEASE_URL
+    from .setup import DEFAULT_COORDINATOR, DEFAULT_RPC
     parser = argparse.ArgumentParser(
         prog="coretex-validator", description=__doc__.splitlines()[0])
     parser.add_argument("--version", action="version", version=__version__)
@@ -482,6 +493,23 @@ def build_parser() -> argparse.ArgumentParser:
                          help="exit 1 when the receipt could not be replayed at all")
     _add_law_arguments(receipt)
     receipt.set_defaults(func=_cmd_verify_receipt)
+
+    setup = sub.add_parser(
+        "setup",
+        help="verify the live deployment, cache kit packages, read the chain head")
+    setup.add_argument("--rpc", default=DEFAULT_RPC,
+                       help=f"JSON-RPC endpoint (default: {DEFAULT_RPC})")
+    setup.add_argument("--coordinator", default=DEFAULT_COORDINATOR,
+                       help="coordinator base URL serving /coretex/v5/kit (default: "
+                            f"{DEFAULT_COORDINATOR})")
+    setup.add_argument("--release", default=DEFAULT_PRODUCTION_RELEASE_URL)
+    setup.add_argument("--confirmation-depth", type=int, default=15)
+    setup.add_argument("--packages-dir", default=None,
+                       help="where to cache kit packages (default: "
+                            "~/.local/share/coretex/packages)")
+    setup.add_argument("--skip-packages", action="store_true",
+                       help="verify + read chain only; do not fetch the miner-kit tar")
+    setup.set_defaults(func=_cmd_setup)
 
     verify = sub.add_parser("verify-release", help="steps 1-2 only")
     verify.add_argument("--release", default=DEFAULT_PRODUCTION_RELEASE_URL)

@@ -1,27 +1,14 @@
 # coretex-validator
 
-Dependency-free public validator for BOTCOIN's canonical Base descriptor-v3 CoreTex rig lane.
-
-The default release is the immutable, operator-signed production deployment. Production
-classification is accepted only after its signature and exact contract/genesis identities are
-verified, followed by independent Base bytecode and wiring reads.
-
-The constructor genesis is verified as an immutable deployment fact only. Operational state begins
-at the parent root in the confirmed epoch context. Prospective schema-v4 validation then requires
-the complete content-addressed composition, all three profile releases, and each release's direct
-``module.py`` bytes. Schema 3 is historical inspection only and cannot materialize live state.
-
-Deterministic admission needs six code trees. They are published as content-addressed objects,
-addressed by the same tree-hash rule the signed receipt's `code_roots` binds, so a clean machine
-gets them from a mirror and checks them against the chain-bound identity rather than the courier:
+Dependency-free public validator for BOTCOIN's canonical Base descriptor-v3 CoreTex rig.
 
 ```bash
-coretex-validator sync-law --mirror https://<coordinator-or-mirror>
+pip install https://github.com/botcoinmoney/coretex-client/releases/download/v0.4.1/coretex_validator-0.4.1-py3-none-any.whl
+coretex-validator setup
 ```
 
-Every object is rehashed from the bytes that arrived, and a mismatch, a truncation, an oversize
-response, a tar carrying anything the hash rule does not cover, or a missing tree installs nothing
-at all. The verified cache is applied automatically by `reproduce`, `replay-advance` and
-`verify-receipt`.
+`setup` verifies the signed production deployment, caches the miner-kit from the
+coordinator (`/coretex/v5/kit/file/<sha256>`), and reads the confirmed chain head.
+The older npm `@botcoinmoney/coretex-client` is retired.
 
-See the repository root README for installation and production replay commands.
+See the repository root README for commands and contracts.

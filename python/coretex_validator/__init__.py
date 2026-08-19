@@ -56,4 +56,7 @@ __all__ = [
 #: wrapper format 3, explicit empty ``base_modules``, and byte-identical miner/module content with
 #: admission-report, analyzer-ruleset, and ``capabilities_used`` commitments. Schema 3 remains
 #: available only through an explicitly historical inspection function and cannot activate state.
-__version__ = "0.4.0"
+#:
+#: 0.4.1 adds ``coretex-validator setup`` (verify the live deployment, cache kit packages, read
+#: the chain head). Verification semantics are unchanged from 0.4.0.
+__version__ = "0.4.1"

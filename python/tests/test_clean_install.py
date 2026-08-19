@@ -48,6 +48,7 @@ _STDLIB_FALLBACK = {
     "signal", "socket", "string", "struct", "subprocess", "sys", "sysconfig", "tempfile",
     "textwrap", "threading", "time", "types", "typing", "unicodedata", "urllib", "uuid",
     "warnings", "zlib", "ctypes", "errno", "fcntl", "select", "traceback", "secrets",
+    "tarfile",
 }
 
 

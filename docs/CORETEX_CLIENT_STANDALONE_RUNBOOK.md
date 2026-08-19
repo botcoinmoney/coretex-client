@@ -1,4 +1,21 @@
-# CoreTex Standalone Client Runbook
+# CoreTex Standalone Client Runbook (retired)
+
+**This runbook is for the retired V4 npm client** (`@botcoinmoney/coretex-client`,
+`coretex-client-setup` / `coretex-client-sync`, GitHub release `v0.7.1`). It hydrates
+launch artifacts from `coretex/launch/v16` and does **not** verify the live
+descriptor-v3 rig.
+
+The public validator is the Python package `coretex-validator` in this same
+repository. See the [root README](../README.md):
+
+```bash
+pip install https://github.com/botcoinmoney/coretex-client/releases/download/v0.4.1/coretex_validator-0.4.1-py3-none-any.whl
+coretex-validator setup
+```
+
+The rest of this file is historical.
+
+---
 
 How to run a CoreTex client from a bare host with the `@botcoinmoney/coretex-client` npm
 package, RPC access to Base, and the launch artifact base URL. The client

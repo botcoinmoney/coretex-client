@@ -39,7 +39,7 @@ def test_the_existing_subcommands_are_unchanged():
     actions = [a for a in parser._actions if hasattr(a, "choices") and a.choices]
     names = set(actions[0].choices)
     assert {"reproduce", "verify-release", "reproduce-snapshot", "topics", "selftest"} <= names
-    assert {"sync-law", "replay-advance", "verify-receipt"} <= names
+    assert {"sync-law", "replay-advance", "verify-receipt", "setup"} <= names
 
 
 def test_selftest_still_passes_from_the_cli(capsys):
@@ -47,7 +47,7 @@ def test_selftest_still_passes_from_the_cli(capsys):
     assert code == 0
     payload = json.loads(captured.out)
     assert payload["ok"] is True
-    assert payload["version"] == "0.4.0"
+    assert payload["version"] == "0.4.1"
 
 
 # --------------------------------------------------------------------------- #
