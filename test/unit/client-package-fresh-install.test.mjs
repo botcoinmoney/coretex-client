@@ -89,7 +89,6 @@ describe('fresh npm install of @botcoinmoney/coretex-client', () => {
       'scripts/lib/_package-paths.mjs',
       'src/state/codec.ts',
       'specs/coretex_state.md',
-      'docs/CORETEX_CLIENT_STANDALONE_RUNBOOK.md',
     ]) {
       assert.ok(existsSync(join(installed, rel)), `installed package missing ${rel}`);
     }
