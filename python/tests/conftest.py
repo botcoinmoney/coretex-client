@@ -65,7 +65,7 @@ REPO = os.path.dirname(_PYTHON_ROOT)
 
 
 ROOT_A = "a" * 64
-ROOT_B = "b" * 64
+ROOT_B = "4e81744ee61fd58602c04b23210b8ac7dad66cc126986ac82db2af66200dbe9c"
 ROOT_C = "c" * 64
 ROOT_LAW = "1" * 64
 ROOT_ABI = "2" * 64
@@ -207,9 +207,19 @@ def make_receipt_wrapper(*, gate_entropy, confirm_entropy, gate_cases, confirm_c
                       "declaration_id": "a1" * 32, "exec": "candidate_module",
                       "manifest": {"candidate_hash": candidate_hash}},
         "incumbent": {"id": "reference-runtime", "candidate_hash": None, "exec": "reference"},
-        "code_roots": {"generators": "10" * 32, "frontier": "11" * 32, "validator": "12" * 32,
-                       "scoring": "13" * 32, "miner_abi": "14" * 32,
-                       "runtime_coretex_memory": "15" * 32},
+        # Frozen R12 production roots. Three-field identities are historical evidence only and
+        # are accepted solely when the addressed report binds this exact pre-cut tree.
+        "code_roots": {
+            "candidate_isolation_posture":
+                "77e581c35758e0e1bef0b58e07322b7d3f4a7e8c5f120ea7067a48f41cbf0e69",
+            "frontier": "9ccdfe9bcabca32015dd5b5a809f1fa4e383500310cd5b18fbafb86dbdbbfea1",
+            "generators": "20a8402bc5de5ca791963efd33a31df09ab9cd451e926399a546d8e431d65d15",
+            "miner_abi": "074511156e7bb1088596e81dc0794b11221cbd5a35aa875e6a34d9ac28d9f73d",
+            "runtime_coretex_memory":
+                "e0e334dba9d88020e59c493ba1bf9d1ef0cbb9ebbf5b572353a43b9c9261e25b",
+            "scoring": "867a96b0bfca26ac462978964f3e6fb238821c0e95c002c5641c4c51b83e07a5",
+            "validator": "9f55f31169e08dbb6c695e4edb26e6299e84ee1264f84788b76bc9fdd0939e04",
+        },
         "entropy": {"provider": "file.v1", "ref": "gate-fixture", "value": gate_entropy,
                     "proof": {"fixture": "gate-fixture", "sha256": "20" * 32}},
         "confirm_entropy": {"provider": "file.v1", "ref": "confirm-fixture",

@@ -110,7 +110,7 @@ class StubSandbox(rp.CandidateSandbox):
     def available(self) -> bool:
         return self._available
 
-    def execute(self, *, receipt_wrapper, artifact):
+    def execute(self, *, receipt_wrapper, artifact, incumbent_execution=None):
         self.calls += 1
         if self._raises is not None:
             raise self._raises

@@ -164,3 +164,12 @@ def test_the_counter_resource_law_ships_with_the_package():
     assert (PACKAGE_DIR / "COUNTER_RESOURCE_LAW.v1.json").is_file(), (
         f"the law did load, but not from {PACKAGE_DIR} — the package under test is not the one "
         "this test located")
+
+
+def test_the_exact_parent_authority_ships_with_the_package():
+    """Historical replay authority is data and must not depend on a sibling source checkout."""
+    from coretex_validator import parent_execution as pe
+
+    assert pe.PRODUCTION_REFERENCE_RELEASE_ROOTS
+    assert pe.PRE_EXACT_PARENT_CODE_ROOT_SETS
+    assert (PACKAGE_DIR / "EXACT-PARENT-AUTHORITY.production.json").is_file()

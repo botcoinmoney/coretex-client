@@ -47,7 +47,7 @@ def test_selftest_still_passes_from_the_cli(capsys):
     assert code == 0
     payload = json.loads(captured.out)
     assert payload["ok"] is True
-    assert payload["version"] == "0.4.1"
+    assert payload["version"] == "0.4.2"
 
 
 # --------------------------------------------------------------------------- #

@@ -279,7 +279,8 @@ def test_a_substituted_parent_manifest_is_a_fail(scenario):
 # --------------------------------------------------------------------------- #
 def test_tampered_transition_bytes_break_the_new_root(scenario):
     tampered = fr.canonical_bytes(fr.make_transition(
-        target_profile="doc.tool.v1", expected_prior_release_root="b" * 64,
+        target_profile="doc.tool.v1",
+        expected_prior_release_root=scenario.parent["profiles"]["doc.tool.v1"],
         new_release_root="1" * 64, resulting_composition_root="4" * 64))
     result = scenario.replay(event=scenario.event(transition_bytes=tampered))
     assert result.outcome is bl.FAIL and result.code == "new_root_mismatch"

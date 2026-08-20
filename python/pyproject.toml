@@ -14,7 +14,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "coretex-validator"
-version = "0.4.1"
+version = "0.4.2"
 description = "Public CoreTex descriptor-v3, one-shape schema-4 production validator."
 readme = "README.md"
 license = "Apache-2.0"
@@ -46,7 +46,10 @@ include-package-data = false
 # it is the resource half of the Pareto rule, and a validator that had to be handed it could be
 # handed a different one. It ships inside the wheel so a clean install has it.
 [tool.setuptools.package-data]
-coretex_validator = ["COUNTER_RESOURCE_LAW.v1.json"]
+coretex_validator = [
+  "COUNTER_RESOURCE_LAW.v1.json",
+  "EXACT-PARENT-AUTHORITY.production.json",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

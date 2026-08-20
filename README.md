@@ -5,7 +5,7 @@ Public validator for the live CoreTex descriptor-v3 rig on Base.
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-pip install https://github.com/botcoinmoney/coretex-client/releases/download/v0.4.1/coretex_validator-0.4.1-py3-none-any.whl
+pip install https://github.com/botcoinmoney/coretex-client/releases/download/v0.4.2/coretex_validator-0.4.2-py3-none-any.whl
 coretex-validator setup
 ```
 
@@ -38,3 +38,9 @@ explicit historical artifact.
 | `selftest` | known-answer vectors |
 
 Zero runtime dependencies. See [docs/V5-RIG-VALIDATOR.md](docs/V5-RIG-VALIDATOR.md).
+
+Version 0.4.2 replays the parent slot as executable evidence: new artifacts carry the incumbent's
+release root and module SHA-256, and the validator independently fetches and re-hashes those bytes
+from the public CAS before the pinned sandbox runs. The historical three-field identity remains
+accepted only for the exact frozen pre-cut production code roots, so the three existing advances
+remain auditable without creating a fallback for new artifacts.

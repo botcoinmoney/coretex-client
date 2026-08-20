@@ -84,6 +84,7 @@ from typing import Any, Dict, Mapping, Optional, Tuple
 
 from . import authority_law as al
 from . import frontier as fr
+from . import parent_execution as parent_exec
 from . import publication as pub
 from .keccak256 import keccak256_hex
 # Identity constants
@@ -182,6 +183,7 @@ RECEIPT_FIELDS_V1_SIGNED_ERA = (
 REPLAY_INPUT_FIELDS = ("candidate_declaration_id", "candidate_exec", "candidate_manifest_hash",
                        "incumbent", "parent_manifest")
 INCUMBENT_FIELDS = ("candidate_hash", "exec", "id")
+INCUMBENT_EXACT_FIELDS = INCUMBENT_FIELDS + ("module_sha256", "release_root")
 RESOURCE_ACCOUNTING_FIELDS = ("branch", "resource_after_ppm", "resource_before_ppm",
                               "utility_after_ppm", "utility_before_ppm")
 VERDICT_FIELDS = ("admit", "consensus_critical", "decision_hash", "verdict")
@@ -453,6 +455,40 @@ def _check_bool(value: Any, field: str) -> bool:
 def _require(condition: bool, error: type, message: str) -> None:
     if not condition:
         raise error(message)
+
+
+def project_incumbent(incumbent: Mapping[str, Any]) -> Dict[str, Any]:
+    """Project a report incumbent into the closed historical or exact identity.
+
+    The release and module roots are atomic. A partial or open identity is refused rather than
+    being projected into the weaker historical statement.
+    """
+    if not isinstance(incumbent, dict):
+        raise ReceiptBindingError("receipt incumbent must be an object")
+    fields = frozenset(incumbent)
+    historical_fields = frozenset(INCUMBENT_FIELDS)
+    exact_fields = frozenset(INCUMBENT_EXACT_FIELDS)
+    if fields not in (historical_fields, exact_fields):
+        raise ReceiptBindingError(
+            "receipt incumbent must be exactly the historical three-field identity or the "
+            "exact five-field release/module identity")
+    _check_str(incumbent["id"], "receipt incumbent.id")
+    _check_str(incumbent["exec"], "receipt incumbent.exec")
+    candidate_hash = incumbent.get("candidate_hash") or fr.ZERO_ROOT
+    fr.check_root(candidate_hash, "receipt incumbent.candidate_hash")
+    projected = {
+        "candidate_hash": candidate_hash,
+        "exec": incumbent["exec"],
+        "id": incumbent["id"],
+    }
+    if fields == exact_fields:
+        fr.check_root(incumbent["release_root"], "receipt incumbent.release_root")
+        fr.check_root(incumbent["module_sha256"], "receipt incumbent.module_sha256")
+        projected.update({
+            "module_sha256": incumbent["module_sha256"],
+            "release_root": incumbent["release_root"],
+        })
+    return projected
 
 
 def to_micro(value: Any, field: str) -> int:
@@ -1021,10 +1057,23 @@ def validate_artifact(artifact: Any) -> Dict[str, Any]:
     fr.check_root(replay["candidate_manifest_hash"], "replay_inputs.candidate_manifest_hash")
     fr.check_root(replay["candidate_declaration_id"], "replay_inputs.candidate_declaration_id")
     _check_str(replay["candidate_exec"], "replay_inputs.candidate_exec")
-    inc = _check_closed(replay["incumbent"], INCUMBENT_FIELDS, "replay_inputs.incumbent")
+    incumbent_fields = set(replay["incumbent"]) if isinstance(replay["incumbent"], dict) else set()
+    expected_incumbent_fields = (INCUMBENT_EXACT_FIELDS
+                                 if incumbent_fields == set(INCUMBENT_EXACT_FIELDS)
+                                 else INCUMBENT_FIELDS)
+    inc = _check_closed(replay["incumbent"], expected_incumbent_fields,
+                        "replay_inputs.incumbent")
     _check_str(inc["id"], "replay_inputs.incumbent.id")
     _check_str(inc["exec"], "replay_inputs.incumbent.exec")
     fr.check_root(inc["candidate_hash"], "replay_inputs.incumbent.candidate_hash")
+    if expected_incumbent_fields == INCUMBENT_EXACT_FIELDS:
+        fr.check_root(inc["release_root"], "replay_inputs.incumbent.release_root")
+        fr.check_root(inc["module_sha256"], "replay_inputs.incumbent.module_sha256")
+    elif replay["candidate_exec"] == "candidate_module" and not signed_era \
+            and not parent_exec.is_pre_exact_parent_code_roots(roots):
+        raise ArtifactSchemaError(
+            "a prospective candidate-module artifact under this code-root set requires the "
+            "exact five-field incumbent release/module identity")
 
     acct = _check_closed(artifact["resource_accounting"], RESOURCE_ACCOUNTING_FIELDS,
                          "resource_accounting")
@@ -1342,11 +1391,7 @@ def build_artifact(*, epoch: int, parent_manifest: Mapping[str, Any],
             "candidate_declaration_id": body["candidate"]["declaration_id"],
             "candidate_exec": body["candidate"]["exec"],
             "candidate_manifest_hash": body["candidate"]["manifest_hash"],
-            "incumbent": {
-                "candidate_hash": inc.get("candidate_hash") or NO_CHAMPION,
-                "exec": inc["exec"],
-                "id": inc["id"],
-            },
+            "incumbent": project_incumbent(inc),
             "parent_manifest": dict(parent_manifest),
         },
         "resource_accounting": dict(ppm, branch=branch),
@@ -1743,11 +1788,7 @@ def verify_artifact(artifact: Mapping[str, Any], *, expected_parent_root: str,
     _require(body["candidate"]["exec"] == artifact["replay_inputs"]["candidate_exec"],
              ReceiptBindingError, "receipt candidate exec != replay_inputs.candidate_exec")
     inc_bound = artifact["replay_inputs"]["incumbent"]
-    _require((body["incumbent"].get("candidate_hash") or NO_CHAMPION)
-             == inc_bound["candidate_hash"], ReceiptBindingError,
-             "receipt incumbent candidate_hash != replay_inputs.incumbent.candidate_hash")
-    _require(body["incumbent"]["id"] == inc_bound["id"]
-             and body["incumbent"]["exec"] == inc_bound["exec"], ReceiptBindingError,
+    _require(project_incumbent(body["incumbent"]) == inc_bound, ReceiptBindingError,
              "receipt incumbent identity != replay_inputs.incumbent")
     _require(body["profile_id"] == cand["target_profile"], ReceiptBindingError,
              f"receipt profile {body['profile_id']!r} != the target profile "

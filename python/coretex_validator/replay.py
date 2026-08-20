@@ -109,6 +109,7 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 from . import authority_law as al
 from . import eval_artifact as ea
 from . import frontier as fr
+from . import parent_execution as parent_exec
 from . import publication as pub
 
 from . import backlog as bl
@@ -553,7 +554,8 @@ class CandidateSandbox:
         return False
 
     def execute(self, *, receipt_wrapper: Mapping[str, Any],
-                artifact: Mapping[str, Any]) -> Dict[str, Any]:
+                artifact: Mapping[str, Any],
+                incumbent_execution: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
         raise SandboxUnavailable(f"{self.name}: no sandbox implementation")
 
 
@@ -570,7 +572,8 @@ class NullSandbox(CandidateSandbox):
         "executed and its utility/safety/rendered-cost/fuel/storage are UNVERIFIED")
 
     def execute(self, *, receipt_wrapper: Mapping[str, Any],
-                artifact: Mapping[str, Any]) -> Dict[str, Any]:
+                artifact: Mapping[str, Any],
+                incumbent_execution: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
         raise SandboxUnavailable(self.unavailable_reason)
 
 
@@ -692,6 +695,29 @@ def _run():
 
     ch = body["candidate"]["candidate_hash"]
     round_rec = _minimal_round_rec(body)
+    compact_incumbent = (
+        body["incumbent"]
+        if bench_receipt.is_exact_incumbent_execution(body.get("incumbent"))
+        else None)
+    incumbent_execution = payload.get("incumbent_execution")
+    if compact_incumbent is not None:
+        if incumbent_execution is None:
+            return _res(False, "incumbent_execution_required", "evaluate",
+                        "exact-parent replay requires the resolved full incumbent execution")
+        try:
+            incumbent_execution = bench_receipt.validate_full_incumbent_execution(
+                body["profile_id"], incumbent_execution)
+            projected = bench_receipt.project_incumbent_execution(
+                body["profile_id"], incumbent_execution)
+        except bench_receipt.ReceiptError as exc:
+            return _res(False, "incumbent_execution_invalid", "evaluate", str(exc))
+        if projected != compact_incumbent:
+            return _res(False, "incumbent_execution_mismatch", "evaluate",
+                        "resolved parent execution differs from the report-bound identity")
+        round_rec["parent_release_root"] = compact_incumbent["release_root"]
+    elif incumbent_execution is not None:
+        return _res(False, "incumbent_execution_unexpected", "evaluate",
+                    "a historical report does not accept an exact-parent descriptor")
     try:
         re_sel = bench_select.select_for_candidate(round_rec, ch, burned)
     except bench_select.SelectionError as exc:
@@ -710,12 +736,18 @@ def _run():
         ev = bench_evaluate.evaluate_candidate(
             round_rec, ch, re_sel, work, pool=bench_evaluate.POOL_MAX,
             bench_v2_dir={bench!r}, portability=body.get("portability"),
-            runtime_config=body.get("runtime_config"))
-        recomputed_incumbent = bench_receipt.expected_incumbent_block(body["profile_id"])
+            runtime_config=body.get("runtime_config"),
+            incumbent_execution=incumbent_execution,
+            pre_exact_report=(body if incumbent_execution is None else None))
+        recomputed_incumbent = (
+            bench_receipt.expected_incumbent_block(body["profile_id"])
+            if incumbent_execution is None else None)
         rebuilt = bench_receipt.build_receipt_body(
             round_rec=round_rec, round_hash=body["round_hash"], candidate_hash=ch,
             incumbent=recomputed_incumbent, selection=re_sel, case_hashes=ev["case_hashes"],
-            evaluation=ev, roots=roots, burned_head=body["burned_head"])
+            evaluation=ev, roots=roots, burned_head=body["burned_head"],
+            incumbent_execution=incumbent_execution,
+            pre_exact_report=(body if incumbent_execution is None else None))
     except Exception as exc:
         return _res(False, "reexecution_failed", "evaluate",
                     type(exc).__name__ + ": " + str(exc))
@@ -799,7 +831,8 @@ class BenchmarkV2Sandbox(CandidateSandbox):
                 f"execution, so without it the candidate would run unconfined)")
 
     def execute(self, *, receipt_wrapper: Mapping[str, Any],
-                artifact: Mapping[str, Any]) -> Dict[str, Any]:
+                artifact: Mapping[str, Any],
+                incumbent_execution: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
         if not self.available():
             raise SandboxUnavailable(self.unavailable_reason)
         # The interface name is retained for historical test doubles. Under v2 the value is the
@@ -817,6 +850,7 @@ class BenchmarkV2Sandbox(CandidateSandbox):
             child_payload = {
                 "eval_report": receipt_wrapper,
                 "bound_eval_report_root": bound_root,
+                "incumbent_execution": incumbent_execution,
             }
         else:
             src = _SANDBOX_CHILD.format(
@@ -1273,6 +1307,54 @@ def replay_advance(event: dp.FrontierAdvanced, *, store: pub.ContentStore,
         return _fail("counter_resource_law", "counter_law_corrupt", str(exc), checks=checks,
                      new_manifest=new_manifest, **ident)
 
+    # Resolve exact-parent reports from public CAS bytes. The coordinator's worker objects are
+    # transport only; replay independently follows frontier -> composition -> release -> module.
+    eval_report = receipt_or_report["receipt"] if signed_era else receipt_or_report
+    reported_incumbent = eval_report.get("incumbent")
+    exact_parent_report = (
+        isinstance(reported_incumbent, abc.Mapping)
+        and frozenset(reported_incumbent) == frozenset(ea.INCUMBENT_EXACT_FIELDS))
+    resolved_parent_execution = None
+    if exact_parent_report:
+        try:
+            resolved_parent_execution = parent_exec.fetch_parent_execution(
+                store=store, parent_manifest=parent_manifest,
+                target_profile=target_profile)
+        except pub.ObjectNotFoundError as exc:
+            return _backlog(
+                "parent_execution",
+                bl.missing_artifact(
+                    f"exact parent release/composition/module bytes are not published: {exc}",
+                    event=event, subject=parent_manifest["profiles"][target_profile],
+                    observed_at=observed_at),
+                checks=checks, new_manifest=new_manifest, **ident)
+        except (pub.PublicationError, parent_exec.ParentExecutionError,
+                fr.FrontierError, RuntimeError, ValueError) as exc:
+            return _fail("parent_execution", "parent_execution_invalid", str(exc),
+                         checks=checks, new_manifest=new_manifest, **ident)
+        try:
+            resolved_identity = parent_exec.compact_identity(resolved_parent_execution)
+        except parent_exec.ParentExecutionError as exc:
+            return _fail("parent_execution", "parent_execution_invalid", str(exc),
+                         checks=checks, new_manifest=new_manifest, **ident)
+        if dict(reported_incumbent) != resolved_identity:
+            return _fail(
+                "parent_execution", "parent_execution_mismatch",
+                "the evaluation report incumbent is not the parent release independently "
+                "resolved from confirmed public bytes", checks=checks,
+                new_manifest=new_manifest, **ident)
+        try:
+            projected_parent = ea.project_incumbent(resolved_identity)
+        except (ea.EvalArtifactError, fr.FrontierError) as exc:
+            return _fail("parent_execution", "parent_execution_invalid", str(exc),
+                         checks=checks, new_manifest=new_manifest, **ident)
+        if artifact["replay_inputs"]["incumbent"] != projected_parent:
+            return _fail(
+                "parent_execution", "parent_execution_projection_mismatch",
+                "the artifact incumbent does not bind the publicly resolved parent release "
+                "and module roots", checks=checks, new_manifest=new_manifest, **ident)
+        done("parent_execution")
+
     # ---- 7. EVERY binding, against values the CHAIN asserts ----------------------------------
     try:
         verification_evidence = ({"receipt_wrapper": receipt_or_report,
@@ -1390,7 +1472,9 @@ def replay_advance(event: dp.FrontierAdvanced, *, store: pub.ContentStore,
                 f"sandbox {getattr(runner, 'name', type(runner).__name__)!r}: "
                 + getattr(runner, "unavailable_reason",
                           "reports itself unavailable on this host"))
-        execution = runner.execute(receipt_wrapper=receipt_or_report, artifact=artifact)
+        execution = runner.execute(
+            receipt_wrapper=receipt_or_report, artifact=artifact,
+            incumbent_execution=resolved_parent_execution)
     except SandboxDependencyError as exc:
         # A DETERMINATION, not a backlog: the environment is wrong and the reader can fix it.
         return _fail("sandbox", "missing_dependency", str(exc), checks=checks,
@@ -1489,7 +1573,9 @@ def replay_advance(event: dp.FrontierAdvanced, *, store: pub.ContentStore,
     done("recompute")
 
     # ---- 12. did it beat the EXACT parent incumbent, under the frozen law? -------------------
-    beat = _beat_incumbent(artifact, parent_manifest, target_profile, ppm, deterministic)
+    beat = _beat_incumbent(
+        artifact, parent_manifest, target_profile, ppm, deterministic,
+        store=store, resolved_parent_execution=resolved_parent_execution)
     if beat.get("code"):
         return _fail("incumbent_law", beat["code"], beat["reason"], checks=checks,
                      new_manifest=new_manifest, **ident)
@@ -1616,7 +1702,10 @@ def _safety_report(body: Mapping[str, Any], branch: str) -> Dict[str, Any]:
 
 def _beat_incumbent(artifact: Mapping[str, Any], parent_manifest: Mapping[str, Any],
                     target_profile: str, ppm: Mapping[str, int],
-                    deterministic: Mapping[str, Any]) -> Dict[str, Any]:
+                    deterministic: Mapping[str, Any], *,
+                    store: Optional[pub.ContentStore] = None,
+                    resolved_parent_execution: Optional[Mapping[str, Any]] = None) \
+        -> Dict[str, Any]:
     """Confirm the candidate beat THE EXACT PARENT INCUMBENT under the frozen law.
 
     "Exact" is load-bearing: the incumbent is the release the PARENT frontier serves for the
@@ -1644,6 +1733,74 @@ def _beat_incumbent(artifact: Mapping[str, Any], parent_manifest: Mapping[str, A
                 "reason": f"the candidate was evaluated against prior release "
                           f"{artifact['candidate']['prior_release_root']} but the parent frontier "
                           f"serves {prior} for {target_profile!r}"}
+    incumbent = artifact["replay_inputs"]["incumbent"]
+    is_initial_reference = (
+        parent_exec.PRODUCTION_REFERENCE_RELEASE_ROOTS.get(target_profile) == prior)
+    incumbent_fields = frozenset(incumbent)
+    historical_fields = frozenset(ea.INCUMBENT_FIELDS)
+    exact_fields = frozenset(ea.INCUMBENT_EXACT_FIELDS)
+    receipt_roots = (artifact.get("receipt") or {}).get("code_roots")
+    legacy_reference_allowed = (
+        artifact.get("format") == ea.ARTIFACT_FORMAT_V1_SIGNED_ERA
+        or parent_exec.is_pre_exact_parent_code_roots(receipt_roots))
+    resolved = None
+    if incumbent_fields == exact_fields:
+        if store is not None:
+            try:
+                resolved = parent_exec.fetch_parent_execution(
+                    store=store, parent_manifest=parent_manifest,
+                    target_profile=target_profile)
+            except Exception as exc:
+                return {"code": "parent_execution_invalid",
+                        "reason": "the exact parent module bytes could not be resolved and "
+                                  f"re-hashed: {type(exc).__name__}: {exc}"}
+        elif isinstance(resolved_parent_execution, abc.Mapping):
+            resolved = dict(resolved_parent_execution)
+        if resolved is None:
+            return {"code": "parent_execution_unverified",
+                    "reason": "the exact incumbent was not resolved from its parent "
+                              "composition, release, and module bytes"}
+        if resolved.get("exec") != incumbent.get("exec") \
+                or resolved.get("release_root") != prior:
+            return {"code": "wrong_incumbent_execution",
+                    "reason": "the resolved parent release is not the exact execution claimed "
+                              "by the evaluation"}
+        try:
+            projected = ea.project_incumbent(parent_exec.compact_identity(resolved))
+        except (ea.EvalArtifactError, parent_exec.ParentExecutionError,
+                fr.FrontierError) as exc:
+            return {"code": "parent_execution_invalid", "reason": str(exc)}
+        if incumbent != projected:
+            return {"code": "wrong_incumbent_execution",
+                    "reason": "the artifact incumbent does not bind the parent composition "
+                              "delegation, release root, and module bytes"}
+    elif incumbent_fields != historical_fields:
+        return {"code": "wrong_incumbent_execution",
+                "reason": "the incumbent identity is neither the historical reference shape "
+                          "nor the exact release/module shape"}
+    elif not legacy_reference_allowed:
+        return {"code": "wrong_incumbent_execution",
+                "reason": "admission under this law requires the exact five-field parent "
+                          "release/module identity; three fields are closed to frozen pre-cut "
+                          "artifacts"}
+    if incumbent.get("exec") == "reference":
+        if not is_initial_reference:
+            return {"code": "wrong_incumbent_execution",
+                    "reason": f"the report executed reference for parent release {prior}, but "
+                              f"that is not the initial production release for "
+                              f"{target_profile!r}"}
+        if incumbent.get("id") != "reference-runtime" \
+                or incumbent.get("candidate_hash") != fr.ZERO_ROOT:
+            return {"code": "wrong_incumbent_execution",
+                    "reason": "the initial reference incumbent carries a non-reference identity"}
+    elif incumbent.get("exec") == "candidate_module":
+        if incumbent_fields != exact_fields:
+            return {"code": "wrong_incumbent_execution",
+                    "reason": "candidate-module execution requires the exact release and "
+                              "module identity"}
+    else:
+        return {"code": "wrong_incumbent_execution",
+                "reason": f"unsupported incumbent execution {incumbent.get('exec')!r}"}
     if not deterministic["admit"]:
         return {"code": "not_admitted",
                 "reason": f"the deterministic Benchmark-v2 decision is "

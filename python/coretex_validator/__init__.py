@@ -37,6 +37,7 @@ __all__ = [
     "join",
     "keccak256",
     "law",
+    "parent_execution",
     "publication",
     "receipt_chain",
     "release",
@@ -59,4 +60,8 @@ __all__ = [
 #:
 #: 0.4.1 adds ``coretex-validator setup`` (verify the live deployment, cache kit packages, read
 #: the chain head). Verification semantics are unchanged from 0.4.0.
-__version__ = "0.4.1"
+#:
+#: 0.4.2 binds an exact five-field incumbent identity to the confirmed parent's composition,
+#: release and module bytes. The historical three-field shape remains replayable only for the
+#: exact frozen pre-cut code-root set embedded in the wheel.
+__version__ = "0.4.2"
