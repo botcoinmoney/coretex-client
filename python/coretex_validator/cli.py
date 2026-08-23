@@ -9,6 +9,9 @@
     coretex-validator sync-law --mirror URL               fetch + VERIFY the admission law
     coretex-validator replay-advance --logs F --artifacts DIR   one confirmed advance, replayed
     coretex-validator verify-receipt RECEIPT.json         Benchmark-v2 receipt replay
+    coretex-validator preview-current-parent MODULE.py    OPTIONAL miner aid: score a candidate
+        --manifest M.json --profile P --parent-root ROOT  against the CURRENT confirmed parent on
+                                                          PUBLIC dev cases (never an admission)
     coretex-validator topics                              the dispatch table, V4 and rig
     coretex-validator selftest                            keccak/ecrecover/canonical-JSON vectors
 
@@ -315,6 +318,68 @@ def _cmd_verify_receipt(args: argparse.Namespace) -> int:
     return 0 if result["reproduced"] else 1
 
 
+def _cmd_preview_current_parent(args: argparse.Namespace) -> int:
+    """Score a candidate against the CURRENT confirmed parent, on public dev cases only.
+
+    WHY THE EXIT CODES LOOK LIKE THIS. Losing to the live parent is the single most useful thing
+    this command can tell a miner, so it is exit 0 — the same as winning. Non-zero means the
+    comparison could not be made: no pinned law trees (2), an unverifiable parent chain (2), a
+    scorer that could not run (2). A miner's CI must never learn to read "exit 1" as "you lost",
+    because then a genuine operational failure would read as a verdict.
+    """
+    law_block = _activate_law(args)                            # BEFORE the imports below
+    from . import law as law_mod
+    from . import pipeline
+    from . import preview as pv
+
+    def _fail(payload: Dict[str, Any]) -> int:
+        payload["law"] = law_block
+        _emit(payload, pretty=not args.compact)
+        return 2
+
+    # The trees come from THE CACHE THIS RUN ACTIVATED, or from an explicit --repo-root. They are
+    # deliberately NOT read out of the ambient environment: inherited pins are host state, and a
+    # preview scored against whatever happened to be exported in this shell is exactly the
+    # unpinned number this command must never produce. `--no-law-cache` therefore refuses here.
+    pins = (law_block or {}).get("env") or {}
+    if args.repo_root:
+        bench_dir = os.path.join(args.repo_root, "benchmark-v2")
+        coretex_dir = os.path.join(args.repo_root, "coretex-memory")
+        repo_root = args.repo_root
+    else:
+        bench_dir = pins.get(law_mod.ENV_BENCHMARK_V2, "")
+        coretex_dir = pins.get(law_mod.ENV_MEMORY_RUNTIME, "")
+        repo_root = pins.get(law_mod.ENV_REPO_ROOT, "")
+    if not (bench_dir and coretex_dir):
+        return _fail(pv.PreviewError(
+            "no pinned law trees are active, so there is nothing to score inside. A preview "
+            "produced by an unpinned local runtime would be a number the adjudicator never "
+            "computes, which is worse than no number at all",
+            code="LAW_TREES_UNAVAILABLE",
+            remedy=("run `coretex-validator sync-law --mirror URL` (and drop --no-law-cache), or "
+                    "pass --repo-root DIR for a host that already holds benchmark-v2 and "
+                    "coretex-memory")).as_dict())
+
+    try:
+        store = pipeline.open_store(artifact_dir=args.artifact_dir,
+                                    base_url=args.artifact_base_url)
+        with open(os.path.expanduser(args.module), "r", encoding="utf-8") as fh:
+            module_source = fh.read()
+        manifest = _load_json(args.manifest)
+        report = pv.preview_current_parent(
+            child=pv.LawTreeChild(bench_v2_dir=bench_dir, coretex_dir=coretex_dir,
+                                  repo_root=repo_root),
+            store=store, parent_root=args.parent_root, target_profile=args.profile,
+            module_source=module_source, candidate_manifest=manifest, scale=args.scale,
+            portability_breadth=args.portability)
+    except pv.PreviewError as exc:
+        return _fail(exc.as_dict())
+
+    report["law"] = law_block
+    _emit(report, pretty=not args.compact)
+    return 0                                                   # win or lose, this ran
+
+
 def _cmd_topics(args: argparse.Namespace) -> int:
     from . import rig_events as rig
 
@@ -397,6 +462,9 @@ def _add_law_arguments(parser: argparse.ArgumentParser) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     from .law import DEFAULT_PUBLICATION_ROOT, MAX_OBJECT_BYTES
+    # Safe to import here even though `build_parser` runs BEFORE `_activate_law`: unlike
+    # `replay`, this module reads no law pins at import time.
+    from .preview import DEFAULT_SCALE as pv_default_scale
     from .release import DEFAULT_PRODUCTION_RELEASE_URL
     from .setup import DEFAULT_COORDINATOR, DEFAULT_RPC
     parser = argparse.ArgumentParser(
@@ -493,6 +561,35 @@ def build_parser() -> argparse.ArgumentParser:
                          help="exit 1 when the receipt could not be replayed at all")
     _add_law_arguments(receipt)
     receipt.set_defaults(func=_cmd_verify_receipt)
+
+    parent_preview = sub.add_parser(
+        "preview-current-parent",
+        help="OPTIONAL: score a candidate against the CURRENT confirmed parent on PUBLIC dev "
+             "cases (a preview, never an admission prediction)")
+    parent_preview.add_argument("module", help="path to your submission module")
+    parent_preview.add_argument("--manifest", required=True,
+                                help="your candidate manifest JSON — the candidate arm is scored "
+                                     "with ITS capabilities and max_compute_ms, and the parent "
+                                     "arm with the parent release manifest's")
+    parent_preview.add_argument("--profile", required=True, help="target profile id")
+    parent_preview.add_argument("--parent-root", required=True,
+                                help="the CONFIRMED frontier root to preview against; every "
+                                     "object it names is re-hashed before it is used")
+    parent_preview.add_argument("--artifact-dir", default=None,
+                                help="local content-addressed artifact directory")
+    parent_preview.add_argument("--artifact-base-url", default=None,
+                                help="http(s) CAS serving the parent's objects by root")
+    parent_preview.add_argument("--scale", default=pv_default_scale,
+                                help="dev scale; refused unless the pinned kit publishes it")
+    parent_preview.add_argument("--portability", nargs="?", const="full", default=None,
+                                help="EXECUTE the portability support matrix locally at this "
+                                     "breadth (full|x86|host). Omitted: the prerequisite is "
+                                     "reported as not established rather than assumed")
+    parent_preview.add_argument("--repo-root", default=None,
+                                help="use these trees instead of the law cache — the directory "
+                                     "that CONTAINS benchmark-v2 and coretex-memory")
+    _add_law_arguments(parent_preview)
+    parent_preview.set_defaults(func=_cmd_preview_current_parent)
 
     setup = sub.add_parser(
         "setup",
