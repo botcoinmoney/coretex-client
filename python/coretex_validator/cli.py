@@ -127,7 +127,7 @@ def _cmd_setup(args: argparse.Namespace) -> int:
     payload = su.run(
         rpc_url=args.rpc, coordinator=args.coordinator, release=args.release,
         confirmation_depth=args.confirmation_depth, packages_dir=args.packages_dir,
-        skip_packages=args.skip_packages)
+        skip_packages=args.skip_packages, skip_law=args.skip_law, law_cache=args.law_cache)
     _emit(payload, pretty=not args.compact)
     return 0 if payload["ok"] else 1
 
@@ -625,6 +625,12 @@ def build_parser() -> argparse.ArgumentParser:
                             "~/.local/share/coretex/packages)")
     setup.add_argument("--skip-packages", action="store_true",
                        help="verify + read chain only; do not fetch the miner-kit tar")
+    setup.add_argument("--skip-law", action="store_true",
+                       help="do not discover or install the published admission law. "
+                            "Deterministic admission then BACKLOGs until `sync-law` is run by "
+                            "hand, exactly as it did before setup did this")
+    setup.add_argument("--law-cache", default=None,
+                       help="where to materialize the law (default: ~/.local/share/coretex/law)")
     setup.set_defaults(func=_cmd_setup)
 
     verify = sub.add_parser("verify-release", help="steps 1-2 only")

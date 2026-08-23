@@ -66,6 +66,40 @@ def test_kit_package_files_take_the_miner_kit_not_the_validator_wheel():
     assert all(item["sha256"] != "aa" * 32 for item in files)
 
 
+def test_package_selection_ignores_the_law_publication_component():
+    """The law's files are addressed by ROOT and are installed by the law sync, not unpacked as
+    packages. A root-named tar landing in the packages directory would be extracted blind."""
+    manifest = {
+        "kit": {
+            "components": [
+                {
+                    "id": "law_publication",
+                    "note": "admission law publication root " + "1" * 64,
+                    "files": [
+                        {"path": "v5/law-publication/LAW-PUBLICATION.json",
+                         "sha256": "11" * 32,
+                         "download": "/coretex/v5/kit/file/" + "11" * 32},
+                        {"path": "v5/law-publication/" + "2" * 64, "sha256": "22" * 32,
+                         "download": "/coretex/v5/kit/file/" + "22" * 32},
+                    ],
+                },
+                {
+                    "id": "frozen_runtime_packet",
+                    "files": [
+                        {"path": "v5/runtime-packets/root/coretex-validator-miner-kit-bb.tar",
+                         "sha256": "bb" * 32,
+                         "download": "/coretex/v5/kit/file/" + "bb" * 32},
+                    ],
+                },
+            ]
+        }
+    }
+    assert [item["name"] for item in su.kit_package_files(manifest)] == [
+        "coretex-validator-miner-kit-bb.tar"]
+    component = su.law_publication_component(manifest)
+    assert component is not None and su.law_publication_root(component) == "1" * 64
+
+
 def test_extract_is_idempotent(tmp_path):
     archive = tmp_path / "coretex-validator-miner-kit-test.tar"
     with tarfile.open(archive, "w") as tar:
