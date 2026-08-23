@@ -1,13 +1,18 @@
 # SPDX-License-Identifier: Apache-2.0
 """``coretex-validator`` — the command an external agent actually runs.
 
-    coretex-validator setup                               install-time: verify, kit packages, chain head
+    coretex-validator setup                               install-time: verify, kit packages,
+                                                          chain head, AND the admission law
     coretex-validator reproduce --rpc URL                 production, steps 1-8
     coretex-validator reproduce --release R --rpc URL     explicit historical release
     coretex-validator verify-release --release R --rpc URL   steps 1-2 only
     coretex-validator reproduce-snapshot --snapshot F --rpc URL --artifacts DIR
-    coretex-validator sync-law --mirror URL               fetch + VERIFY the admission law
-    coretex-validator replay-advance --logs F --artifacts DIR   one confirmed advance, replayed
+    coretex-validator sync-law --mirror URL --root ROOT   fetch + VERIFY a NAMED publication
+                                                          (no default: `setup` discovers the live
+                                                          root from the coordinator kit)
+    coretex-validator replay-latest --rpc URL --artifacts DIR    the NEWEST confirmed advance,
+                                                          discovered from the chain and replayed
+    coretex-validator replay-advance --logs F --artifacts DIR   confirmed advances from a feed file
     coretex-validator verify-receipt RECEIPT.json         Benchmark-v2 receipt replay
     coretex-validator preview-current-parent MODULE.py    OPTIONAL miner aid: score a candidate
         --manifest M.json --profile P --parent-root ROOT  against the CURRENT confirmed parent on
@@ -28,11 +33,17 @@ silently becomes "X is broken".
 
 THE LAW CACHE, AND WHY IT IS APPLIED BEFORE ANY IMPORT
 =====================================================
-``sync-law`` fetches the six published admission trees by publication root, verifies every one
-against the same tree-hash rule the signed receipt's ``code_roots`` binds, and materializes them
-under ``~/.local/share/coretex/law/<root>/``. ``reproduce``, ``replay-advance`` and
+The six published admission trees are fetched by publication root, every one verified against the
+same tree-hash rule the signed receipt's ``code_roots`` binds, and materialized under
+``~/.local/share/coretex/law/<root>/``. ``reproduce``, ``replay-latest``, ``replay-advance`` and
 ``verify-receipt`` then pick that cache up automatically — which is what removes step 5's BACKLOG
 on a clean machine.
+
+``setup`` does this for you, and the root is DISCOVERED rather than defaulted: the coordinator
+kit's ``law_publication`` component names which publication its chain head binds. ``sync-law``
+remains for naming a publication explicitly, and it has no default root — verifying a set proves
+it hashes to the root you asked for, never that the root is the live one, so a default would
+choose the law silently.
 
 The pins are applied by :func:`_activate_law` BEFORE the module that reads them is imported, and
 that ordering is load-bearing rather than tidy: ``replay.py`` reads the three env vars at IMPORT
@@ -287,6 +298,115 @@ def _cmd_replay_advance(args: argparse.Namespace) -> int:
         sys.stderr.write(
             "--require-complete: nothing was contradicted, but these advances could not be "
             "checked:\n" + "".join(f"  - {r.stage}: {r.reason}\n" for r in unresolved))
+        return 1
+    return 0
+
+
+def _cmd_replay_latest(args: argparse.Namespace) -> int:
+    """Replay the NEWEST confirmed advance, discovering everything it needs.
+
+    WHY THIS IS A SEPARATE COMMAND rather than ``replay-advance --latest``. Every subcommand here
+    has exactly one input mode, and these two read from different worlds: ``replay-advance`` takes
+    a FEED FILE and replays what is in it, offline and without a chain; this takes a CHAIN and a
+    release, like ``reproduce``. Folding them together would make ``--logs`` conditionally
+    required and bolt ``--rpc``/``--release`` onto a command whose value is needing neither.
+    ``--logs`` is accepted here too — as an offline source for the same discovery — but the
+    default source is the chain.
+
+    NEWEST IS (epoch, transitionIndex), NOT BLOCK ORDER. ``transitionIndex`` restarts at 0 every
+    epoch, so the last log in a block-ordered feed is routinely not the head advance.
+    ``sync.order_events`` already sorts by the chain's order; the newest is its last element, and
+    that is the only place this command decides anything.
+    """
+    law_block = _activate_law(args)                            # BEFORE the imports below
+    from . import backlog as bl
+    from . import pipeline
+    from . import release as rel
+    from . import replay as rp
+    from . import sync as sy
+
+    release = rel.discover(args.release)
+    chain: Dict[str, Any] = {"source": "logs-file" if args.logs else "rpc",
+                             "release": release.classification}
+    if args.logs:
+        logs = _load_logs(args.logs)
+        latest_block = args.latest_block
+    else:
+        if not args.rpc:
+            sys.stderr.write(
+                "coretex-validator replay-latest: --rpc is required unless --logs names a feed "
+                "file.\n  The newest advance is discovered from the chain; with neither there is "
+                "nothing to discover it from.\n")
+            return 2
+        from .rpc import JsonRpc
+
+        rpc = JsonRpc(args.rpc)
+        rpc.assert_chain(release.chain_id)
+        latest_block = rpc.block_number()
+        head = sy.confirmed_head(latest_block, args.confirmation_depth)
+        from_block = int(args.from_block if args.from_block is not None else release.deploy_block)
+        logs = rpc.get_logs(addresses=list(release.deployment.addresses), topics=[],
+                            from_block=from_block, to_block=head)
+        chain.update({"rpc": args.rpc, "latest_block": latest_block, "confirmed_head": head,
+                      "scanned_blocks": [from_block, head]})
+
+    genesis = args.genesis_root or release.raw.get("genesis_state_root")
+    synced = sy.sync_logs(logs, latest_block=latest_block,
+                          confirmation_depth=args.confirmation_depth,
+                          genesis_frontier_root=str(genesis).replace("0x", "") if genesis else None)
+    # THE ONE DECISION: the chain's order, last element. Never the feed's order.
+    newest = synced.events[-1] if synced.events else None
+
+    try:
+        store = pipeline.open_store(artifact_dir=args.artifacts,
+                                    base_url=args.artifact_base_url or release.artifact_base_url)
+    except pipeline.PipelineError as exc:
+        sys.stderr.write(f"coretex-validator replay-latest: {exc.message}\n")
+        return 2
+
+    payload: Dict[str, Any] = {
+        "law": law_block, "chain": chain, "feed": synced.summary(),
+        "artifacts": {"source": args.artifacts or args.artifact_base_url
+                      or release.artifact_base_url},
+        "selected": None if newest is None else {
+            "epoch": newest.epoch, "transition_index": newest.transition_index,
+            "miner": newest.miner, "parent_frontier_root": newest.parent_frontier_root,
+            "new_frontier_root": newest.new_frontier_root,
+            "eval_report_hash": newest.eval_report_hash,
+            "block_number": newest.provenance.block_number,
+            "transaction_hash": newest.provenance.transaction_hash},
+    }
+    if newest is None:
+        payload["note"] = ("the feed carries no confirmed advance; nothing was replayed and "
+                           "nothing is claimed")
+        payload["outcomes"] = {"PASS": 0, "FAIL": 0, "BACKLOG": 0}
+        _emit(payload, pretty=not args.compact)
+        return 2
+
+    screen = rp.default_oracle_screen()
+    sandbox = rp.default_sandbox()
+    result = rp.replay_advance(
+        newest, store=store, pins=synced.pin_resolver(), screen=screen, sandbox=sandbox,
+        credit_event=synced.credit_for(newest),
+        burned=_load_json(args.burned) if args.burned else None,
+        live_root=args.live_root, allow_test_doubles=args.allow_test_doubles)
+    payload.update({
+        "screen": {"name": getattr(screen, "name", type(screen).__name__),
+                   "available": bool(screen.available())},
+        "sandbox": {"name": getattr(sandbox, "name", type(sandbox).__name__),
+                    "available": bool(sandbox.available())},
+        "replayed": result.as_dict(),
+        "outcomes": {name: (1 if str(result.outcome) == name else 0)
+                     for name in ("PASS", "FAIL", "BACKLOG")},
+    })
+    _emit(payload, pretty=not args.compact)
+
+    if result.outcome == bl.FAIL:
+        return 1
+    if args.require_complete and result.outcome == bl.BACKLOG:
+        sys.stderr.write(
+            "--require-complete: nothing was contradicted, but the newest advance could not be "
+            f"checked:\n  - {result.stage}: {result.reason}\n")
         return 1
     return 0
 
@@ -567,6 +687,41 @@ def build_parser() -> argparse.ArgumentParser:
                               "on the command line on purpose")
     _add_law_arguments(advance)
     advance.set_defaults(func=_cmd_replay_advance)
+
+    latest = sub.add_parser(
+        "replay-latest",
+        help="discover and replay the NEWEST confirmed advance (one command, from the chain)")
+    latest.add_argument("--rpc", default=None,
+                        help="JSON-RPC endpoint. Required unless --logs supplies the feed")
+    latest.add_argument("--release", default=DEFAULT_PRODUCTION_RELEASE_URL,
+                        help="path or url of the release artifact (default: signed canonical "
+                             "Base production release)")
+    latest.add_argument("--logs", default=None,
+                        help="replay from this feed file instead of the chain (a JSON list, or "
+                             "{\"logs\": [...]}) — the same discovery, offline")
+    latest.add_argument("--artifacts", default=None,
+                        help="directory of content-addressed objects the advance points at")
+    latest.add_argument("--artifact-base-url", default=None,
+                        help="http(s) CAS serving the advance's objects by root (default: the "
+                             "release's artifact_base_url, when it publishes one)")
+    latest.add_argument("--from-block", type=int, default=None,
+                        help="start of the log scan (default: the release's deploy block)")
+    latest.add_argument("--latest-block", type=int, default=None,
+                        help="chain head for a --logs feed; without it the feed is taken as "
+                             "already confirmed by the caller's own policy")
+    latest.add_argument("--confirmation-depth", type=int, default=15)
+    latest.add_argument("--genesis-root", default=None,
+                        help="deployment genesis frontier root (default: the release's)")
+    latest.add_argument("--live-root", default=None,
+                        help="the confirmed live root the advance must build on")
+    latest.add_argument("--burned", default=None, help="JSON list of burned instance ids")
+    latest.add_argument("--require-complete", action="store_true",
+                        help="exit 1 when the newest advance BACKLOGs")
+    latest.add_argument("--allow-test-doubles", action="store_true",
+                        help="let a declared non-consensus-grade screen/sandbox count. Visible "
+                             "on the command line on purpose")
+    _add_law_arguments(latest)
+    latest.set_defaults(func=_cmd_replay_latest)
 
     receipt = sub.add_parser(
         "verify-receipt", help="replay a signed Benchmark-v2 receipt through the law cache")

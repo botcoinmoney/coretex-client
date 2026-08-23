@@ -27,12 +27,13 @@ explicit historical artifact.
 
 | command | what it does |
 |---------|--------------|
-| `setup` | verify deployment, cache kit packages, read chain head |
+| `setup` | verify deployment, cache kit packages, read chain head, **install the admission law** |
 | `verify-release --rpc URL` | authenticate the release and read bytecode/wiring |
-| `sync-law --mirror URL --root ROOT` | fetch + verify admission trees (name a live root) |
+| `sync-law --mirror URL --root ROOT` | fetch + verify a **named** publication (no default root) |
 | `reproduce --rpc URL` | the eight steps against a live endpoint |
 | `reproduce-snapshot --snapshot F --rpc URL --artifacts DIR` | rebuild a published resolver snapshot |
-| `replay-advance --logs F --artifacts DIR` | replay confirmed frontier advances |
+| `replay-latest --rpc URL --artifacts DIR` | discover and replay the **newest** confirmed advance |
+| `replay-advance --logs F --artifacts DIR` | replay confirmed advances from a feed file |
 | `verify-receipt RECEIPT.json` | replay a signed Benchmark-v2 receipt |
 | `topics` | the dispatch table |
 | `selftest` | known-answer vectors |
