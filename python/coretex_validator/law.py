@@ -100,11 +100,18 @@ REQUIRED_TREES: Tuple[str, ...] = (
     "coretex-memory/coretex_memory",
 )
 
-#: The publication root recorded for the epoch-180 admission closure (finding F4). A default, not a
-#: hard-coded trust anchor: any root may be named on the command line, and whatever is named is
-#: verified from the bytes. It is here so the common case is one flag instead of two.
-DEFAULT_PUBLICATION_ROOT = \
-    "d90f469cf8f737e100f8cd13f06c56559e315c04f974d4e3c987c40a7c4f7399"
+#: THERE IS NO DEFAULT PUBLICATION ROOT, deliberately.
+#:
+#: One used to live here — the 2026-08-04 REHEARSAL closure — on the reasoning that a default is
+#: not a trust anchor because whatever is named is verified from the bytes. That reasoning was
+#: wrong by one step: verification proves the trees hash to the root that was asked for, and says
+#: nothing about whether that root is the one the CHAIN HEAD binds. So the default silently
+#: installed rehearsal law on live hosts, every later command picked it up, and the run reported
+#: a verified cache the whole time.
+#:
+#: The publication a validator wants is a property of the deployment it is verifying, so it is
+#: DISCOVERED (``setup`` reads it from the coordinator kit) or named explicitly. Absence is the
+#: only behaviour: the root is a required argument, here and on the command line.
 
 #: Bounded downloads, in the style of the rest of this package. The largest object the publication
 #: lane has ever addressed is a 614 KiB tar; these ceilings are orders of magnitude above that and
@@ -263,10 +270,15 @@ def manifest_matches(data: bytes, publication_root: str) -> Optional[str]:
 # --------------------------------------------------------------------------- #
 #: How a mirror lays its objects out. Discovered once, from where the MANIFEST verifies, and then
 #: fixed for every object — so a set cannot be assembled from two different layouts.
+#:
+#: A ``coretex-v5-object`` layout used to head this list, fetching
+#: ``{base}/coretex/v5/object/{root}`` raw from a coordinator. It could never verify against a
+#: real one: that route refuses a request carrying no ``?hashRule`` and envelopes its answer by
+#: default, and law tars are not in the object CAS at all — they are published through the KIT.
+#: A layout that cannot succeed is not a fallback, it is a wasted fetch and a misleading
+#: "not found", so it is gone rather than repaired. ``setup`` mirrors the kit's publication into
+#: a local ``flat-cas`` directory, which is what a coordinator-served law sync actually is.
 LAYOUTS = (
-    # the coordinator's immutable content-addressed route (spec §8.1)
-    {"name": "coretex-v5-object", "manifest": "coretex/v5/object/{root}",
-     "object": "coretex/v5/object/{root}"},
     # a bare content-addressed mirror: one file per address
     {"name": "flat-cas", "manifest": "{root}", "object": "{root}"},
     # a published evidence set, as it sits in the repository / in a release tarball
@@ -700,10 +712,10 @@ def find_cache(*, cache_dir: Optional[str] = None,
                publication_root: Optional[str] = None) -> Optional[LawCache]:
     """The cache a later command should use, or ``None``. Never guesses between two.
 
-    With no root named: the default publication root if it is present, else the single cache in the
-    directory. If there are several and none is the default, ``None`` is returned and the caller
-    reports that the pin is ambiguous — picking one would make the law a function of directory
-    listing order.
+    With no root named: the single cache in the directory, if there is exactly one. If there are
+    several, ``None`` is returned and the caller reports that the pin is ambiguous — picking one
+    would make the active law a function of directory listing order. There is no baked-in root to
+    break the tie, and there deliberately never was a good one to use for it.
     """
     base = os.path.abspath(os.path.expanduser(cache_dir or default_cache_dir()))
     if publication_root:
@@ -717,12 +729,10 @@ def find_cache(*, cache_dir: Optional[str] = None,
                      if is_root(name) and os.path.isfile(os.path.join(base, name, CACHE_RECEIPT)))
     if not present:
         return None
-    chosen = DEFAULT_PUBLICATION_ROOT if DEFAULT_PUBLICATION_ROOT in present else (
-        present[0] if len(present) == 1 else None)
-    if chosen is None:
+    if len(present) != 1:
         return None
     try:
-        return load_cache(chosen, cache_dir=base)
+        return load_cache(present[0], cache_dir=base)
     except LawCacheError:
         return None
 
@@ -730,7 +740,7 @@ def find_cache(*, cache_dir: Optional[str] = None,
 # --------------------------------------------------------------------------- #
 # sync-law
 # --------------------------------------------------------------------------- #
-def sync_law(publication_root: str = DEFAULT_PUBLICATION_ROOT, *, mirror: str,
+def sync_law(publication_root: str, *, mirror: str,
              cache_dir: Optional[str] = None, force: bool = False,
              timeout: float = 30.0, retries: int = 3,
              max_object_bytes: int = MAX_OBJECT_BYTES,

@@ -76,10 +76,22 @@ def test_print_export_emits_only_shell_lines(published, capsys):
 
 
 def test_a_mirror_that_serves_nothing_exits_2(tmp_path, capsys):
+    code, captured = run(["sync-law", "--mirror", str(tmp_path), "--root", "a" * 64,
+                          "--cache-dir", str(tmp_path / "c")], capsys)
+    assert code == 2
+    assert "no layout" in captured.err
+
+
+def test_sync_law_without_a_root_refuses_and_says_where_to_get_one(tmp_path, capsys):
+    """No default publication. The remedy names DISCOVERY, not a value to paste."""
     code, captured = run(["sync-law", "--mirror", str(tmp_path), "--cache-dir",
                           str(tmp_path / "c")], capsys)
     assert code == 2
-    assert "no layout" in captured.err
+    assert "--root" in captured.err
+    assert "setup" in captured.err
+    assert captured.out == ""
+    # and nothing was installed under the cache directory
+    assert not os.path.isdir(str(tmp_path / "c"))
 
 
 def test_a_bad_root_exits_2(published, capsys):

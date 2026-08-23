@@ -92,14 +92,6 @@ def write_set(base, publication_root, manifest_bytes, objects, *, layout="public
         for root, blob in objects.items():
             with open(os.path.join(base, root), "wb") as fh:
                 fh.write(blob)
-    elif layout == "coretex-v5-object":
-        objdir = os.path.join(base, "coretex", "v5", "object")
-        os.makedirs(objdir, exist_ok=True)
-        with open(os.path.join(objdir, publication_root), "wb") as fh:
-            fh.write(manifest_bytes)
-        for root, blob in objects.items():
-            with open(os.path.join(objdir, root), "wb") as fh:
-                fh.write(blob)
     else:                                                      # pragma: no cover - test bug
         raise AssertionError(layout)
     return base
@@ -160,7 +152,19 @@ def test_sync_law_over_http_materializes_a_verified_cache(honest, http_mirror):
     assert env[law.ENV_MEMORY_RUNTIME] == os.path.join(cache.root_dir, "coretex-memory")
 
 
-@pytest.mark.parametrize("layout", ["publication-set", "flat-cas", "coretex-v5-object"])
+def test_the_supported_layouts_are_exactly_the_two_a_real_mirror_can_serve():
+    """A layout that can never verify is worse than no layout: it spends a fetch and a retry on
+    every sync and then reports "not found" for a mirror that is serving perfectly.
+
+    ``coretex-v5-object`` was one. It fetched ``{base}/coretex/v5/object/{root}`` raw, but the
+    coordinator route it named refuses a request that carries no ``?hashRule``, envelopes its
+    answer by default — and does not hold law tars in the first place, which live in the KIT, not
+    in the object CAS. Removed rather than fixed, because there is nothing there to fix.
+    """
+    assert {entry["name"] for entry in law.LAYOUTS} == {"flat-cas", "publication-set"}
+
+
+@pytest.mark.parametrize("layout", ["publication-set", "flat-cas"])
 def test_every_supported_mirror_layout_produces_the_same_cache(tmp_path, layout):
     publication_root, manifest_bytes, objects = build_publication()
     base = write_set(str(tmp_path / layout), publication_root, manifest_bytes, objects,
@@ -216,6 +220,37 @@ def test_find_cache_locates_what_sync_law_wrote(honest):
     assert found is not None and found.publication_root == honest["root"]
     assert law.find_cache(cache_dir=honest["cache"], publication_root=honest["root"]) is not None
     assert law.find_cache(cache_dir=honest["cache"], publication_root="f" * 64) is None
+
+
+# --------------------------------------------------------------------------- #
+# there is no default publication
+# --------------------------------------------------------------------------- #
+def test_there_is_no_baked_in_publication_root(honest):
+    """A default root is a trust anchor wearing a convenience costume.
+
+    The one that used to be here was a 2026-08-04 REHEARSAL, so ``sync-law`` with no ``--root``
+    silently installed trees no live chain head had ever bound, and every later command picked
+    them up. The publication a validator wants is the one the deployment it is verifying names —
+    which it discovers, from the coordinator kit or the release. So absence is now the only
+    behaviour: the root is a required argument, everywhere.
+    """
+    assert not hasattr(law, "DEFAULT_PUBLICATION_ROOT")
+    with pytest.raises(TypeError):
+        law.sync_law(mirror=honest["dir"], cache_dir=honest["cache"])       # noqa: B015
+
+
+def test_two_caches_and_no_named_root_is_ambiguous_rather_than_arbitrary(honest, tmp_path):
+    """Without a default to break the tie, a second cache makes the pin genuinely ambiguous —
+    and picking one would make the active law a function of directory listing order."""
+    law.sync_law(honest["root"], mirror=honest["dir"], cache_dir=honest["cache"])
+    other_root, other_manifest, other_objects = build_publication(
+        {name: {**tree_files(name), "extra.py": b"X = 2\n"} for name in law.REQUIRED_TREES})
+    other_dir = write_set(str(tmp_path / "mirror2"), other_root, other_manifest, other_objects)
+    law.sync_law(other_root, mirror=other_dir, cache_dir=honest["cache"])
+    assert law.find_cache(cache_dir=honest["cache"]) is None
+    # naming one is still unambiguous
+    named = law.find_cache(cache_dir=honest["cache"], publication_root=other_root)
+    assert named is not None and named.publication_root == other_root
 
 
 def test_export_lines_are_shell_ready(honest):

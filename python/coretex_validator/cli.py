@@ -180,9 +180,25 @@ def _cmd_sync_law(args: argparse.Namespace) -> int:
 
     The verdict is binary and there is no partial success: either every object reproduced the
     address it was fetched under and every required tree is present, or nothing is installed.
+
+    ``--root`` is REQUIRED and has no default. Verifying a publication proves its trees hash to
+    the root that was asked for; it says nothing about whether that root is the one the chain head
+    binds. A default therefore chose the law silently, which is what a rehearsal root did on live
+    hosts until this command stopped offering one.
     """
     from . import law as law_mod
 
+    if not args.root:
+        sys.stderr.write(
+            "coretex-validator sync-law: --root is required and has no default.\n"
+            "  The publication to install is a property of the deployment you are verifying, and\n"
+            "  verifying a set proves only that it hashes to the root you asked for — never that\n"
+            "  the root is the live one. Discover it instead of pasting one:\n"
+            "    coretex-validator setup            # syncs the law itself, from the "
+            "coordinator kit\n"
+            "  and it is reported under `law.publicationRoot`. A historical publication may be\n"
+            "  named explicitly with --root ROOT.\n")
+        return 2
     cache = law_mod.sync_law(args.root, mirror=args.mirror, cache_dir=args.cache_dir,
                              force=args.force, timeout=args.timeout,
                              max_object_bytes=args.max_object_bytes)
@@ -461,7 +477,7 @@ def _add_law_arguments(parser: argparse.ArgumentParser) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    from .law import DEFAULT_PUBLICATION_ROOT, MAX_OBJECT_BYTES
+    from .law import MAX_OBJECT_BYTES
     # Safe to import here even though `build_parser` runs BEFORE `_activate_law`: unlike
     # `replay`, this module reads no law pins at import time.
     from .preview import DEFAULT_SCALE as pv_default_scale
@@ -507,10 +523,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="fetch + verify the published admission trees, and pin them for later commands")
     lawp.add_argument("--mirror", required=True,
                       help="http(s) url, file:// url or local directory serving the publication "
-                           "set (a coordinator's /coretex/v5/object route, a bare CAS, or a "
-                           "published evidence directory — the layout is discovered)")
-    lawp.add_argument("--root", default=DEFAULT_PUBLICATION_ROOT,
-                      help="publication root to fetch (default: the epoch-180 admission closure)")
+                           "set (a bare CAS naming each object by its root, or a published "
+                           "evidence directory with a MANIFEST.json — the layout is discovered)")
+    lawp.add_argument("--root", default=None,
+                      help="publication root to fetch. REQUIRED — there is no default, because a "
+                           "default would choose the law silently. `setup` discovers and syncs "
+                           "the live one for you; name a root here to install a historical "
+                           "publication instead")
     lawp.add_argument("--cache-dir", default=None,
                       help="where to materialize (default: ~/.local/share/coretex/law)")
     lawp.add_argument("--force", action="store_true",

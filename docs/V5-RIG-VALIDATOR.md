@@ -111,11 +111,17 @@ and the memory-lane label are named refusals, never fallback acceptance.
 
 **This finding is resolved.** The six trees deterministic admission needs —
 `benchmark-v2/{generators,scoring,miner_abi,validator,frontier}` and
-`coretex-memory/coretex_memory` — are published as content-addressed objects under publication
-root `d90f469cf8f737e100f8cd13f06c56559e315c04f974d4e3c987c40a7c4f7399`, addressed by the SAME
-tree-hash rule the signed receipt's `code_roots` binds. So the address is the chain-bound identity,
-not a new scheme, and a consumer verifies by extracting and recomputing rather than trusting the
-container.
+`coretex-memory/coretex_memory` — are published as content-addressed objects under a publication
+root, addressed by the SAME tree-hash rule the signed receipt's `code_roots` binds. So the address
+is the chain-bound identity, not a new scheme, and a consumer verifies by extracting and
+recomputing rather than trusting the container.
+
+**The root is DISCOVERED, never defaulted.** `setup` reads it from the coordinator kit's
+`law_publication` component and syncs the law itself. The first publication root this lane ever
+recorded — `d90f469c…`, the 2026-08-04 rehearsal closure — used to be a baked-in default, which
+meant a `sync-law` with no `--root` installed rehearsal trees on a live host and reported a
+verified cache while doing it. Verification proves a set hashes to the root you asked for; only
+discovery tells you the root is the live one. `--root` is now required.
 
 ```bash
 CORETEX_ADMISSION_REPO_ROOT=<dest>
@@ -135,8 +141,15 @@ front of them. See K1 and K2 below.
 publication set by root, verifies it, materializes `<dest>` and applies the pins itself:
 
 ```bash
-coretex-validator sync-law --mirror https://<coordinator-or-mirror>
+coretex-validator setup                       # discovers the live root and syncs the law
 coretex-validator reproduce --rpc "$BASE_RPC_URL"
+```
+
+A historical publication is installed by naming it — the mirror is a bare CAS (one file per root)
+or a published evidence directory carrying a `MANIFEST.json`:
+
+```bash
+coretex-validator sync-law --mirror https://<mirror> --root <PUBLICATION_ROOT>
 ```
 
 What "verifies" means here, precisely, because it is the whole value of the command:
