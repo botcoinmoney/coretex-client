@@ -89,6 +89,13 @@ HASH_RULES = (HASH_RULE_BYTES, HASH_RULE_FRONTIER_JSON, HASH_RULE_BENCHMARK_JSON
 SIGNED_MANIFEST_ATTESTATION_FIELDS = ("manifest_self_sha256", "operator_signature")
 
 
+def check_hash_rule(hash_rule: str) -> str:
+    """The single gate every rule-taking entry point passes through."""
+    if hash_rule not in HASH_RULES:
+        raise HashRuleError(f"unknown hash rule {hash_rule!r}; known rules are {list(HASH_RULES)}")
+    return hash_rule
+
+
 class PublicationError(Exception):
     """Base class for every availability failure."""
 
@@ -204,10 +211,19 @@ def root_of(data: bytes, hash_rule: str) -> str:
 class ContentStore:
     """A content-addressed publication surface.
 
-    Three methods, no assumptions about locality. Implementations MUST be honest: ``get`` returns
-    the bytes the surface would serve to a third party, and raises :class:`ObjectNotFoundError`
-    when it has nothing at that root. An implementation that "helpfully" returns a locally cached
-    copy defeats the entire point of the read-back.
+    Three required methods, no assumptions about locality. Implementations MUST be honest: ``get``
+    returns the bytes the surface would serve to a third party, and raises
+    :class:`ObjectNotFoundError` when it has nothing at that root. An implementation that
+    "helpfully" returns a locally cached copy defeats the entire point of the read-back.
+
+    :meth:`get_for_rule` is the FOURTH method and the only one with a default. It exists because
+    an address alone does not tell a surface how the object was committed, and some surfaces need
+    to be told: the coordinator's public object route refuses a request that names no rule, and
+    it decides between an envelope and raw octets from it. A store whose transport does not vary
+    by rule — every LOCAL store — inherits the default, which validates the rule and answers with
+    ``get``. Nothing about VERIFICATION moves here: the rule is transport metadata, the caller
+    still recomputes the root from the bytes that arrived (:func:`read_back`), and a surface that
+    reports its own successful verification is not thereby believed.
     """
 
     def put(self, root: str, data: bytes) -> None:
@@ -218,6 +234,15 @@ class ContentStore:
 
     def has(self, root: str) -> bool:
         raise NotImplementedError
+
+    def get_for_rule(self, root: str, hash_rule: str) -> bytes:
+        """The bytes at ``root``, told which rule the caller committed to. Default: :meth:`get`.
+
+        An unknown rule is refused BEFORE any transport happens — a request this client cannot
+        verify the answer to is one it must never make.
+        """
+        check_hash_rule(hash_rule)
+        return self.get(root)
 
 
 class InMemoryCAS(ContentStore):
@@ -336,9 +361,19 @@ def read_back(root: str, *, hash_rule: str, store: ContentStore,
     This is the check a coordinator runs at PRE-SIGN time for objects published earlier (a
     candidate bundle uploaded during submission, the composition manifest minted at compose time)
     and the check a validator runs at replay time. It never trusts a local copy.
+
+    THE FETCH CARRIES THE RULE (:meth:`ContentStore.get_for_rule`), because a remote surface may
+    need it to answer at all — the coordinator's public object route refuses a request that names
+    no rule, and serves raw octets rather than an envelope when one is named. What the rule NEVER
+    does is move verification: the root is recomputed below, here, from the bytes that arrived,
+    under the rule the caller committed to. A surface may report that it verified the transport
+    itself; that report is not evidence and is not read. For the float-bearing benchmark rule this
+    matters most — a server can only check that ``sha256(bytes)`` equals the root, while THIS side
+    additionally requires the bytes to BE the canonical serialisation the root names.
     """
     fr.check_root(root, "root")
-    data = store.get(root)                             # ObjectNotFoundError on absence
+    check_hash_rule(hash_rule)
+    data = store.get_for_rule(root, hash_rule)         # ObjectNotFoundError on absence
     if not isinstance(data, (bytes, bytearray)):
         raise StoreIntegrityError(
             f"store returned {type(data).__name__}, not bytes, for {root}")

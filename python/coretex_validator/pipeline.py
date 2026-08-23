@@ -33,6 +33,7 @@ from __future__ import annotations
 import json
 import os
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
@@ -73,11 +74,31 @@ class UrlContentStore(pub.ContentStore):
     cache fallback, no retry against a different base. :func:`publication.read_back` re-hashes
     whatever comes back, so a substituted body fails there; the job here is only to not quietly
     substitute one ourselves.
+
+    ``get_for_rule`` adds the one thing an address cannot say: WHICH RULE the caller committed to.
+    The coordinator's public object route (:data:`OBJECT_ROUTE`) needs it — it refuses a request
+    that names no rule, and it envelopes its answer unless raw octets are asked for. So the rule
+    travels as ``?hashRule=`` and the request carries ``Accept: application/octet-stream``. That
+    is a TRANSPORT negotiation and nothing more: whatever comes back is re-hashed locally under
+    the committed rule, and for the float-bearing benchmark rule the canonical form is
+    reconstructed byte-for-byte rather than accepted on the server's raw-sha256 agreement.
+
+    A flat CAS (an S3 prefix serving one file per root) ignores the query string, so ONE spelling
+    serves both surfaces; use :meth:`for_coordinator` when the base is a coordinator root rather
+    than an object prefix.
     """
+
+    #: The coordinator's immutable content-addressed route (spec §8.1), relative to its root.
+    OBJECT_ROUTE = "coretex/v5/object"
 
     def __init__(self, base_url: str, *, timeout: float = 30.0) -> None:
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
+
+    @classmethod
+    def for_coordinator(cls, coordinator_url: str, *, timeout: float = 30.0) -> "UrlContentStore":
+        """A store over a COORDINATOR's base url, which serves objects under its object route."""
+        return cls(f"{coordinator_url.rstrip('/')}/{cls.OBJECT_ROUTE}", timeout=timeout)
 
     def _url(self, root: str) -> str:
         return f"{self.base_url}/{root}"
@@ -86,8 +107,18 @@ class UrlContentStore(pub.ContentStore):
         raise pub.PublicationError("this store is read-only; a validator publishes nothing")
 
     def get(self, root: str) -> bytes:
+        return self._fetch(self._url(root), root=root)
+
+    def get_for_rule(self, root: str, hash_rule: str) -> bytes:
+        pub.check_hash_rule(hash_rule)                 # never ask for what we cannot verify
+        url = f"{self._url(root)}?hashRule={urllib.parse.quote(hash_rule, safe='')}"
+        request = urllib.request.Request(
+            url, headers={"accept": "application/octet-stream"})
+        return self._fetch(request, root=root)
+
+    def _fetch(self, target, *, root: str) -> bytes:
         try:
-            with urllib.request.urlopen(self._url(root), timeout=self.timeout) as response:  # noqa: S310,E501
+            with urllib.request.urlopen(target, timeout=self.timeout) as response:  # noqa: S310
                 return response.read()
         except urllib.error.HTTPError as exc:
             if exc.code == 404:
