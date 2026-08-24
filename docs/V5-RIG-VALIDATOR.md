@@ -116,6 +116,21 @@ root, addressed by the SAME tree-hash rule the signed receipt's `code_roots` bin
 is the chain-bound identity, not a new scheme, and a consumer verifies by extracting and
 recomputing rather than trusting the container.
 
+**Seven sealed roots, and the seventh is a FILE.** `code_roots` computes six with the tree-hash
+rule and one — `candidate_isolation_posture` — as the plain `sha256` of
+`<repo_root>/v5/production/CANDIDATE-ISOLATION.production.json`. It was gated at build time and
+not packed, because it is not a tree and cannot be one; the consequence was that a validator with
+a fully verified cache still refused every replay at `code_roots` (see K5). It is now published as
+a SINGLE-FILE object — one manifest entry addressed by `sha256(bytes)` with an install path — and
+installed at exactly the relative path `code_roots` opens, which for a validator running on the
+cache is inside the cache. A publication that omits it is refused rather than half-installed.
+
+**What the law publication can never carry.** `benchmark-v2/kit` and `benchmark-v2/integration`
+are not sealed code roots. `preview-current-parent` needs both, and they come from the hash-pinned
+miner-kit tar `setup` downloads and extracts — a second publication, verified a different way (the
+kit manifest binds its sha256), composed with the sealed trees by path layering, sealed first. See
+K4.
+
 **The root is DISCOVERED, never defaulted.** `setup` reads it from the coordinator kit's
 `law_publication` component and syncs the law itself. The first publication root this lane ever
 recorded — `d90f469c…`, the 2026-08-04 rehearsal closure — used to be a baked-in default, which
@@ -279,6 +294,16 @@ being told which one), and `verify-receipt` (a signed Benchmark-v2 receipt, whic
 from `receipt + trees`). All use the law cache exactly as step 5 does, and all surface `PASS` /
 `FAIL` / `BACKLOG` verbatim — there is no flag on any of them that turns an unreachable binding into
 a pass.
+
+**One live decoding authority.** All four decode the deployed descriptor-v3 events through
+`rig_events`; `rig_discovery` adds only confirmation depth, chain ordering, per-epoch contiguity
+and the projection into the shape `replay_advance` consumes. `dispatch`/`sync` keep the retired
+`CoreTexMemory*` lane and the staged never-deployed rig set as regression decoders, and no live
+command consults them — which is the fix for K3. What separates `reproduce` from the two
+`replay-*` commands is the RECEIPT JOIN: `reproduce` fetches each transaction's calldata and
+refuses unless the eval artifact's `candidate.release_root` equals the signed `artifactHash`. The
+`replay-*` commands do not, and say so in their own report rather than implying a check that did
+not run.
 
 ### What the clean machine can and cannot do, once the law is installed
 
@@ -638,6 +663,55 @@ package rather than a top-level `frontier`, so removing it was never useful ther
    archive-capable at these heights.
 
 ---
+
+### K3–K6 — four defects a stranger-path qualification exposed
+
+Found by running a pip-installed 0.4.3 on a clean box from nothing but a URL, in exactly the order
+three published documents tell a miner to run it. None was a publication problem; all four were in
+this package.
+
+**K3 — the two `replay-*` commands decoded a lane no contract emits.** `replay-latest --rpc` over
+the whole production history — 600k blocks, 200,885 logs from the three addresses the canonical
+release itself pins — reported `events: 0`, `selected: null`, exit 2, "the feed carries no
+confirmed advance", on a chain carrying fourteen epochs of them. Discovery ran through
+`sync.sync_logs` → `dispatch.decode`, whose two tables are the retired `CoreTexMemory*` lane and
+the staged `RigCoreTex*` set `rig_events` documents as emitted by nothing. `sync_logs`'s fail-soft
+ignore-unknown-topics rule — right in isolation — then turned a total lane mismatch into a silent
+empty feed, which is indistinguishable from an idle deployment and is a FALSE STATEMENT about a
+live one. `reproduce` was never affected, because it scans through `rig_events`.
+
+Fixed by routing discovery through that one decoder rather than repairing the dead table: a second
+live decoder for the same three contracts would eventually disagree with the first about a
+malformed log, and only one of them would be right.
+
+**K4 — `setup` could not enable `preview-current-parent`.** The command gated on
+`<CACHE>/benchmark-v2/kit/self_check.py` and, when it was absent, printed "run `sync-law`" — a
+remedy the reader had already followed and that can never work, because `kit` is not a sealed code
+root. The aggregate step needed `benchmark-v2/integration` too and died on it
+(`ModuleNotFoundError: integration`) after both arms had really scored. Fixed by composing the
+child's tree view from the law cache PLUS the hash-pinned miner-kit tar (F4 above), and by
+mirroring `kit/self_check.py`'s own documented shim for a missing `integration`.
+
+**K5 — the seventh sealed root was required at replay time and served by nothing.**
+`verify-receipt` on a real production receipt refused at `code_roots` with `[Errno 2] No such file
+or directory` for the candidate-isolation posture. Fixed by publishing and installing it as a
+single-file object (F4 above).
+
+**K6 — `verify-receipt` could never verify an exact-parent receipt.** The frozen replayer requires
+`incumbent_execution` whenever the report carries the five-field exact incumbent identity; the CLI
+never passed it and no flag could supply one. The only caller that resolved it was
+`replay.replay_advance`, reachable only through the lane K3 shows could not see the chain — so
+0.4.3's headline feature had no command-line route to a verdict at all. The CLI now resolves it
+itself, through the same public `frontier → composition → release → module` walk, and compares the
+result for exact equality against the identity the report binds.
+
+**K5 and K6 shared a reporting fault.** Both printed a missing INPUT as `outcome: FAIL`, exit 1 —
+the code this package's own documentation defines as A RECEIPT DID NOT REPRODUCE. A CI wired to
+the documented contract would have raised a refutation alarm against a healthy production receipt
+because a file had never been published. Availability failures are now `BACKLOG` / exit 0, the
+outcome that means "I could not check that", which the sibling `SandboxUnavailable` branch already
+used. The reclassification is deliberately narrow: `code_root_mismatch` stays a determination,
+because two pinned things disagreeing IS one.
 
 ## 5. What has been proven, and how
 

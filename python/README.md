@@ -12,13 +12,41 @@ opening a three-field path for new law roots. It adds `setup`'s law install, `re
 `preview-current-parent`, and a rule-carrying object transport; it removes the rehearsal default
 publication root.
 
-## `setup` installs the admission law
+## `reproduce` — the whole verification, in one command
+
+```bash
+coretex-validator reproduce --rpc "$BASE_RPC_URL"
+```
+
+Eight steps against a live endpoint: authenticate the release, check contract bytecode and wiring,
+replay per-rig receipt continuity, reconstruct the transition, run deterministic admission inside
+the installed law, resolve the HISTORICAL law at that transition, rebuild the resolver snapshot,
+and build the activation export. It is the command to reach for first; everything below is a
+narrower slice of the same machinery.
+
+`--epoch` / `--transition-index` select one advance; `--artifact-dir` points at the objects;
+`--require-complete` turns "could not check" into exit 1.
+
+## `setup` installs the admission law — and the miner-kit tar
 
 `setup` ends with `law.synced: true`. It reads the publication root from the coordinator kit's
 `law_publication` component, downloads the publication under the kit's hashes, and hands it to the
 same verifier `sync-law` uses — which re-derives every address (the manifest's, each container's,
 each extracted tree's) from the bytes that arrived. Deterministic admission then runs instead of
 backlogging, on a machine that started with nothing but a URL.
+
+**Seven sealed roots, six of them trees.** `benchmark-v2/validator/receipt.py::code_roots` computes
+six with the tree-hash rule and one — `candidate_isolation_posture` — as the plain `sha256` of a
+single FILE, opened at `<repo_root>/v5/production/CANDIDATE-ISOLATION.production.json`. For a
+validator running on the law cache, `repo_root` *is* the cache, so that file is published as a
+single-file object and installed at exactly that relative path. A publication that omits it is
+refused: a cache that cannot compute `code_roots()` cannot replay a single receipt, and finding
+that out at the first replay instead of at install time is worse than not installing.
+
+**`setup` also caches and extracts the miner-kit tar**, under the sha256 the kit manifest binds.
+That tar is where `benchmark-v2/kit` and `benchmark-v2/integration` come from — neither is a sealed
+code root, so no law publication can carry them, and `preview-current-parent` needs both. Do not
+pass `--skip-packages` if you intend to preview.
 
 An older coordinator that publishes no such component gets `law.synced: false` and a remedy, and
 setup still succeeds. A publication that does **not** reproduce its address fails the command —
@@ -47,6 +75,34 @@ it. `PASS` / `FAIL` / `BACKLOG` are reported verbatim: exit 1 on a refutation, e
 BACKLOG unless `--require-complete`, exit 2 when there was no confirmed advance to replay.
 `--logs FILE` runs the same discovery offline against a feed file.
 
+Discovery decodes the **deployed descriptor-v3 events** (`rig_events`) — the same decoder
+`reproduce` uses, and the only live one. The report names it under `chain.decoder` and
+`feed.decoder`, so "which decoder read this chain" is never a question you answer by reading
+source. The `CoreTexMemory*` tables in `dispatch`/`sync` belong to the retired lane and no live
+command consults them.
+
+What this command does *not* do, and `reproduce` does: fetch the transaction calldata and join the
+advance to its signed rig receipt. So `candidate_release_root` here is the eval artifact's rather
+than the signed `artifactHash`. The report says so under `replayed.auxiliary.projection.binding`
+instead of implying a check that did not run.
+
+## `verify-receipt` — one signed receipt, no chain at all
+
+```bash
+coretex-validator verify-receipt ./cas/<REPORT_ROOT> --artifact ./cas/<ARTIFACT_ROOT>
+```
+
+A receipt is self-contained from `receipt + trees`, so this needs no RPC. When the report names an
+EXACT PARENT (the five-field incumbent identity 0.4.3 introduced), the incumbent's execution is
+**resolved here** — frontier → composition → release → module, every hop re-hashed, compared for
+exact equality against the identity the report binds — rather than demanded from the caller.
+`--artifacts DIR` names the object store; it defaults to the directory holding the receipt, which
+is where a content-addressed receipt normally sits.
+
+Outcomes keep their meanings. An object that is not published, or a law tree this host does not
+have, is `BACKLOG` / exit 0 — unresolved work. `FAIL` / exit 1 is reserved for a refutation: a
+resolved parent that is not the one the report binds, or a report that did not reproduce.
+
 ## `preview-current-parent` (optional, for miners)
 
 The kit's `self_check` scores you against the **frozen reference baseline**. The live incumbent
@@ -55,7 +111,7 @@ comparison. This command scores your module and the **current confirmed parent**
 public dev cases, inside the pinned law trees:
 
 ```bash
-coretex-validator setup                          # once: the pinned trees this scores inside
+coretex-validator setup                          # once: BOTH publications this scores inside
 coretex-validator preview-current-parent module.py \
     --manifest manifest.json --profile doc.tool.v1 \
     --parent-root CONFIRMED_FRONTIER_ROOT --artifact-dir ./cas
@@ -64,6 +120,23 @@ coretex-validator preview-current-parent module.py \
 Every object between the frontier root and the parent's module bytes is re-hashed under its own
 rule before it is used, and the parent arm is scored with the **parent release manifest's**
 capabilities and `max_compute_ms` — never yours.
+
+**Where the scoring trees come from.** Two publications, composed by path layering with the sealed
+ones first:
+
+| tree | source | why |
+| --- | --- | --- |
+| `benchmark-v2/{frontier,generators,miner_abi,scoring,validator}`, `coretex-memory` | the verified **law cache** | sealed code roots; their tree hash is what a signed receipt binds |
+| `benchmark-v2/kit`, `benchmark-v2/integration` | the hash-pinned **miner-kit tar** | not sealed roots, so no law publication can ever carry them |
+
+The sealed directory wins every module name it defines; the tar — which also ships older copies of
+`frontier`/`scoring`/`miner_abi` — only ever supplies names the seal does not. `--packages-dir`
+points at an already-extracted tar; `--repo-root` uses a full checkout instead of either.
+
+`benchmark-v2/integration` is genuinely absent from the frozen kit tar. That is not fatal and not a
+candidate defect: the portability prerequisite reports `executed: false, ok: false` with
+`reason_code: portability_prerequisite_not_executed_locally`, exactly as `kit/self_check.py`'s own
+documented shim does. The adjudicating host always runs that gate.
 
 It is a preview, not a prediction. The report carries `publicDevCasesOnly: true` and
 `predictsAdmission: false`, because official evaluation re-runs on fresh confirmation cases drawn

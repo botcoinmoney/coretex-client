@@ -9,10 +9,23 @@ pip install https://github.com/botcoinmoney/coretex-client/releases/download/v0.
 coretex-validator setup
 ```
 
-`setup` verifies the signed production deployment, caches the miner-kit from the
-coordinator kit (`GET /coretex/v5/kit/file/<sha256>`), and reads the confirmed
-chain head. Defaults: `--rpc https://mainnet.base.org` and
+`setup` verifies the signed production deployment, caches **and extracts** the
+miner-kit from the coordinator kit (`GET /coretex/v5/kit/file/<sha256>`), reads
+the confirmed chain head, and installs the published admission law. Defaults:
+`--rpc https://mainnet.base.org` and
 `--coordinator https://coordinator.agentmoney.net`.
+
+**Start with `reproduce`.** It is the one command that verifies a live advance
+end to end — release authentication, contract bytecode and wiring, per-rig
+receipt continuity, the transition join, deterministic admission against the
+installed law, the historical law at that transition, and the resolver snapshot:
+
+```bash
+coretex-validator reproduce --rpc https://mainnet.base.org
+```
+
+Everything else is a narrower slice of the same machinery, useful when you
+already know which part you want.
 
 ## Production contracts (Base)
 
@@ -30,12 +43,12 @@ explicit historical artifact.
 | `setup` | verify deployment, cache kit packages, read chain head, **install the admission law** |
 | `verify-release --rpc URL` | authenticate the release and read bytecode/wiring |
 | `sync-law --mirror URL --root ROOT` | fetch + verify a **named** publication (no default root) |
-| `reproduce --rpc URL` | the eight steps against a live endpoint |
+| **`reproduce --rpc URL`** | **the eight steps against a live endpoint — the full end-to-end verification** |
 | `reproduce-snapshot --snapshot F --rpc URL --artifacts DIR` | rebuild a published resolver snapshot |
 | `replay-latest --rpc URL --artifacts DIR` | discover and replay the **newest** confirmed advance |
 | `replay-advance --logs F --artifacts DIR` | replay confirmed advances from a feed file |
 | `preview-current-parent MODULE.py …` | score a candidate against the **live confirmed parent** |
-| `verify-receipt RECEIPT.json` | replay a signed Benchmark-v2 receipt |
+| `verify-receipt RECEIPT.json --artifact A.json` | replay a signed Benchmark-v2 receipt |
 | `topics` | the dispatch table |
 | `selftest` | known-answer vectors |
 
@@ -54,8 +67,24 @@ public CAS before the pinned sandbox runs — and removes what a clean machine s
 first. `setup` discovers the deployment's publication root and installs the admission law, so
 deterministic admission runs instead of backlogging; `replay-latest` replays the newest confirmed
 advance without being told which one; `preview-current-parent` scores a candidate against the live
-parent. There is no longer a default publication root: a rehearsal root pinned by default is a
-validator that reports a verified cache for the wrong law.
+parent; `verify-receipt` resolves the exact parent's execution itself rather than demanding it.
+There is no longer a default publication root: a rehearsal root pinned by default is a validator
+that reports a verified cache for the wrong law.
+
+**Two publications, not one, and `setup` fetches both.** The law publication seals seven code
+roots — five `benchmark-v2` subtrees, `coretex-memory`, and the candidate-isolation posture FILE.
+`benchmark-v2/kit` and `benchmark-v2/integration` are *not* sealed roots and can never appear in
+it; they ship in the hash-pinned miner-kit tar, which is why `preview-current-parent` needs
+`setup` to have run without `--skip-packages`.
+
+**One live decoder.** `replay-latest` / `replay-advance` / `reproduce` all decode the deployed
+descriptor-v3 events (`rig_events`). The `CoreTexMemory*` tables in `dispatch`/`sync` are the
+retired lane's and no live command consults them.
+
+**Pre-deploy limits that remain.** `setup` can only install the law from a coordinator whose kit
+carries a `law_publication` component; against a coordinator that does not publish one it reports
+`law.synced: false` with a remedy and still succeeds. A publication must carry the posture file to
+be installable at all — a set without it is refused rather than half-installed.
 
 **Which version is live.** 0.4.3 is **cut** — it is the version this repository builds and the one
 the coordinator's kit is prepared to serve — and it is **pending release and deploy**. Until that
