@@ -33,11 +33,12 @@ silently becomes "X is broken".
 
 THE LAW CACHE, AND WHY IT IS APPLIED BEFORE ANY IMPORT
 =====================================================
-The six published admission trees are fetched by publication root, every one verified against the
+The seven published admission objects are fetched by publication root, every one verified against the
 same tree-hash rule the signed receipt's ``code_roots`` binds, and materialized under
-``~/.local/share/coretex/law/<root>/``. ``reproduce``, ``replay-latest``, ``replay-advance`` and
-``verify-receipt`` then pick that cache up automatically — which is what removes step 5's BACKLOG
-on a clean machine.
+``~/.local/share/coretex/law/<root>/``. A normal ``setup`` atomically activates that law together
+with the exact current miner-kit tar. Default commands use only that active tuple. ``sync-law``
+can verify a publication named explicitly, but does not silently replace the canonical active
+tuple.
 
 ``setup`` does this for you, and the root is DISCOVERED rather than defaulted: the coordinator
 kit's ``law_publication`` component names which publication its chain head binds. ``sync-law``
@@ -229,8 +230,9 @@ def _cmd_sync_law(args: argparse.Namespace) -> int:
            "verified": ("every object was rehashed under benchmark-v2/validator/receipt.py's "
                         "tree-hash rule from the bytes that arrived; the mirror was used, never "
                         "trusted"),
-           "next": ("reproduce / replay-advance / verify-receipt now pick this cache up "
-                    "automatically; nothing else needs setting")},
+           "next": ("this named publication is verified. Pass --law-root explicitly to inspect "
+                    "it, or run setup to verify and atomically activate the coordinator's one "
+                    "current kit/law tuple")},
           pretty=not args.compact)
     return 0
 
@@ -1035,9 +1037,9 @@ def build_parser() -> argparse.ArgumentParser:
     setup.add_argument("--skip-packages", action="store_true",
                        help="verify + read chain only; do not fetch the miner-kit tar")
     setup.add_argument("--skip-law", action="store_true",
-                       help="do not discover or install the published admission law. "
-                            "Deterministic admission then BACKLOGs until `sync-law` is run by "
-                            "hand, exactly as it did before setup did this")
+                       help="diagnostic only: do not fetch the published admission law and do "
+                            "not activate a new current tuple; run setup normally to activate "
+                            "the coordinator's current kit and law together")
     setup.add_argument("--law-cache", default=None,
                        help="where to materialize the law (default: ~/.local/share/coretex/law)")
     setup.set_defaults(func=_cmd_setup)

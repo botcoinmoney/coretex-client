@@ -286,7 +286,7 @@ def fetch_kit_packages(
     max_file_bytes: int = 64 * 1024 * 1024,
     manifest: Optional[Mapping[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
-    """Download miner-kit / runtime-packet files into dest_dir. Matching hashes are skipped."""
+    """Download the explicit current miner-kit tar. Matching hashes are skipped."""
     os.makedirs(dest_dir, exist_ok=True)
     if manifest is None:
         manifest = fetch_kit_manifest(coordinator, timeout=timeout)

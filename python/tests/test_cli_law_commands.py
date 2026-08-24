@@ -61,6 +61,9 @@ def test_sync_law_reports_the_cache_it_built(published, capsys):
     assert payload["law"]["publication_root"] == published["root"]
     assert set(payload["law"]["env"]) == set(law.ENV_PINS)
     assert sorted(payload["law"]["receipt"]["trees"]) == sorted(law.REQUIRED_TREES)
+    assert "Pass --law-root explicitly" in payload["next"]
+    assert "run setup" in payload["next"]
+    assert "automatically" not in payload["next"]
 
 
 def test_print_export_emits_only_shell_lines(published, capsys):
@@ -104,7 +107,8 @@ def test_a_bad_root_exits_2(published, capsys):
 # --------------------------------------------------------------------------- #
 # the pins reach the later commands
 # --------------------------------------------------------------------------- #
-def test_a_later_command_picks_the_cache_up_without_being_told(published, monkeypatch, capsys):
+def test_a_later_command_picks_the_active_tuple_up_without_being_told(
+        published, monkeypatch, capsys):
     import sys
 
     run(["sync-law", "--mirror", published["mirror"], "--root", published["root"],
