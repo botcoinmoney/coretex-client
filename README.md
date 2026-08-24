@@ -5,7 +5,7 @@ Public validator for the live CoreTex descriptor-v3 rig on Base.
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-pip install https://github.com/botcoinmoney/coretex-client/releases/download/v0.4.2/coretex_validator-0.4.2-py3-none-any.whl
+pip install https://github.com/botcoinmoney/coretex-client/releases/download/v0.4.3/coretex_validator-0.4.3-py3-none-any.whl
 coretex-validator setup
 ```
 
@@ -40,8 +40,11 @@ explicit historical artifact.
 
 Zero runtime dependencies. See [docs/V5-RIG-VALIDATOR.md](docs/V5-RIG-VALIDATOR.md).
 
-Version 0.4.2 replays the parent slot as executable evidence: new artifacts carry the incumbent's
-release root and module SHA-256, and the validator independently fetches and re-hashes those bytes
-from the public CAS before the pinned sandbox runs. The historical three-field identity remains
-accepted only for the exact frozen pre-cut production code roots, so the three existing advances
-remain auditable without creating a fallback for new artifacts.
+Version 0.4.3 keeps 0.4.2's exact-parent replay — new artifacts carry the incumbent's release root
+and module SHA-256, and the validator independently fetches and re-hashes those bytes from the
+public CAS before the pinned sandbox runs — and removes what a clean machine still had to be handed
+first. `setup` discovers the deployment's publication root and installs the admission law, so
+deterministic admission runs instead of backlogging; `replay-latest` replays the newest confirmed
+advance without being told which one; `preview-current-parent` scores a candidate against the live
+parent. There is no longer a default publication root: a rehearsal root pinned by default is a
+validator that reports a verified cache for the wrong law.

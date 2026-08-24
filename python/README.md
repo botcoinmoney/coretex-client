@@ -1,14 +1,16 @@
 # coretex-validator
 
 ```bash
-pip install https://github.com/botcoinmoney/coretex-client/releases/download/v0.4.2/coretex_validator-0.4.2-py3-none-any.whl
+pip install https://github.com/botcoinmoney/coretex-client/releases/download/v0.4.3/coretex_validator-0.4.3-py3-none-any.whl
 coretex-validator setup
 ```
 
-Version 0.4.2 independently resolves and re-hashes the parent composition, release, and module
+Version 0.4.3 independently resolves and re-hashes the parent composition, release, and module
 bytes before replaying a new five-field incumbent identity. The frozen pre-cut code-root set is
 embedded in the wheel so existing three-field production artifacts remain replayable without
-opening a three-field path for new law roots.
+opening a three-field path for new law roots. It adds `setup`'s law install, `replay-latest`,
+`preview-current-parent`, and a rule-carrying object transport; it removes the rehearsal default
+publication root.
 
 ## `setup` installs the admission law
 
