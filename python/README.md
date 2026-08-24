@@ -129,9 +129,11 @@ ones first:
 | `benchmark-v2/{frontier,generators,miner_abi,scoring,validator}`, `coretex-memory` | the verified **law cache** | sealed code roots; their tree hash is what a signed receipt binds |
 | `benchmark-v2/kit`, `benchmark-v2/integration` | the hash-pinned **current miner-kit tar** | required support code; not sealed roots |
 
-The sealed directory wins every module name it defines; the tar — which also ships older copies of
-`frontier`/`scoring`/`miner_abi` — only ever supplies names the seal does not. `--packages-dir`
-points at an already-extracted tar; `--repo-root` uses a full checkout instead of either.
+The current tar contains only `benchmark-v2/kit` and `benchmark-v2/integration`; it carries no
+sealed scorer tree to compete with the law cache. Path layering still gives the sealed directory
+priority defensively, so a manually supplied package directory cannot override
+`frontier`/`scoring`/`miner_abi`. `--packages-dir` points at an already-extracted tar;
+`--repo-root` uses a full checkout instead of either.
 
 Retained frozen packet tarballs are audit artifacts, not install candidates. A current miner-kit
 missing either support tree is refused before preview starts.
