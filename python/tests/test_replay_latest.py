@@ -71,6 +71,13 @@ def replay_latest(feed_obj, capsys, *extra):
                 feed_obj["artifacts"], "--law-cache", feed_obj["cache"], *extra], capsys)
 
 
+def replay_logs(tmp_path, capsys, logs, store):
+    path = tmp_path / "selection-feed.json"
+    path.write_text(json.dumps(logs))
+    return run(["replay-latest", "--logs", str(path), "--artifacts", str(store),
+                "--law-cache", str(tmp_path / "empty-law-cache")], capsys)
+
+
 # --------------------------------------------------------------------------- #
 # discovery
 # --------------------------------------------------------------------------- #
@@ -90,7 +97,7 @@ def test_newest_is_epoch_then_index_not_block_order(tmp_path, capsys):
     """``transitionIndex`` restarts each epoch, so a feed whose newest advance sits in an EARLIER
     block must still be selected. This is the exact bug a block-order sort produces."""
     store = pub.FilesystemCAS(str(tmp_path / "cas"))
-    early_epoch_late_block = vf.RigScenario(epoch=7, transition_index=3, block_number=999,
+    early_epoch_late_block = vf.RigScenario(epoch=7, transition_index=0, block_number=999,
                                             store=store)
     late_epoch_early_block = vf.RigScenario(epoch=9, transition_index=0, block_number=100,
                                             candidate_hash="b" * 64, store=store)
@@ -119,6 +126,107 @@ def test_an_empty_feed_replays_nothing_and_claims_nothing(tmp_path, capsys):
     assert payload["selected"] is None
 
 
+@pytest.mark.parametrize("defect", ["truncated", "wrong_emitter", "gap", "conflict", "removed"])
+def test_a_defective_latest_feed_refuses_instead_of_selecting_an_older_row(
+        tmp_path, capsys, defect):
+    """Known lane damage is operational unavailability, never an idle/older-chain answer."""
+    store = pub.FilesystemCAS(str(tmp_path / "cas"))
+    old = vf.RigScenario(epoch=7, transition_index=0, block_number=100, store=store)
+    latest = vf.RigScenario(epoch=8, transition_index=0, block_number=200,
+                            candidate_hash="b" * 64, store=store)
+    logs = old.logs() + latest.law_logs()
+    candidate = latest.advance_log()
+    if defect == "truncated":
+        candidate["data"] = "0x00"
+        logs.append(candidate)
+    elif defect == "wrong_emitter":
+        candidate["address"] = vf.PRODUCTION_DEPLOYMENT.mining
+        logs.append(candidate)
+    elif defect == "gap":
+        candidate["topics"][2] = "0x" + f"{2:064x}"
+        logs.append(candidate)
+    elif defect == "conflict":
+        logs.extend([candidate, latest.advance_log(new_state_root="f" * 64)])
+    else:
+        candidate["removed"] = True
+        logs.append(candidate)
+
+    code, captured = replay_logs(tmp_path, capsys, logs, tmp_path / "cas")
+    payload = json.loads(captured.out)
+    assert code == 2
+    assert payload["code"] == "FEED_NOT_SELECTABLE"
+    assert payload["outcome"] == "BACKLOG"
+    assert payload["selected"] is None
+    assert payload["feed"]["selectable"] is False
+    assert payload["feed"]["selection_defects"]
+    assert "older" in payload["note"]
+
+
+def test_an_unknown_topic_is_ignored_and_does_not_poison_latest_selection(feed, capsys):
+    document = json.loads(open(feed["logs"], "r", encoding="utf-8").read())
+    logs = document["logs"] if isinstance(document, dict) else document
+    logs.append({
+        "address": vf.PRODUCTION_DEPLOYMENT.registry,
+        "topics": ["0x" + "12" * 32], "data": "0x", "blockNumber": 201,
+        "logIndex": 99,
+    })
+    path = os.path.join(os.path.dirname(feed["logs"]), "logs-with-unknown.json")
+    with open(path, "w", encoding="utf-8") as handle:
+        json.dump(logs, handle)
+    code, captured = run(["replay-latest", "--logs", path, "--artifacts",
+                          feed["artifacts"], "--law-cache", feed["cache"]], capsys)
+    payload = json.loads(captured.out)
+    assert code in (0, 1)
+    assert payload["selected"]["epoch"] == 8
+    assert payload["feed"]["selectable"] is True
+    assert payload["feed"]["ignored"] >= 1
+
+
+@pytest.mark.parametrize("word_index", [6, 7], ids=["improvement-credits", "format-version"])
+def test_every_decoded_advance_field_participates_in_conflict_detection(
+        tmp_path, capsys, word_index):
+    store = pub.FilesystemCAS(str(tmp_path / "cas"))
+    scenario = vf.RigScenario(epoch=8, transition_index=0, block_number=200, store=store)
+    first = scenario.advance_log()
+    second = dict(first)
+    raw = str(first["data"])[2:]
+    start = word_index * 64
+    second["data"] = "0x" + raw[:start] + f"{999:064x}" + raw[start + 64:]
+    second["logIndex"] = int(first["logIndex"]) + 1
+    code, captured = replay_logs(
+        tmp_path, capsys, scenario.law_logs() + [first, second], tmp_path / "cas")
+    payload = json.loads(captured.out)
+    assert code == 2
+    assert payload["code"] == "FEED_NOT_SELECTABLE"
+    assert payload["feed"]["conflicts"] == 1
+    assert payload["selected"] is None
+
+
+@pytest.mark.parametrize("provenance_change", ["location", "block_hash", "removed"])
+def test_same_payload_with_different_provenance_is_a_conflict_not_a_duplicate(
+        tmp_path, capsys, provenance_change):
+    store = pub.FilesystemCAS(str(tmp_path / "cas"))
+    scenario = vf.RigScenario(epoch=8, transition_index=0, block_number=200, store=store)
+    first = scenario.advance_log()
+    second = dict(first)
+    if provenance_change == "location":
+        second["logIndex"] = int(first["logIndex"]) + 1
+        second["transactionHash"] = "0x" + "9" * 64
+    elif provenance_change == "block_hash":
+        first["blockHash"] = "0x" + "8" * 64
+        second["blockHash"] = "0x" + "9" * 64
+    else:
+        second["removed"] = True
+    code, captured = replay_logs(
+        tmp_path, capsys, scenario.law_logs() + [first, second], tmp_path / "cas")
+    payload = json.loads(captured.out)
+    assert code == 2
+    assert payload["code"] == "FEED_NOT_SELECTABLE"
+    assert payload["feed"]["conflicts"] == 1
+    assert payload["feed"]["duplicates"] == 0
+    assert payload["selected"] is None
+
+
 def test_the_report_names_the_one_decoder_that_saw_the_chain(feed, capsys):
     """"Which decoder read this chain" must never be a question answered by reading source."""
     from coretex_validator import rig_discovery as rd
@@ -127,6 +235,8 @@ def test_the_report_names_the_one_decoder_that_saw_the_chain(feed, capsys):
     payload = json.loads(captured.out)
     assert rd.LIVE_DECODER in payload["chain"]["decoder"]
     assert rd.LIVE_DECODER in payload["feed"]["decoder"]
+    assert payload["chain"]["selection_scope"] == "latest-in-supplied-feed"
+    assert payload["chain"]["chain_latest_proven"] is False
     assert code in (0, 1)
 
 
@@ -203,6 +313,13 @@ def test_an_artifact_source_is_required_and_says_both_ways_to_give_one(tmp_path,
                           "--law-cache", str(tmp_path / "c")], capsys)
     assert code == 2
     assert "--artifacts" in captured.err or "artifact" in captured.err
+
+
+def test_two_explicit_artifact_sources_are_refused():
+    parser = cli.build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["replay-latest", "--logs", "feed.json", "--artifacts", "/tmp/cas",
+                           "--artifact-base-url", "https://objects.example/cas"])
 
 
 def test_the_artifact_store_is_the_releases_when_none_is_named(tmp_path, capsys, monkeypatch):

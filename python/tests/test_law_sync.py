@@ -249,10 +249,10 @@ def test_force_rematerializes_over_an_existing_cache(honest):
     assert second.verify()
 
 
-def test_find_cache_locates_what_sync_law_wrote(honest):
+def test_sync_law_alone_does_not_choose_the_default_active_tuple(honest):
     law.sync_law(honest["root"], mirror=honest["dir"], cache_dir=honest["cache"])
     found = law.find_cache(cache_dir=honest["cache"])
-    assert found is not None and found.publication_root == honest["root"]
+    assert found is None
     assert law.find_cache(cache_dir=honest["cache"], publication_root=honest["root"]) is not None
     assert law.find_cache(cache_dir=honest["cache"], publication_root="f" * 64) is None
 
@@ -286,6 +286,24 @@ def test_two_caches_and_no_named_root_is_ambiguous_rather_than_arbitrary(honest,
     # naming one is still unambiguous
     named = law.find_cache(cache_dir=honest["cache"], publication_root=other_root)
     assert named is not None and named.publication_root == other_root
+
+
+def test_active_install_selects_one_exact_law_when_two_caches_exist(honest, tmp_path):
+    law.sync_law(honest["root"], mirror=honest["dir"], cache_dir=honest["cache"])
+    other_root, other_manifest, other_objects = build_publication(
+        {name: {**tree_files(name), "extra.py": b"X = 3\n"} for name in law.REQUIRED_TREES})
+    other_dir = write_set(str(tmp_path / "mirror-active"), other_root, other_manifest,
+                          other_objects)
+    law.sync_law(other_root, mirror=other_dir, cache_dir=honest["cache"])
+    law.write_active_install(
+        cache_dir=honest["cache"], publication_root=other_root,
+        kit_manifest_hash="1" * 64, miner_kit_sha256="2" * 64,
+        miner_kit_filename="coretex-validator-miner-kit-" + "2" * 64 + ".tar",
+        miner_kit_tree_sha256="3" * 64)
+    selected = law.find_cache(cache_dir=honest["cache"])
+    assert selected is not None and selected.publication_root == other_root
+    active = law.load_active_install(cache_dir=honest["cache"])
+    assert active["miner_kit"]["sha256"] == "2" * 64
 
 
 def test_export_lines_are_shell_ready(honest):

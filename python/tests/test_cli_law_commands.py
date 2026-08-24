@@ -109,6 +109,11 @@ def test_a_later_command_picks_the_cache_up_without_being_told(published, monkey
 
     run(["sync-law", "--mirror", published["mirror"], "--root", published["root"],
          "--cache-dir", published["cache"]], capsys)
+    law.write_active_install(
+        cache_dir=published["cache"], publication_root=published["root"],
+        kit_manifest_hash="1" * 64, miner_kit_sha256="2" * 64,
+        miner_kit_filename="coretex-validator-miner-kit-" + "2" * 64 + ".tar",
+        miner_kit_tree_sha256="3" * 64)
     for pin in law.ENV_PINS:
         monkeypatch.delenv(pin, raising=False)
     # `conftest` imports `replay` to build its aliases, which is exactly the ordering the
@@ -158,7 +163,7 @@ def test_no_cache_at_all_reports_honestly_rather_than_failing(tmp_path):
     args = type("A", (), {"law_cache": str(tmp_path), "law_root": None,
                           "no_law_cache": False})()
     block = cli._activate_law(args)
-    assert block["used"] is False and "sync-law" in block["reason"]
+    assert block["used"] is False and "setup" in block["reason"]
 
 
 # --------------------------------------------------------------------------- #

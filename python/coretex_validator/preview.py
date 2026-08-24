@@ -149,7 +149,7 @@ SEALED_BENCH_SUBTREES: Tuple[str, ...] = (
 #:
 #:   ``kit``          ``self_check._aggregate``/``._measurements`` (the tree's own aggregation law)
 #:                    and ``dev_instances`` (the published public dev set)
-#:   ``integration``  ``portability_matrix`` — optional, and its absence is evidence, not a crash
+#:   ``integration``  ``portability_matrix`` — required in the canonical current miner-kit
 #:
 #: They arrive in the HASH-PINNED MINER-KIT TAR that ``setup`` downloads: the kit manifest binds
 #: its sha256 and :func:`setup.download_kit_file` refuses bytes that disagree, so provenance holds
@@ -161,10 +161,9 @@ SUPPORT_BENCH_SUBTREES: Tuple[str, ...] = ("kit", "integration")
 #: actually imports rather than by the directory existing.
 KIT_REQUIRED_FILES: Tuple[str, ...] = ("self_check.py", "dev_instances.py")
 
-#: Which support subtrees the child cannot run without. ``integration`` is deliberately absent:
-#: the frozen kit tar omits it and ``kit/self_check.py`` carries a documented shim for exactly
-#: that, which :data:`PORTABILITY_SHIM_SOURCE` mirrors.
-REQUIRED_SUPPORT_SUBTREES: Tuple[str, ...] = ("kit",)
+#: Both are required by the one canonical current miner-kit. Retained frozen packet tarballs are
+#: audit material and never participate in selection.
+REQUIRED_SUPPORT_SUBTREES: Tuple[str, ...] = ("kit", "integration")
 
 #: How ``setup`` names the extracted miner-kit tar under the packages directory.
 KIT_TAR_PREFIX = "coretex-validator-miner-kit-"
@@ -179,33 +178,65 @@ def default_packages_dir() -> str:
     return su.default_packages_dir()
 
 
-def extracted_kit_trees(packages_dir: Optional[str] = None) -> List[Dict[str, str]]:
-    """Every extracted miner-kit tar under ``packages_dir``, newest-verified first.
+def extraction_tree_sha256(root: str) -> str:
+    """The setup extraction identity, imported lazily to avoid a second hashing rule."""
+    from . import setup as su
 
-    Discovery is by the marker ``setup`` writes, never by directory name alone: the marker exists
-    only after :func:`setup.download_kit_file` accepted the tar against the sha256 the kit manifest
-    binds, so an unpacked directory somebody dropped in by hand is not mistaken for a pinned one.
+    return su.extraction_tree_sha256(root)
+
+
+def extracted_kit_trees(packages_dir: Optional[str] = None, *,
+                        active_install: Optional[Mapping[str, Any]] = None) -> List[Dict[str, str]]:
+    """Load only the miner-kit bound by the active install tuple, rechecking bytes on every use.
+
+    Retained package directories are a cache, not a version selector.  No active tuple means no
+    implicit kit.  A tuple whose archive, extraction marker or extracted bytes changed is refused
+    rather than falling through to another directory.
     """
     base = os.path.abspath(os.path.expanduser(packages_dir or default_packages_dir()))
-    if not os.path.isdir(base):
+    if active_install is None:
         return []
-    out: List[Dict[str, str]] = []
-    for name in sorted(os.listdir(base)):
-        tree = os.path.join(base, name)
-        marker = os.path.join(tree, KIT_EXTRACTED_MARKER)
-        if not name.startswith(KIT_TAR_PREFIX) or not os.path.isfile(marker):
-            continue
-        try:
-            with open(marker, "r", encoding="utf-8") as handle:
-                sha256 = handle.read().strip()
-        except OSError:                                        # pragma: no cover - race
-            continue
-        bench = os.path.join(tree, "benchmark-v2")
-        if os.path.isdir(bench):
-            out.append({"tree": tree, "bench_v2_dir": bench,
-                        "sha256": sha256 or name[len(KIT_TAR_PREFIX):],
-                        "tar": name + ".tar"})
-    return out
+    miner = active_install.get("miner_kit") if isinstance(active_install, Mapping) else None
+    if not isinstance(miner, Mapping):
+        raise PreviewError("the active install does not bind a miner-kit",
+                           code="KIT_BINDING_INVALID", step="miner_kit")
+    filename = miner.get("filename")
+    archive_sha = miner.get("sha256")
+    tree_sha = miner.get("tree_sha256")
+    expected_name = f"{KIT_TAR_PREFIX}{archive_sha}.tar"
+    if (not isinstance(archive_sha, str) or len(archive_sha) != 64
+            or any(ch not in "0123456789abcdef" for ch in archive_sha)
+            or not isinstance(tree_sha, str) or len(tree_sha) != 64
+            or any(ch not in "0123456789abcdef" for ch in tree_sha)
+            or filename != expected_name):
+        raise PreviewError("the active miner-kit identity is malformed",
+                           code="KIT_BINDING_INVALID", step="miner_kit")
+    archive = os.path.join(base, filename)
+    tree = os.path.join(base, os.path.splitext(filename)[0])
+    marker_path = os.path.join(tree, KIT_EXTRACTED_MARKER)
+    try:
+        with open(archive, "rb") as handle:
+            observed_archive = hashlib.sha256(handle.read()).hexdigest()
+        with open(marker_path, "r", encoding="utf-8") as handle:
+            marker = json.load(handle)
+        observed_tree = extraction_tree_sha256(tree)
+    except (OSError, ValueError, RuntimeError) as exc:
+        raise PreviewError(
+            f"the active miner-kit cannot be verified: {exc}", code="KIT_BINDING_INVALID",
+            step="miner_kit", remedy="re-run `coretex-validator setup` to repair the active tuple") \
+            from exc
+    from . import setup as su
+    if (observed_archive != archive_sha or not isinstance(marker, Mapping)
+            or marker.get("format") != su.KIT_EXTRACTION_FORMAT
+            or marker.get("archive_sha256") != archive_sha
+            or marker.get("tree_sha256") != tree_sha or observed_tree != tree_sha):
+        raise PreviewError(
+            "the active miner-kit archive or extracted bytes no longer match the activated tuple",
+            code="KIT_BINDING_INVALID", step="miner_kit",
+            remedy="re-run `coretex-validator setup` to verify and repair the current kit")
+    bench = os.path.join(tree, "benchmark-v2")
+    return [{"tree": tree, "bench_v2_dir": bench, "sha256": archive_sha,
+             "tar": filename}]
 
 
 @dataclass(frozen=True)
@@ -270,7 +301,8 @@ def _subtree_present(bench_dir: str, name: str) -> bool:
 
 def resolve_scoring_trees(*, bench_v2_dir: str, coretex_dir: str,
                           packages_dir: Optional[str] = None,
-                          kit_bench_dirs: Optional[List[str]] = None) -> TreeResolution:
+                          kit_bench_dirs: Optional[List[str]] = None,
+                          active_install: Optional[Mapping[str, Any]] = None) -> TreeResolution:
     """Compose the scoring child's tree view out of the law cache PLUS the miner-kit tar.
 
     A ``--repo-root`` that already carries ``kit``/``integration`` (a full checkout) resolves them
@@ -280,9 +312,6 @@ def resolve_scoring_trees(*, bench_v2_dir: str, coretex_dir: str,
     bench_v2_dir = (bench_v2_dir or "").strip()
     coretex_dir = (coretex_dir or "").strip()
     packages_dir = os.path.abspath(os.path.expanduser(packages_dir or default_packages_dir()))
-    kits = ([{"bench_v2_dir": d, "sha256": "", "tar": ""} for d in kit_bench_dirs]
-            if kit_bench_dirs is not None else extracted_kit_trees(packages_dir))
-
     sources: Dict[str, str] = {}
     # `bool(dir)` FIRST — an unconfigured tree is "" and `os.path.join("", x)` is a RELATIVE path a
     # stray working directory could satisfy (the `replay.py` discipline).
@@ -290,6 +319,11 @@ def resolve_scoring_trees(*, bench_v2_dir: str, coretex_dir: str,
         for name in SEALED_BENCH_SUBTREES + SUPPORT_BENCH_SUBTREES:
             if _subtree_present(bench_v2_dir, name):
                 sources[name] = bench_v2_dir
+    needs_support = any(name not in sources for name in SUPPORT_BENCH_SUBTREES)
+    kits = ([{"bench_v2_dir": d, "sha256": "", "tar": ""} for d in kit_bench_dirs]
+            if kit_bench_dirs is not None else
+            extracted_kit_trees(packages_dir, active_install=active_install)
+            if needs_support else [])
     support_dirs: List[str] = []
     for name in SUPPORT_BENCH_SUBTREES:
         if name in sources:
@@ -493,13 +527,11 @@ def build_parent_arm(execution: Mapping[str, Any]) -> Dict[str, Any]:
 #:   aggregate  fold the per-instance rows and decide, through the tree's OWN aggregation
 #:              (``kit.self_check``) and its OWN Pareto law (``frontier.pareto2``). This client
 #:              does not own a second scoring or comparison law.
-#: THE ``integration`` SHIM, mirrored from ``benchmark-v2/kit/self_check.py::_local_portability``.
+#: Defensive ``integration`` shim, mirrored from ``benchmark-v2/kit/self_check.py``.
 #:
-#: The frozen miner-kit tar does not ship ``benchmark-v2/integration``, and the kit's own
-#: self-check documents that and handles it: a missing portability tree is the SAME local
-#: situation as not asking for the matrix — not executed here, still executed by the adjudicating
-#: host. The shipped preview child imported it unconditionally and died with
-#: ``ModuleNotFoundError: integration`` at the aggregate step, after both arms had really scored.
+#: Canonical active tuples require the real integration tree before starting the child. This shim
+#: remains only for an explicit noncanonical test harness, where absence must be NOT EXECUTED
+#: evidence rather than a fabricated pass.
 #:
 #: FAIL CLOSED either way: ``ok`` is False and ``executed`` is False, so the hard gate rejects. It
 #: is kept as its own source string so a test can execute it against a controlled ``sys.path``
@@ -518,10 +550,8 @@ def _local_portability(breadth):
             "ok": False,
             "missing_module": "integration",
             "reason":
-                "benchmark-v2/integration is not on sys.path (the frozen miner-kit tar omits the "
-                "portability shim, and it is not a sealed code root so no law publication carries "
-                "it). This is a local-tooling gap, not a candidate defect. The adjudicating host "
-                "always runs the portability gate.",
+                "benchmark-v2/integration is not on sys.path; portability was NOT executed "
+                "locally (canonical current kits are refused before this point).",
             "reason_code": "portability_prerequisite_not_executed_locally",
             "breadth": breadth,
         }

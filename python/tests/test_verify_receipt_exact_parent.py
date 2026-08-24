@@ -278,6 +278,32 @@ def test_the_artifact_store_defaults_to_the_directory_holding_the_receipt(monkey
     assert code == 0
 
 
+def test_an_explicit_artifact_url_is_used_instead_of_synthesizing_the_receipt_directory(
+        monkeypatch, capsys):
+    from coretex_validator import pipeline
+    from coretex_validator import publication as pub
+
+    seen = {}
+
+    def fake_open_store(*, artifact_dir, base_url):
+        seen.update({"artifact_dir": artifact_dir, "base_url": base_url})
+        return pub.InMemoryCAS()
+
+    monkeypatch.setattr(pipeline, "open_store", fake_open_store)
+    code, payload = verify_receipt(capsys, "--artifact-base-url", "https://objects.example/cas")
+    assert seen == {"artifact_dir": None, "base_url": "https://objects.example/cas"}
+    assert payload["artifacts"]["source"] == "https://objects.example/cas"
+    assert payload["outcome"] == "BACKLOG"
+    assert code == 0
+
+
+def test_artifact_directory_and_url_are_mutually_exclusive():
+    parser = cli.build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["verify-receipt", "receipt.json", "--artifacts", "/tmp/cas",
+                           "--artifact-base-url", "https://objects.example/cas"])
+
+
 def test_the_posture_file_is_taken_from_a_SYNCED_law_cache(tmp_path):
     """D-3 and D-4 meet here: the seventh sealed root arrives through `sync-law`, and the run that
     replays a receipt is pinned to the cache that carries it — no loose fixture on the side.
@@ -303,7 +329,7 @@ def test_the_posture_file_is_taken_from_a_SYNCED_law_cache(tmp_path):
     proc = subprocess.run(
         [sys.executable, "-m", "coretex_validator.cli", "verify-receipt",
          os.path.join(CAS, REPORT_ROOT), "--artifact", os.path.join(CAS, ARTIFACT_ROOT),
-         "--artifacts", CAS, "--law-cache", cache_dir],
+         "--artifacts", CAS, "--law-cache", cache_dir, "--law-root", publication_root],
         capture_output=True, text=True, env=env, timeout=300)
     payload = json.loads(proc.stdout)
 

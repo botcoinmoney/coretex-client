@@ -8,22 +8,17 @@ themselves, moved up one level to their address — and the address is the part 
 law you install, so leaving it to a paste is where a rehearsal root ends up on a live host.
 
 The root is a property of the deployment, so it is DISCOVERED: the coordinator kit carries a
-``law_publication`` component whose note names it, and whose files are the publication manifest
+``law_publication`` component whose explicit ``publicationRoot`` names it, and whose files are the publication manifest
 plus one tar per code root. Setup downloads them under their kit-declared hashes, lays them out as
 a local ``flat-cas`` mirror (the manifest under the PUBLICATION ROOT's name, each object under its
 own), and hands that directory to the ordinary :func:`law.sync_law` — which re-derives every
 address from the bytes that arrived, exactly as it does for any other mirror. Nothing here is a
 second verification path, and nothing here is weaker than `sync-law --mirror URL --root ROOT`.
 
-THE THREE OUTCOMES, KEPT APART:
-
-* discovered and verified -> ``law.synced: true`` and the pins are on disk;
-* NOT OFFERED (an older coordinator, no such component; a note naming no root or two) ->
-  ``law.synced: false`` with a remedy, and setup still succeeds. A coordinator that does not
-  publish its law is a fact about the coordinator, not a broken install;
-* offered and WRONG (a tar that does not hash to its kit entry, or a tree that does not reproduce
-  the root it is addressed by) -> setup FAILS, loudly. Never a soft "law unavailable": bytes that
-  disagree with their address are the one thing that must not be shrugged off.
+THE CURRENT OUTCOME IS CLOSED: the production-bound kit explicitly names its law, every object
+verifies, and setup activates the kit+law tuple atomically. Missing components, note-only roots,
+and bytes that disagree with their address fail loudly. ``--skip-law`` is an explicit diagnostic
+and never activates a partial tuple.
 """
 from __future__ import annotations
 
@@ -47,8 +42,8 @@ COORDINATOR = "https://coordinator.example"
 class FakeKit:
     """The coordinator's kit endpoints, in memory. No socket is opened anywhere in this file."""
 
-    def __init__(self, *, component: bool = True, note=None, extra_components=(),
-                 corrupt: str = "") -> None:
+    def __init__(self, *, component: bool = True, note=None, explicit_root: bool = True,
+                 extra_components=(), corrupt: str = "") -> None:
         self.root, self.manifest_bytes, self.objects = build_publication()
         self.files = {}
         entries = []
@@ -80,11 +75,14 @@ class FakeKit:
 
         components = [{"id": "frozen_runtime_packet", "files": []}, *extra_components]
         if component:
-            components.append({
+            law_component = {
                 "id": "law_publication",
                 "note": (f"admission law publication root {self.root} — the six trees "
                          "deterministic admission needs") if note is None else note,
-                "files": entries})
+                "files": entries}
+            if explicit_root:
+                law_component["publicationRoot"] = self.root
+            components.append(law_component)
         self.manifest = {"kit": {"format": "coretex.v5.kit/v1", "components": components}}
 
     # -- transport ---------------------------------------------------------- #
@@ -158,8 +156,7 @@ def test_a_second_setup_reuses_what_it_already_verified(kit, tmp_path):
     assert second["trees"] == first["trees"]
 
 
-def test_the_note_is_parsed_defensively_not_greedily(kit, tmp_path):
-    """Any wording is fine as long as it names exactly ONE address."""
+def test_free_text_note_is_not_an_authority_when_the_explicit_root_is_present(kit, tmp_path):
     kit.manifest["kit"]["components"][-1]["note"] = f"root={kit.root}"
     assert sync(kit, tmp_path)["synced"] is True
 
@@ -175,26 +172,21 @@ def test_an_explicit_publication_root_field_is_preferred_when_a_coordinator_send
 # --------------------------------------------------------------------------- #
 # NOT OFFERED — a fact about the coordinator, not a broken install
 # --------------------------------------------------------------------------- #
-def test_a_coordinator_that_publishes_no_law_leaves_a_remedy_and_setup_still_succeeds(
+def test_a_coordinator_that_publishes_no_law_is_not_a_canonical_install(
         monkeypatch, tmp_path):
     kit_obj = FakeKit(component=False).install(monkeypatch)
-    report = sync(kit_obj, tmp_path)
-    assert report["synced"] is False
-    assert "law_publication" in report["reason"]
-    assert "sync-law" in report["reason"]
-    assert "publicationRoot" not in report
+    with pytest.raises(RuntimeError, match="law_publication"):
+        sync(kit_obj, tmp_path)
 
 
-@pytest.mark.parametrize("note,why", [
-    ("the admission law trees", "names no publication root"),
-    ("roots " + "a" * 64 + " and " + "b" * 64, "names 2"),
+@pytest.mark.parametrize("note", [
+    "the admission law trees", "roots " + "a" * 64 + " and " + "b" * 64,
 ])
-def test_a_note_that_does_not_name_exactly_one_root_is_reported_not_guessed(
-        monkeypatch, tmp_path, note, why):
-    kit_obj = FakeKit(note=note).install(monkeypatch)
-    report = sync(kit_obj, tmp_path)
-    assert report["synced"] is False
-    assert why in report["reason"]
+def test_a_note_cannot_substitute_for_the_explicit_current_publication_root(
+        monkeypatch, tmp_path, note):
+    kit_obj = FakeKit(note=note, explicit_root=False).install(monkeypatch)
+    with pytest.raises(RuntimeError, match="explicit.*publicationRoot"):
+        sync(kit_obj, tmp_path)
 
 
 def test_skip_law_keeps_the_old_behaviour(kit, tmp_path):

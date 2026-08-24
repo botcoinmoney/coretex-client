@@ -137,10 +137,55 @@ def test_newest_is_epoch_then_index_not_block_order():
                if str(l["topics"][0]).lower().replace("0x", "") == rig.STATE_ADVANCED_TOPIC0][0]
     early_epoch_late_block = dict(advance)
     early_epoch_late_block["topics"] = [advance["topics"][0], "0x" + f"{183:064x}",
-                                        "0x" + f"{7:064x}", advance["topics"][3]]
+                                        "0x" + f"{0:064x}", advance["topics"][3]]
     early_epoch_late_block["blockNumber"] = hex(E184["block_number"] + 900)
     feed = rd.sync_rig_logs(logs + [early_epoch_late_block], deployment=deployment())
     assert (feed.newest().epoch, feed.newest().transition_index) == (184, 0)
+
+
+class _Counts:
+    block = 50_400_000
+
+    def __init__(self, current, counts):
+        self._current = current
+        self._counts = dict(counts)
+
+    def current_epoch(self):
+        return self._current
+
+    def transition_count(self, epoch):
+        return self._counts.get(epoch, 0)
+
+
+def test_registry_count_proves_the_latest_epoch_and_dense_tail():
+    feed = rd.sync_rig_logs(feed_logs(), deployment=deployment())
+    proof = rd.prove_rpc_latest_complete(
+        feed, views=_Counts(184, {184: 1}), cutover_epoch=171)
+    assert proof["proven"] is True and proof["idle"] is False
+    assert proof["latest_transition_epoch"] == 184
+    assert proof["transition_count"] == 1
+
+
+def test_registry_count_detects_a_truncated_final_page():
+    feed = rd.sync_rig_logs(feed_logs(), deployment=deployment())
+    with pytest.raises(rd.FeedCompletenessError, match="transitionCount=2"):
+        rd.prove_rpc_latest_complete(
+            feed, views=_Counts(184, {184: 2}), cutover_epoch=171)
+
+
+def test_registry_count_detects_an_entire_omitted_newest_epoch():
+    feed = rd.sync_rig_logs(feed_logs(), deployment=deployment())
+    with pytest.raises(rd.FeedCompletenessError, match="epoch 185"):
+        rd.prove_rpc_latest_complete(
+            feed, views=_Counts(185, {185: 1, 184: 1}), cutover_epoch=171)
+
+
+def test_only_zero_counts_through_cutover_can_prove_an_idle_chain():
+    feed = rd.sync_rig_logs([], deployment=deployment())
+    proof = rd.prove_rpc_latest_complete(
+        feed, views=_Counts(184, {}), cutover_epoch=171)
+    assert proof["proven"] is True and proof["idle"] is True
+    assert len(proof["checked_transition_counts"]) == 14
 
 
 # --------------------------------------------------------------------------- #

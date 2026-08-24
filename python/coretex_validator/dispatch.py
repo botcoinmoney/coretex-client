@@ -661,6 +661,8 @@ class LogProvenance:
     transaction_hash: Optional[str] = None
     transaction_index: Optional[int] = None
     removed: bool = False
+    #: Appended to preserve the positional constructor used by historical fixtures.
+    block_hash: Optional[str] = None
 
     @property
     def position(self) -> Tuple[int, int]:
@@ -678,6 +680,8 @@ def _provenance(log: Mapping[str, Any]) -> LogProvenance:
     return LogProvenance(
         address=address.lower() if isinstance(address, str) else None,
         block_number=_int_field(log, "blockNumber"),
+        block_hash=(log.get("blockHash").lower()
+                    if isinstance(log.get("blockHash"), str) else None),
         log_index=_int_field(log, "logIndex"),
         transaction_hash=(log.get("transactionHash").lower()
                           if isinstance(log.get("transactionHash"), str) else None),

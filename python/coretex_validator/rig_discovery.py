@@ -106,6 +106,10 @@ class ProjectionError(Exception):
         self.stage = stage
 
 
+class FeedCompletenessError(Exception):
+    """Confirmed chain state proves the log response cannot identify the latest transition."""
+
+
 # --------------------------------------------------------------------------- #
 # 1. confirmation, ordering, selection
 # --------------------------------------------------------------------------- #
@@ -119,7 +123,10 @@ def _same_payload(a: rig.StateAdvanced, b: rig.StateAdvanced) -> bool:
             and a.eval_report_hash == b.eval_report_hash
             and a.core_version_hash == b.core_version_hash
             and a.epoch_context_root == b.epoch_context_root
-            and a.compact_patch_bytes == b.compact_patch_bytes)
+            and a.improvement_credits == b.improvement_credits
+            and a.transition_format_version == b.transition_format_version
+            and a.compact_patch_bytes == b.compact_patch_bytes
+            and a.provenance == b.provenance)
 
 
 @dataclass
@@ -144,6 +151,29 @@ class RigFeed:
         return not self.gaps and not self.conflicts
 
     @property
+    def selection_defects(self) -> List[str]:
+        """Facts that make a claim about THE latest advance unsafe.
+
+        Explicit replay may still enumerate the decodable rows and report these defects.  Latest
+        selection may not skip over a malformed/reorged/conflicting tail and answer with an older
+        row, because that would turn an unusable feed into a false statement about chain head.
+        """
+        defects: List[str] = []
+        if self.undecodable:
+            defects.append("known live-lane logs were present but undecodable or mis-emitted")
+        if self.gaps:
+            defects.append("the confirmed transition sequence has gaps")
+        if self.conflicts:
+            defects.append("different transitions claim the same epoch/index")
+        if any(a.provenance.removed for a in self.advances):
+            defects.append("a candidate latest transition is marked removed by the feed")
+        return defects
+
+    @property
+    def selectable(self) -> bool:
+        return not self.selection_defects
+
+    @property
     def epochs(self) -> Tuple[int, ...]:
         return tuple(sorted({a.epoch for a in self.advances}))
 
@@ -153,7 +183,7 @@ class RigFeed:
         ``transitionIndex`` restarts at 0 every epoch, so the last log in a block-ordered feed is
         routinely not the head advance.
         """
-        return self.advances[-1] if self.advances else None
+        return self.advances[-1] if self.advances and self.selectable else None
 
     def credit_for(self, advance: rig.StateAdvanced) -> Optional[rig.CoreTexCreditAccepted]:
         """The CoreTex credit minted in the SAME transaction. Matched on transaction hash — the
@@ -177,6 +207,8 @@ class RigFeed:
             "pending": len(self.pending),
             "epochs": list(self.epochs),
             "contiguous": self.contiguous,
+            "selectable": self.selectable,
+            "selection_defects": self.selection_defects,
             "gaps": [g.as_dict() for g in self.gaps],
             "conflicts": len(self.conflicts),
             "duplicates": len(self.duplicates),
@@ -262,6 +294,51 @@ def sync_rig_logs(logs: Iterable[Mapping[str, Any]], *, deployment: rig.RigDeplo
         pending, key=lambda a: (a.epoch, a.transition_index)), duplicates=duplicates,
         conflicts=conflicts, gaps=gaps, anomalies=anomalies, undecodable=undecodable,
         confirmed_head=head)
+
+
+def prove_rpc_latest_complete(feed: RigFeed, *, views: Any,
+                              cutover_epoch: int) -> Dict[str, Any]:
+    """Bind latest selection to registry counts at the SAME confirmed block as the log scan.
+
+    Walking backward stops at the newest epoch whose on-chain transition count is nonzero.  Zero
+    epochs above it are part of the proof: they rule out an omitted whole newest epoch.  Exact
+    dense indices for the first nonzero epoch rule out a truncated final page.  If every epoch to
+    cutover is zero, only an actually empty feed may be called idle.
+    """
+    current = int(views.current_epoch())
+    floor = int(cutover_epoch)
+    if current < floor:
+        raise FeedCompletenessError(
+            f"confirmed current epoch {current} is below release cutover epoch {floor}")
+    out_of_range = [a for a in feed.advances if a.epoch > current or a.epoch < floor]
+    if out_of_range:
+        raise FeedCompletenessError(
+            "the log response contains advances outside the release epoch range")
+    checked: Dict[str, int] = {}
+    for epoch in range(current, floor - 1, -1):
+        expected_count = int(views.transition_count(epoch))
+        if expected_count < 0:
+            raise FeedCompletenessError(f"transitionCount({epoch}) is negative")
+        checked[str(epoch)] = expected_count
+        observed = sorted(a.transition_index for a in feed.advances if a.epoch == epoch)
+        expected = list(range(expected_count))
+        if observed != expected:
+            raise FeedCompletenessError(
+                f"epoch {epoch} registry transitionCount={expected_count}, but the confirmed "
+                f"log response contains indices {observed}; the response is incomplete or "
+                "out of scope")
+        if expected_count:
+            return {"proven": True, "idle": False, "current_epoch": current,
+                    "latest_transition_epoch": epoch, "transition_count": expected_count,
+                    "checked_transition_counts": checked,
+                    "confirmed_block": getattr(views, "block", None)}
+    if feed.advances:
+        raise FeedCompletenessError(
+            "registry transition counts are zero through cutover, but the feed contains advances")
+    return {"proven": True, "idle": True, "current_epoch": current,
+            "latest_transition_epoch": None, "transition_count": 0,
+            "checked_transition_counts": checked,
+            "confirmed_block": getattr(views, "block", None)}
 
 
 def _contiguity(advances: Sequence[rig.StateAdvanced], *,

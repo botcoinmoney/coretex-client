@@ -16,7 +16,7 @@ law gets installed, so leaving it to a paste is exactly where a rehearsal public
 pinned on a live host — which is what the removed ``DEFAULT_PUBLICATION_ROOT`` did.
 
 The root is a property of the deployment, so the coordinator publishes it: the kit carries a
-``law_publication`` component whose note names the publication root and whose files are the
+``law_publication`` component whose explicit ``publicationRoot`` names the publication and whose files are the
 publication manifest (``LAW-PUBLICATION.json``) plus one tar per code root. Setup downloads them
 under their kit-declared sha256s, arranges them as a local ``flat-cas`` mirror — the manifest
 under the PUBLICATION ROOT's name, each object under its own, which is the layout
@@ -28,9 +28,9 @@ binds, and each extracted tree to the tree-hash root its own name is. The kit's 
 transport check on top of that, never a substitute for it, and a coordinator's word about which
 root is live is a POINTER — the trees still have to reproduce it.
 
-Three outcomes, deliberately not two: installed; NOT OFFERED (an older coordinator has no such
-component) which reports a remedy and still succeeds; and OFFERED-AND-WRONG, which fails loudly.
-Bytes that disagree with their address are never a soft "law unavailable".
+A normal setup has one outcome: the current miner-kit and current law are both verified and one
+closed tuple is activated atomically.  ``--skip-packages`` and ``--skip-law`` remain explicit
+diagnostic escape hatches, but an incomplete public kit is not a successful current install.
 """
 from __future__ import annotations
 
@@ -38,13 +38,16 @@ import base64
 import hashlib
 import json
 import os
-import re
+from pathlib import PurePosixPath
+import shutil
 import tarfile
+import tempfile
 import urllib.parse
 import urllib.request
 from typing import Any, Dict, List, Mapping, Optional
 
 from . import law as law_mod
+from . import frontier as fr
 from .rpc import DEFAULT_USER_AGENT
 
 DEFAULT_RPC = "https://mainnet.base.org"
@@ -52,6 +55,18 @@ DEFAULT_COORDINATOR = "https://coordinator.agentmoney.net"
 DEFAULT_PACKAGES_DIR = os.path.join(
     os.environ.get("XDG_DATA_HOME", os.path.expanduser("~/.local/share")),
     "coretex", "packages")
+KIT_MANIFEST_FORMAT = "coretex.memory-frontier.v1/kit-manifest"
+CURRENT_MINER_KIT_COMPONENT_ID = "current_miner_kit"
+KIT_TAR_PREFIX = "coretex-validator-miner-kit-"
+KIT_EXTRACTION_FORMAT = "coretex-validator.kit-extraction/v1"
+KIT_EXTRACTION_MARKER = ".extracted"
+MAX_KIT_MEMBERS = 20_000
+MAX_KIT_EXTRACTED_BYTES = 512 * 1024 * 1024
+REQUIRED_CURRENT_KIT_FILES = (
+    "benchmark-v2/kit/self_check.py",
+    "benchmark-v2/kit/dev_instances.py",
+    "benchmark-v2/integration/portability_matrix.py",
+)
 
 
 def default_packages_dir() -> str:
@@ -65,6 +80,111 @@ def kit_components(manifest: Mapping[str, Any]) -> List[Mapping[str, Any]]:
     if not isinstance(components, list):
         return []
     return [c for c in components if isinstance(c, Mapping)]
+
+
+def _canonical_kit_manifest_body(kit: Mapping[str, Any]) -> Dict[str, Any]:
+    """The exact subset hashed by ``coretex-memory-v5-kit.ts``.
+
+    Download URLs, notes, timestamps and host paths are deliberately absent: the coordinator's
+    manifest hash commits to the component/file inventory, and this mirrors that inventory byte for
+    byte instead of trusting the hash string it arrived beside.
+    """
+    if kit.get("format") != KIT_MANIFEST_FORMAT:
+        raise RuntimeError(
+            f"kit.format must be the current {KIT_MANIFEST_FORMAT!r}, got {kit.get('format')!r}")
+    raw_components = kit.get("components")
+    if not isinstance(raw_components, list) or not raw_components:
+        raise RuntimeError("kit.components must be a non-empty array")
+    components: List[Dict[str, Any]] = []
+    ids = set()
+    for index, component in enumerate(raw_components):
+        if not isinstance(component, Mapping):
+            raise RuntimeError(f"kit.components[{index}] must be an object")
+        component_id = component.get("id")
+        if not isinstance(component_id, str) or not component_id or component_id in ids:
+            raise RuntimeError(f"kit.components[{index}].id is absent or duplicated")
+        ids.add(component_id)
+        present = component.get("present")
+        files = component.get("files")
+        missing = component.get("missing")
+        if not isinstance(present, bool) or not isinstance(files, list) \
+                or not isinstance(missing, list) or not all(isinstance(v, str) for v in missing):
+            raise RuntimeError(
+                f"kit component {component_id!r} needs boolean present and array files/missing")
+        canonical_files: List[Dict[str, Any]] = []
+        for file_index, item in enumerate(files):
+            if not isinstance(item, Mapping):
+                raise RuntimeError(f"kit component {component_id!r} file {file_index} is not an object")
+            path, sha, size = item.get("path"), item.get("sha256"), item.get("bytes")
+            if not isinstance(path, str) or not path or path.startswith(("/", "\\")):
+                raise RuntimeError(f"kit component {component_id!r} has an invalid file path")
+            if sha is not None and (not isinstance(sha, str) or not law_mod.is_root(sha)):
+                raise RuntimeError(f"kit file {path!r} has an invalid sha256")
+            if not isinstance(size, int) or isinstance(size, bool) or size < 0:
+                raise RuntimeError(f"kit file {path!r} has an invalid byte length")
+            canonical_files.append({"path": path, "sha256": sha or "", "bytes": size})
+        components.append({"id": component_id, "present": present,
+                           "files": canonical_files, "missing": list(missing)})
+    return {"format": KIT_MANIFEST_FORMAT, "components": components}
+
+
+def _miner_kit_candidates(manifest: Mapping[str, Any]) -> List[Dict[str, str]]:
+    components = [component for component in kit_components(manifest)
+                  if component.get("id") == CURRENT_MINER_KIT_COMPONENT_ID]
+    if len(components) != 1 or components[0].get("present") is not True:
+        raise RuntimeError(
+            f"the current kit must publish exactly one present {CURRENT_MINER_KIT_COMPONENT_ID} "
+            f"component, found {len(components)}")
+    raw_files = components[0].get("files")
+    candidates = component_files(components[0])
+    if not isinstance(raw_files, list) or len(raw_files) != 1 or len(candidates) != 1:
+        raise RuntimeError(
+            f"{CURRENT_MINER_KIT_COMPONENT_ID} must contain exactly one addressed tar, found "
+            f"{len(candidates)} files")
+    item = candidates[0]
+    name = item["name"]
+    expected_name = f"{KIT_TAR_PREFIX}{item['sha256']}.tar"
+    if name != expected_name:
+        raise RuntimeError(
+            f"current miner-kit filename {name!r} must embed its full sha256 as {expected_name!r}")
+    return candidates
+
+
+def current_miner_kit_file(manifest: Mapping[str, Any]) -> Dict[str, str]:
+    """The ONE current miner-kit tar. There is no ordered fallback among prior tarballs."""
+    candidates = _miner_kit_candidates(manifest)
+    if len(candidates) != 1:
+        raise RuntimeError(
+            f"the current kit must publish exactly one miner-kit tar, found {len(candidates)}")
+    return candidates[0]
+
+
+def validate_kit_manifest_envelope(manifest: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Validate the current public envelope and independently recompute ``manifestHash``."""
+    if not isinstance(manifest, Mapping) or manifest.get("ok") is not True:
+        raise RuntimeError("kit manifest response must be an ok:true object")
+    kit = manifest.get("kit")
+    if not isinstance(kit, Mapping):
+        raise RuntimeError("kit manifest response has no kit object")
+    body = _canonical_kit_manifest_body(kit)
+    observed = hashlib.sha256(fr.canonical_bytes(body)).hexdigest()
+    claimed = kit.get("manifestHash")
+    if claimed != observed:
+        raise RuntimeError(f"kit.manifestHash is {claimed!r}, recomputed {observed}")
+    production = manifest.get("productionRelease")
+    if not isinstance(production, Mapping):
+        raise RuntimeError("the current kit envelope has no productionRelease object")
+    if production.get("kitManifestHash") != observed:
+        raise RuntimeError("productionRelease.kitManifestHash does not bind this kit manifest")
+    # These are the two pieces a canonical install needs. Merely parsing the rest of the inventory
+    # must never turn an old/partial coordinator into a successful current install.
+    current_miner_kit_file(manifest)
+    law_components = [c for c in kit_components(manifest)
+                      if c.get("id") == LAW_PUBLICATION_COMPONENT_ID]
+    if len(law_components) != 1 or law_components[0].get("present") is not True:
+        raise RuntimeError("the current kit must publish exactly one present law_publication component")
+    law_publication_root(law_components[0])
+    return kit
 
 
 def component_files(component: Mapping[str, Any]) -> List[Dict[str, str]]:
@@ -89,20 +209,17 @@ def kit_package_files(manifest: Mapping[str, Any]) -> List[Dict[str, str]]:
     """The miner-kit tar and frozen-runtime-packet identity from a kit manifest.
 
     The kit also carries a ``coretex_validator`` wheel. Setup does not download it: the operator
-    already installed this package, and the live kit wheel is an older 0.4.0 pin. The law
+    already installed this package. The law
     publication's own files are addressed by root and handled by :func:`law_publication_files`.
     """
-    out: List[Dict[str, str]] = []
-    seen = set()
+    current = current_miner_kit_file(manifest)
+    out: List[Dict[str, str]] = [current]
+    seen = {current["sha256"]}
     for component in kit_components(manifest):
         for item in component_files(component):
             if item["sha256"] in seen:
                 continue
-            interesting = (
-                (item["name"].startswith("coretex-validator-miner-kit-")
-                 and item["name"].endswith(".tar"))
-                or item["name"] == "FROZEN-RUNTIME-PACKET.json"
-            )
+            interesting = item["name"] == "FROZEN-RUNTIME-PACKET.json"
             if not interesting:
                 continue
             seen.add(item["sha256"])
@@ -142,7 +259,9 @@ def _unwrap_kit_bytes(raw: bytes, encoding: str) -> bytes:
 def fetch_kit_manifest(coordinator: str, *, timeout: float = 60.0) -> Dict[str, Any]:
     """``GET /coretex/v5/kit/manifest``, parsed. The one document setup discovers everything from."""
     url = _urljoin(coordinator, "/coretex/v5/kit/manifest")
-    return json.loads(_fetch(url, timeout=timeout, limit=2 * 1024 * 1024))
+    document = json.loads(_fetch(url, timeout=timeout, limit=2 * 1024 * 1024))
+    validate_kit_manifest_envelope(document)
+    return document
 
 
 def download_kit_file(coordinator: str, item: Mapping[str, Any], target: str, *,
@@ -188,13 +307,70 @@ def fetch_kit_packages(
             for item in kit_package_files(manifest)]
 
 
+def extraction_tree_sha256(root: str) -> str:
+    """Hash every regular extracted file, refusing links/devices and excluding only the marker."""
+    lines: List[bytes] = []
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        dirnames.sort()
+        filenames.sort()
+        for dirname in dirnames:
+            path = os.path.join(dirpath, dirname)
+            if os.path.islink(path):
+                raise RuntimeError(f"extracted kit contains symlink directory {path}")
+        for filename in filenames:
+            if filename == KIT_EXTRACTION_MARKER and os.path.abspath(dirpath) == os.path.abspath(root):
+                continue
+            path = os.path.join(dirpath, filename)
+            if os.path.islink(path) or not os.path.isfile(path):
+                raise RuntimeError(f"extracted kit contains a non-regular file {path}")
+            rel = os.path.relpath(path, root).replace(os.sep, "/")
+            with open(path, "rb") as handle:
+                digest = hashlib.sha256(handle.read()).hexdigest()
+            lines.append(rel.encode("utf-8") + b"\0" + digest.encode("ascii") + b"\n")
+    return hashlib.sha256(b"".join(sorted(lines))).hexdigest()
+
+
+def validate_current_miner_kit_tree(root: str) -> None:
+    """The explicit current kit is runnable support, not merely a correctly hashed tar."""
+    missing = [relpath for relpath in REQUIRED_CURRENT_KIT_FILES
+               if not os.path.isfile(os.path.join(root, *relpath.split("/")))]
+    if missing:
+        raise RuntimeError(
+            "the current miner-kit is missing required support files: " + ", ".join(missing))
+
+
 def _extract_tar(archive: str, dest: str) -> None:
+    """Extract only ordinary files/directories, including on Python versions without filters."""
     os.makedirs(dest, exist_ok=True)
+    seen = set()
+    total = 0
     with tarfile.open(archive, "r:*") as tar:
-        kwargs: Dict[str, Any] = {}
-        if hasattr(tarfile, "data_filter"):
-            kwargs["filter"] = "data"
-        tar.extractall(dest, **kwargs)
+        members = tar.getmembers()
+        if len(members) > MAX_KIT_MEMBERS:
+            raise RuntimeError(f"miner-kit tar has {len(members)} members, limit {MAX_KIT_MEMBERS}")
+        for member in members:
+            raw = member.name
+            parts = PurePosixPath(raw).parts
+            if (not raw or raw.startswith(("/", "\\")) or "\\" in raw
+                    or any(part in ("", ".", "..") for part in parts)
+                    or raw in seen or not (member.isdir() or member.isreg())):
+                raise RuntimeError(f"unsafe tar member {raw!r}: only unique relative files/dirs are allowed")
+            seen.add(raw)
+            total += int(member.size or 0)
+            if total > MAX_KIT_EXTRACTED_BYTES:
+                raise RuntimeError(
+                    f"miner-kit tar expands beyond {MAX_KIT_EXTRACTED_BYTES} bytes")
+            target = os.path.join(dest, *parts)
+            if member.isdir():
+                os.makedirs(target, exist_ok=True)
+                continue
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            source = tar.extractfile(member)
+            if source is None:  # pragma: no cover - tarfile invariant for regular files
+                raise RuntimeError(f"unsafe tar member {raw!r}: regular file has no payload")
+            with source, open(target, "wb") as output:
+                shutil.copyfileobj(source, output)
+            os.chmod(target, member.mode & 0o755 or 0o600)
 
 
 def maybe_extract_tars(files: List[Mapping[str, Any]], dest_dir: str) -> List[str]:
@@ -203,14 +379,53 @@ def maybe_extract_tars(files: List[Mapping[str, Any]], dest_dir: str) -> List[st
         path = str(item.get("local_path") or "")
         if not path.endswith(".tar"):
             continue
+        expected = str(item.get("sha256") or "")
+        if not law_mod.is_root(expected):
+            raise RuntimeError(f"tar {path} has no valid expected sha256")
+        with open(path, "rb") as handle:
+            actual = hashlib.sha256(handle.read()).hexdigest()
+        if actual != expected:
+            raise RuntimeError(f"tar {path} hashes to {actual}, kit named {expected}")
         out = os.path.join(dest_dir, os.path.splitext(os.path.basename(path))[0])
         marker = os.path.join(out, ".extracted")
         if os.path.isfile(marker):
-            extracted.append(out)
-            continue
-        _extract_tar(path, out)
-        with open(marker, "w", encoding="utf-8") as fh:
-            fh.write(item.get("sha256") or "")
+            try:
+                with open(marker, "r", encoding="utf-8") as fh:
+                    recorded = json.load(fh)
+                tree = extraction_tree_sha256(out)
+                if (recorded.get("format") == KIT_EXTRACTION_FORMAT
+                        and recorded.get("archive_sha256") == expected
+                        and recorded.get("tree_sha256") == tree):
+                    extracted.append(out)
+                    continue
+            except (OSError, ValueError, RuntimeError, AttributeError):
+                pass
+        os.makedirs(dest_dir, exist_ok=True)
+        staging = tempfile.mkdtemp(prefix=".kit-incomplete-", dir=dest_dir)
+        retired = None
+        try:
+            _extract_tar(path, staging)
+            tree = extraction_tree_sha256(staging)
+            with open(os.path.join(staging, KIT_EXTRACTION_MARKER), "w", encoding="utf-8") as fh:
+                json.dump({"format": KIT_EXTRACTION_FORMAT, "archive_sha256": expected,
+                           "tree_sha256": tree}, fh, sort_keys=True, separators=(",", ":"))
+                fh.write("\n")
+            if os.path.exists(out):
+                retired = out + f".retired-{os.getpid()}"
+                if os.path.exists(retired):
+                    shutil.rmtree(retired)
+                os.replace(out, retired)
+            os.replace(staging, out)
+            staging = ""
+            if retired:
+                shutil.rmtree(retired)
+        except Exception:
+            if retired and not os.path.exists(out) and os.path.exists(retired):
+                os.replace(retired, out)
+            raise
+        finally:
+            if staging:
+                shutil.rmtree(staging, ignore_errors=True)
         extracted.append(out)
     return extracted
 
@@ -222,24 +437,8 @@ def maybe_extract_tars(files: List[Mapping[str, Any]], dest_dir: str) -> List[st
 LAW_PUBLICATION_COMPONENT_ID = "law_publication"
 LAW_PUBLICATION_MANIFEST_NAME = "LAW-PUBLICATION.json"
 
-#: A bare lowercase sha256, not touching another hex digit on either side. Used to read the
-#: publication root out of a free-text note without depending on how the note is worded.
-_ROOT_IN_TEXT = re.compile(r"(?<![0-9a-fA-F])[0-9a-f]{64}(?![0-9a-fA-F])")
-
-_LAW_REMEDY = ("Install it explicitly instead: `coretex-validator sync-law --mirror URL --root "
-               "ROOT`. Deterministic admission BACKLOGs until then, which is the honest outcome "
-               "and not a broken install")
-
-
-class LawNotPublished(Exception):
-    """This kit does not offer a law publication this client can ADDRESS.
-
-    Deliberately not a verification failure. An older coordinator carries no ``law_publication``
-    component at all, and a component whose note names no address — or two — cannot be resolved to
-    one publication without guessing. Both are facts about the coordinator, so setup reports them
-    and succeeds. Bytes that disagree with an address are a different matter entirely and are
-    raised by :func:`law.sync_law`, which nothing here catches.
-    """
+_LAW_REMEDY = ("Run `coretex-validator setup` without --skip-law to verify and activate the one "
+               "current kit/law tuple. Deterministic admission BACKLOGs without an active tuple")
 
 
 def law_publication_component(manifest: Mapping[str, Any]) -> Optional[Mapping[str, Any]]:
@@ -251,34 +450,13 @@ def law_publication_component(manifest: Mapping[str, Any]) -> Optional[Mapping[s
 
 
 def law_publication_root(component: Mapping[str, Any]) -> str:
-    """The publication root the component names. Parsed defensively; never guessed.
-
-    An explicit ``publicationRoot`` / ``publication_root`` field wins when a coordinator sends
-    one. Otherwise the free-text ``note`` is scanned for bare sha256 addresses and must yield
-    EXACTLY ONE: a note naming none has not told us what to install, and a note naming several has
-    not told us which — and picking one would make the installed law a function of word order.
-    """
-    for field in ("publicationRoot", "publication_root"):
-        explicit = component.get(field)
-        if explicit is None:
-            continue
-        if not law_mod.is_root(explicit):
-            raise LawNotPublished(
-                f"the kit's {LAW_PUBLICATION_COMPONENT_ID} component names {field}="
-                f"{explicit!r}, which is not a bare sha256")
-        return str(explicit)
-    note = str(component.get("note") or "")
-    found = sorted(set(_ROOT_IN_TEXT.findall(note)))
-    if not found:
-        raise LawNotPublished(
-            f"the kit's {LAW_PUBLICATION_COMPONENT_ID} component names no publication root: its "
-            f"note is {note!r} and it carries no publicationRoot field")
-    if len(found) > 1:
-        raise LawNotPublished(
-            f"the kit's {LAW_PUBLICATION_COMPONENT_ID} note names {len(found)} addresses "
-            f"({found}); which one is the publication root is not something this client will "
-            "guess at")
-    return found[0]
+    """The explicit current publication root. Free-text notes are never an authority."""
+    explicit = component.get("publicationRoot")
+    if not law_mod.is_root(explicit):
+        raise RuntimeError(
+            f"the current {LAW_PUBLICATION_COMPONENT_ID} component must carry an explicit "
+            f"valid publicationRoot, got {explicit!r}")
+    return str(explicit)
 
 
 def mirror_law_publication(coordinator: str, component: Mapping[str, Any],
@@ -335,14 +513,10 @@ def sync_law_from_kit(coordinator: str, manifest: Mapping[str, Any], *, packages
                 "reason": "--skip-law: the admission law was not fetched. " + _LAW_REMEDY}
     component = law_publication_component(manifest)
     if component is None:
-        return {"synced": False,
-                "reason": (f"this coordinator's kit carries no {LAW_PUBLICATION_COMPONENT_ID} "
-                           "component, so it does not publish which admission law its chain head "
-                           "binds. " + _LAW_REMEDY)}
-    try:
-        publication_root = law_publication_root(component)
-    except LawNotPublished as exc:
-        return {"synced": False, "reason": f"{exc}. " + _LAW_REMEDY}
+        raise RuntimeError(
+            f"the current kit carries no {LAW_PUBLICATION_COMPONENT_ID} component; a canonical "
+            "install requires both the current miner-kit and its law publication")
+    publication_root = law_publication_root(component)
 
     mirror = mirror_law_publication(
         coordinator, component, publication_root,
@@ -411,6 +585,42 @@ def run(
     law_block = sync_law_from_kit(coordinator, kit_manifest or {}, packages_dir=packages_dir,
                                   cache_dir=law_cache, skip_law=skip_law)
 
+    active_install = None
+    if not skip_packages and not skip_law:
+        assert kit_manifest is not None                 # fetched and envelope-validated above
+        miner = current_miner_kit_file(kit_manifest)
+        matching = [item for item in packages
+                    if item.get("sha256") == miner["sha256"]
+                    and item.get("name") == miner["name"]]
+        if len(matching) != 1:
+            raise RuntimeError("the verified current miner-kit was not downloaded exactly once")
+        archive_path = str(matching[0].get("local_path") or "")
+        if not archive_path or not os.path.isfile(archive_path):
+            raise RuntimeError("the verified current miner-kit archive is absent after download")
+        extraction = os.path.join(
+            packages_dir, os.path.splitext(os.path.basename(archive_path))[0])
+        if extraction not in extracted:
+            raise RuntimeError("the verified current miner-kit was not extracted")
+        marker_path = os.path.join(extraction, KIT_EXTRACTION_MARKER)
+        try:
+            with open(marker_path, "r", encoding="utf-8") as handle:
+                marker = json.load(handle)
+        except (OSError, ValueError) as exc:
+            raise RuntimeError(f"the current miner-kit extraction receipt is unreadable: {exc}") \
+                from exc
+        tree_sha = extraction_tree_sha256(extraction)
+        validate_current_miner_kit_tree(extraction)
+        if (not isinstance(marker, Mapping)
+                or marker.get("format") != KIT_EXTRACTION_FORMAT
+                or marker.get("archive_sha256") != miner["sha256"]
+                or marker.get("tree_sha256") != tree_sha):
+            raise RuntimeError("the current miner-kit extraction does not match its receipt")
+        active_install = law_mod.write_active_install(
+            cache_dir=law_cache, publication_root=law_block["publicationRoot"],
+            kit_manifest_hash=str(kit_manifest["kit"]["manifestHash"]),
+            miner_kit_sha256=miner["sha256"], miner_kit_filename=miner["name"],
+            miner_kit_tree_sha256=tree_sha)
+
     return {
         "ok": bool(verification.ok),
         "rpc": rpc_url,
@@ -432,5 +642,6 @@ def run(
         "packages": [{k: v for k, v in item.items() if k != "download"} for item in packages],
         "extracted": extracted,
         "law": law_block,
+        "active_install": active_install,
         "next": "coretex-validator verify-release --rpc " + rpc_url,
     }

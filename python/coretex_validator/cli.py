@@ -78,8 +78,8 @@ def _activate_law(args: argparse.Namespace) -> Optional[Dict[str, Any]]:
     """Apply a verified law cache's env pins, and say in the report which one was used.
 
     MUST run before ``pipeline``/``replay`` is imported — see the module docstring. Returns the
-    block the command reports under ``law``, or ``None`` when no cache is available (in which case
-    the run proceeds exactly as it did before this feature existed: honest BACKLOGs at step 5).
+    block the command reports under ``law``, or ``None`` when no active tuple is available (in
+    which case the run proceeds to honest BACKLOGs at step 5).
 
     An explicitly-named ``--law-root`` that is NOT present is an error, never a silent fallback to
     "no law": a caller who named a publication meant that publication.
@@ -90,14 +90,17 @@ def _activate_law(args: argparse.Namespace) -> Optional[Dict[str, Any]]:
     root = getattr(args, "law_root", None)
     if getattr(args, "no_law_cache", False):
         return {"used": False, "reason": "--no-law-cache: the law cache was not consulted"}
+    active = law_mod.load_active_install(cache_dir=cache_dir)
     if root:
         cache = law_mod.load_cache(root, cache_dir=cache_dir)   # raises if absent or tampered
+        if active is not None and active["law_publication_root"] != root:
+            active = None
     else:
         cache = law_mod.find_cache(cache_dir=cache_dir)
     if cache is None:
         return {"used": False,
                 "reason": ("no verified law cache was found; deterministic admission will BACKLOG. "
-                           "Run `coretex-validator sync-law --mirror URL` to remove it"),
+                           "Run `coretex-validator setup` to activate the current kit and law"),
                 "cache_dir": cache_dir or law_mod.default_cache_dir()}
     pins = law_mod.activate(cache)
     return {"used": True, "publication_root": cache.publication_root,
@@ -105,7 +108,8 @@ def _activate_law(args: argparse.Namespace) -> Optional[Dict[str, Any]]:
             "trees": cache.receipt["trees"],
             # The seventh sealed root is a FILE, not a tree (D-3). Reported separately so a reader
             # can tell at a glance whether this cache can compute `code_roots` at all.
-            "files": cache.files, "mirror": cache.receipt.get("mirror")}
+            "files": cache.files, "mirror": cache.receipt.get("mirror"),
+            "active_install": active}
 
 
 def _cmd_reproduce(args: argparse.Namespace) -> int:
@@ -369,9 +373,14 @@ def _cmd_replay_latest(args: argparse.Namespace) -> int:
     from . import sync as sy
 
     release = rel.discover(args.release)
-    chain: Dict[str, Any] = {"source": "logs-file" if args.logs else "rpc",
-                             "release": release.classification,
-                             "decoder": rd.DECODER_NOTE}
+    chain: Dict[str, Any] = {
+        "source": "logs-file" if args.logs else "rpc", "release": release.classification,
+        "decoder": rd.DECODER_NOTE,
+        "selection_scope": ("latest-in-supplied-feed" if args.logs
+                            else "confirmed-chain-latest"),
+        "chain_latest_proven": False,
+    }
+    completeness_views = None
     if args.logs:
         logs = _load_logs(args.logs)
         latest_block = args.latest_block
@@ -391,6 +400,8 @@ def _cmd_replay_latest(args: argparse.Namespace) -> int:
         from_block = int(args.from_block if args.from_block is not None else release.deploy_block)
         logs = rpc.get_logs(addresses=list(release.deployment.addresses), topics=[],
                             from_block=from_block, to_block=head)
+        from .rpc import RigViews
+        completeness_views = RigViews(rpc, release.deployment, block=head)
         chain.update({"rpc": args.rpc, "latest_block": latest_block, "confirmed_head": head,
                       "scanned_blocks": [from_block, head]})
 
@@ -398,6 +409,44 @@ def _cmd_replay_latest(args: argparse.Namespace) -> int:
                             confirmation_depth=args.confirmation_depth)
     # THE ONE DECISION: the chain's order, last element. Never the feed's order.
     newest = feed.newest()
+
+    if not feed.selectable:
+        payload = {
+            "law": law_block, "chain": chain, "feed": feed.summary(),
+            "artifacts": {"source": args.artifacts or args.artifact_base_url
+                          or release.artifact_base_url},
+            "selected": None, "outcome": "BACKLOG", "code": "FEED_NOT_SELECTABLE",
+            "reason": ("the confirmed feed cannot identify one latest advance: "
+                       + "; ".join(feed.selection_defects)),
+            "note": ("no older advance was selected and the feed was not described as idle; "
+                     "repair or rescan the confirmed range"),
+            "outcomes": {"PASS": 0, "FAIL": 0, "BACKLOG": 1},
+        }
+        _emit(payload, pretty=not args.compact)
+        return 2
+
+    if completeness_views is not None:
+        raw_cutover = release.raw.get("cutover_epoch", release.raw.get("cutoverEpoch"))
+        if not isinstance(raw_cutover, int) or isinstance(raw_cutover, bool):
+            sys.stderr.write("coretex-validator replay-latest: release has no valid cutover epoch\n")
+            return 2
+        try:
+            completeness = rd.prove_rpc_latest_complete(
+                feed, views=completeness_views, cutover_epoch=raw_cutover)
+        except rd.FeedCompletenessError as exc:
+            payload = {
+                "law": law_block, "chain": chain, "feed": feed.summary(),
+                "artifacts": {"source": args.artifacts or args.artifact_base_url
+                              or release.artifact_base_url},
+                "selected": None, "outcome": "BACKLOG",
+                "code": "FEED_COMPLETENESS_UNPROVEN", "reason": str(exc),
+                "note": ("no older advance was selected and the chain was not described as "
+                         "idle; use an RPC that returns the full confirmed range"),
+                "outcomes": {"PASS": 0, "FAIL": 0, "BACKLOG": 1},
+            }
+            _emit(payload, pretty=not args.compact)
+            return 2
+        chain.update({"chain_latest_proven": True, "completeness": completeness})
 
     try:
         store = pipeline.open_store(artifact_dir=args.artifacts,
@@ -537,9 +586,10 @@ def _cmd_verify_receipt(args: argparse.Namespace) -> int:
     """Drive ``benchmark-v2/validator/replay.replay_receipt`` through the law cache.
 
     Same pattern as ``reproduce``'s step 5, exposed on its own so a receipt can be checked without
-    a chain at all: the receipt is self-contained from ``receipt + trees``. The frozen replay runs
-    in a child interpreter that installs and PROVES a networkless seccomp filter before executing
-    the candidate; a host where that cannot be installed BACKLOGs rather than running it unconfined.
+    a chain at all. Exact-parent reports additionally need the eval artifact and the public parent
+    graph; a receipt plus law trees alone does not contain those bytes. The frozen replay runs in
+    a child interpreter that installs and PROVES a networkless seccomp filter before executing the
+    candidate; a host where that cannot be installed BACKLOGs rather than running it unconfined.
 
     EXACT-PARENT RECEIPTS (D-4). When the report names the five-field exact incumbent, the
     incumbent EXECUTION is resolved here from the artifact store rather than demanded from a flag
@@ -560,8 +610,10 @@ def _cmd_verify_receipt(args: argparse.Namespace) -> int:
     # The receipt is normally named by its own address INSIDE a content-addressed directory, so
     # that directory is the artifact source unless the caller names another. Requiring --artifacts
     # for a directory the command was already pointed into would be a second way to say one thing.
-    artifact_dir = args.artifacts or os.path.dirname(
-        os.path.abspath(os.path.expanduser(args.receipt))) or None
+    artifact_dir = args.artifacts
+    if artifact_dir is None and args.artifact_base_url is None:
+        artifact_dir = os.path.dirname(
+            os.path.abspath(os.path.expanduser(args.receipt))) or None
     try:
         store = pipeline.open_store(artifact_dir=artifact_dir,
                                     base_url=args.artifact_base_url)
@@ -674,7 +726,8 @@ def _cmd_preview_current_parent(args: argparse.Namespace) -> int:
     # resolution is reported under `law.scoring_trees` so a refusal for want of an UNSEALED tree
     # can never read as "the law cache is missing" while `law.used` says otherwise.
     resolution = pv.resolve_scoring_trees(
-        bench_v2_dir=bench_dir, coretex_dir=coretex_dir, packages_dir=args.packages_dir)
+        bench_v2_dir=bench_dir, coretex_dir=coretex_dir, packages_dir=args.packages_dir,
+        active_install=(law_block or {}).get("active_install"))
     if law_block is not None:
         law_block = {**law_block, "scoring_trees": resolution.as_dict()}
     try:
@@ -883,11 +936,14 @@ def build_parser() -> argparse.ArgumentParser:
     latest.add_argument("--logs", default=None,
                         help="replay from this feed file instead of the chain (a JSON list, or "
                              "{\"logs\": [...]}) — the same discovery, offline")
-    latest.add_argument("--artifacts", default=None,
-                        help="directory of content-addressed objects the advance points at")
-    latest.add_argument("--artifact-base-url", default=None,
-                        help="http(s) CAS serving the advance's objects by root (default: the "
-                             "release's artifact_base_url, when it publishes one)")
+    latest_source = latest.add_mutually_exclusive_group()
+    latest_source.add_argument(
+        "--artifacts", default=None,
+        help="directory of content-addressed objects the advance points at")
+    latest_source.add_argument(
+        "--artifact-base-url", default=None,
+        help="http(s) CAS serving the advance's objects by root (default: the release's "
+             "artifact_base_url, when it publishes one)")
     latest.add_argument("--from-block", type=int, default=None,
                         help="start of the log scan (default: the release's deploy block)")
     latest.add_argument("--latest-block", type=int, default=None,
@@ -912,12 +968,14 @@ def build_parser() -> argparse.ArgumentParser:
                          help="the V5 eval artifact that binds it (needed for a v2 report, and "
                               "for an exact-parent receipt: it names the parent frontier root the "
                               "incumbent execution is resolved from)")
-    receipt.add_argument("--artifacts", default=None,
-                         help="directory of content-addressed objects the receipt's exact parent "
-                              "is resolved from (default: the directory holding the receipt, "
-                              "which is where a content-addressed receipt normally sits)")
-    receipt.add_argument("--artifact-base-url", default=None,
-                         help="http(s) CAS serving those objects by root, instead of a directory")
+    receipt_source = receipt.add_mutually_exclusive_group()
+    receipt_source.add_argument(
+        "--artifacts", default=None,
+        help="directory of content-addressed objects the receipt's exact parent is resolved from "
+             "(default: the directory holding the receipt)")
+    receipt_source.add_argument(
+        "--artifact-base-url", default=None,
+        help="http(s) CAS serving those objects by root, instead of a directory")
     receipt.add_argument("--repo-root", default=None,
                          help="use these trees instead of the law cache — the directory that "
                               "CONTAINS benchmark-v2 and coretex-memory")

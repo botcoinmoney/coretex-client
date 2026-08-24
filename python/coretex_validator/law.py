@@ -107,6 +107,11 @@ REQUIRED_TREES: Tuple[str, ...] = (
     "coretex-memory/coretex_memory",
 )
 
+#: One successful current setup activates one law+kit tuple. Cache directories may retain bytes for
+#: audit/debugging, but default commands never infer "current" from their names or count.
+ACTIVE_INSTALL_FORMAT = "coretex-validator.active-install/v1"
+ACTIVE_INSTALL_FILENAME = "ACTIVE-INSTALL.json"
+
 # --------------------------------------------------------------------------- #
 # THE SEVENTH SEALED ROOT IS A FILE, NOT A TREE
 # --------------------------------------------------------------------------- #
@@ -843,33 +848,96 @@ def load_cache(publication_root: str, *, cache_dir: Optional[str] = None,
     return cache
 
 
+def _active_install_path(cache_dir: Optional[str]) -> str:
+    base = os.path.abspath(os.path.expanduser(cache_dir or default_cache_dir()))
+    return os.path.join(base, ACTIVE_INSTALL_FILENAME)
+
+
+def _validate_active_install(document: Any) -> Dict[str, Any]:
+    if not isinstance(document, Mapping):
+        raise LawCacheError("the active install receipt is not an object")
+    expected_fields = {"format", "kit_manifest_hash", "law_publication_root", "miner_kit"}
+    if set(document) != expected_fields or document.get("format") != ACTIVE_INSTALL_FORMAT:
+        raise LawCacheError(
+            f"the active install receipt must be a closed {ACTIVE_INSTALL_FORMAT} object")
+    kit_hash = check_root(document.get("kit_manifest_hash"), "kit_manifest_hash")
+    law_root = check_root(document.get("law_publication_root"), "law_publication_root")
+    miner = document.get("miner_kit")
+    if not isinstance(miner, Mapping) \
+            or set(miner) != {"filename", "sha256", "tree_sha256"}:
+        raise LawCacheError("active install miner_kit must bind filename, sha256 and tree_sha256")
+    filename = miner.get("filename")
+    if (not isinstance(filename, str) or not filename.endswith(".tar")
+            or os.path.basename(filename) != filename):
+        raise LawCacheError("active install miner-kit filename must be one basename ending in .tar")
+    archive = check_root(miner.get("sha256"), "miner_kit.sha256")
+    tree = check_root(miner.get("tree_sha256"), "miner_kit.tree_sha256")
+    expected_filename = f"coretex-validator-miner-kit-{archive}.tar"
+    if filename != expected_filename:
+        raise LawCacheError(
+            f"active install miner-kit filename must be {expected_filename!r}, got {filename!r}")
+    return {"format": ACTIVE_INSTALL_FORMAT, "kit_manifest_hash": kit_hash,
+            "law_publication_root": law_root,
+            "miner_kit": {"filename": filename, "sha256": archive, "tree_sha256": tree}}
+
+
+def load_active_install(*, cache_dir: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """Load the single explicitly activated install tuple. Absence means no default."""
+    path = _active_install_path(cache_dir)
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, "rb") as handle:
+            document = _parse_json_strict(handle.read(), path)
+    except OSError as exc:
+        raise LawCacheError(f"could not read active install receipt {path}: {exc}") from exc
+    return _validate_active_install(document)
+
+
+def write_active_install(*, cache_dir: Optional[str], publication_root: str,
+                         kit_manifest_hash: str, miner_kit_sha256: str,
+                         miner_kit_filename: str, miner_kit_tree_sha256: str) -> Dict[str, Any]:
+    """Atomically make one fully verified law+kit tuple the default for later commands."""
+    document = _validate_active_install({
+        "format": ACTIVE_INSTALL_FORMAT,
+        "kit_manifest_hash": kit_manifest_hash,
+        "law_publication_root": publication_root,
+        "miner_kit": {"filename": miner_kit_filename, "sha256": miner_kit_sha256,
+                      "tree_sha256": miner_kit_tree_sha256},
+    })
+    # Refuse to activate a root whose installed cache is absent or no longer verifies.
+    load_cache(publication_root, cache_dir=cache_dir)
+    path = _active_install_path(cache_dir)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + f".part-{os.getpid()}"
+    try:
+        with open(tmp, "w", encoding="utf-8") as handle:
+            json.dump(document, handle, sort_keys=True, separators=(",", ":"))
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+    finally:
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:
+            pass
+    return document
+
+
 def find_cache(*, cache_dir: Optional[str] = None,
                publication_root: Optional[str] = None) -> Optional[LawCache]:
-    """The cache a later command should use, or ``None``. Never guesses between two.
-
-    With no root named: the single cache in the directory, if there is exactly one. If there are
-    several, ``None`` is returned and the caller reports that the pin is ambiguous — picking one
-    would make the active law a function of directory listing order. There is no baked-in root to
-    break the tie, and there deliberately never was a good one to use for it.
-    """
+    """The explicitly named or atomically activated cache. Directory contents never choose law."""
     base = os.path.abspath(os.path.expanduser(cache_dir or default_cache_dir()))
     if publication_root:
         try:
             return load_cache(publication_root, cache_dir=base)
         except LawCacheError:
             return None
-    if not os.path.isdir(base):
+    active = load_active_install(cache_dir=base)
+    if active is None:
         return None
-    present = sorted(name for name in os.listdir(base)
-                     if is_root(name) and os.path.isfile(os.path.join(base, name, CACHE_RECEIPT)))
-    if not present:
-        return None
-    if len(present) != 1:
-        return None
-    try:
-        return load_cache(present[0], cache_dir=base)
-    except LawCacheError:
-        return None
+    return load_cache(active["law_publication_root"], cache_dir=base)
 
 
 # --------------------------------------------------------------------------- #

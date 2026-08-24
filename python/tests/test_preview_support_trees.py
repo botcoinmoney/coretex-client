@@ -18,15 +18,14 @@ directory wins every name it defines; the kit tar only ever supplies names the s
 from __future__ import annotations
 
 import json
+import hashlib
 import os
+import tarfile
 import textwrap
 
 import pytest
 
 from coretex_validator import preview as pv
-
-
-KIT_TAR_SHA = "0b" + "c0" * 31 + "31"
 
 
 def _write(path, text):
@@ -50,7 +49,7 @@ def sealed_law_cache(tmp_path, *, marker="sealed"):
 def extracted_kit(tmp_path, *, with_integration=True, marker="kit-tar"):
     """The miner-kit tar as ``setup`` leaves it: extracted beside its ``.extracted`` marker."""
     packages = tmp_path / "packages"
-    tree = packages / (pv.KIT_TAR_PREFIX + KIT_TAR_SHA)
+    tree = packages / (".payload-" + marker)
     bench = tree / "benchmark-v2"
     _write(str(bench / "kit" / "__init__.py"), "\n")
     _write(str(bench / "kit" / "self_check.py"), "def _aggregate(rows, profile):\n    return {}\n")
@@ -65,8 +64,30 @@ def extracted_kit(tmp_path, *, with_integration=True, marker="kit-tar"):
     for subtree in pv.SEALED_BENCH_SUBTREES:
         _write(str(bench / subtree / "__init__.py"),
                f'SOURCE = "{marker}"\nGENERATOR_PROFILE_IDS = ["stale.profile.v1"]\n')
-    _write(str(tree / ".extracted"), KIT_TAR_SHA)
-    return {"packages_dir": str(packages), "bench": str(bench), "tree": str(tree)}
+    os.makedirs(packages, exist_ok=True)
+    candidate = packages / ("candidate-" + marker + ".tar")
+    with tarfile.open(candidate, "w") as archive:
+        archive.add(bench, arcname="benchmark-v2")
+    archive_sha = hashlib.sha256(candidate.read_bytes()).hexdigest()
+    final_tree = packages / (pv.KIT_TAR_PREFIX + archive_sha)
+    final_archive = packages / (pv.KIT_TAR_PREFIX + archive_sha + ".tar")
+    os.replace(tree, final_tree)
+    os.replace(candidate, final_archive)
+    tree_sha = pv.extraction_tree_sha256(str(final_tree))
+    _write(str(final_tree / ".extracted"), json.dumps({
+        "format": "coretex-validator.kit-extraction/v1",
+        "archive_sha256": archive_sha, "tree_sha256": tree_sha,
+    }))
+    return {
+        "packages_dir": str(packages), "bench": str(final_tree / "benchmark-v2"),
+        "tree": str(final_tree), "archive": str(final_archive), "sha": archive_sha,
+        "active": {
+            "format": "coretex-validator.active-install/v1",
+            "kit_manifest_hash": "1" * 64, "law_publication_root": "a" * 64,
+            "miner_kit": {"filename": final_archive.name, "sha256": archive_sha,
+                          "tree_sha256": tree_sha},
+        },
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -78,7 +99,7 @@ def test_the_two_unsealed_support_trees_are_resolved_from_the_miner_kit_tar(tmp_
 
     resolution = pv.resolve_scoring_trees(
         bench_v2_dir=law["bench"], coretex_dir=law["coretex"],
-        packages_dir=kit["packages_dir"])
+        packages_dir=kit["packages_dir"], active_install=kit["active"])
 
     assert resolution.ok is True
     assert resolution.missing_required == ()
@@ -88,11 +109,33 @@ def test_the_two_unsealed_support_trees_are_resolved_from_the_miner_kit_tar(tmp_
     for subtree in pv.SEALED_BENCH_SUBTREES:
         assert resolution.sources[subtree] == law["bench"]
     assert resolution.support_dirs == (kit["bench"],)
-    assert resolution.kit_tars == (KIT_TAR_SHA,)
+    assert resolution.kit_tars == (kit["sha"],)
 
     child = pv.LawTreeChild(bench_v2_dir=law["bench"], coretex_dir=law["coretex"],
                             support_dirs=resolution.support_dirs)
     assert child.available() is True
+
+
+def test_preview_uses_only_the_active_kit_not_a_lexically_first_old_cache(tmp_path):
+    law = sealed_law_cache(tmp_path)
+    old = extracted_kit(tmp_path, marker="old")
+    current = extracted_kit(tmp_path, marker="current")
+    resolution = pv.resolve_scoring_trees(
+        bench_v2_dir=law["bench"], coretex_dir=law["coretex"],
+        packages_dir=old["packages_dir"], active_install=current["active"])
+    assert resolution.sources["kit"] == current["bench"]
+    assert resolution.kit_tars == (current["sha"],)
+
+
+def test_preview_refuses_a_mutated_active_extraction(tmp_path):
+    law = sealed_law_cache(tmp_path)
+    kit = extracted_kit(tmp_path)
+    _write(os.path.join(kit["bench"], "kit", "self_check.py"), "MUTATED = True\n")
+    with pytest.raises(pv.PreviewError, match="no longer match") as excinfo:
+        pv.resolve_scoring_trees(
+            bench_v2_dir=law["bench"], coretex_dir=law["coretex"],
+            packages_dir=kit["packages_dir"], active_install=kit["active"])
+    assert excinfo.value.code == "KIT_BINDING_INVALID"
 
 
 def test_a_law_cache_alone_cannot_provision_the_scorer_and_says_so_achievably(tmp_path):
@@ -119,6 +162,18 @@ def test_a_law_cache_alone_cannot_provision_the_scorer_and_says_so_achievably(tm
     # the unachievable remedy must be GONE: sync-law can never publish an unsealed tree
     assert "sync-law" not in remedy
     assert "sealed" in str(excinfo.value)
+
+
+def test_the_canonical_current_kit_requires_the_integration_support_tree(tmp_path):
+    law = sealed_law_cache(tmp_path)
+    kit = extracted_kit(tmp_path, with_integration=False)
+    resolution = pv.resolve_scoring_trees(
+        bench_v2_dir=law["bench"], coretex_dir=law["coretex"],
+        packages_dir=kit["packages_dir"], active_install=kit["active"])
+    assert resolution.ok is False
+    assert "integration" in resolution.missing_required
+    with pytest.raises(pv.PreviewError, match="integration"):
+        pv.require_scoring_trees(resolution)
 
 
 def test_the_refusal_report_does_not_claim_the_law_is_used_and_missing_at_once(tmp_path):
@@ -149,7 +204,7 @@ def test_the_sealed_trees_win_every_name_the_kit_tar_also_defines(tmp_path):
     kit = extracted_kit(tmp_path)
     resolution = pv.resolve_scoring_trees(
         bench_v2_dir=law["bench"], coretex_dir=law["coretex"],
-        packages_dir=kit["packages_dir"])
+        packages_dir=kit["packages_dir"], active_install=kit["active"])
     child = pv.LawTreeChild(bench_v2_dir=law["bench"], coretex_dir=law["coretex"],
                             support_dirs=resolution.support_dirs, timeout=120)
 
@@ -189,10 +244,7 @@ def _run_portability_shim(tmp_path, *, breadth, with_integration):
 
 
 def test_a_missing_integration_tree_is_not_executed_evidence_not_a_crash(tmp_path):
-    """The frozen kit tar omits `benchmark-v2/integration`; `kit/self_check.py` documents a shim
-    for exactly that and this child must mirror it. The shipped child imported it unconditionally
-    and died `ModuleNotFoundError: integration` at the aggregate step, after 585 seconds of real
-    scoring."""
+    """Defensive noncanonical seam: absence is never fabricated into portability success."""
     evidence = _run_portability_shim(tmp_path, breadth=None, with_integration=False)
     assert evidence["executed"] is False
     assert evidence["ok"] is False                       # FAIL CLOSED, never an assumed pass
@@ -244,4 +296,4 @@ def test_the_cli_refuses_a_law_cache_only_host_with_the_achievable_remedy(tmp_pa
     trees = payload["law"]["scoring_trees"]
     assert trees["sealed_trees_present"] is True
     assert trees["sufficient_for_scoring"] is False
-    assert trees["missing_required"] == ["kit"]
+    assert trees["missing_required"] == ["kit", "integration"]

@@ -292,6 +292,20 @@ class JsonRpc:
             raw = self.call("eth_getLogs", [criteria])
             if not isinstance(raw, list):
                 raise RpcError("eth_getLogs did not return a list")
+            allowed = {str(address).lower() for address in addresses}
+            for index, item in enumerate(raw):
+                if not isinstance(item, Mapping):
+                    raise RpcError(f"eth_getLogs[{index}] is not an object")
+                address = item.get("address")
+                if not isinstance(address, str) or address.lower() not in allowed:
+                    raise RpcError(
+                        f"eth_getLogs[{index}] returned address {address!r} outside the request")
+                block = _hex_int(item.get("blockNumber"),
+                                 f"eth_getLogs[{index}].blockNumber")
+                if block < start or block > stop:
+                    raise RpcError(
+                        f"eth_getLogs[{index}] returned block {block} outside requested "
+                        f"chunk [{start}, {stop}]")
             out.extend(raw)
             start = stop + 1
         return out
