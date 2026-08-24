@@ -160,9 +160,10 @@ permanent refutation — never the retryable `ObjectNotFoundError`.
 
 ## Version status
 
-0.4.3 is cut here and pending release/deploy; 0.4.2 is the prior live cut. What a particular
-coordinator actually serves is on that coordinator: `GET /coretex/v5/status` →
-`productionRelease.validatorWheel` names the wheel filename, version and sha256 parsed from the
-bytes it will hand you.
+0.4.3 is the one canonical validator production release; there is no supported prior/current
+version split. `GET /coretex/v5/status` → `productionRelease.validatorWheel` is the deployment byte
+authority: it names the exact wheel filename, version and sha256 parsed from the bytes the
+coordinator will hand you. A deployment is current only when that tuple names the canonical 0.4.3
+artifact.
 
 See the repository root README for commands and contracts.

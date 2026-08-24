@@ -84,9 +84,9 @@ retired lane's and no live command consults them.
 one miner-kit tar and an explicit law-publication root. Missing components and a publication
 without the posture file are refused rather than installed partially.
 
-**Which version is live.** 0.4.3 is **cut** — it is the version this repository builds and the one
-the coordinator's kit is prepared to serve — and it is **pending release and deploy**. Until that
-lands, the live coordinator serves 0.4.2, which is the prior live cut. Do not read the version in
-this README as a claim about what a given deployment is serving right now: ask the deployment.
-`GET /coretex/v5/status` → `productionRelease.validatorWheel` names the exact wheel and sha256 that
-coordinator will hand you, parsed from the bytes it serves.
+**One canonical validator release.** 0.4.3 is the validator this repository builds and the only
+current production release; there is no supported prior/current version split. The deployment byte
+authority is `GET /coretex/v5/status` → `productionRelease.validatorWheel`: that tuple names the
+exact wheel, version and sha256 the coordinator will hand you, parsed from the bytes it serves. A
+deployment is on the canonical release only when that tuple names the canonical 0.4.3 artifact;
+documentation, tags and a local cache are not substitutes for those served bytes.
