@@ -267,23 +267,26 @@ Eight steps, in order, stopping at the first outright failure and recording the 
 | 2 | verify contract bytecode + wiring | `release` | against the RELEASE, not a rebuild |
 | 3 | per-rig receipt continuity | `receipt_chain` | CoreTex **and** standard receipts share one chain |
 | 4 | reconstruct the transition | `join` | design §7.2, keyed on `(epoch, parentStateRoot, patchHash)` |
-| 5 | deterministic admission | `replay` | runs for real once `sync-law` has run; BACKLOGs otherwise — see F4 |
+| 5 | deterministic admission | `replay` | runs for real once the law is installed — `setup` does that itself; BACKLOGs otherwise — see F4 |
 | 6 | artifacts + HISTORICAL law | `historical_law` | the law at that transition, never today's |
 | 7 | reproduce the resolver snapshot | `snapshot` | unsigned payload FIRST, signature separately |
 | 8 | export for portable activation | `export` | `MAINNET_REHEARSAL` only |
 
-Two commands sit alongside the eight, driving the same machinery without a chain in front of it:
-`replay-advance` (one confirmed advance, from a supplied log feed and artifact store) and
-`verify-receipt` (a signed Benchmark-v2 receipt, which is self-contained from `receipt + trees`).
-Both use the law cache exactly as step 5 does, and both surface `PASS` / `FAIL` / `BACKLOG`
-verbatim — there is no flag on either that turns an unreachable binding into a pass.
+Commands sit alongside the eight, driving the same machinery: `replay-advance` (one confirmed
+advance, from a supplied log feed and artifact store), `replay-latest` (the same thing, but it
+*discovers* the newest confirmed advance from the chain by `(epoch, transitionIndex)` rather than
+being told which one), and `verify-receipt` (a signed Benchmark-v2 receipt, which is self-contained
+from `receipt + trees`). All use the law cache exactly as step 5 does, and all surface `PASS` /
+`FAIL` / `BACKLOG` verbatim — there is no flag on any of them that turns an unreachable binding into
+a pass.
 
-### What the clean machine can and cannot do, after `sync-law`
+### What the clean machine can and cannot do, once the law is installed
 
-The honest ceilings do **not** move because the law is now fetchable. Stated again so the new
-capability is not read as more than it is:
+The honest ceilings do **not** move because the law is now discoverable and fetchable. Stated again
+so the new capability is not read as more than it is:
 
-* **`sync-law` removes step 5's BACKLOG; it does not make anything production-authoritative.**
+* **Installing the law removes step 5's BACKLOG; it does not make anything
+  production-authoritative.**
   Nothing this package reproduces carries `production_authority: true`. `release.py` refuses a
   release declaring `MAINNET_CANONICAL` by name and `export.build_export` cannot emit that
   classification, by construction rather than by policy.
@@ -302,9 +305,30 @@ capability is not read as more than it is:
   installed the child exits and the result is a BACKLOG, never an unconfined run. That is a
   process-level control on a host the validator does not own. The fully-locked shape is the
   digest-pinned runner image.
-* **The law cache is content-addressed, not authorized.** `sync-law` proves the trees are the ones
-  the receipt's `code_roots` names. It says nothing about whether that publication root is the one
-  an operator *should* be replaying against; that binding comes from the chain, at step 5.
+* **The law cache is content-addressed, not authorized.** Verification proves the trees are the
+  ones the receipt's `code_roots` names. It says nothing about whether that publication root is the
+  one an operator *should* be replaying against; that binding comes from the chain, at step 5.
+  `setup` narrows the gap by *discovering* the root from the deployment's own kit instead of taking
+  one on the command line — which is why `sync-law` no longer carries a default root at all — but
+  discovery is provenance, not authority.
+
+### Objects travel with their rule, and the client re-hashes anyway
+
+`ContentStore.get_for_rule(root, hash_rule)` sends the committed hash rule with the request
+(`?hashRule=`), because a content address is only half a contract and the coordinator's public
+object route refuses a request that names no rule. Two of the four rules address bytes that are not
+the bytes on the wire, and `sha256-benchmark-canonical-json` addresses a document that legitimately
+carries floats.
+
+What does **not** travel is trust. A server may report `transportVerified: true` and
+`canonicalVerification: "client_required"` (or the equivalent `X-CoreTex-Transport-Verified` /
+`X-CoreTex-Canonical-Verification` headers on the raw path); this client does not read either as
+verification. `publication.read_back` recomputes the root from the bytes that arrived, under the
+rule the caller committed to. The distinction is exact: the server can only check that
+`sha256(bytes)` equals the root, while this side additionally requires the bytes to **be** the
+canonical serialisation the root names. A disagreement raises `ReadBackMismatchError` — a permanent,
+provable refutation — and specifically not `ObjectNotFoundError`, which is a retryable availability
+fact; collapsing the two would let a substituting mirror hide inside a backlog.
 
 ### The two authorities, never collapsed
 

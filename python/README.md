@@ -71,4 +71,27 @@ from future public entropy and applies the full composite law including the prer
 adjudicating host executes. **Losing to the current parent exits 0** — it is information, not an
 error; non-zero means the comparison could not be made.
 
+## Objects carry their hash rule; verification stays here
+
+`ContentStore.get_for_rule(root, hash_rule)` sends the committed rule with the request, because the
+coordinator's object route refuses one that names no rule, and because two of the four rules address
+bytes that are not the bytes on the wire. The rule decides how the object is *served*. It never
+decides whether the object is *correct*: `publication.read_back` recomputes the root here, from the
+bytes that arrived, under the rule the caller committed to.
+
+So a response carrying `transportVerified: true` and `canonicalVerification: "client_required"` (or
+the `X-CoreTex-Transport-Verified` / `X-CoreTex-Canonical-Verification` headers on the raw path) is
+read as a transport-level statement and nothing more — it is not evidence and this client does not
+act on it. The gap is real for `sha256-benchmark-canonical-json`, the float-bearing rule: a server
+can only check that `sha256(bytes)` equals the root, while this side also requires the bytes to
+**be** the canonical serialisation that root names. A mismatch is `ReadBackMismatchError` — a
+permanent refutation — never the retryable `ObjectNotFoundError`.
+
+## Version status
+
+0.4.3 is cut here and pending release/deploy; 0.4.2 is the prior live cut. What a particular
+coordinator actually serves is on that coordinator: `GET /coretex/v5/status` →
+`productionRelease.validatorWheel` names the wheel filename, version and sha256 parsed from the
+bytes it will hand you.
+
 See the repository root README for commands and contracts.

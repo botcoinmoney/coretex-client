@@ -34,9 +34,17 @@ explicit historical artifact.
 | `reproduce-snapshot --snapshot F --rpc URL --artifacts DIR` | rebuild a published resolver snapshot |
 | `replay-latest --rpc URL --artifacts DIR` | discover and replay the **newest** confirmed advance |
 | `replay-advance --logs F --artifacts DIR` | replay confirmed advances from a feed file |
+| `preview-current-parent MODULE.py …` | score a candidate against the **live confirmed parent** |
 | `verify-receipt RECEIPT.json` | replay a signed Benchmark-v2 receipt |
 | `topics` | the dispatch table |
 | `selftest` | known-answer vectors |
+
+Objects are fetched with the hash rule they were committed under (`get_for_rule`), and the root is
+**recomputed here** from the bytes that arrived. A surface reporting `transportVerified` /
+`canonicalVerification: "client_required"` is stating a transport-level fact only — the server can
+check that `sha256(bytes)` equals the root, this client additionally requires the bytes to *be* the
+canonical serialisation the root names. That matters for the float-bearing
+`sha256-benchmark-canonical-json` rule, where raw-sha agreement is not canonical verification.
 
 Zero runtime dependencies. See [docs/V5-RIG-VALIDATOR.md](docs/V5-RIG-VALIDATOR.md).
 
@@ -48,3 +56,10 @@ deterministic admission runs instead of backlogging; `replay-latest` replays the
 advance without being told which one; `preview-current-parent` scores a candidate against the live
 parent. There is no longer a default publication root: a rehearsal root pinned by default is a
 validator that reports a verified cache for the wrong law.
+
+**Which version is live.** 0.4.3 is **cut** — it is the version this repository builds and the one
+the coordinator's kit is prepared to serve — and it is **pending release and deploy**. Until that
+lands, the live coordinator serves 0.4.2, which is the prior live cut. Do not read the version in
+this README as a claim about what a given deployment is serving right now: ask the deployment.
+`GET /coretex/v5/status` → `productionRelease.validatorWheel` names the exact wheel and sha256 that
+coordinator will hand you, parsed from the bytes it serves.
