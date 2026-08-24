@@ -819,10 +819,15 @@ def _comparison(candidate: Mapping[str, Any], parent: Mapping[str, Any],
     # BEATS = the Pareto comparison against the parent, and nothing more. It deliberately does NOT
     # fold in `hard_ok`: the hard prerequisites are executed by the adjudicating host, so folding
     # them in here would turn "we did not run the portability matrix" into "you lost".
+    beats = bool(verdict.get("pareto_ok"))
+    meaning = (
+        "the candidate satisfies at least one Pareto clause against the CURRENT CONFIRMED "
+        "PARENT on the public dev cases; it is not an admission" if beats else
+        "the candidate does not satisfy any Pareto clause against the CURRENT CONFIRMED "
+        "PARENT on the public dev cases; it is not an admission")
     return {
-        "beats_current_parent": bool(verdict.get("pareto_ok")),
-        "meaning": ("the candidate satisfies at least one Pareto clause against the CURRENT "
-                    "CONFIRMED PARENT on the public dev cases; it is not an admission"),
+        "beats_current_parent": beats,
+        "meaning": meaning,
         "satisfied_clauses": list(verdict.get("satisfied_clauses") or ()),
         "hard_gates_ok": bool(verdict.get("hard_ok")),
         "failed_hard": list(verdict.get("failed_hard") or ()),

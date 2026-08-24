@@ -623,6 +623,12 @@ def test_losing_to_the_current_parent_is_exit_zero(tmp_path, monkeypatch, capsys
     code, payload = _cli_run(tmp_path, graph, monkeypatch, capsys, FakeLawTreeChild())
     assert code == 0
     assert payload["comparison"]["beats_current_parent"] is False
+    assert payload["comparison"]["satisfied_clauses"] == []
+    assert payload["verdict"]["verdict"] == "REJECT"
+    assert payload["comparison"]["meaning"] == (
+        "the candidate does not satisfy any Pareto clause against the CURRENT CONFIRMED "
+        "PARENT on the public dev cases; it is not an admission")
+    assert "satisfies at least one" not in payload["comparison"]["meaning"]
     assert payload["ok"] is True
 
 
