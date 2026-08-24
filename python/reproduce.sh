@@ -30,6 +30,7 @@
 # — see docs/V5-RIG-VALIDATOR.md. Pass --law-mirror to remove that, and --require-complete to the
 # CLI if you want any remaining gap to be a failure.
 set -euo pipefail
+umask 022
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(git -C "$HERE" rev-parse --show-toplevel 2>/dev/null || true)"
@@ -72,12 +73,22 @@ BUILD_WHEEL="0.44.0"
 COMMIT="$(git -C "$REPO" rev-parse HEAD)"
 SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(git -C "$REPO" show -s --format=%ct "$COMMIT")}"
 export SOURCE_DATE_EPOCH
-CANONICAL_SOURCE="$WORK/source"
-mkdir -p "$CANONICAL_SOURCE"
+CANONICAL_SOURCE="$WORK/source-a"
+CANONICAL_SOURCE_B="$WORK/source-b"
+stage_committed_source() {
+  local destination="$1"
+  mkdir -p "$destination"
+  git -C "$REPO" -c tar.umask=0022 archive --format=tar "$COMMIT:python" \
+    | tar -xf - -C "$destination"
+  # Defense in depth against host git/tar defaults: directories and tracked executable files keep
+  # execute permission; ordinary files become 0644. Wheel RECORD/mode bytes cannot inherit 0664.
+  chmod -R u=rwX,go=rX "$destination"
+}
 # Build exactly the COMMITTED python subtree. git-archive normalizes modes and excludes dirty
 # workspace bytes; SOURCE_DATE_EPOCH plus the exact backend/frontend versions makes the release
 # input and toolchain explicit rather than a property of this host's filesystem.
-git -C "$REPO" archive --format=tar "$COMMIT:python" | tar -xf - -C "$CANONICAL_SOURCE"
+stage_committed_source "$CANONICAL_SOURCE"
+stage_committed_source "$CANONICAL_SOURCE_B"
 
 echo "== 1. build a wheel from canonical committed bytes ======================"
 echo "   commit=$COMMIT source_date_epoch=$SOURCE_DATE_EPOCH"
@@ -86,10 +97,15 @@ python3 -m venv "$WORK/build"
 "$WORK/build/bin/pip" install --quiet --upgrade \
   "pip==$BUILD_PIP" "build==$BUILD_FRONTEND" \
   "setuptools==$BUILD_SETUPTOOLS" "wheel==$BUILD_WHEEL"
-"$WORK/build/bin/python" -m build --no-isolation --wheel --outdir "$WORK/dist" \
+"$WORK/build/bin/python" -m build --no-isolation --wheel --outdir "$WORK/dist-a" \
   "$CANONICAL_SOURCE" >/dev/null
-WHEEL="$(ls "$WORK"/dist/*.whl | head -1)"
+"$WORK/build/bin/python" -m build --no-isolation --wheel --outdir "$WORK/dist-b" \
+  "$CANONICAL_SOURCE_B" >/dev/null
+WHEEL="$(ls "$WORK"/dist-a/*.whl | head -1)"
+WHEEL_B="$(ls "$WORK"/dist-b/*.whl | head -1)"
+cmp "$WHEEL" "$WHEEL_B"
 echo "   $WHEEL"
+echo "   reproducible_sha256=$(sha256sum "$WHEEL" | awk '{print $1}') (two independent stages)"
 
 echo "== 2. install it into a FRESH venv ======================================="
 python3 -m venv "$WORK/clean"

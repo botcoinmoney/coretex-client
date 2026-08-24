@@ -93,6 +93,16 @@ def test_reproduce_refuses_half_of_a_law_source_tuple_before_building(args):
     assert "build a wheel" not in result.stdout
 
 
+def test_reproduce_normalizes_archive_modes_and_compares_two_independent_builds():
+    if not PYPROJECT.is_file():
+        pytest.skip("reproduce.sh is a source-tree qualification command")
+    text = (PYPROJECT.parent / "reproduce.sh").read_text(encoding="utf-8")
+    assert "tar.umask=0022" in text
+    assert "chmod -R u=rwX,go=rX" in text
+    assert 'CANONICAL_SOURCE_B="$WORK/source-b"' in text
+    assert 'cmp "$WHEEL" "$WHEEL_B"' in text
+
+
 @pytest.mark.parametrize("module_path", _shipped_modules(), ids=lambda p: p.name)
 def test_imports_nothing_outside_the_stdlib(module_path):
     tree = ast.parse(module_path.read_text(encoding="utf-8"), filename=str(module_path))
