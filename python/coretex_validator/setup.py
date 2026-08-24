@@ -206,25 +206,13 @@ def component_files(component: Mapping[str, Any]) -> List[Dict[str, str]]:
 
 
 def kit_package_files(manifest: Mapping[str, Any]) -> List[Dict[str, str]]:
-    """The miner-kit tar and frozen-runtime-packet identity from a kit manifest.
+    """The one explicit current miner-kit tar from a kit manifest.
 
     The kit also carries a ``coretex_validator`` wheel. Setup does not download it: the operator
-    already installed this package. The law
-    publication's own files are addressed by root and handled by :func:`law_publication_files`.
+    already installed this package. Frozen runtime packets are audit material, and the law
+    publication's own files are addressed by root; neither belongs in the install package path.
     """
-    current = current_miner_kit_file(manifest)
-    out: List[Dict[str, str]] = [current]
-    seen = {current["sha256"]}
-    for component in kit_components(manifest):
-        for item in component_files(component):
-            if item["sha256"] in seen:
-                continue
-            interesting = item["name"] == "FROZEN-RUNTIME-PACKET.json"
-            if not interesting:
-                continue
-            seen.add(item["sha256"])
-            out.append(item)
-    return out
+    return [current_miner_kit_file(manifest)]
 
 
 def _urljoin(coordinator: str, download: str) -> str:

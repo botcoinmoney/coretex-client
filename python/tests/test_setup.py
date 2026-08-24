@@ -72,11 +72,9 @@ def test_kit_package_files_take_the_miner_kit_not_the_validator_wheel():
     }
     files = su.kit_package_files(manifest)
     names = {item["name"] for item in files}
-    assert names == {
-        "coretex-validator-miner-kit-" + "ee" * 32 + ".tar",
-        "FROZEN-RUNTIME-PACKET.json",
-    }
+    assert names == {"coretex-validator-miner-kit-" + "ee" * 32 + ".tar"}
     assert "coretex-validator-miner-kit-bb.tar" not in names
+    assert "FROZEN-RUNTIME-PACKET.json" not in names
     assert all(item["sha256"] != "aa" * 32 for item in files)
 
 
