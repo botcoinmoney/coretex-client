@@ -242,7 +242,7 @@ def test_verify_availability_reads_every_object_back():
 def test_verify_availability_fails_closed_on_an_unpublished_object():
     store = pub.InMemoryCAS()
     items = {"a": pub.availability_item("3" * 64, pub.HASH_RULE_BYTES, 4)}
-    with pytest.raises(pub.AvailabilityError):
+    with pytest.raises(pub.ObjectNotFoundError):
         pub.verify_availability(items, store=store)
 
 

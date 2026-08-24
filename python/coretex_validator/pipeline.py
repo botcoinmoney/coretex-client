@@ -30,6 +30,7 @@ fraud; collapsing it into a pass would be a lie. :class:`RunReport` carries them
 """
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import urllib.error
@@ -123,9 +124,9 @@ class UrlContentStore(pub.ContentStore):
         except urllib.error.HTTPError as exc:
             if exc.code == 404:
                 raise pub.ObjectNotFoundError(f"{root} is not published at {self.base_url}") from exc
-            raise pub.AvailabilityError(f"{root}: {exc}") from exc
-        except (urllib.error.URLError, OSError) as exc:
-            raise pub.AvailabilityError(f"{root}: {exc}") from exc
+            raise pub.TransportUnavailableError(f"{root}: {exc}") from exc
+        except (urllib.error.URLError, OSError, http.client.HTTPException) as exc:
+            raise pub.TransportUnavailableError(f"{root}: {exc}") from exc
 
     def has(self, root: str) -> bool:
         try:
@@ -484,10 +485,14 @@ def _admit(selected: jn.JoinedTransition, law: hl.EpochLaw, store: pub.ContentSt
     try:
         artifact = pub.fetch_json(selected.advance.eval_report_hash,
                                   hash_rule=pub.HASH_RULE_FRONTIER_JSON, store=store)
-    except pub.PublicationError as exc:
+    except pub.PublicationUnavailableError as exc:
         return None, {"outcome": "BACKLOG", "code": "missing_artifact",
                       "reason": f"the eval artifact {selected.advance.eval_report_hash} could not "
                                 f"be fetched and re-hashed: {exc}"}
+    except pub.PublicationError as exc:
+        return None, {"outcome": "FAIL", "code": "artifact_corrupt",
+                      "reason": f"the eval artifact {selected.advance.eval_report_hash} was "
+                                f"served but could not be re-hashed as committed: {exc}"}
     front = artifact.get("frontier") if isinstance(artifact, Mapping) else None
     if not isinstance(front, Mapping):
         return artifact, {"outcome": "FAIL", "code": "MALFORMED_ARTIFACT",
@@ -517,7 +522,7 @@ def _admit(selected: jn.JoinedTransition, law: hl.EpochLaw, store: pub.ContentSt
             law.epoch_context_root,
             hash_rule=pub.HASH_RULE_FRONTIER_JSON,
             store=store)
-    except pub.ObjectNotFoundError as exc:
+    except pub.PublicationUnavailableError as exc:
         return artifact, {
             "outcome": "BACKLOG", "code": rig.EPOCH_CONTEXT_UNAVAILABLE,
             "reason": (f"the epoch-context manifest {law.epoch_context_root} is not served: "
@@ -578,9 +583,9 @@ def _admit(selected: jn.JoinedTransition, law: hl.EpochLaw, store: pub.ContentSt
     # raise are three MATERIALLY DIFFERENT facts, and a single `except pub.PublicationError`
     # collapsed all of them into "could not be fetched" -> BACKLOG, i.e. TRY AGAIN LATER:
     #
-    #   * ObjectNotFoundError   — the publication surface serves nothing at this address.
-    #     Availability genuinely failed and a later retry can genuinely succeed, so BACKLOG is the
-    #     honest outcome and the ONLY one of the three that is.
+    #   * PublicationUnavailableError — the publication surface serves nothing at this address,
+    #     or its transport could not answer. Availability genuinely failed and a later retry can
+    #     genuinely succeed, so BACKLOG is the honest outcome and the ONLY retryable family.
     #   * ReadBackMismatchError — the store served bytes that do NOT re-hash to the committed
     #     address: a SUBSTITUTED artifact. Retrying cannot make that right, and reporting it as an
     #     outage is the exact opposite of §5.4's "disagreeing with the descriptor's newStateRoot is
@@ -597,7 +602,7 @@ def _admit(selected: jn.JoinedTransition, law: hl.EpochLaw, store: pub.ContentSt
         patch_artifact_bytes = pub.read_back(
             descriptor.patch_artifact_hash,
             hash_rule=pub.HASH_RULE_FRONTIER_JSON, store=store)
-    except pub.ObjectNotFoundError as exc:
+    except pub.PublicationUnavailableError as exc:
         return artifact, {
             "outcome": "BACKLOG", "code": rig.TRANSITION_ARTIFACT_UNAVAILABLE,
             "reason": (f"the canonical patch artifact {descriptor.patch_artifact_hash} is not "
@@ -642,7 +647,7 @@ def _admit(selected: jn.JoinedTransition, law: hl.EpochLaw, store: pub.ContentSt
         parent_manifest = pub.fetch_json(
             selected.advance.parent_state_root,
             hash_rule=pub.HASH_RULE_FRONTIER_JSON, store=store)
-    except pub.ObjectNotFoundError as exc:
+    except pub.PublicationUnavailableError as exc:
         return artifact, {
             "outcome": "BACKLOG", "code": rig.TRANSITION_ARTIFACT_UNAVAILABLE,
             "reason": (f"the parent manifest {selected.advance.parent_state_root} is not served "
@@ -724,7 +729,7 @@ def _admit(selected: jn.JoinedTransition, law: hl.EpochLaw, store: pub.ContentSt
             composition_root=resulting_composition,
             expected_candidate_hashes=expected_candidates,
             store=store)
-    except pub.ObjectNotFoundError as exc:
+    except pub.PublicationUnavailableError as exc:
         return artifact, {
             "outcome": "BACKLOG", "code": "RELEASE_STATE_UNAVAILABLE",
             "reason": f"resulting schema-v4 release graph is not fully published: {exc}"}

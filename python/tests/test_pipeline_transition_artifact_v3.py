@@ -7,6 +7,8 @@ import inspect
 from types import SimpleNamespace
 from typing import Optional
 
+import pytest
+
 from coretex_validator import dispatch as dp
 from coretex_validator import frontier as fr
 from coretex_validator import pipeline
@@ -23,6 +25,23 @@ class RecordingStore(pub.InMemoryCAS):
     def get(self, root):
         self.reads.append(root)
         return super().get(root)
+
+
+class TransportUnavailableAt(pub.ContentStore):
+    def __init__(self, delegate, root):
+        self.delegate = delegate
+        self.root = root
+
+    def put(self, root, data):
+        self.delegate.put(root, data)
+
+    def get(self, root):
+        if root == self.root:
+            raise pub.TransportUnavailableError(f"fixture transport failed at {root}")
+        return self.delegate.get(root)
+
+    def has(self, root):
+        return root != self.root and self.delegate.has(root)
 
 
 def _fixture(*, candidate_release: str = "cd" * 32,
@@ -259,6 +278,44 @@ def test_epoch_context_must_be_available_before_transition_replay(monkeypatch):
     assert report["outcome"] == "BACKLOG"
     assert report["code"] == rig.EPOCH_CONTEXT_UNAVAILABLE
     assert calls.replay == []
+
+
+@pytest.mark.parametrize(
+    "root_name,expected_code",
+    [
+        ("epoch_context", rig.EPOCH_CONTEXT_UNAVAILABLE),
+        ("patch_root", rig.TRANSITION_ARTIFACT_UNAVAILABLE),
+        ("parent_root", rig.TRANSITION_ARTIFACT_UNAVAILABLE),
+    ],
+)
+def test_pipeline_transport_failures_are_backlogs_at_every_fetch_stage(
+        monkeypatch, root_name, expected_code):
+    fixture = _fixture()
+    fixture.store = TransportUnavailableAt(fixture.store, getattr(fixture, root_name))
+    artifact, report, _calls = _admit(monkeypatch, fixture)
+
+    assert artifact is not None
+    assert report["outcome"] == "BACKLOG"
+    assert report["code"] == expected_code
+
+
+def test_pipeline_release_graph_transport_failure_is_a_backlog(monkeypatch):
+    fixture = _fixture()
+    _install_pure_port_spies(monkeypatch, fixture)
+
+    def transport_unavailable(**kwargs):
+        raise pub.TransportUnavailableError("fixture release graph transport failed")
+
+    monkeypatch.setattr(pipeline.rg, "verify_materializable_release_state",
+                        transport_unavailable)
+    law = SimpleNamespace(epoch_context_root=fixture.epoch_context,
+                          entropy_commitment="18" * 32, revealed_secret=None)
+    artifact, report = pipeline._admit(
+        fixture.selected, law, fixture.store, allow_test_doubles=False)
+
+    assert artifact is not None
+    assert report["outcome"] == "BACKLOG"
+    assert report["code"] == "RELEASE_STATE_UNAVAILABLE"
 
 
 def test_substituted_epoch_context_bytes_fail_before_transition_replay(monkeypatch):

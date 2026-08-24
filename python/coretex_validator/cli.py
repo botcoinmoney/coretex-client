@@ -495,7 +495,7 @@ def _resolve_incumbent_execution(wrapper, artifact, *, store):
                                          store=store)
         execution = pe.fetch_parent_execution(store=store, parent_manifest=parent_manifest,
                                               target_profile=profile_id)
-    except pub.ObjectNotFoundError as exc:
+    except pub.PublicationUnavailableError as exc:
         # AN UNAVAILABLE OBJECT, and therefore a BACKLOG. Reporting it as FAIL/exit 1 — the code
         # the docs define as a refutation — would raise a refutation alarm against a healthy
         # production receipt because a publisher had not served an object yet.

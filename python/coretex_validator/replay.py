@@ -1167,7 +1167,7 @@ def replay_advance(event: dp.FrontierAdvanced, *, store: pub.ContentStore,
     try:
         parent_manifest = pub.fetch_json(event.parent_frontier_root,
                                          hash_rule=pub.HASH_RULE_FRONTIER_JSON, store=store)
-    except pub.ObjectNotFoundError as exc:
+    except pub.PublicationUnavailableError as exc:
         return _backlog("parent_manifest", bl.unfetchable_manifest(
             f"parent frontier manifest {event.parent_frontier_root} is not on the publication "
             f"surface: {exc}", event=event, subject=event.parent_frontier_root,
@@ -1246,7 +1246,7 @@ def replay_advance(event: dp.FrontierAdvanced, *, store: pub.ContentStore,
     try:
         artifact = pub.fetch_json(event.eval_report_hash,
                                   hash_rule=pub.HASH_RULE_FRONTIER_JSON, store=store)
-    except pub.ObjectNotFoundError as exc:
+    except pub.PublicationUnavailableError as exc:
         return _backlog("artifact", bl.missing_artifact(
             f"eval artifact {event.eval_report_hash} is not published: {exc}", event=event,
             observed_at=observed_at), checks=checks, new_manifest=new_manifest, **ident)
@@ -1305,7 +1305,7 @@ def replay_advance(event: dp.FrontierAdvanced, *, store: pub.ContentStore,
     try:
         receipt_or_report = pub.fetch_json(
             receipt_root, hash_rule=pub.HASH_RULE_BENCHMARK_JSON, store=store)
-    except pub.ObjectNotFoundError as exc:
+    except pub.PublicationUnavailableError as exc:
         return _backlog("receipt", bl.receipt_unavailable(
             f"{'signed receipt' if signed_era else 'evaluation report'} {receipt_root} is not "
             f"published: {exc}", event=event, subject=receipt_root, observed_at=observed_at),
@@ -1316,7 +1316,7 @@ def replay_advance(event: dp.FrontierAdvanced, *, store: pub.ContentStore,
     try:
         counter_law = pub.fetch_json(artifact["counter_resource_law_root"],
                                      hash_rule=pub.HASH_RULE_FRONTIER_JSON, store=store)
-    except pub.ObjectNotFoundError as exc:
+    except pub.PublicationUnavailableError as exc:
         return _backlog("counter_resource_law", bl.counter_law_unavailable(
             f"counter-resource law {artifact['counter_resource_law_root']} is not published: "
             f"{exc}", event=event, subject=artifact["counter_resource_law_root"],
@@ -1338,7 +1338,7 @@ def replay_advance(event: dp.FrontierAdvanced, *, store: pub.ContentStore,
             resolved_parent_execution = parent_exec.fetch_parent_execution(
                 store=store, parent_manifest=parent_manifest,
                 target_profile=target_profile)
-        except pub.ObjectNotFoundError as exc:
+        except pub.PublicationUnavailableError as exc:
             return _backlog(
                 "parent_execution",
                 bl.missing_artifact(

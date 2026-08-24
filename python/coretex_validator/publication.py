@@ -105,8 +105,21 @@ class HashRuleError(PublicationError):
     unparseable JSON, a float under the frontier rule, ...)."""
 
 
-class ObjectNotFoundError(PublicationError):
+class PublicationUnavailableError(PublicationError):
+    """Base class for publication bytes that could not be reached.
+
+    This is operationally unresolved work, not evidence that the committed bytes disagree.  Its
+    two concrete cases deliberately distinguish a content-address with no object from a transport
+    that could not answer the question at all.
+    """
+
+
+class ObjectNotFoundError(PublicationUnavailableError):
     """The publication surface does not serve an object at this root — availability FAILED."""
+
+
+class TransportUnavailableError(PublicationUnavailableError):
+    """The publication transport failed before it could answer whether the object exists."""
 
 
 class ReadBackMismatchError(PublicationError):
@@ -467,6 +480,11 @@ def verify_availability(items: Mapping[str, Any], *, store: ContentStore,
         try:
             read_back(item["root"], hash_rule=item["hash_rule"], store=store,
                       expected_bytes_len=item["bytes"])
+        except PublicationUnavailableError:
+            # Preserve the unavailable subtype.  A caller must be able to distinguish "not
+            # published" from "the transport never answered", and both from a structural
+            # availability record that was fetched and disproved.
+            raise
         except PublicationError as exc:
             raise AvailabilityError(f"availability read-back failed for {name!r}: {exc}") from exc
         out[name] = item["root"]

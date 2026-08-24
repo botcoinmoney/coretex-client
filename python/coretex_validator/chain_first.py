@@ -82,7 +82,7 @@ def _fetch(commitment: ArtifactCommitment, store: pub.ContentStore) -> Tuple[byt
     try:
         data = pub.read_back(commitment.root, hash_rule=commitment.hash_rule, store=store,
                              expected_bytes_len=commitment.size)
-    except pub.ObjectNotFoundError as exc:
+    except pub.PublicationUnavailableError as exc:
         raise ChainFirstError("MISSING_ARTIFACT", f"{commitment.kind}: {exc}") from exc
     except pub.PublicationError as exc:
         raise ChainFirstError("ARTIFACT_INTEGRITY_FAILURE",
@@ -782,6 +782,8 @@ def _verify_canary(canary: Mapping[str, Any], receipt: Mapping[str, Any], *, now
                               "canary proposed root does not bind the candidate transition")
     try:
         pub.read_back(transcript_root, hash_rule=pub.HASH_RULE_BENCHMARK_JSON, store=store)
+    except pub.PublicationUnavailableError as exc:
+        raise ChainFirstError("MISSING_ARTIFACT", f"sealed transcript: {exc}") from exc
     except pub.PublicationError as exc:
         raise ChainFirstError("TRANSCRIPT_SUBSTITUTION", str(exc)) from exc
     return {"present": True, "verified": True, "model_rerun": False,

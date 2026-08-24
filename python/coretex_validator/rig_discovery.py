@@ -289,7 +289,7 @@ def _contiguity(advances: Sequence[rig.StateAdvanced], *,
 def _fetch_artifact(root: str, *, store: pub.ContentStore) -> Mapping[str, Any]:
     try:
         return pub.fetch_json(root, hash_rule=pub.HASH_RULE_FRONTIER_JSON, store=store)
-    except pub.ObjectNotFoundError as exc:
+    except pub.PublicationUnavailableError as exc:
         raise ProjectionError(
             f"the eval artifact {root} is not served by this publication surface: {exc}. The "
             "advance was found and identified; what is missing is the off-chain evidence it "
@@ -400,7 +400,7 @@ def pins_for(advance: rig.StateAdvanced, *, feed: RigFeed,
     try:
         raw = pub.read_back(law.epoch_context_root, hash_rule=pub.HASH_RULE_FRONTIER_JSON,
                             store=store)
-    except pub.ObjectNotFoundError as exc:
+    except pub.PublicationUnavailableError as exc:
         raise ProjectionError(
             f"the epoch-context manifest {law.epoch_context_root} is not served: {exc}. No "
             "artifact field may substitute for independently verified epoch pins",
