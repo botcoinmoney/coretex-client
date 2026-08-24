@@ -183,7 +183,21 @@ def validate_kit_manifest_envelope(manifest: Mapping[str, Any]) -> Mapping[str, 
                       if c.get("id") == LAW_PUBLICATION_COMPONENT_ID]
     if len(law_components) != 1 or law_components[0].get("present") is not True:
         raise RuntimeError("the current kit must publish exactly one present law_publication component")
-    law_publication_root(law_components[0])
+    publication_root = law_publication_root(law_components[0])
+    publication_manifests = [item for item in component_files(law_components[0])
+                             if item["name"] == LAW_PUBLICATION_MANIFEST_NAME]
+    if len(publication_manifests) != 1:
+        raise RuntimeError(
+            f"the current law_publication component must carry exactly one addressed "
+            f"{LAW_PUBLICATION_MANIFEST_NAME}, found {len(publication_manifests)}")
+    if production.get("admissionClosureRoot") != publication_root:
+        raise RuntimeError(
+            "productionRelease.admissionClosureRoot does not bind the law_publication root")
+    publication_manifest_sha = publication_manifests[0]["sha256"]
+    if production.get("publicationManifestSha256") != publication_manifest_sha:
+        raise RuntimeError(
+            "productionRelease.publicationManifestSha256 does not bind the addressed "
+            f"{LAW_PUBLICATION_MANIFEST_NAME} bytes")
     return kit
 
 

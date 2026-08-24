@@ -192,6 +192,15 @@ def test_current_miner_kit_tree_requires_both_unsealed_support_trees(tmp_path):
     su.validate_current_miner_kit_tree(str(root))
 
 
+def _law_component(root="cd" * 32, manifest_sha="ef" * 32):
+    return {
+        "id": "law_publication", "present": True, "missing": [],
+        "publicationRoot": root,
+        "files": [{"path": "v5/law-publication/LAW-PUBLICATION.json",
+                   "sha256": manifest_sha, "bytes": 123}],
+    }
+
+
 def _manifest_envelope(components):
     kit = {"format": "coretex.memory-frontier.v1/kit-manifest", "components": components}
     body = {
@@ -206,7 +215,17 @@ def _manifest_envelope(components):
     from coretex_validator import frontier as fr
     manifest_hash = hashlib.sha256(fr.canonical_bytes(body)).hexdigest()
     kit["manifestHash"] = manifest_hash
-    return {"ok": True, "productionRelease": {"kitManifestHash": manifest_hash}, "kit": kit}
+    laws = [c for c in components if c.get("id") == "law_publication"]
+    law_root = laws[0].get("publicationRoot") if len(laws) == 1 else None
+    manifests = [f for f in laws[0].get("files", [])
+                 if f.get("path", "").replace("\\", "/").rsplit("/", 1)[-1]
+                 == "LAW-PUBLICATION.json"] if len(laws) == 1 else []
+    publication_sha = manifests[0].get("sha256") if len(manifests) == 1 else None
+    return {"ok": True, "productionRelease": {
+        "kitManifestHash": manifest_hash,
+        "admissionClosureRoot": law_root,
+        "publicationManifestSha256": publication_sha,
+    }, "kit": kit}
 
 
 def test_current_kit_envelope_recomputes_manifest_hash_and_requires_one_miner_tar():
@@ -215,10 +234,7 @@ def test_current_kit_envelope_recomputes_manifest_hash_and_requires_one_miner_ta
         "id": "current_miner_kit", "present": True, "missing": [],
         "files": [{"path": f"v5/runtime/coretex-validator-miner-kit-{tar_sha}.tar",
                    "sha256": tar_sha, "bytes": 12}],
-    }, {
-        "id": "law_publication", "present": True, "missing": [],
-        "publicationRoot": "cd" * 32, "files": [],
-    }]
+    }, _law_component()]
     envelope = _manifest_envelope(components)
     verified = su.validate_kit_manifest_envelope(envelope)
     assert verified["manifestHash"] == envelope["kit"]["manifestHash"]
@@ -231,10 +247,7 @@ def test_current_kit_envelope_rejects_a_wrong_manifest_hash():
         "id": "current_miner_kit", "present": True, "missing": [],
         "files": [{"path": f"v5/runtime/coretex-validator-miner-kit-{tar_sha}.tar",
                    "sha256": tar_sha, "bytes": 12}],
-    }, {
-        "id": "law_publication", "present": True, "missing": [],
-        "publicationRoot": "cd" * 32, "files": [],
-    }]
+    }, _law_component()]
     envelope = _manifest_envelope(components)
     envelope["kit"]["manifestHash"] = "00" * 32
     with pytest.raises(RuntimeError, match="manifestHash"):
@@ -247,10 +260,7 @@ def test_current_kit_envelope_requires_the_production_release_binding():
         "id": "current_miner_kit", "present": True, "missing": [],
         "files": [{"path": f"v5/runtime/coretex-validator-miner-kit-{tar_sha}.tar",
                    "sha256": tar_sha, "bytes": 12}],
-    }, {
-        "id": "law_publication", "present": True, "missing": [],
-        "publicationRoot": "cd" * 32, "files": [],
-    }])
+    }, _law_component()])
     del envelope["productionRelease"]
     with pytest.raises(RuntimeError, match="productionRelease"):
         su.validate_kit_manifest_envelope(envelope)
@@ -266,10 +276,7 @@ def test_current_kit_envelope_rejects_two_miner_tars():
             {"path": f"v5/runtime/coretex-validator-miner-kit-{tar_b}.tar",
              "sha256": tar_b, "bytes": 13},
         ],
-    }, {
-        "id": "law_publication", "present": True, "missing": [],
-        "publicationRoot": "cd" * 32, "files": [],
-    }]
+    }, _law_component()]
     envelope = _manifest_envelope(components)
     with pytest.raises(RuntimeError, match="exactly one addressed tar"):
         su.validate_kit_manifest_envelope(envelope)
@@ -282,12 +289,40 @@ def test_current_kit_envelope_rejects_absent_or_duplicate_current_components():
         "files": [{"path": f"v5/runtime/coretex-validator-miner-kit-{tar_sha}.tar",
                    "sha256": tar_sha, "bytes": 12}],
     }
-    law_component = {
-        "id": "law_publication", "present": True, "missing": [],
-        "publicationRoot": "cd" * 32, "files": [],
-    }
+    law_component = _law_component()
     with pytest.raises(RuntimeError, match="current_miner_kit"):
         su.validate_kit_manifest_envelope(_manifest_envelope([law_component]))
     with pytest.raises(RuntimeError, match="duplicated|current_miner_kit"):
         su.validate_kit_manifest_envelope(_manifest_envelope([current, dict(current),
                                                                law_component]))
+
+
+@pytest.mark.parametrize("field", ["admissionClosureRoot", "publicationManifestSha256"])
+@pytest.mark.parametrize("value", [None, "00" * 32])
+def test_current_kit_envelope_binds_the_production_release_to_the_law_component(
+        field, value):
+    tar_sha = "ab" * 32
+    envelope = _manifest_envelope([{
+        "id": "current_miner_kit", "present": True, "missing": [],
+        "files": [{"path": f"v5/runtime/coretex-validator-miner-kit-{tar_sha}.tar",
+                   "sha256": tar_sha, "bytes": 12}],
+    }, _law_component()])
+    if value is None:
+        del envelope["productionRelease"][field]
+    else:
+        envelope["productionRelease"][field] = value
+    with pytest.raises(RuntimeError, match=field):
+        su.validate_kit_manifest_envelope(envelope)
+
+
+def test_current_kit_envelope_requires_one_addressed_law_publication_manifest():
+    tar_sha = "ab" * 32
+    law_component = _law_component()
+    law_component["files"] = []
+    envelope = _manifest_envelope([{
+        "id": "current_miner_kit", "present": True, "missing": [],
+        "files": [{"path": f"v5/runtime/coretex-validator-miner-kit-{tar_sha}.tar",
+                   "sha256": tar_sha, "bytes": 12}],
+    }, law_component])
+    with pytest.raises(RuntimeError, match="LAW-PUBLICATION.json"):
+        su.validate_kit_manifest_envelope(envelope)
