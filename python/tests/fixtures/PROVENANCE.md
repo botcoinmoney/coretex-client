@@ -8,6 +8,7 @@ is detectable rather than silent — which is the entire reason a shared vector 
 | `signing-vector.json` | resolver lane, `v5/resolver/tests/fixtures/signing-vector.json` | `e19b0f513b4ebeb66bdd698ed95a6cd72eb38cac8bd990d11b071d76d332ba1c` |
 | `rig-descriptor-v3-vector.json` | independently derived from `botcoin-mining-rigs@a473f3fd1038a81f8ef456cd4c7ce1f7b9fbef6e` | `c9c6e86b23f34ba4c871d70f0c581b5019778f9fd8b187add0033e056339b1fb` |
 | `e184-cas/*` | the nine published objects of the LIVE epoch-184 advance, copied verbatim from the production publication surface | each file is named by its own root; see below |
+| `e184-rig-feed.json` | thirteen VERBATIM Base mainnet logs pulled with `eth_getLogs` over blocks 50330000-50372318 from the three addresses the canonical release pins, no topic0 filter | `26db6a75d82e3eedb3247e5282b11f6171106f6a2282ad2bf4eb1c90f543935e` |
 
 ## `e184-cas/` — real production bytes, not a synthesised set
 
@@ -45,3 +46,23 @@ The vector deliberately carries `superseded_signing_digest` — the digest under
 auditable: it lets a stale signature be *diagnosed* ("signed under the superseded domain") rather
 than merely rejected, and it is the evidence that no published snapshot was ever signed under the
 old tag.
+
+## `e184-rig-feed.json` — the feed the shipped decoder could not see
+
+Thirteen real logs, unedited, carrying the epoch-184 advance
+(`CoreTexStateAdvanced`, tx `0xc77f8725…`, block 50357019) beside its
+`RigCoreTexCreditAccepted`, `CoreTexEpochFinalized`, the epoch-185
+`CoreTexEpochContextSet`/`EpochCommitSet`, the epoch-184 `EpochSecretRevealed`,
+three `RigCreditAccepted` receipts and four logs whose topic0 no CoreTex decoder
+knows.
+
+They are a slice of the 21,544-log window a clean-box qualification fetched, kept
+whole rather than synthesised, because D-2 was a decoder defect: `dispatch`'s two
+tables decode NONE of the rig-lane events in this file, and a fixture built with
+the encoder that has the bug would have agreed with it. `test_rig_discovery.py`
+asserts both halves — that the retired table finds no advance in these bytes, and
+that `rig_events` finds the one that is there.
+
+The four unknown-topic logs are deliberate: an administrative event a field
+validator has never heard of must be IGNORED, never fatal, and the counts in
+`RigFeed.summary()` say so out loud.

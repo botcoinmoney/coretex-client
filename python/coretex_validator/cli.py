@@ -238,6 +238,44 @@ def _load_logs(path: str) -> List[Dict[str, Any]]:
     return logs
 
 
+def _replay_one(advance, *, feed, store, screen, sandbox, burned, live_root,
+                allow_test_doubles: bool):
+    """Project ONE confirmed rig advance and replay it. Returns a :class:`replay.ReplayResult`.
+
+    THE ONE LIVE DECODING AUTHORITY (see :mod:`rig_discovery`). A projection that cannot be built
+    is turned into the outcome the failure actually is — BACKLOG for an unavailable object, FAIL
+    for published bytes that contradict the confirmed event — and never into "there was no
+    advance", which is what the retired-table discovery reported for fourteen epochs of them.
+    """
+    from . import backlog as bl
+    from . import replay as rp
+    from . import rig_discovery as rd
+
+    def refused(exc: "rd.ProjectionError") -> "rp.ReplayResult":
+        return rp.ReplayResult(
+            outcome=(bl.BACKLOG if exc.outcome == "BACKLOG" else bl.FAIL),
+            stage=exc.stage, reason=str(exc), code=exc.code, epoch=advance.epoch,
+            transition_index=advance.transition_index, miner=advance.miner,
+            parent_frontier_root=advance.parent_state_root,
+            new_frontier_root=advance.new_state_root,
+            eval_report_hash=advance.eval_report_hash)
+
+    try:
+        projected, provenance = rd.project_advance(advance, store=store)
+    except rd.ProjectionError as exc:
+        return refused(exc)
+    try:
+        pins, _pin_provenance = rd.pins_for(advance, feed=feed, store=store)
+    except rd.ProjectionError as exc:
+        return refused(exc)
+    result = rp.replay_advance(
+        projected, store=store, pins=pins, screen=screen, sandbox=sandbox,
+        burned=burned, live_root=live_root, allow_test_doubles=allow_test_doubles)
+    result.auxiliary = {**dict(result.auxiliary), "projection": provenance,
+                        "consensus_critical": False}
+    return result
+
+
 def _cmd_replay_advance(args: argparse.Namespace) -> int:
     """Replay confirmed frontier advances against a law cache and a local artifact store.
 
@@ -248,34 +286,35 @@ def _cmd_replay_advance(args: argparse.Namespace) -> int:
     law_block = _activate_law(args)                            # BEFORE the imports below
     from . import backlog as bl
     from . import publication as pub
+    from . import release as rel
     from . import replay as rp
-    from . import sync as sy
+    from . import rig_discovery as rd
 
+    release = rel.discover(args.release)
     logs = _load_logs(args.logs)
-    synced = sy.sync_logs(logs, latest_block=args.latest_block,
-                          confirmation_depth=args.confirmation_depth,
-                          genesis_frontier_root=args.genesis_root)
-    events = list(synced.events)
+    feed = rd.sync_rig_logs(logs, deployment=release.deployment,
+                            latest_block=args.latest_block,
+                            confirmation_depth=args.confirmation_depth)
+    advances = list(feed.advances)
     if args.epoch is not None:
-        events = [e for e in events if e.epoch == args.epoch]
+        advances = [a for a in advances if a.epoch == args.epoch]
     if args.transition_index is not None:
-        events = [e for e in events if e.transition_index == args.transition_index]
+        advances = [a for a in advances if a.transition_index == args.transition_index]
 
     store = pub.FilesystemCAS(os.path.expanduser(args.artifacts))
     screen = rp.default_oracle_screen()
     sandbox = rp.default_sandbox()
     burned = _load_json(args.burned) if args.burned else None
-    pins = synced.pin_resolver()                               # per-epoch, assembled once
     results = [
-        rp.replay_advance(event, store=store, pins=pins, screen=screen, sandbox=sandbox,
-                          credit_event=synced.credit_for(event), burned=burned,
-                          live_root=args.live_root,
-                          allow_test_doubles=args.allow_test_doubles)
-        for event in events]
+        _replay_one(advance, feed=feed, store=store, screen=screen, sandbox=sandbox,
+                    burned=burned, live_root=args.live_root,
+                    allow_test_doubles=args.allow_test_doubles)
+        for advance in advances]
 
     payload = {
         "law": law_block,
-        "feed": synced.summary(),
+        "release": release.classification,
+        "feed": feed.summary(),
         "screen": {"name": getattr(screen, "name", type(screen).__name__),
                    "available": bool(screen.available())},
         "sandbox": {"name": getattr(sandbox, "name", type(sandbox).__name__),
@@ -284,7 +323,7 @@ def _cmd_replay_advance(args: argparse.Namespace) -> int:
         "outcomes": {name: sum(1 for r in results if str(r.outcome) == name)
                      for name in ("PASS", "FAIL", "BACKLOG")},
     }
-    if not events:
+    if not advances:
         payload["note"] = ("the supplied feed carries no confirmed advance matching the filters; "
                            "nothing was replayed and nothing is claimed")
     _emit(payload, pretty=not args.compact)
@@ -292,7 +331,7 @@ def _cmd_replay_advance(args: argparse.Namespace) -> int:
     if any(r.outcome == bl.FAIL for r in results):
         return 1
     unresolved = [r for r in results if r.outcome == bl.BACKLOG]
-    if not events:
+    if not advances:
         return 2
     if args.require_complete and unresolved:
         sys.stderr.write(
@@ -323,11 +362,13 @@ def _cmd_replay_latest(args: argparse.Namespace) -> int:
     from . import pipeline
     from . import release as rel
     from . import replay as rp
+    from . import rig_discovery as rd
     from . import sync as sy
 
     release = rel.discover(args.release)
     chain: Dict[str, Any] = {"source": "logs-file" if args.logs else "rpc",
-                             "release": release.classification}
+                             "release": release.classification,
+                             "decoder": rd.DECODER_NOTE}
     if args.logs:
         logs = _load_logs(args.logs)
         latest_block = args.latest_block
@@ -350,12 +391,10 @@ def _cmd_replay_latest(args: argparse.Namespace) -> int:
         chain.update({"rpc": args.rpc, "latest_block": latest_block, "confirmed_head": head,
                       "scanned_blocks": [from_block, head]})
 
-    genesis = args.genesis_root or release.raw.get("genesis_state_root")
-    synced = sy.sync_logs(logs, latest_block=latest_block,
-                          confirmation_depth=args.confirmation_depth,
-                          genesis_frontier_root=str(genesis).replace("0x", "") if genesis else None)
+    feed = rd.sync_rig_logs(logs, deployment=release.deployment, latest_block=latest_block,
+                            confirmation_depth=args.confirmation_depth)
     # THE ONE DECISION: the chain's order, last element. Never the feed's order.
-    newest = synced.events[-1] if synced.events else None
+    newest = feed.newest()
 
     try:
         store = pipeline.open_store(artifact_dir=args.artifacts,
@@ -365,16 +404,10 @@ def _cmd_replay_latest(args: argparse.Namespace) -> int:
         return 2
 
     payload: Dict[str, Any] = {
-        "law": law_block, "chain": chain, "feed": synced.summary(),
+        "law": law_block, "chain": chain, "feed": feed.summary(),
         "artifacts": {"source": args.artifacts or args.artifact_base_url
                       or release.artifact_base_url},
-        "selected": None if newest is None else {
-            "epoch": newest.epoch, "transition_index": newest.transition_index,
-            "miner": newest.miner, "parent_frontier_root": newest.parent_frontier_root,
-            "new_frontier_root": newest.new_frontier_root,
-            "eval_report_hash": newest.eval_report_hash,
-            "block_number": newest.provenance.block_number,
-            "transaction_hash": newest.provenance.transaction_hash},
+        "selected": None if newest is None else rd.selected_summary(newest),
     }
     if newest is None:
         payload["note"] = ("the feed carries no confirmed advance; nothing was replayed and "
@@ -385,9 +418,8 @@ def _cmd_replay_latest(args: argparse.Namespace) -> int:
 
     screen = rp.default_oracle_screen()
     sandbox = rp.default_sandbox()
-    result = rp.replay_advance(
-        newest, store=store, pins=synced.pin_resolver(), screen=screen, sandbox=sandbox,
-        credit_event=synced.credit_for(newest),
+    result = _replay_one(
+        newest, feed=feed, store=store, screen=screen, sandbox=sandbox,
         burned=_load_json(args.burned) if args.burned else None,
         live_root=args.live_root, allow_test_doubles=args.allow_test_doubles)
     payload.update({
@@ -685,9 +717,10 @@ def build_parser() -> argparse.ArgumentParser:
                          help="chain head; without it the feed is taken as already confirmed by "
                               "the caller's own policy, and that is reported rather than assumed")
     advance.add_argument("--confirmation-depth", type=int, default=15)
-    advance.add_argument("--genesis-root", default=None,
-                         help="deployment genesis frontier root; without it the first epoch's "
-                              "inheritance is UNVERIFIED rather than assumed")
+    advance.add_argument("--release", default=DEFAULT_PRODUCTION_RELEASE_URL,
+                         help="path or url of the release artifact. It names the three addresses "
+                              "the live lane is scoped to — topic0 alone is not an identity, so a "
+                              "feed is decoded AGAINST a deployment, never on its own")
     advance.add_argument("--live-root", default=None,
                          help="the confirmed live root the advance must build on")
     advance.add_argument("--burned", default=None, help="JSON list of burned instance ids")
@@ -721,8 +754,6 @@ def build_parser() -> argparse.ArgumentParser:
                         help="chain head for a --logs feed; without it the feed is taken as "
                              "already confirmed by the caller's own policy")
     latest.add_argument("--confirmation-depth", type=int, default=15)
-    latest.add_argument("--genesis-root", default=None,
-                        help="deployment genesis frontier root (default: the release's)")
     latest.add_argument("--live-root", default=None,
                         help="the confirmed live root the advance must build on")
     latest.add_argument("--burned", default=None, help="JSON list of burned instance ids")

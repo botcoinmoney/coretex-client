@@ -317,3 +317,135 @@ def v4_advance_log(*, address: str = V4_REGISTRY, epoch: int = 3, transition_ind
                        "0x" + f"{transition_index:064x}", "0x" + "0" * 24 + MINER[2:]],
             "data": "0x" + data, "blockNumber": 5, "logIndex": 0,
             "transactionHash": "0x" + "0" * 64}
+
+
+# --------------------------------------------------------------------------- #
+# RigScenario — the SAME advance, spoken in the lane the deployed contracts emit
+# --------------------------------------------------------------------------- #
+# WHY THIS EXISTS (D-2). `Scenario` above emits the `CoreTexMemory*` memory-frontier lane, which
+# the coordinator's own kit manifest publishes under `retired_reference_do_not_build_against` and
+# which no deployed contract emits. Tests built on it can — and did — stay green while every
+# `replay-*` command decoded zero advances out of the entire production history. So the discovery
+# tests now speak descriptor-v3: the registry's `CoreTexStateAdvanced`, the verifier's
+# `CoreTexEpochContextSet` plus the epoch-context MANIFEST it addresses, and mining's commit /
+# reveal / credit. The addresses are the canonical production release's, because a rig log is
+# routed by (address, topic0) and topic0 alone is not an identity.
+from coretex_validator import release as _rel                                  # noqa: E402
+from coretex_validator import rig_events as _rig                               # noqa: E402
+
+PRODUCTION_DEPLOYMENT = _rel.discover(_rel.DEFAULT_PRODUCTION_RELEASE_URL).deployment
+
+
+def _word(value: str) -> str:
+    return str(value).lower().replace("0x", "").rjust(64, "0")
+
+
+class RigScenario:
+    """One confirmed rig advance, its epoch law, and the publication surface behind both."""
+
+    def __init__(self, *, epoch: int = 7, transition_index: int = 0, block_number: int = 100,
+                 log_index: int = 0, store=None, secret: str = "7" * 64,
+                 candidate_hash: str = "e" * 64, core_version_hash: str = "16" * 32,
+                 admit: bool = True, **receipt_kwargs) -> None:
+        self.inner = Scenario(epoch=epoch, transition_index=transition_index,
+                              block_number=block_number, log_index=log_index, store=store,
+                              secret=secret, candidate_hash=candidate_hash, admit=admit,
+                              **receipt_kwargs)
+        self.store = self.inner.store
+        self.epoch = epoch
+        self.transition_index = transition_index
+        self.block_number = block_number
+        self.log_index = log_index
+        self.core_version_hash = core_version_hash
+        self.parent_root = self.inner.parent_root
+        self.new_root = self.inner.new_root
+        self.eval_report_hash = self.inner.eval_report_hash
+
+        # The epoch-context MANIFEST: the separately content-addressed document the three law pins
+        # actually live in. Published so a validator can fetch and re-hash it rather than take the
+        # advance's word for its own pins.
+        self.epoch_context_document = {
+            "format": _rig.EPOCH_CONTEXT_FORMAT,
+            "epoch": epoch,
+            "corpus_root": "15" * 32,
+            "active_frontier_root": self.parent_root,
+            "baseline_manifest_hash": "16" * 32,
+            "benchmark_law_root": self.inner.parent["benchmark_law_root"],
+            "runtime_abi_root": self.inner.parent["runtime_abi_root"],
+            "counter_resource_law_root": self.inner.artifact["counter_resource_law_root"],
+            "selection_law_root": "17" * 32,
+            "admission_thresholds_ppm": {"minimum_improvement": 1},
+            "seed_commitment": {"scheme": "keccak256",
+                                "binding_rule": "confirmed-epoch-context",
+                                "commitment_source": "EpochCommitSet"},
+        }
+        self.epoch_context_root = _rig.epoch_context_root(self.epoch_context_document)
+        self.store.put(self.epoch_context_root,
+                       fr.canonical_bytes(_rig.validate_epoch_context(
+                           self.epoch_context_document)))
+        self.descriptor = _rig.encode_transition_descriptor(
+            patch_artifact_hash="ab" * 32, parent_state_root=self.parent_root,
+            new_state_root=self.new_root)
+
+    # -- logs ----------------------------------------------------------------
+    def advance_log(self, **overrides):
+        values = {
+            "epoch": self.epoch, "transition_index": self.transition_index, "miner": MINER,
+            "parent_state_root": self.parent_root, "new_state_root": self.new_root,
+            "eval_report_hash": self.eval_report_hash,
+            "core_version_hash": self.core_version_hash,
+            "epoch_context_root": self.epoch_context_root,
+            "block_number": self.block_number, "log_index": self.log_index,
+            "patch": self.descriptor,
+        }
+        values.update(overrides)
+        patch = values["patch"]
+        padded = patch + b"\x00" * ((32 - len(patch) % 32) % 32)
+        data = "".join([
+            _word(values["parent_state_root"]), _word(values["new_state_root"]),
+            _word(_rig.transition_descriptor_hash(patch)), _word(values["eval_report_hash"]),
+            _word(values["core_version_hash"]), _word(values["epoch_context_root"]),
+            _word(f"{7:x}"), _word("21"), _word(f"{9 * 32:x}"), _word(f"{len(patch):x}"),
+            padded.hex(),
+        ])
+        return {
+            "address": PRODUCTION_DEPLOYMENT.registry,
+            "topics": ["0x" + _rig.STATE_ADVANCED_TOPIC0,
+                       "0x" + f"{int(values['epoch']):064x}",
+                       "0x" + f"{int(values['transition_index']):064x}",
+                       "0x" + _word(values["miner"])],
+            "data": "0x" + data,
+            "blockNumber": int(values["block_number"]),
+            "logIndex": int(values["log_index"]),
+            "transactionHash": "0x" + f"{int(values['block_number']) * 1000:064x}",
+        }
+
+    def context_log(self, **overrides):
+        return dp.encode_simple_log(
+            address=PRODUCTION_DEPLOYMENT.verifier, topic0=_rig.EPOCH_CONTEXT_SET_TOPIC0,
+            indexed=[f"{self.epoch:064x}"],
+            words=[_word(overrides.get("parent_state_root", self.parent_root)),
+                   _word(overrides.get("epoch_context_root", self.epoch_context_root)),
+                   _word(overrides.get("core_version_hash", self.core_version_hash))],
+            block_number=self.block_number - 10, log_index=0)
+
+    def commit_log(self, commitment=None):
+        return dp.encode_simple_log(
+            address=PRODUCTION_DEPLOYMENT.mining, topic0=_rig.EPOCH_COMMIT_SET_TOPIC0,
+            indexed=[f"{self.epoch:064x}", commitment or self.inner.entropy_commitment],
+            words=[], block_number=self.block_number - 9, log_index=0)
+
+    def reveal_log(self, secret=None):
+        return dp.encode_simple_log(
+            address=PRODUCTION_DEPLOYMENT.mining, topic0=_rig.EPOCH_SECRET_REVEALED_TOPIC0,
+            indexed=[f"{self.epoch:064x}"], words=[_word(secret or self.inner.secret)],
+            block_number=self.block_number - 8, log_index=0)
+
+    def law_logs(self, *, reveal: bool = True):
+        logs = [self.context_log(), self.commit_log()]
+        if reveal:
+            logs.append(self.reveal_log())
+        return logs
+
+    def logs(self, *, reveal: bool = True, **advance_overrides):
+        return self.law_logs(reveal=reveal) + [self.advance_log(**advance_overrides)]
