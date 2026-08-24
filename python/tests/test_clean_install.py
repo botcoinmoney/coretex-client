@@ -36,7 +36,7 @@ import coretex_validator as _pkg                                       # noqa: E
 PACKAGE_DIR = pathlib.Path(_pkg.__file__).resolve().parent
 #: Source-tree only. An installed wheel has no pyproject, so the test that reads it SKIPS rather
 #: than failing — "I could not check the manifest" is not "the manifest is wrong".
-PYPROJECT = PACKAGE_DIR.parent.parent / "pyproject.toml"
+PYPROJECT = PACKAGE_DIR.parent / "pyproject.toml"
 
 #: Modules this package is allowed to import. Everything here ships with CPython.
 #: ``sys.stdlib_module_names`` is authoritative on 3.10+; the explicit set keeps the test
@@ -69,6 +69,27 @@ def test_declares_no_runtime_dependencies():
     assert "dependencies = []" in text, (
         "pyproject.toml must declare zero runtime dependencies; a validator whose verdict "
         "depends on a downloaded wheel has a supply-chain root it did not choose")
+
+
+def test_the_wheel_build_backend_is_an_exact_recorded_toolchain():
+    if not PYPROJECT.is_file():
+        pytest.skip("the installed wheel contains products, not its source build manifest")
+    text = PYPROJECT.read_text(encoding="utf-8")
+    assert 'requires = ["setuptools==75.3.0", "wheel==0.44.0"]' in text
+    assert "setuptools>=" not in text
+
+
+@pytest.mark.parametrize("args", [["--law-mirror", "https://law.example"],
+                                   ["--law-root", "a" * 64]])
+def test_reproduce_refuses_half_of_a_law_source_tuple_before_building(args):
+    if not PYPROJECT.is_file():
+        pytest.skip("reproduce.sh is a source-tree qualification command")
+    script = PYPROJECT.parent / "reproduce.sh"
+    result = subprocess.run(["bash", str(script), *args], capture_output=True, text=True,
+                            timeout=10)
+    assert result.returncode == 2
+    assert "must be supplied together" in result.stderr
+    assert "build a wheel" not in result.stdout
 
 
 @pytest.mark.parametrize("module_path", _shipped_modules(), ids=lambda p: p.name)

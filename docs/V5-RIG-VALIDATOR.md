@@ -126,10 +126,8 @@ installed at exactly the relative path `code_roots` opens, which for a validator
 cache is inside the cache. A publication that omits it is refused rather than half-installed.
 
 **What the law publication can never carry.** `benchmark-v2/kit` and `benchmark-v2/integration`
-are not sealed code roots. `preview-current-parent` needs both, and they come from the hash-pinned
-miner-kit tar `setup` downloads and extracts — a second publication, verified a different way (the
-kit manifest binds its sha256), composed with the sealed trees by path layering, sealed first. See
-K4.
+are not sealed code roots. Both come from the explicit hash-pinned `current_miner_kit` tar that
+`setup` downloads and extracts. The sources are composed by path layering, sealed first. See K4.
 
 **The root is DISCOVERED, never defaulted.** `setup` reads it from the coordinator kit's
 `law_publication` component and syncs the law itself. The first publication root this lane ever
@@ -290,8 +288,8 @@ Eight steps, in order, stopping at the first outright failure and recording the 
 Commands sit alongside the eight, driving the same machinery: `replay-advance` (one confirmed
 advance, from a supplied log feed and artifact store), `replay-latest` (the same thing, but it
 *discovers* the newest confirmed advance from the chain by `(epoch, transitionIndex)` rather than
-being told which one), and `verify-receipt` (a signed Benchmark-v2 receipt, which is self-contained
-from `receipt + trees`). All use the law cache exactly as step 5 does, and all surface `PASS` /
+being told which one), and `verify-receipt` (a signed Benchmark-v2 receipt; exact-parent reports
+also require the eval artifact and parent graph from the selected artifact store). All use the law cache exactly as step 5 does, and all surface `PASS` /
 `FAIL` / `BACKLOG` verbatim — there is no flag on any of them that turns an unreachable binding into
 a pass.
 

@@ -74,17 +74,15 @@ that reports a verified cache for the wrong law.
 **Two publications, not one, and `setup` fetches both.** The law publication seals seven code
 roots — five `benchmark-v2` subtrees, `coretex-memory`, and the candidate-isolation posture FILE.
 `benchmark-v2/kit` and `benchmark-v2/integration` are *not* sealed roots and can never appear in
-it; they ship in the hash-pinned miner-kit tar, which is why `preview-current-parent` needs
-`setup` to have run without `--skip-packages`.
+it. Both required support trees ship in the explicit hash-pinned `current_miner_kit` tar.
 
 **One live decoder.** `replay-latest` / `replay-advance` / `reproduce` all decode the deployed
 descriptor-v3 events (`rig_events`). The `CoreTexMemory*` tables in `dispatch`/`sync` are the
 retired lane's and no live command consults them.
 
-**Pre-deploy limits that remain.** `setup` can only install the law from a coordinator whose kit
-carries a `law_publication` component; against a coordinator that does not publish one it reports
-`law.synced: false` with a remedy and still succeeds. A publication must carry the posture file to
-be installable at all — a set without it is refused rather than half-installed.
+**Install closure.** `setup` activates only a production-release-bound current kit with exactly
+one miner-kit tar and an explicit law-publication root. Missing components and a publication
+without the posture file are refused rather than installed partially.
 
 **Which version is live.** 0.4.3 is **cut** — it is the version this repository builds and the one
 the coordinator's kit is prepared to serve — and it is **pending release and deploy**. Until that

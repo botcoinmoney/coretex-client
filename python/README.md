@@ -44,18 +44,17 @@ refused: a cache that cannot compute `code_roots()` cannot replay a single recei
 that out at the first replay instead of at install time is worse than not installing.
 
 **`setup` also caches and extracts the miner-kit tar**, under the sha256 the kit manifest binds.
-That tar is where `benchmark-v2/kit` and `benchmark-v2/integration` come from — neither is a sealed
-code root, so no law publication can carry them, and `preview-current-parent` needs both. Do not
-pass `--skip-packages` if you intend to preview.
+That tar supplies the required `benchmark-v2/kit` and `benchmark-v2/integration` trees.
+Do not pass `--skip-packages` if you intend to preview.
 
-An older coordinator that publishes no such component gets `law.synced: false` and a remedy, and
-setup still succeeds. A publication that does **not** reproduce its address fails the command —
-loudly, and with no flag that recovers it.
+A canonical setup requires a production-release-bound kit envelope, exactly one current miner-kit
+tar, and an explicit `law_publication.publicationRoot`. A partial/older envelope or publication
+that does **not** reproduce its address fails the command loudly.
 
 ```bash
 coretex-validator setup                                   # discovers + installs the live law
-coretex-validator setup --skip-law                        # the old behaviour
-coretex-validator sync-law --mirror URL --root ROOT       # a NAMED (e.g. historical) publication
+coretex-validator setup --skip-law                        # explicit diagnostic; does not activate
+coretex-validator sync-law --mirror URL --root ROOT       # verify a named publication explicitly
 ```
 
 `sync-law` has **no default root**. The one it used to carry was a 2026-08-04 rehearsal closure,
@@ -92,8 +91,9 @@ instead of implying a check that did not run.
 coretex-validator verify-receipt ./cas/<REPORT_ROOT> --artifact ./cas/<ARTIFACT_ROOT>
 ```
 
-A receipt is self-contained from `receipt + trees`, so this needs no RPC. When the report names an
-EXACT PARENT (the five-field incumbent identity 0.4.3 introduced), the incumbent's execution is
+A receipt check needs no RPC, but an exact-parent receipt is not self-contained in `receipt +
+trees`: it also needs the eval artifact and the parent graph from the selected artifact store.
+When the report names an EXACT PARENT, the incumbent's execution is
 **resolved here** — frontier → composition → release → module, every hop re-hashed, compared for
 exact equality against the identity the report binds — rather than demanded from the caller.
 `--artifacts DIR` names the object store; it defaults to the directory holding the receipt, which
@@ -127,16 +127,14 @@ ones first:
 | tree | source | why |
 | --- | --- | --- |
 | `benchmark-v2/{frontier,generators,miner_abi,scoring,validator}`, `coretex-memory` | the verified **law cache** | sealed code roots; their tree hash is what a signed receipt binds |
-| `benchmark-v2/kit`, `benchmark-v2/integration` | the hash-pinned **miner-kit tar** | not sealed roots, so no law publication can ever carry them |
+| `benchmark-v2/kit`, `benchmark-v2/integration` | the hash-pinned **current miner-kit tar** | required support code; not sealed roots |
 
 The sealed directory wins every module name it defines; the tar — which also ships older copies of
 `frontier`/`scoring`/`miner_abi` — only ever supplies names the seal does not. `--packages-dir`
 points at an already-extracted tar; `--repo-root` uses a full checkout instead of either.
 
-`benchmark-v2/integration` is genuinely absent from the frozen kit tar. That is not fatal and not a
-candidate defect: the portability prerequisite reports `executed: false, ok: false` with
-`reason_code: portability_prerequisite_not_executed_locally`, exactly as `kit/self_check.py`'s own
-documented shim does. The adjudicating host always runs that gate.
+Retained frozen packet tarballs are audit artifacts, not install candidates. A current miner-kit
+missing either support tree is refused before preview starts.
 
 It is a preview, not a prediction. The report carries `publicDevCasesOnly: true` and
 `predictsAdmission: false`, because official evaluation re-runs on fresh confirmation cases drawn
