@@ -165,6 +165,19 @@ def test_extract_rejects_links_and_devices(tmp_path):
         su.maybe_extract_tars([{"local_path": str(archive), "sha256": digest}], str(tmp_path))
 
 
+@pytest.mark.parametrize("name", ["./a.txt", "a//b.txt", "C:/drive.txt"])
+def test_extract_rejects_normalization_aliases(name, tmp_path):
+    archive = tmp_path / "coretex-validator-miner-kit-alias.tar"
+    with tarfile.open(archive, "w") as tar:
+        payload = b"x"
+        info = tarfile.TarInfo(name=name)
+        info.size = len(payload)
+        tar.addfile(info, io.BytesIO(payload))
+    digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+    with pytest.raises(RuntimeError, match="unsafe tar member"):
+        su.maybe_extract_tars([{"local_path": str(archive), "sha256": digest}], str(tmp_path))
+
+
 def test_current_miner_kit_tree_requires_both_unsealed_support_trees(tmp_path):
     root = tmp_path / "kit"
     for relpath in su.REQUIRED_CURRENT_KIT_FILES[:-1]:

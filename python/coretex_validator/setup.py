@@ -338,12 +338,17 @@ def _extract_tar(archive: str, dest: str) -> None:
             raise RuntimeError(f"miner-kit tar has {len(members)} members, limit {MAX_KIT_MEMBERS}")
         for member in members:
             raw = member.name
+            # Split BEFORE PurePath normalization. ``./a`` and ``a//b`` otherwise alias ``a`` and
+            # ``a/b`` while evading duplicate detection, making extraction order meaningful.
+            raw_parts = raw.split("/")
             parts = PurePosixPath(raw).parts
             if (not raw or raw.startswith(("/", "\\")) or "\\" in raw
-                    or any(part in ("", ".", "..") for part in parts)
-                    or raw in seen or not (member.isdir() or member.isreg())):
+                    or any(part in ("", ".", "..") for part in raw_parts)
+                    or (raw_parts and raw_parts[0].endswith(":"))
+                    or "/".join(parts) in seen
+                    or not (member.isdir() or member.isreg())):
                 raise RuntimeError(f"unsafe tar member {raw!r}: only unique relative files/dirs are allowed")
-            seen.add(raw)
+            seen.add("/".join(parts))
             total += int(member.size or 0)
             if total > MAX_KIT_EXTRACTED_BYTES:
                 raise RuntimeError(
