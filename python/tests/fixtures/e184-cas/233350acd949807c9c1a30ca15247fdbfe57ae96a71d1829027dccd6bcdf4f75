@@ -1,0 +1,105 @@
+# SPDX-License-Identifier: Apache-2.0
+"""doc.tool.v1 pack: answer-first ordering over deduped reference stream."""
+import re
+from collections import Counter
+
+from coretex_memory import abi2
+from coretex_memory.hooks import HookDispatch
+
+_WORD = re.compile(r"[a-z0-9]+")
+
+DUP_JACCARD_PCT = 80
+DEFERRED_FILL_PCT = 92
+
+#: A term occurring in at most this many live records counts as an answer surface.
+RARE_MAX_DF = 2
+
+
+def _tokens(text):
+    return set(_WORD.findall(str(text).casefold()))
+
+
+def _jaccard_pct(a, b):
+    union = len(a | b)
+    if union == 0:
+        return 0
+    return (100 * len(a & b)) // union
+
+
+def _event_text(ev):
+    if isinstance(ev, dict):
+        return str(ev.get("text") or ev.get("value") or "")
+    if hasattr(ev, "value"):
+        val = ev.value
+        if val is not None:
+            return str(val)
+    if hasattr(ev, "text"):
+        val = ev.text
+        if val is not None:
+            return str(val)
+    return str(ev)
+
+
+def _unpack_ranked(pair):
+    if isinstance(pair, (tuple, list)) and len(pair) >= 2:
+        return pair[0], pair[1]
+    return 0, pair
+
+
+def make_hooks(context):
+    store = context.store
+    state = {"rare": None}
+
+    def _rare_terms():
+        if state["rare"] is None:
+            df = Counter()
+            for ev in store.live_events():
+                df.update(_tokens(ev.value))
+            state["rare"] = {t for t, n in df.items() if n <= RARE_MAX_DF}
+        return state["rare"]
+
+    def m6_pack(question, merged):
+        budget = 10 ** 12
+        qtoks = set()
+        if isinstance(question, dict):
+            if question.get("budget") is not None:
+                budget = question["budget"]
+            qtoks = _tokens(question.get("text") or "")
+        rare = _rare_terms()
+
+        primary = []
+        deferred = []
+        seen_toks = []
+        for pair in merged:
+            _rank, ev = _unpack_ranked(pair)
+            text = _event_text(ev)
+            toks = _tokens(text)
+            if any(_jaccard_pct(toks, prev) >= DUP_JACCARD_PCT
+                   for prev in seen_toks):
+                continue
+            seen_toks.append(toks)
+            item = context.item_dict(ev, context.event_units(ev), text=text)
+            cost = context.render_cost_v2(item)
+            if (toks - qtoks) & rare:
+                primary.append((cost, item))
+            else:
+                deferred.append((cost, item))
+
+        kept = []
+        used = 0
+        for cost, item in primary:
+            if kept and used + cost > budget:
+                continue
+            kept.append(item)
+            used += cost
+        deferred_limit = (budget * DEFERRED_FILL_PCT) // 100
+        for cost, item in deferred:
+            if kept and used + cost > deferred_limit:
+                continue
+            kept.append(item)
+            used += cost
+        return kept
+
+    dispatch = HookDispatch()
+    dispatch.set_override(abi2.M6, m6_pack)
+    return dispatch

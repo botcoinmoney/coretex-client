@@ -446,6 +446,93 @@ def _cmd_replay_latest(args: argparse.Namespace) -> int:
     return 0
 
 
+def _resolve_incumbent_execution(wrapper, artifact, *, store):
+    """Resolve the EXACT-PARENT incumbent this receipt names, from public content-addressed bytes.
+
+    THE DEFECT THIS CLOSES (D-4). ``benchmark-v2/validator/replay.py`` refuses an exact-parent
+    report without ``incumbent_execution``, the CLI never passed one, and no flag could supply it
+    — so ``verify-receipt`` could never verify the receipt shape that is 0.4.3's whole point. The
+    only caller that resolved it was ``replay.replay_advance``.
+
+    The resolution is the same public one ``replay_advance`` and ``preview-current-parent`` use:
+    frontier -> composition -> release -> module, every hop re-hashed, and the result compared for
+    EXACT equality against the five-field identity the report binds. The coordinator's worker
+    objects are transport; this follows the graph itself.
+
+    Returns ``(execution_or_None, block)``. ``block`` is the ``incumbent`` section of the report
+    and always says which of the three situations held.
+    """
+    from collections import abc as _abc
+
+    from . import eval_artifact as ea
+    from . import frontier as fr
+    from . import parent_execution as pe
+    from . import publication as pub
+
+    body = wrapper.get("receipt") if isinstance(wrapper, _abc.Mapping) \
+        and isinstance(wrapper.get("receipt"), _abc.Mapping) else wrapper
+    reported = body.get("incumbent") if isinstance(body, _abc.Mapping) else None
+    exact = (isinstance(reported, _abc.Mapping)
+             and frozenset(reported) == frozenset(ea.INCUMBENT_EXACT_FIELDS))
+    if not exact:
+        return None, {"resolved": False, "kind": "reference_or_historical",
+                      "reason": ("the report's incumbent is not the exact five-field identity, so "
+                                 "the frozen replayer reconstructs it and REFUSES a supplied "
+                                 "execution (`incumbent_execution_unexpected`)")}
+
+    profile_id = str((body or {}).get("profile_id")
+                     or ((artifact or {}).get("candidate") or {}).get("target_profile") or "")
+    parent_root = ((artifact or {}).get("frontier") or {}).get("parent_frontier_root")
+    if not profile_id or not isinstance(parent_root, str):
+        return None, {
+            "resolved": False, "kind": "exact_parent", "code": "PARENT_EXECUTION_UNRESOLVABLE",
+            "outcome": "BACKLOG",
+            "reason": ("this receipt names an exact parent, but the target profile and the parent "
+                       "frontier root could not be read from the report and the eval artifact. "
+                       "Pass the artifact that binds the receipt with --artifact")}
+    try:
+        parent_manifest = pub.fetch_json(parent_root, hash_rule=pub.HASH_RULE_FRONTIER_JSON,
+                                         store=store)
+        execution = pe.fetch_parent_execution(store=store, parent_manifest=parent_manifest,
+                                              target_profile=profile_id)
+    except pub.ObjectNotFoundError as exc:
+        # AN UNAVAILABLE OBJECT, and therefore a BACKLOG. Reporting it as FAIL/exit 1 — the code
+        # the docs define as a refutation — would raise a refutation alarm against a healthy
+        # production receipt because a publisher had not served an object yet.
+        return None, {
+            "resolved": False, "kind": "exact_parent", "code": "PARENT_EXECUTION_UNAVAILABLE",
+            "outcome": "BACKLOG", "parent_frontier_root": parent_root,
+            "target_profile": profile_id,
+            "reason": (f"the exact parent's release/composition/module bytes are not published by "
+                       f"this artifact source: {exc}. The receipt was not contradicted; it could "
+                       "not be checked")}
+    except (pub.PublicationError, pe.ParentExecutionError, fr.FrontierError, ValueError) as exc:
+        return None, {
+            "resolved": False, "kind": "exact_parent", "code": "PARENT_EXECUTION_INVALID",
+            "outcome": "FAIL", "parent_frontier_root": parent_root,
+            "target_profile": profile_id,
+            "reason": f"the exact parent release graph does not resolve: {exc}"}
+    try:
+        identity = pe.compact_identity(execution)
+    except pe.ParentExecutionError as exc:
+        return None, {"resolved": False, "kind": "exact_parent",
+                      "code": "PARENT_EXECUTION_INVALID", "outcome": "FAIL",
+                      "reason": str(exc)}
+    if dict(reported) != dict(identity):
+        return None, {
+            "resolved": False, "kind": "exact_parent", "code": "PARENT_EXECUTION_MISMATCH",
+            "outcome": "FAIL", "parent_frontier_root": parent_root,
+            "target_profile": profile_id, "resolved_identity": identity,
+            "reason": ("the report's incumbent is not the parent release independently resolved "
+                       "from confirmed public bytes")}
+    return execution, {"resolved": True, "kind": "exact_parent",
+                       "parent_frontier_root": parent_root, "target_profile": profile_id,
+                       "release_root": identity.get("release_root"),
+                       "authority": ("frontier -> composition -> release -> module, every hop "
+                                     "re-hashed; compared for EXACT equality against the identity "
+                                     "the report binds")}
+
+
 def _cmd_verify_receipt(args: argparse.Namespace) -> int:
     """Drive ``benchmark-v2/validator/replay.replay_receipt`` through the law cache.
 
@@ -453,8 +540,14 @@ def _cmd_verify_receipt(args: argparse.Namespace) -> int:
     a chain at all: the receipt is self-contained from ``receipt + trees``. The frozen replay runs
     in a child interpreter that installs and PROVES a networkless seccomp filter before executing
     the candidate; a host where that cannot be installed BACKLOGs rather than running it unconfined.
+
+    EXACT-PARENT RECEIPTS (D-4). When the report names the five-field exact incumbent, the
+    incumbent EXECUTION is resolved here from the artifact store rather than demanded from a flag
+    that never existed — see :func:`_resolve_incumbent_execution`.
     """
     law_block = _activate_law(args)                            # BEFORE the import below
+    from . import pipeline
+    from . import publication as pub
     from . import replay as rp
 
     wrapper = _load_json(args.receipt)
@@ -464,10 +557,40 @@ def _cmd_verify_receipt(args: argparse.Namespace) -> int:
         bench_v2_dir=os.path.join(args.repo_root, "benchmark-v2"),
         coretex_dir=os.path.join(args.repo_root, "coretex-memory"))
 
-    base = {"law": law_block, "sandbox": {"name": sandbox.name,
-                                          "available": bool(sandbox.available())}}
+    # The receipt is normally named by its own address INSIDE a content-addressed directory, so
+    # that directory is the artifact source unless the caller names another. Requiring --artifacts
+    # for a directory the command was already pointed into would be a second way to say one thing.
+    artifact_dir = args.artifacts or os.path.dirname(
+        os.path.abspath(os.path.expanduser(args.receipt))) or None
     try:
-        result = sandbox.execute(receipt_wrapper=wrapper, artifact=artifact)
+        store = pipeline.open_store(artifact_dir=artifact_dir,
+                                    base_url=args.artifact_base_url)
+    except pipeline.PipelineError as exc:                      # pragma: no cover - defensive
+        sys.stderr.write(f"coretex-validator verify-receipt: {exc.message}\n")
+        return 2
+
+    base = {"law": law_block, "sandbox": {"name": sandbox.name,
+                                          "available": bool(sandbox.available())},
+            "artifacts": {"source": args.artifacts or args.artifact_base_url or artifact_dir}}
+
+    incumbent_execution, incumbent_block = _resolve_incumbent_execution(
+        wrapper, artifact, store=store)
+    base["incumbent"] = incumbent_block
+    if incumbent_block.get("outcome") in ("BACKLOG", "FAIL"):
+        base.update({"outcome": incumbent_block["outcome"], "code": incumbent_block["code"],
+                     "reason": incumbent_block["reason"]})
+        _emit(base, pretty=not args.compact)
+        if incumbent_block["outcome"] == "FAIL":
+            return 1
+        if args.require_complete:
+            sys.stderr.write("--require-complete: the receipt was not replayed: "
+                             f"{incumbent_block['reason']}\n")
+            return 1
+        return 0
+
+    try:
+        result = sandbox.execute(receipt_wrapper=wrapper, artifact=artifact,
+                                 incumbent_execution=incumbent_execution)
     except rp.SandboxDependencyError as exc:
         # An ENVIRONMENT fault, and deliberately a FAIL: the reader's next move is one `pip
         # install`, not a re-read of our documentation. Conflating it with "unavailable" is the
@@ -481,6 +604,20 @@ def _cmd_verify_receipt(args: argparse.Namespace) -> int:
         _emit(base, pretty=not args.compact)
         if args.require_complete:
             sys.stderr.write(f"--require-complete: the receipt was not replayed: {exc}\n")
+            return 1
+        return 0
+
+    # THREE OUTCOMES, NOT TWO. A refusal because an INPUT was missing is unresolved work, and in
+    # this client's vocabulary FAIL/exit-1 means "a receipt did not reproduce" — the chain is
+    # lying. Printing a never-published law file as a refutation is what made a CI wired to the
+    # documented contract alarm on a healthy production receipt.
+    if not result["reproduced"] and result.get("code") in rp.AVAILABILITY_REPLAY_CODES:
+        base.update({"outcome": "BACKLOG", "code": result.get("code"),
+                     "reason": result.get("reason", ""), "replay": result})
+        _emit(base, pretty=not args.compact)
+        if args.require_complete:
+            sys.stderr.write("--require-complete: the receipt was not replayed: "
+                             f"{result.get('reason', '')}\n")
             return 1
         return 0
 
@@ -772,7 +909,15 @@ def build_parser() -> argparse.ArgumentParser:
         "verify-receipt", help="replay a signed Benchmark-v2 receipt through the law cache")
     receipt.add_argument("receipt", help="path to a signed receipt wrapper JSON")
     receipt.add_argument("--artifact", default=None,
-                         help="the V5 eval artifact that binds it (needed for a v2 report)")
+                         help="the V5 eval artifact that binds it (needed for a v2 report, and "
+                              "for an exact-parent receipt: it names the parent frontier root the "
+                              "incumbent execution is resolved from)")
+    receipt.add_argument("--artifacts", default=None,
+                         help="directory of content-addressed objects the receipt's exact parent "
+                              "is resolved from (default: the directory holding the receipt, "
+                              "which is where a content-addressed receipt normally sits)")
+    receipt.add_argument("--artifact-base-url", default=None,
+                         help="http(s) CAS serving those objects by root, instead of a directory")
     receipt.add_argument("--repo-root", default=None,
                          help="use these trees instead of the law cache — the directory that "
                               "CONTAINS benchmark-v2 and coretex-memory")

@@ -777,6 +777,24 @@ print("<<<JSON>>>" + json.dumps(out, sort_keys=True, default=str))
 '''
 
 
+#: Sandbox result codes that mean "an INPUT was missing", not "the receipt did not reproduce".
+#:
+#: The frozen replayer returns one refusal shape for both facts, and the CLI used to print every
+#: one of them as ``outcome: FAIL``, exit 1 — the code this client's own documentation defines as
+#: A REFUTATION. So a never-published law file (``code_root_unavailable``: the seventh sealed root,
+#: D-3) or an unresolved exact parent (``incumbent_execution_required``, D-4) made a CI wired to
+#: the documented contract raise a refutation alarm against a healthy production receipt.
+#:
+#: BACKLOG is the outcome that means "I could not check that", and the sibling
+#: :class:`SandboxUnavailable` branch already used it. Deliberately NARROW: ``code_root_mismatch``
+#: is not here, because two pinned things disagreeing IS a determination, and neither is
+#: ``reexecution_failed``, which may be a genuine divergence.
+AVAILABILITY_REPLAY_CODES = frozenset({
+    "code_root_unavailable",
+    "incumbent_execution_required",
+})
+
+
 class BenchmarkV2Sandbox(CandidateSandbox):
     """The pinned networkless sandbox: benchmark-v2's own receipt replay, in a child interpreter.
 

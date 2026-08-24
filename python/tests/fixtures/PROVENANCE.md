@@ -7,12 +7,12 @@ is detectable rather than silent — which is the entire reason a shared vector 
 | --- | --- | --- |
 | `signing-vector.json` | resolver lane, `v5/resolver/tests/fixtures/signing-vector.json` | `e19b0f513b4ebeb66bdd698ed95a6cd72eb38cac8bd990d11b071d76d332ba1c` |
 | `rig-descriptor-v3-vector.json` | independently derived from `botcoin-mining-rigs@a473f3fd1038a81f8ef456cd4c7ce1f7b9fbef6e` | `c9c6e86b23f34ba4c871d70f0c581b5019778f9fd8b187add0033e056339b1fb` |
-| `e184-cas/*` | the nine published objects of the LIVE epoch-184 advance, copied verbatim from the production publication surface | each file is named by its own root; see below |
+| `e184-cas/*` | the twelve published objects of the LIVE epoch-184 advance and its exact parent, copied verbatim from the production publication surface | each file is named by its own root; see below |
 | `e184-rig-feed.json` | thirteen VERBATIM Base mainnet logs pulled with `eth_getLogs` over blocks 50330000-50372318 from the three addresses the canonical release pins, no topic0 filter | `26db6a75d82e3eedb3247e5282b11f6171106f6a2282ad2bf4eb1c90f543935e` |
 
 ## `e184-cas/` — real production bytes, not a synthesised set
 
-Nine content-addressed objects, one directory laid out as a flat CAS (one file per root, named by
+Twelve content-addressed objects, one directory laid out as a flat CAS (one file per root, named by
 the root), exactly as `publication.FilesystemCAS` reads it. They are public protocol artifacts: an
 advance's objects are what any validator fetches to replay it.
 
@@ -32,6 +32,16 @@ tuned. Two properties in particular cannot be manufactured convincingly:
 
 `test_object_transport.py` asserts both properties directly, so a change to either the rules or
 the fixtures fails loudly rather than drifting.
+
+Three of the twelve are the EXACT PARENT's own graph — its composition
+(`9a558da1…`), its release manifest (`bc0f0597…`, the `release_root` the epoch-184
+report's five-field incumbent binds) and its module bytes (`233350ac…`). They are
+here because `verify-receipt` has to RESOLVE the incumbent execution rather than
+be handed it (D-4), and a resolution test built on a synthesised graph would
+prove only that the fixture agrees with itself. With these,
+`parent_execution.fetch_parent_execution` walks
+frontier -> composition -> release -> module over real published bytes and
+reproduces the identity the signed report names, offline.
 
 ## Why this is a fixture and not a recomputation
 
