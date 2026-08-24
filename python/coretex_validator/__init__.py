@@ -83,4 +83,25 @@ __all__ = [
 #:     installs the admission law itself, so step 5 of ``reproduce`` no longer BACKLOGs on a
 #:     machine that started with nothing.
 #:   * ``replay-latest`` replays the newest confirmed advance without being told which one.
-__version__ = "0.4.3"
+#:
+#: 0.4.4 is the published 0.4.3 feature set plus PUBLIC COMPATIBILITY-LOCK SUPPORT. Nothing that
+#: 0.4.3 checked changed meaning; what changed is that the compatibility lock is now obtainable
+#: and verifiable from a URL instead of having to be handed to the machine out of band.
+#:   * the lock is fetched from the coordinator's public object route,
+#:     ``GET /coretex/v5/object/<coreVersionHash>?hashRule=compatibility-lock-root``. The rule is
+#:     named in the request because a lock root is not a ``sha256`` over the served bytes and a
+#:     surface cannot guess which construction the caller committed to.
+#:   * the served bytes must BE the canonical serialisation of what they decode to, and the
+#:     document is re-addressed here —
+#:     ``keccak256(0x19 || "coretex.compatibility-lock/v1" || 0x0a || canonical body without
+#:     lock_root)``. The recomputed root, the document's own ``lock_root`` and the chain's word
+#:     must be one value. The server's own ``verified: true`` is never read.
+#:   * ``setup`` binds that lock: the exact verified bytes are cached under their root in
+#:     ``<packages-dir>/artifacts/``, and the root is recorded in ``ACTIVE-INSTALL.json`` so a
+#:     later run can see which lock the installation was bound to. A coordinator that cannot
+#:     serve the rule leaves ``lock.verified: false`` with a remedy and setup still exits 0 —
+#:     unreachable is not refuted — while bytes that contradict their address fail loudly.
+#:   * descriptor-v3 snapshot reproduction consumes that verified fetch: the cached lock is read
+#:     from the artifacts directory rather than seeded by hand, so a clean machine reproduces a
+#:     published snapshot without being trusted to supply the lock itself.
+__version__ = "0.4.4"
