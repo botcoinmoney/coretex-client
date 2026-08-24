@@ -1096,6 +1096,42 @@ def verify_compatibility_lock_bytes(data: bytes, *, expected_root: str) -> Dict[
     return dict(document)
 
 
+def fetch_compatibility_lock(core_version_hash: str, *,
+                             store: Any) -> Tuple[Dict[str, Any], bytes]:
+    """Fetch the compatibility lock a ``coreVersionHash`` names, and verify it end to end.
+
+    THE ONE SANCTIONED WAY to obtain a lock from a publication surface. It is separate from
+    :func:`publication.read_back` because the generic read-back recomputes ``sha256`` over the
+    served bytes, and a lock root is not that: it is
+    ``keccak256(0x19 || "coretex.compatibility-lock/v1" || 0x0a || canonical body without
+    lock_root)``. A surface therefore has to be TOLD which rule the caller committed to before it
+    can serve the object — hence ``get_for_rule`` and never a bare ``get`` — and this side has to
+    re-address the document itself rather than accept the server's own report that it verified
+    the transport.
+
+    Fail-closed, in order:
+
+      1. the chain word becomes a bare root (``0x``-prefixed or bare, one spelling either way);
+      2. ``store.get_for_rule(root, "compatibility-lock-root")`` — absence and transport failure
+         propagate as :class:`publication.PublicationUnavailableError`, which is an availability
+         fact and NOT a refutation;
+      3. the served bytes must BE the canonical serialisation of what they decode to. Bytes that
+         re-serialize differently are refused outright: a root addresses one byte string, so a
+         re-indented copy is the wrong object, not a formatting preference to normalise away;
+      4. the document is strictly validated, and the recomputed root, the document's own
+         ``lock_root`` and the requested root must all be the same value.
+
+    Returns ``(document, served_bytes)`` — the bytes as well, because a caller that wants to CACHE
+    the lock must cache exactly what verified, never a re-serialisation of the parse.
+    """
+    from . import publication as pub_mod
+
+    root = cn.root_from_word(core_version_hash, "core_version_hash")
+    served = store.get_for_rule(root, COMPATIBILITY_LOCK_HASH_RULE)
+    document = verify_compatibility_lock_bytes(served, expected_root=root)
+    return document, bytes(served)
+
+
 def build_locks_v3(state_manifest: Mapping[str, Any],
                    compatibility_lock: Mapping[str, Any],
                    runtime_record: Optional[Mapping[str, Any]] = None, *,
@@ -1473,14 +1509,16 @@ def reproduce_from_chain(published: Mapping[str, Any], *, rpc_url: str,
         served_context = store.get(epoch_context_root)
         rig_mod.verify_epoch_context_bytes(served_context, expected_root=epoch_context_root)
         epoch_context_bytes_len = len(served_context)
-        compatibility_lock_root = cn.root_from_word(
-            built["state"]["context"]["core_version_hash"], "core_version_hash")
         # Unlike the ordinary SHA-256 CAS families, a compatibility lock addresses its canonical
-        # BODY under a domain-separated keccak rule. Fetch by the chain word first, then verify
-        # the exact served bytes and both copies of the root before any lock value is consumed.
-        compatibility_lock = verify_compatibility_lock_bytes(
-            store.get(compatibility_lock_root),
-            expected_root=built["state"]["context"]["core_version_hash"])
+        # BODY under a domain-separated keccak rule. The fetch therefore CARRIES that rule — the
+        # coordinator's public object route refuses a request that names none, so a rule-less
+        # `get` cannot obtain the document from a live surface at all — and the exact served bytes
+        # and both copies of the root are verified before any lock value is consumed. A locally
+        # seeded artifact directory answers the same call: `FilesystemCAS` does not vary by rule.
+        compatibility_lock, _lock_bytes = fetch_compatibility_lock(
+            built["state"]["context"]["core_version_hash"], store=store)
+        compatibility_lock_root = cn.bare_root(
+            compatibility_lock["lock_root"], "compatibility_lock.lock_root")
     head_root = built["state"]["live_state_root"][2:]
     manifest = pub_mod.fetch_json(head_root, hash_rule=pub_mod.HASH_RULE_FRONTIER_JSON,
                                   store=store)

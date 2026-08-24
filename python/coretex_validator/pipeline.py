@@ -84,6 +84,12 @@ class UrlContentStore(pub.ContentStore):
     the committed rule, and for the float-bearing benchmark rule the canonical form is
     reconstructed byte-for-byte rather than accepted on the server's raw-sha256 agreement.
 
+    ONE RULE IS NOT A SHA256 RULE AT ALL. ``compatibility-lock-root`` names the document
+    descriptor-v3's ``coreVersionHash`` addresses by domain-separated keccak over its canonical
+    body; the route will not serve it without the rule, and this client verifies the answer in
+    ``resolver_snapshot.fetch_compatibility_lock`` instead of ``publication.read_back``. It
+    travels here exactly like the other four — transport is transport.
+
     A flat CAS (an S3 prefix serving one file per root) ignores the query string, so ONE spelling
     serves both surfaces; use :meth:`for_coordinator` when the base is a coordinator root rather
     than an object prefix.
@@ -111,7 +117,11 @@ class UrlContentStore(pub.ContentStore):
         return self._fetch(self._url(root), root=root)
 
     def get_for_rule(self, root: str, hash_rule: str) -> bytes:
-        pub.check_hash_rule(hash_rule)                 # never ask for what we cannot verify
+        # Never ask for what this client cannot verify the answer to. The gate is the TRANSPORT
+        # vocabulary (:data:`publication.HASH_RULES`), which includes `compatibility-lock-root` —
+        # a rule the route needs named and whose answer is verified by
+        # `resolver_snapshot.fetch_compatibility_lock` rather than by `root_of`.
+        pub.check_hash_rule(hash_rule)
         url = f"{self._url(root)}?hashRule={urllib.parse.quote(hash_rule, safe='')}"
         request = urllib.request.Request(
             url, headers={"accept": "application/octet-stream"})

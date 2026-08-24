@@ -51,6 +51,23 @@ A canonical setup requires a production-release-bound kit envelope, exactly one 
 tar, and an explicit `law_publication.publicationRoot`. A partial/older envelope or publication
 that does **not** reproduce its address fails the command loudly.
 
+**`setup` also fetches and binds the compatibility lock.** The confirmed epoch's `coreVersionHash`
+is the address of one `coretex.compatibility-lock/v1` document, and it is now obtainable publicly:
+`GET /coretex/v5/object/<coreVersionHash>?hashRule=compatibility-lock-root`. Setup fetches it,
+requires the served bytes to BE the canonical serialisation, re-addresses the document
+(`keccak256(0x19 ‖ "coretex.compatibility-lock/v1" ‖ 0x0a ‖ canonical-body-without-lock_root)`)
+and requires the recomputation, the document's own `lock_root` and the chain's word to be the same
+value. The server's `verified: true` is never read. The verified bytes are cached under their root
+in `<packages-dir>/artifacts/`, so a later `reproduce-snapshot --artifacts` reads them offline, and
+the root is recorded in `ACTIVE-INSTALL.json` so a later run can see which lock this installation
+was bound to. The report's `lock` block is
+`{verified, root, rawSha256, bytes, cachedAt}`.
+
+The two negative outcomes are **not** one outcome. A coordinator that cannot serve the rule (404,
+503, or an older image that 400s it) leaves `lock.verified: false` with a remedy and setup still
+exits 0 — nothing was disproved. Bytes that arrive and contradict their address — non-canonical
+encoding, a malformed document, a root that does not recompute — fail the command loudly.
+
 ```bash
 coretex-validator setup                                   # discovers + installs the live law
 coretex-validator setup --skip-law                        # explicit diagnostic; does not activate

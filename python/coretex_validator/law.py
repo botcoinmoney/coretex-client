@@ -853,11 +853,36 @@ def _active_install_path(cache_dir: Optional[str]) -> str:
     return os.path.join(base, ACTIVE_INSTALL_FILENAME)
 
 
+def _validate_active_install_lock(binding: Any) -> Dict[str, Any]:
+    """The compatibility lock this installation was bound to: ``{bytes, root, sha256}``.
+
+    ``root`` is the chain's ``coreVersionHash`` — a domain-separated keccak, not a sha256 — and
+    ``sha256`` is the raw digest of the canonical bytes that were served and verified. BOTH are
+    recorded because they answer different questions later: the root says WHICH lock this install
+    is bound to, and the digest says which byte string reproduced it.
+    """
+    if not isinstance(binding, Mapping) or set(binding) != {"bytes", "root", "sha256"}:
+        raise LawCacheError(
+            "active install compatibility_lock must bind exactly bytes, root and sha256")
+    root = check_root(binding.get("root"), "compatibility_lock.root")
+    digest = check_root(binding.get("sha256"), "compatibility_lock.sha256")
+    size = binding.get("bytes")
+    if not isinstance(size, int) or isinstance(size, bool) or size <= 0:
+        raise LawCacheError("active install compatibility_lock.bytes must be a positive integer")
+    return {"bytes": size, "root": root, "sha256": digest}
+
+
 def _validate_active_install(document: Any) -> Dict[str, Any]:
     if not isinstance(document, Mapping):
         raise LawCacheError("the active install receipt is not an object")
     expected_fields = {"format", "kit_manifest_hash", "law_publication_root", "miner_kit"}
-    if set(document) != expected_fields or document.get("format") != ACTIVE_INSTALL_FORMAT:
+    # ADDITIVE and OPTIONAL. A receipt written before the lock could be fetched publicly names a
+    # real verified law+kit tuple; invalidating it because a later field is absent would turn a
+    # client upgrade into a broken installation.
+    optional_fields = {"compatibility_lock"}
+    present = set(document)
+    if (not expected_fields <= present or not present <= (expected_fields | optional_fields)
+            or document.get("format") != ACTIVE_INSTALL_FORMAT):
         raise LawCacheError(
             f"the active install receipt must be a closed {ACTIVE_INSTALL_FORMAT} object")
     kit_hash = check_root(document.get("kit_manifest_hash"), "kit_manifest_hash")
@@ -876,9 +901,13 @@ def _validate_active_install(document: Any) -> Dict[str, Any]:
     if filename != expected_filename:
         raise LawCacheError(
             f"active install miner-kit filename must be {expected_filename!r}, got {filename!r}")
-    return {"format": ACTIVE_INSTALL_FORMAT, "kit_manifest_hash": kit_hash,
-            "law_publication_root": law_root,
-            "miner_kit": {"filename": filename, "sha256": archive, "tree_sha256": tree}}
+    validated = {"format": ACTIVE_INSTALL_FORMAT, "kit_manifest_hash": kit_hash,
+                 "law_publication_root": law_root,
+                 "miner_kit": {"filename": filename, "sha256": archive, "tree_sha256": tree}}
+    if "compatibility_lock" in document:
+        validated["compatibility_lock"] = _validate_active_install_lock(
+            document["compatibility_lock"])
+    return validated
 
 
 def load_active_install(*, cache_dir: Optional[str] = None) -> Optional[Dict[str, Any]]:
@@ -896,15 +925,26 @@ def load_active_install(*, cache_dir: Optional[str] = None) -> Optional[Dict[str
 
 def write_active_install(*, cache_dir: Optional[str], publication_root: str,
                          kit_manifest_hash: str, miner_kit_sha256: str,
-                         miner_kit_filename: str, miner_kit_tree_sha256: str) -> Dict[str, Any]:
-    """Atomically make one fully verified law+kit tuple the default for later commands."""
-    document = _validate_active_install({
+                         miner_kit_filename: str, miner_kit_tree_sha256: str,
+                         compatibility_lock: Optional[Mapping[str, Any]] = None
+                         ) -> Dict[str, Any]:
+    """Atomically make one fully verified law+kit tuple the default for later commands.
+
+    ``compatibility_lock`` is recorded when — and only when — setup actually fetched the lock the
+    confirmed epoch's ``coreVersionHash`` names and re-addressed it. An unreachable publication
+    leaves it absent rather than writing an unverified placeholder: this receipt is the durable
+    answer to "which lock is this installation bound to", and a maybe is not an answer.
+    """
+    body: Dict[str, Any] = {
         "format": ACTIVE_INSTALL_FORMAT,
         "kit_manifest_hash": kit_manifest_hash,
         "law_publication_root": publication_root,
         "miner_kit": {"filename": miner_kit_filename, "sha256": miner_kit_sha256,
                       "tree_sha256": miner_kit_tree_sha256},
-    })
+    }
+    if compatibility_lock is not None:
+        body["compatibility_lock"] = compatibility_lock
+    document = _validate_active_install(body)
     # Refuse to activate a root whose installed cache is absent or no longer verifies.
     load_cache(publication_root, cache_dir=cache_dir)
     path = _active_install_path(cache_dir)

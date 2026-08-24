@@ -9,6 +9,7 @@ is detectable rather than silent — which is the entire reason a shared vector 
 | `rig-descriptor-v3-vector.json` | independently derived from `botcoin-mining-rigs@a473f3fd1038a81f8ef456cd4c7ce1f7b9fbef6e` | `c9c6e86b23f34ba4c871d70f0c581b5019778f9fd8b187add0033e056339b1fb` |
 | `e184-cas/*` | the twelve published objects of the LIVE epoch-184 advance and its exact parent, copied verbatim from the production publication surface | each file is named by its own root; see below |
 | `e184-rig-feed.json` | thirteen VERBATIM Base mainnet logs pulled with `eth_getLogs` over blocks 50330000-50372318 from the three addresses the canonical release pins, no topic0 filter | `26db6a75d82e3eedb3247e5282b11f6171106f6a2282ad2bf4eb1c90f543935e` |
+| `compatibility-lock-v1.json` | the LIVE `coretex.compatibility-lock/v1` document the chain's descriptor-v3 `coreVersionHash` addresses, copied verbatim from the canonical release (`v5/COMPATIBILITY-LOCK.v1.json`) | `be0a58b4820461cd520f247787085248a574e04a9c133d841ba2f5587c90ae54` |
 
 ## `e184-cas/` — real production bytes, not a synthesised set
 
@@ -76,3 +77,18 @@ that `rig_events` finds the one that is there.
 The four unknown-topic logs are deliberate: an administrative event a field
 validator has never heard of must be IGNORED, never fatal, and the counts in
 `RigFeed.summary()` say so out loud.
+
+## `compatibility-lock-v1.json` — the pretty-printed source of a canonical publication
+
+This file is the operator's working copy: 3570 bytes of indented JSON. It is deliberately NOT the
+published byte string. The coordinator serves the canonical serialisation of the same document —
+`frontier.canonical_bytes`, 2852 bytes, raw
+`sha256 0c106339b06110a8c37d97440861a6442f165461ab5e26d3ca0a30ebc50345f7` — and the lock ROOT is
+neither of those sha256s: it is
+`keccak256(0x19 || "coretex.compatibility-lock/v1" || 0x0a || canonical-body-without-lock_root)`
+= `93eb7a00dad8c9e5cdf81187dac85191f7475273cb2bfda0e91843dd37a6902c`, the word the chain carries.
+
+Keeping the indented form is the point. `test_setup_compatibility_lock.py` derives the canonical
+bytes from it in-test (so the served bytes are reproduced, never pasted) and then serves the RAW
+file as the non-canonical negative control — a byte string that decodes to exactly the right
+document and is still refused, because a root addresses one byte string and not a JSON value.

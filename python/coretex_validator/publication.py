@@ -34,6 +34,16 @@ always accompanied by a **hash rule**:
                                         release root / composition root already IS.
 ======================================  ==================================================
 
+There is a FIFTH rule, and it is deliberately not in that table: ``compatibility-lock-root`` is a
+rule a request may CARRY and this module cannot compute. Descriptor-v3's ``coreVersionHash``
+addresses a ``coretex.compatibility-lock/v1`` document by the domain-separated KECCAK256 of its
+canonical body with ``lock_root`` removed — not by any sha256 of the bytes on the wire. The
+coordinator's public object route needs the rule named to serve the document at all, so
+:func:`check_hash_rule` accepts it; :func:`root_of`, :func:`read_back` and
+:func:`availability_item` refuse it through :func:`check_addressable_hash_rule` and name
+``resolver_snapshot.fetch_compatibility_lock``, which verifies it properly. Letting the generic
+path "verify" a lock by rehashing its bytes would report agreement it never checked.
+
 The store is an interface. :class:`FilesystemCAS` is the offline default; :class:`InMemoryCAS`
 is the test double; a real deployment swaps in IPFS/S3/whatever WITHOUT touching a caller —
 :func:`publish_and_read_back` only ever calls ``put``/``get``/``has``.
@@ -80,9 +90,31 @@ HASH_RULE_BYTES = "sha256-bytes"
 HASH_RULE_FRONTIER_JSON = "sha256-frontier-canonical-json"
 HASH_RULE_BENCHMARK_JSON = "sha256-benchmark-canonical-json"
 HASH_RULE_SIGNED_MANIFEST_BODY = "sha256-signed-manifest-body"
+#: TRANSPORT ONLY. Descriptor-v3's ``coreVersionHash`` addresses a compatibility lock under a
+#: DOMAIN-SEPARATED KECCAK of its canonical body with ``lock_root`` removed — not a sha256 of the
+#: bytes on the wire. So a request may CARRY this rule (the coordinator's object route needs it to
+#: answer at all) and :func:`root_of` must never claim to compute it; see
+#: :data:`ADDRESSABLE_HASH_RULES`.
+HASH_RULE_COMPATIBILITY_LOCK = "compatibility-lock-root"
 
-HASH_RULES = (HASH_RULE_BYTES, HASH_RULE_FRONTIER_JSON, HASH_RULE_BENCHMARK_JSON,
-              HASH_RULE_SIGNED_MANIFEST_BODY)
+#: The rules whose root this module can recompute FROM THE BYTES. Everything that verifies —
+#: :func:`root_of`, :func:`read_back`, :func:`fetch_json`, :func:`availability_item` — is closed
+#: over exactly these.
+ADDRESSABLE_HASH_RULES = (HASH_RULE_BYTES, HASH_RULE_FRONTIER_JSON, HASH_RULE_BENCHMARK_JSON,
+                          HASH_RULE_SIGNED_MANIFEST_BODY)
+
+#: The rules a REQUEST may name. A superset of :data:`ADDRESSABLE_HASH_RULES`, and the difference
+#: is deliberate: being able to ask a surface for an object is not being able to verify it.
+HASH_RULES = ADDRESSABLE_HASH_RULES + (HASH_RULE_COMPATIBILITY_LOCK,)
+
+#: What to say when a caller routes the lock rule into the generic addressing path. It names the
+#: verifier rather than only refusing, because there IS a correct way to do this.
+_LOCK_RULE_REFUSAL = (
+    f"{HASH_RULE_COMPATIBILITY_LOCK!r} is a TRANSPORT rule, not an addressing rule: a "
+    "compatibility lock is addressed by the domain-separated keccak256 of its canonical body "
+    "with `lock_root` removed, which no sha256 of the served bytes can reproduce. Fetch and "
+    "verify it with resolver_snapshot.fetch_compatibility_lock (or verify bytes you already hold "
+    "with resolver_snapshot.verify_compatibility_lock_bytes)")
 
 #: The two fields ``coretex_memory.release.canonical_manifest_bytes`` removes before serializing
 #: (a document cannot hash or sign itself).
@@ -90,9 +122,24 @@ SIGNED_MANIFEST_ATTESTATION_FIELDS = ("manifest_self_sha256", "operator_signatur
 
 
 def check_hash_rule(hash_rule: str) -> str:
-    """The single gate every rule-taking entry point passes through."""
+    """The single gate every rule-taking TRANSPORT entry point passes through."""
     if hash_rule not in HASH_RULES:
         raise HashRuleError(f"unknown hash rule {hash_rule!r}; known rules are {list(HASH_RULES)}")
+    return hash_rule
+
+
+def check_addressable_hash_rule(hash_rule: str) -> str:
+    """The gate every VERIFYING entry point passes through. Refuses transport-only rules.
+
+    Kept separate from :func:`check_hash_rule` on purpose. Widening the transport vocabulary must
+    never widen what this module is willing to claim it verified, and the one rule where the two
+    differ is the one whose address is not a hash of the bytes at all.
+    """
+    if hash_rule == HASH_RULE_COMPATIBILITY_LOCK:
+        raise HashRuleError(_LOCK_RULE_REFUSAL)
+    if hash_rule not in ADDRESSABLE_HASH_RULES:
+        raise HashRuleError(
+            f"unknown hash rule {hash_rule!r}; known rules are {list(ADDRESSABLE_HASH_RULES)}")
     return hash_rule
 
 
@@ -158,6 +205,8 @@ def signed_manifest_body(document: Mapping[str, Any]) -> Dict[str, Any]:
 
 def encode(obj: Any, hash_rule: str) -> bytes:
     """The exact bytes to PUBLISH for ``obj`` under ``hash_rule``."""
+    if hash_rule == HASH_RULE_COMPATIBILITY_LOCK:
+        raise HashRuleError(_LOCK_RULE_REFUSAL)
     if hash_rule == HASH_RULE_BYTES:
         if not isinstance(obj, (bytes, bytearray, memoryview)):
             raise HashRuleError(
@@ -180,6 +229,8 @@ def root_of(data: bytes, hash_rule: str) -> str:
     but differently encoded payload is refused rather than silently re-canonicalized, so one root
     addresses exactly one byte string (the ``frontier.parse_transition_bytes`` discipline).
     """
+    if hash_rule == HASH_RULE_COMPATIBILITY_LOCK:
+        raise HashRuleError(_LOCK_RULE_REFUSAL)
     if not isinstance(data, (bytes, bytearray, memoryview)):
         raise HashRuleError(f"root_of takes bytes, got {type(data).__name__}")
     data = bytes(data)
@@ -252,7 +303,9 @@ class ContentStore:
         """The bytes at ``root``, told which rule the caller committed to. Default: :meth:`get`.
 
         An unknown rule is refused BEFORE any transport happens — a request this client cannot
-        verify the answer to is one it must never make.
+        verify the answer to is one it must never make. The gate is the TRANSPORT vocabulary
+        (:data:`HASH_RULES`), not :data:`ADDRESSABLE_HASH_RULES`: ``compatibility-lock-root`` is
+        askable here and verified by ``resolver_snapshot.fetch_compatibility_lock``.
         """
         check_hash_rule(hash_rule)
         return self.get(root)
@@ -385,7 +438,7 @@ def read_back(root: str, *, hash_rule: str, store: ContentStore,
     additionally requires the bytes to BE the canonical serialisation the root names.
     """
     fr.check_root(root, "root")
-    check_hash_rule(hash_rule)
+    check_addressable_hash_rule(hash_rule)             # refused BEFORE any transport happens
     data = store.get_for_rule(root, hash_rule)         # ObjectNotFoundError on absence
     if not isinstance(data, (bytes, bytearray)):
         raise StoreIntegrityError(
@@ -422,8 +475,7 @@ AVAILABILITY_ITEM_FIELDS = ("bytes", "hash_rule", "root")
 def availability_item(root: str, hash_rule: str, byte_len: int) -> Dict[str, Any]:
     """One closed availability record: ``{bytes, hash_rule, root}``."""
     fr.check_root(root, "availability root")
-    if hash_rule not in HASH_RULES:
-        raise HashRuleError(f"unknown hash rule {hash_rule!r}")
+    check_addressable_hash_rule(hash_rule)
     if not isinstance(byte_len, int) or isinstance(byte_len, bool) or byte_len < 0:
         raise AvailabilityError(f"availability bytes must be a non-negative int: {byte_len!r}")
     return {"bytes": byte_len, "hash_rule": hash_rule, "root": root}

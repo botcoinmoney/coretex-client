@@ -67,10 +67,21 @@ REQUIRED_CURRENT_KIT_FILES = (
     "benchmark-v2/kit/dev_instances.py",
     "benchmark-v2/integration/portability_matrix.py",
 )
+#: Where the durably cached content-addressed objects live under the packages directory. It is a
+#: flat CAS (one file per root, named by the root) because that is exactly the layout
+#: ``publication.FilesystemCAS`` reads, so a later ``reproduce-snapshot --artifacts`` on this host
+#: finds what setup fetched WITHOUT the coordinator being reachable again.
+ARTIFACTS_DIRNAME = "artifacts"
 
 
 def default_packages_dir() -> str:
     return DEFAULT_PACKAGES_DIR
+
+
+def default_artifacts_dir(packages_dir: Optional[str] = None) -> str:
+    """The local flat CAS setup caches verified content-addressed objects into."""
+    base = os.path.expanduser(packages_dir or default_packages_dir())
+    return os.path.join(base, ARTIFACTS_DIRNAME)
 
 
 def kit_components(manifest: Mapping[str, Any]) -> List[Mapping[str, Any]]:
@@ -548,6 +559,73 @@ def sync_law_from_kit(coordinator: str, manifest: Mapping[str, Any], *, packages
     }
 
 
+# --------------------------------------------------------------------------- #
+# the compatibility lock, fetched from the public object route
+# --------------------------------------------------------------------------- #
+#: What an operator does about a coordinator that cannot serve the lock. Named in the report so
+#: an UNVERIFIED outcome carries its own remedy rather than only a complaint.
+_LOCK_REMEDY = (
+    "Upgrade the coordinator to an image whose public object route serves "
+    "GET /coretex/v5/object/<coreVersionHash>?hashRule=compatibility-lock-root, then re-run "
+    "`coretex-validator setup`. Until it does, descriptor-v3 snapshot reproduction on this host "
+    "BACKLOGs on the compatibility lock instead of failing: nothing was disproved, the document "
+    "simply could not be obtained")
+
+
+def bind_compatibility_lock(coordinator: str, *, core_version_hash: Optional[str],
+                            packages_dir: str, store: Optional[Any] = None,
+                            timeout: float = 30.0) -> Dict[str, Any]:
+    """Fetch, VERIFY and cache the compatibility lock the confirmed epoch's word addresses.
+
+    The chain says which lock is in force; the coordinator publishes it; this client re-addresses
+    it. Only the third of those is trust-bearing, which is why the verification is
+    :func:`resolver_snapshot.fetch_compatibility_lock`'s and is not repeated or weakened here.
+
+    THE TWO NEGATIVE OUTCOMES ARE NOT THE SAME OUTCOME, and this is the function that keeps them
+    apart:
+
+    * a publication that cannot be REACHED — 404, 503, a refused rule on an old image, a dead
+      socket — is an availability fact. Setup completes, the block reports ``verified: false``
+      with the reason and :data:`_LOCK_REMEDY`, and the command still exits 0. Nothing about the
+      chain was disproved by a server being unable to answer;
+    * bytes that ARRIVE and contradict the address they came from — non-canonical encoding, a
+      malformed document, a root that does not recompute — raise. That is a refutation, it is
+      permanent, and a client that softened it would let a substituting mirror hide in a backlog.
+
+    On success the exact verified bytes are cached under their root in
+    :func:`default_artifacts_dir`, so a later offline reproduction reads what verified rather than
+    a re-serialisation of the parse.
+    """
+    from . import publication as pub
+    from . import resolver_snapshot as rsn
+
+    if not core_version_hash:
+        return {"verified": False,
+                "reason": ("the confirmed epoch carries no epoch context, so the chain names no "
+                           "coreVersionHash to fetch a compatibility lock for"),
+                "remedy": _LOCK_REMEDY}
+    try:
+        root = rsn.cn.root_from_word(core_version_hash, "core_version_hash")
+    except ValueError as exc:
+        raise RuntimeError(f"the chain's coreVersionHash is unreadable: {exc}") from exc
+
+    if store is None:
+        from .pipeline import UrlContentStore
+
+        store = UrlContentStore.for_coordinator(coordinator, timeout=timeout)
+    try:
+        _document, served = rsn.fetch_compatibility_lock(root, store=store)
+    except pub.PublicationUnavailableError as exc:
+        # UNVERIFIED, not FAILED: the surface never answered the question.
+        return {"verified": False, "root": root, "reason": str(exc), "remedy": _LOCK_REMEDY}
+
+    artifacts = default_artifacts_dir(packages_dir)
+    cache = pub.FilesystemCAS(artifacts)
+    cache.put(root, served)
+    return {"verified": True, "root": root, "rawSha256": _sha256(served),
+            "bytes": len(served), "cachedAt": os.path.join(artifacts, root)}
+
+
 def _fmt_root(raw: str) -> str:
     text = raw.strip()
     if text.startswith("0x") or text.startswith("0X"):
@@ -592,6 +670,13 @@ def run(
     law_block = sync_law_from_kit(coordinator, kit_manifest or {}, packages_dir=packages_dir,
                                   cache_dir=law_cache, skip_law=skip_law)
 
+    # The chain names the lock, the coordinator publishes it, this client re-addresses it. Read
+    # the word from the SAME confirmed block everything else above was read at.
+    lock_block = bind_compatibility_lock(
+        coordinator,
+        core_version_hash=views.epoch_core_version_hash(epoch) if has_context else None,
+        packages_dir=packages_dir)
+
     active_install = None
     if not skip_packages and not skip_law:
         assert kit_manifest is not None                 # fetched and envelope-validated above
@@ -626,7 +711,13 @@ def run(
             cache_dir=law_cache, publication_root=law_block["publicationRoot"],
             kit_manifest_hash=str(kit_manifest["kit"]["manifestHash"]),
             miner_kit_sha256=miner["sha256"], miner_kit_filename=miner["name"],
-            miner_kit_tree_sha256=tree_sha)
+            miner_kit_tree_sha256=tree_sha,
+            # BIND, so a later run can see which lock this installation was bound to. Absent
+            # rather than false when the lock could not be fetched: the receipt records what was
+            # verified, and there is no such thing as an unverified binding.
+            compatibility_lock=({"bytes": lock_block["bytes"], "root": lock_block["root"],
+                                 "sha256": lock_block["rawSha256"]}
+                                if lock_block.get("verified") else None))
 
     return {
         "ok": bool(verification.ok),
@@ -649,6 +740,7 @@ def run(
         "packages": [{k: v for k, v in item.items() if k != "download"} for item in packages],
         "extracted": extracted,
         "law": law_block,
+        "lock": lock_block,
         "active_install": active_install,
         "next": "coretex-validator verify-release --rpc " + rpc_url,
     }
