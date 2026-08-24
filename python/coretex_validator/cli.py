@@ -496,7 +496,17 @@ def _cmd_preview_current_parent(args: argparse.Namespace) -> int:
                     "pass --repo-root DIR for a host that already holds benchmark-v2 and "
                     "coretex-memory")).as_dict())
 
+    # TWO PUBLICATIONS, COMPOSED. The five sealed benchmark-v2 subtrees and coretex-memory come
+    # from the law cache; `kit` and `integration` are NOT sealed code roots, can never appear in a
+    # law publication, and come from the hash-pinned miner-kit tar `setup` already extracted. The
+    # resolution is reported under `law.scoring_trees` so a refusal for want of an UNSEALED tree
+    # can never read as "the law cache is missing" while `law.used` says otherwise.
+    resolution = pv.resolve_scoring_trees(
+        bench_v2_dir=bench_dir, coretex_dir=coretex_dir, packages_dir=args.packages_dir)
+    if law_block is not None:
+        law_block = {**law_block, "scoring_trees": resolution.as_dict()}
     try:
+        pv.require_scoring_trees(resolution)
         store = pipeline.open_store(artifact_dir=args.artifact_dir,
                                     base_url=args.artifact_base_url)
         with open(os.path.expanduser(args.module), "r", encoding="utf-8") as fh:
@@ -504,7 +514,8 @@ def _cmd_preview_current_parent(args: argparse.Namespace) -> int:
         manifest = _load_json(args.manifest)
         report = pv.preview_current_parent(
             child=pv.LawTreeChild(bench_v2_dir=bench_dir, coretex_dir=coretex_dir,
-                                  repo_root=repo_root),
+                                  repo_root=repo_root,
+                                  support_dirs=resolution.support_dirs),
             store=store, parent_root=args.parent_root, target_profile=args.profile,
             module_source=module_source, candidate_manifest=manifest, scale=args.scale,
             portability_breadth=args.portability)
@@ -762,6 +773,12 @@ def build_parser() -> argparse.ArgumentParser:
     parent_preview.add_argument("--repo-root", default=None,
                                 help="use these trees instead of the law cache — the directory "
                                      "that CONTAINS benchmark-v2 and coretex-memory")
+    parent_preview.add_argument("--packages-dir", default=None,
+                                help="where `setup` cached and extracted the miner-kit tar, which "
+                                     "is where benchmark-v2/kit and benchmark-v2/integration come "
+                                     "from (they are not sealed code roots, so no law publication "
+                                     "carries them). Default: "
+                                     "~/.local/share/coretex/packages")
     _add_law_arguments(parent_preview)
     parent_preview.set_defaults(func=_cmd_preview_current_parent)
 

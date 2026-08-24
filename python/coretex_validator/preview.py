@@ -61,12 +61,13 @@ gated behind a host that has ``wasmtime`` and a law cache.
 from __future__ import annotations
 
 from collections import abc
+from dataclasses import dataclass, field
 import hashlib
 import json
 import os
 import subprocess
 import sys
-from typing import Any, Dict, List, Mapping, Optional
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from . import frontier as fr
 from . import parent_execution as pe
@@ -131,6 +132,214 @@ def reference_release_roots() -> Dict[str, str]:
     would be a second authority, and the two would eventually disagree.
     """
     return pe.PRODUCTION_REFERENCE_RELEASE_ROOTS
+
+
+# --------------------------------------------------------------------------- #
+# 0. WHERE THE SCORING TREES COME FROM (two publications, not one)
+# --------------------------------------------------------------------------- #
+#: The ``benchmark-v2`` subtrees the law publication SEALS. These are code roots: their tree hash
+#: is the identity ``evaluation_law.code_roots`` binds and a signed receipt commits to, so they
+#: come from the verified law cache and from nowhere else.
+SEALED_BENCH_SUBTREES: Tuple[str, ...] = (
+    "frontier", "generators", "miner_abi", "scoring", "validator")
+
+#: The ``benchmark-v2`` subtrees the law publication can NEVER carry, because they are not sealed
+#: code roots at all (``v5/RUNTIME-INTEGRATION.production.json`` lists seven roots and neither of
+#: these is one). They are still needed to SCORE:
+#:
+#:   ``kit``          ``self_check._aggregate``/``._measurements`` (the tree's own aggregation law)
+#:                    and ``dev_instances`` (the published public dev set)
+#:   ``integration``  ``portability_matrix`` — optional, and its absence is evidence, not a crash
+#:
+#: They arrive in the HASH-PINNED MINER-KIT TAR that ``setup`` downloads: the kit manifest binds
+#: its sha256 and :func:`setup.download_kit_file` refuses bytes that disagree, so provenance holds
+#: exactly as it does for the sealed trees — a different publication, verified a different way,
+#: never an unpinned local checkout.
+SUPPORT_BENCH_SUBTREES: Tuple[str, ...] = ("kit", "integration")
+
+#: ``kit`` without these is not a scoring tree, so its presence is decided by the files the child
+#: actually imports rather than by the directory existing.
+KIT_REQUIRED_FILES: Tuple[str, ...] = ("self_check.py", "dev_instances.py")
+
+#: Which support subtrees the child cannot run without. ``integration`` is deliberately absent:
+#: the frozen kit tar omits it and ``kit/self_check.py`` carries a documented shim for exactly
+#: that, which :data:`PORTABILITY_SHIM_SOURCE` mirrors.
+REQUIRED_SUPPORT_SUBTREES: Tuple[str, ...] = ("kit",)
+
+#: How ``setup`` names the extracted miner-kit tar under the packages directory.
+KIT_TAR_PREFIX = "coretex-validator-miner-kit-"
+#: ``setup.maybe_extract_tars`` writes this marker, holding the tar's verified sha256.
+KIT_EXTRACTED_MARKER = ".extracted"
+
+
+def default_packages_dir() -> str:
+    """Where ``setup`` caches the kit packages. Imported lazily so this module stays standalone."""
+    from . import setup as su
+
+    return su.default_packages_dir()
+
+
+def extracted_kit_trees(packages_dir: Optional[str] = None) -> List[Dict[str, str]]:
+    """Every extracted miner-kit tar under ``packages_dir``, newest-verified first.
+
+    Discovery is by the marker ``setup`` writes, never by directory name alone: the marker exists
+    only after :func:`setup.download_kit_file` accepted the tar against the sha256 the kit manifest
+    binds, so an unpacked directory somebody dropped in by hand is not mistaken for a pinned one.
+    """
+    base = os.path.abspath(os.path.expanduser(packages_dir or default_packages_dir()))
+    if not os.path.isdir(base):
+        return []
+    out: List[Dict[str, str]] = []
+    for name in sorted(os.listdir(base)):
+        tree = os.path.join(base, name)
+        marker = os.path.join(tree, KIT_EXTRACTED_MARKER)
+        if not name.startswith(KIT_TAR_PREFIX) or not os.path.isfile(marker):
+            continue
+        try:
+            with open(marker, "r", encoding="utf-8") as handle:
+                sha256 = handle.read().strip()
+        except OSError:                                        # pragma: no cover - race
+            continue
+        bench = os.path.join(tree, "benchmark-v2")
+        if os.path.isdir(bench):
+            out.append({"tree": tree, "bench_v2_dir": bench,
+                        "sha256": sha256 or name[len(KIT_TAR_PREFIX):],
+                        "tar": name + ".tar"})
+    return out
+
+
+@dataclass(frozen=True)
+class TreeResolution:
+    """Which directory supplies each ``benchmark-v2`` subtree the scoring child imports.
+
+    The composition is PATH LAYERING, not a merge: :attr:`support_dirs` are appended AFTER the
+    sealed ``benchmark-v2`` directory, so the sealed tree wins every module name it defines and the
+    kit tar can only ever supply names the seal does not carry. That ordering is the whole safety
+    property — the kit tar also ships older ``frontier``/``scoring``/``miner_abi`` copies, and a
+    preview scored inside those would be a number the adjudicator never computes.
+    """
+
+    bench_v2_dir: str
+    coretex_dir: str
+    support_dirs: Tuple[str, ...] = ()
+    sources: Dict[str, str] = field(default_factory=dict)
+    missing_required: Tuple[str, ...] = ()
+    missing_optional: Tuple[str, ...] = ()
+    kit_tars: Tuple[str, ...] = ()
+    packages_dir: str = ""
+
+    @property
+    def sealed_ok(self) -> bool:
+        return (bool(self.bench_v2_dir) and bool(self.coretex_dir)
+                and all(name in self.sources for name in SEALED_BENCH_SUBTREES))
+
+    @property
+    def ok(self) -> bool:
+        return self.sealed_ok and not self.missing_required
+
+    def as_dict(self) -> Dict[str, Any]:
+        """The availability report. Internally consistent BY CONSTRUCTION: it says separately
+        whether the sealed law is present and whether the unsealed support trees are, so a refusal
+        can never read as "the law is active" and "the law trees are missing" at the same time."""
+        return {
+            "sealed_trees_present": self.sealed_ok,
+            "sufficient_for_scoring": self.ok,
+            "sealed_subtrees": list(SEALED_BENCH_SUBTREES),
+            "unsealed_support_trees": list(SUPPORT_BENCH_SUBTREES),
+            "missing_required": list(self.missing_required),
+            "missing_optional": list(self.missing_optional),
+            "sources": {name: self.sources[name] for name in sorted(self.sources)},
+            "support_dirs": list(self.support_dirs),
+            "kit_tars": list(self.kit_tars),
+            "packages_dir": self.packages_dir,
+            "note": ("the five sealed benchmark-v2 subtrees and coretex-memory come from the "
+                     "verified law cache; kit and integration are NOT sealed code roots and can "
+                     "never be in a law publication, so they come from the hash-pinned miner-kit "
+                     "tar `setup` downloads"),
+        }
+
+
+def _subtree_present(bench_dir: str, name: str) -> bool:
+    path = os.path.join(bench_dir, name)
+    if not os.path.isdir(path):
+        return False
+    if name == "kit":
+        return all(os.path.isfile(os.path.join(path, f)) for f in KIT_REQUIRED_FILES)
+    return True
+
+
+def resolve_scoring_trees(*, bench_v2_dir: str, coretex_dir: str,
+                          packages_dir: Optional[str] = None,
+                          kit_bench_dirs: Optional[List[str]] = None) -> TreeResolution:
+    """Compose the scoring child's tree view out of the law cache PLUS the miner-kit tar.
+
+    A ``--repo-root`` that already carries ``kit``/``integration`` (a full checkout) resolves them
+    from itself and needs no tar; that is why the sealed directory is searched first for the
+    support subtrees too.
+    """
+    bench_v2_dir = (bench_v2_dir or "").strip()
+    coretex_dir = (coretex_dir or "").strip()
+    packages_dir = os.path.abspath(os.path.expanduser(packages_dir or default_packages_dir()))
+    kits = ([{"bench_v2_dir": d, "sha256": "", "tar": ""} for d in kit_bench_dirs]
+            if kit_bench_dirs is not None else extracted_kit_trees(packages_dir))
+
+    sources: Dict[str, str] = {}
+    # `bool(dir)` FIRST — an unconfigured tree is "" and `os.path.join("", x)` is a RELATIVE path a
+    # stray working directory could satisfy (the `replay.py` discipline).
+    if bench_v2_dir:
+        for name in SEALED_BENCH_SUBTREES + SUPPORT_BENCH_SUBTREES:
+            if _subtree_present(bench_v2_dir, name):
+                sources[name] = bench_v2_dir
+    support_dirs: List[str] = []
+    for name in SUPPORT_BENCH_SUBTREES:
+        if name in sources:
+            continue
+        for kit in kits:
+            if _subtree_present(kit["bench_v2_dir"], name):
+                sources[name] = kit["bench_v2_dir"]
+                if kit["bench_v2_dir"] not in support_dirs:
+                    support_dirs.append(kit["bench_v2_dir"])
+                break
+    missing_required = tuple(n for n in REQUIRED_SUPPORT_SUBTREES if n not in sources)
+    missing_optional = tuple(n for n in SUPPORT_BENCH_SUBTREES
+                             if n not in sources and n not in missing_required)
+    return TreeResolution(
+        bench_v2_dir=bench_v2_dir, coretex_dir=coretex_dir,
+        support_dirs=tuple(support_dirs), sources=sources,
+        missing_required=missing_required, missing_optional=missing_optional,
+        kit_tars=tuple(k["sha256"] for k in kits if k["sha256"]),
+        packages_dir=packages_dir)
+
+
+def require_scoring_trees(resolution: TreeResolution) -> TreeResolution:
+    """Raise a refusal whose remedy is ACHIEVABLE, or return the resolution unchanged.
+
+    The shipped command answered a missing ``kit`` with "run `coretex-validator sync-law`" — which
+    the reader had already done, and which could never have worked: ``kit`` is not a sealed code
+    root, so no publication can contain it. A remedy that cannot be followed is worse than none,
+    because it sends the reader round the same loop.
+    """
+    if resolution.ok:
+        return resolution
+    if not resolution.sealed_ok:
+        wanted = ", ".join(f"{resolution.bench_v2_dir or '(unset)'}/{n}"
+                           for n in SEALED_BENCH_SUBTREES)
+        raise PreviewError(
+            f"the sealed law trees are not provisioned on this host (need {wanted} and "
+            f"{resolution.coretex_dir or '(unset)'})",
+            code="SCORER_UNAVAILABLE",
+            remedy="run `coretex-validator setup` (it discovers and installs the published law)")
+    missing = ", ".join(f"benchmark-v2/{n}" for n in resolution.missing_required)
+    raise PreviewError(
+        f"the sealed law trees ARE installed, but the scoring child also needs {missing}, which "
+        "is not a sealed code root and therefore can never be in a law publication. It ships in "
+        "the miner-kit tar instead, and no verified copy of that tar was found under "
+        f"{resolution.packages_dir or '(no packages directory)'}",
+        code="SUPPORT_TREES_UNAVAILABLE",
+        remedy=("run `coretex-validator setup` — it downloads and hash-verifies the miner-kit tar "
+                f"({KIT_TAR_PREFIX}<sha256>.tar, pinned by the coordinator kit manifest) and "
+                "extracts benchmark-v2/kit beside the law cache; or pass --packages-dir at the "
+                "directory holding an already-extracted one"))
 
 
 # --------------------------------------------------------------------------- #
@@ -284,10 +493,52 @@ def build_parent_arm(execution: Mapping[str, Any]) -> Dict[str, Any]:
 #:   aggregate  fold the per-instance rows and decide, through the tree's OWN aggregation
 #:              (``kit.self_check``) and its OWN Pareto law (``frontier.pareto2``). This client
 #:              does not own a second scoring or comparison law.
+#: THE ``integration`` SHIM, mirrored from ``benchmark-v2/kit/self_check.py::_local_portability``.
+#:
+#: The frozen miner-kit tar does not ship ``benchmark-v2/integration``, and the kit's own
+#: self-check documents that and handles it: a missing portability tree is the SAME local
+#: situation as not asking for the matrix — not executed here, still executed by the adjudicating
+#: host. The shipped preview child imported it unconditionally and died with
+#: ``ModuleNotFoundError: integration`` at the aggregate step, after both arms had really scored.
+#:
+#: FAIL CLOSED either way: ``ok`` is False and ``executed`` is False, so the hard gate rejects. It
+#: is kept as its own source string so a test can execute it against a controlled ``sys.path``
+#: instead of inferring the behaviour from the text of a bigger child.
+PORTABILITY_SHIM_SOURCE = r'''
+def _local_portability(breadth):
+    """Portability-prerequisite evidence for a LOCAL preview (LAW 3.1 gate 7)."""
+    try:
+        from integration import portability_matrix as _pm
+    except ModuleNotFoundError as _exc:
+        if getattr(_exc, "name", None) not in (None, "integration") \
+                and "integration" not in str(_exc):
+            raise
+        return {
+            "executed": False,
+            "ok": False,
+            "missing_module": "integration",
+            "reason":
+                "benchmark-v2/integration is not on sys.path (the frozen miner-kit tar omits the "
+                "portability shim, and it is not a sealed code root so no law publication carries "
+                "it). This is a local-tooling gap, not a candidate defect. The adjudicating host "
+                "always runs the portability gate.",
+            "reason_code": "portability_prerequisite_not_executed_locally",
+            "breadth": breadth,
+        }
+    if breadth is None:
+        return _pm.not_executed(
+            "preview-current-parent did not run the support matrix (pass --portability to "
+            "execute it); the adjudicating host executes it for real")
+    try:
+        return _pm.run_matrix(breadth=breadth)
+    except Exception as _exc:                             # noqa: BLE001 - fail closed
+        return _pm.not_executed(type(_exc).__name__ + ": " + str(_exc), breadth=breadth)
+'''
+
 _PREVIEW_CHILD = r'''
 import json, sys
 import importlib.util, os as _os, site as _site, sysconfig as _sysconfig, tempfile
-_allowed = [{bench!r}, {coretex!r}]
+_allowed = [{bench!r}] + list({support!r}) + [{coretex!r}]
 for _key in ("stdlib", "platstdlib"):
     _p = _sysconfig.get_path(_key)
     if _p:
@@ -300,6 +551,7 @@ except AttributeError:                                # pragma: no cover - virtu
 _seen = set()
 sys.path[:] = [p for p in _allowed
                if p and p not in _seen and not _seen.add(p) and _os.path.isdir(p)]
+{shim}
 payload = json.loads(sys.stdin.read())
 mode = payload["mode"]
 
@@ -360,7 +612,6 @@ elif mode == "score":
 elif mode == "aggregate":
     from frontier import pareto2 as _pareto2
     from frontier import profiles as _profiles
-    from integration import portability_matrix as _pm
     from kit import self_check as _self_check
     for _name in ("_aggregate", "_measurements"):
         if not hasattr(_self_check, _name):
@@ -370,16 +621,7 @@ elif mode == "aggregate":
     profile = _profiles.get_profile(payload["profile_id"])
     aggregates = {{name: _self_check._aggregate(rows, profile)
                    for name, rows in payload["per_arm"].items()}}
-    breadth = payload.get("portability_breadth")
-    if breadth is None:
-        portability = _pm.not_executed(
-            "preview-current-parent did not run the support matrix (pass --portability to "
-            "execute it); the adjudicating host executes it for real")
-    else:
-        try:
-            portability = _pm.run_matrix(breadth=breadth)
-        except Exception as exc:                      # noqa: BLE001 - fail closed
-            portability = _pm.not_executed(type(exc).__name__ + ": " + str(exc), breadth=breadth)
+    portability = _local_portability(payload.get("portability_breadth"))
     candidate, parent = _self_check._measurements(
         aggregates["candidate"], aggregates["parent"], payload["declared_limits"],
         bool(payload["replay_identical"]), portability)
@@ -403,41 +645,92 @@ class LawTreeChild:
     command then REFUSES rather than scoring against something else. A preview that quietly fell
     back to an unpinned local runtime would be the one failure mode worth avoiding here: it would
     hand a miner a number produced by different law than the adjudicator's.
+
+    ``support_dirs`` are the UNSEALED trees (:data:`SUPPORT_BENCH_SUBTREES`), layered AFTER the
+    sealed ``benchmark-v2`` directory on the child's ``sys.path`` — see :class:`TreeResolution`.
     """
 
     name = "benchmark-v2/kit.self_check + frontier.pareto2 (child-interpreter)"
 
     def __init__(self, *, bench_v2_dir: str, coretex_dir: str, repo_root: str = "",
+                 support_dirs: Sequence[str] = (),
                  isolation_path: Optional[str] = None, timeout: int = 7200) -> None:
         self.bench_v2_dir = (bench_v2_dir or "").strip()
         self.coretex_dir = (coretex_dir or "").strip()
         self.repo_root = (repo_root or "").strip()
+        self.support_dirs = tuple(d for d in (str(s).strip() for s in support_dirs) if d)
         self.isolation_path = isolation_path or os.path.join(_PKG_DIR, "isolation.py")
         self.timeout = timeout
+
+    @property
+    def _tree_dirs(self) -> Tuple[str, ...]:
+        """The layered search order the child's ``sys.path`` uses. Sealed first, always."""
+        return (self.bench_v2_dir,) + self.support_dirs if self.bench_v2_dir else ()
+
+    def _find(self, *relative: str) -> Optional[str]:
+        for base in self._tree_dirs:
+            path = os.path.join(base, *relative)
+            if os.path.exists(path):
+                return path
+        return None
 
     def available(self) -> bool:
         # `bool(dir)` FIRST — an unconfigured tree is "" and `os.path.join("", x)` is a RELATIVE
         # path a stray working directory could satisfy (the `replay.py` discipline).
         return (bool(self.bench_v2_dir) and bool(self.coretex_dir)
-                and os.path.isfile(os.path.join(self.bench_v2_dir, "kit", "self_check.py"))
-                and os.path.isfile(os.path.join(self.bench_v2_dir, "kit", "dev_instances.py"))
+                and self._find("kit", "self_check.py") is not None
+                and self._find("kit", "dev_instances.py") is not None
                 and os.path.isdir(os.path.join(self.bench_v2_dir, "miner_abi"))
                 and os.path.isdir(self.coretex_dir)
                 and os.path.isfile(self.isolation_path))
 
     @property
     def unavailable_reason(self) -> str:
-        return (f"the pinned law trees are not provisioned on this host (need "
-                f"{self.bench_v2_dir or '(unset)'}/kit/self_check.py, "
-                f"{self.coretex_dir or '(unset)'} and {self.isolation_path} — the last one is "
-                f"what enforces AND proves networkless execution, so without it the candidate "
-                f"would run unconfined)")
+        """Name the trees that are ACTUALLY absent, sealed and unsealed kept apart.
+
+        The shipped message listed three prerequisites of which two were present, and pointed at
+        ``sync-law`` for a tree ``sync-law`` can never install. Separating the two publications is
+        what makes the sentence actionable.
+        """
+        if not self.bench_v2_dir or not self.coretex_dir:
+            return ("no pinned trees are configured for the scoring child (benchmark-v2="
+                    f"{self.bench_v2_dir or '(unset)'}, coretex-memory="
+                    f"{self.coretex_dir or '(unset)'})")
+        gaps = []
+        if not os.path.isdir(os.path.join(self.bench_v2_dir, "miner_abi")):
+            gaps.append(f"the SEALED tree {self.bench_v2_dir}/miner_abi (install it with "
+                        "`coretex-validator setup`)")
+        if not os.path.isdir(self.coretex_dir):
+            gaps.append(f"the SEALED tree {self.coretex_dir} (install it with "
+                        "`coretex-validator setup`)")
+        if self._find("kit", "self_check.py") is None \
+                or self._find("kit", "dev_instances.py") is None:
+            gaps.append(
+                "the UNSEALED support tree benchmark-v2/kit (self_check.py + dev_instances.py). "
+                "It is not a sealed code root, so no law publication carries it: it ships in the "
+                f"hash-pinned {KIT_TAR_PREFIX}<sha256>.tar that `coretex-validator setup` "
+                "downloads, and the searched directories were "
+                f"{list(self._tree_dirs)}")
+        if not os.path.isfile(self.isolation_path):
+            gaps.append(f"{self.isolation_path} — what enforces AND proves networkless execution, "
+                        "so without it the candidate would run unconfined")
+        return "the scoring child cannot run: " + "; ".join(gaps or ["(no gap identified)"])
+
+    @property
+    def unavailable_remedy(self) -> str:
+        if self._find("kit", "self_check.py") is None:
+            return ("run `coretex-validator setup` — it downloads and hash-verifies the miner-kit "
+                    f"tar ({KIT_TAR_PREFIX}<sha256>.tar) that carries benchmark-v2/kit, alongside "
+                    "installing the sealed law publication")
+        return "run `coretex-validator setup` first"
 
     def __call__(self, payload: Mapping[str, Any]) -> Dict[str, Any]:
         if not self.available():
             raise PreviewError(self.unavailable_reason, code="SCORER_UNAVAILABLE",
-                               remedy="run `coretex-validator sync-law --mirror URL` first")
+                               remedy=self.unavailable_remedy)
         source = _PREVIEW_CHILD.format(bench=self.bench_v2_dir, coretex=self.coretex_dir,
+                                       support=list(self.support_dirs),
+                                       shim=PORTABILITY_SHIM_SOURCE,
                                        isolation=self.isolation_path)
         env = dict(os.environ)
         for key in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"):
@@ -520,7 +813,8 @@ def preview_current_parent(*, child, store: pub.ContentStore, parent_root: str,
     if hasattr(child, "available") and not child.available():
         raise PreviewError(getattr(child, "unavailable_reason", "the scorer is unavailable"),
                            code="SCORER_UNAVAILABLE",
-                           remedy="run `coretex-validator sync-law --mirror URL` first")
+                           remedy=getattr(child, "unavailable_remedy",
+                                          "run `coretex-validator setup` first"))
 
     probe = child({"mode": "probe"})
     dev_seeds = [int(seed) for seed in probe.get("dev_seeds") or ()]

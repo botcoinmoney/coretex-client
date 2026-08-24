@@ -601,8 +601,16 @@ def _cli_run(tmp_path, graph, monkeypatch, capsys, child, extra=()):
     module.write_bytes(CANDIDATE_MODULE)
     manifest = tmp_path / "manifest.json"
     manifest.write_text(json.dumps(candidate_manifest()))
+    # A --repo-root is a FULL checkout: it carries the five sealed benchmark-v2 subtrees, the
+    # runtime tree AND the unsealed support trees. Building it for real here is what makes the CLI
+    # tests exercise the same tree-resolution gate a stranger's host goes through.
     repo = tmp_path / "repo"
-    repo.mkdir(exist_ok=True)
+    for subtree in pv.SEALED_BENCH_SUBTREES + pv.SUPPORT_BENCH_SUBTREES:
+        (repo / "benchmark-v2" / subtree).mkdir(parents=True, exist_ok=True)
+        (repo / "benchmark-v2" / subtree / "__init__.py").write_text("\n")
+    for name in pv.KIT_REQUIRED_FILES:
+        (repo / "benchmark-v2" / "kit" / name).write_text("\n")
+    (repo / "coretex-memory" / "coretex_memory").mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(pv, "LawTreeChild", lambda **kwargs: child)
     code = cli.main(["preview-current-parent", str(module), "--manifest", str(manifest),
                      "--profile", TARGET, "--parent-root", graph["parent_root"],
@@ -641,6 +649,15 @@ def test_an_unverifiable_parent_chain_is_an_operational_failure_exit_two(
 # 9. the real child. Skips cleanly on a host without the pinned trees.
 # --------------------------------------------------------------------------- #
 def _real_child():
+    """Compose the real child, and FAIL — never skip — when `setup` would have provisioned it.
+
+    D-1's lesson about this suite. The old gate returned ``None`` whenever the child was not
+    available and the caller skipped, so the one condition that broke the documented miner flow —
+    a verified law cache present and ``benchmark-v2/kit`` absent, which is the NORMAL state of a
+    law cache — read as "not provisioned on this host" and the suite stayed green through a
+    blocking defect. Absence of a law cache is still a legitimate skip (nothing was installed);
+    a law cache WITHOUT the support trees the composition is supposed to supply is a failure.
+    """
     bench = os.environ.get(law_mod.ENV_BENCHMARK_V2, "").strip()
     coretex = os.environ.get(law_mod.ENV_MEMORY_RUNTIME, "").strip()
     repo = os.environ.get(law_mod.ENV_REPO_ROOT, "").strip()
@@ -651,10 +668,19 @@ def _real_child():
         except Exception:                                      # noqa: BLE001 - absence, not error
             cache = None
         if cache is None:
-            return None
+            pytest.skip("no verified law cache on this host: nothing was ever installed")
         bench, coretex, repo = (cache.benchmark_v2_dir, cache.coretex_memory_dir, cache.root_dir)
-    child = pv.LawTreeChild(bench_v2_dir=bench, coretex_dir=coretex, repo_root=repo)
-    return child if child.available() else None
+    resolution = pv.resolve_scoring_trees(bench_v2_dir=bench, coretex_dir=coretex)
+    child = pv.LawTreeChild(bench_v2_dir=bench, coretex_dir=coretex, repo_root=repo,
+                            support_dirs=resolution.support_dirs)
+    if not child.available():
+        pytest.fail(
+            "a law cache is installed but the scoring child is still not runnable — this is the "
+            "exact D-1 shape (the law publication can never carry benchmark-v2/kit; `setup` has "
+            "to supply it from the miner-kit tar). Skipping here is what hid the defect.\n"
+            f"  resolution: {json.dumps(resolution.as_dict(), indent=2, sort_keys=True)}\n"
+            f"  reason: {child.unavailable_reason}")
+    return child
 
 
 @pytest.mark.skipif(os.environ.get("CORETEX_PREVIEW_INTEGRATION", "") != "1",
@@ -669,15 +695,12 @@ def test_real_child_scores_two_arms_on_one_public_dev_case():
     probe, so this test cannot drift from whatever the pinned kit publishes.
     """
     child = _real_child()
-    if child is None:
-        pytest.skip("no verified law cache / benchmark tree on this host")
-
     probe = child({"mode": "probe"})
     assert probe["dev_seeds"] and TARGET in probe["profiles"]
     assert "small" in probe["dev_scales"]
 
-    kit = os.path.join(child.bench_v2_dir, "kit", "example_submission")
-    if not os.path.isfile(os.path.join(kit, "module.py")):
+    kit = child._find("kit", "example_submission") or ""
+    if not kit or not os.path.isfile(os.path.join(kit, "module.py")):
         pytest.skip("the pinned kit ships no example submission to preview")
     with open(os.path.join(kit, "module.py"), "r", encoding="utf-8") as fh:
         source = fh.read()
@@ -714,3 +737,41 @@ def test_real_child_scores_two_arms_on_one_public_dev_case():
     # The local run does not execute the portability prerequisite, and says so rather than
     # quietly passing it.
     assert aggregated["portability"]["executed"] is False
+
+
+def test_the_integration_gate_fails_rather_than_skips_when_setup_should_have_provisioned(
+        tmp_path, monkeypatch):
+    """The gate itself, exercised without the env flag.
+
+    A law cache that verifies but leaves the scoring child unrunnable is a DEFECT, and this suite
+    now says so out loud. Reproducing D-1 exactly: six sealed trees present, benchmark-v2/kit
+    absent, no miner-kit tar anywhere.
+    """
+    cache_root = tmp_path / "law" / ("a" * 64)
+    for subtree in pv.SEALED_BENCH_SUBTREES:
+        (cache_root / "benchmark-v2" / subtree).mkdir(parents=True, exist_ok=True)
+        (cache_root / "benchmark-v2" / subtree / "__init__.py").write_text("\n")
+    (cache_root / "coretex-memory" / "coretex_memory").mkdir(parents=True, exist_ok=True)
+
+    class _Cache:
+        benchmark_v2_dir = str(cache_root / "benchmark-v2")
+        coretex_memory_dir = str(cache_root / "coretex-memory")
+        root_dir = str(cache_root)
+
+    for name in (law_mod.ENV_BENCHMARK_V2, law_mod.ENV_MEMORY_RUNTIME, law_mod.ENV_REPO_ROOT):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(law_mod, "find_cache", lambda **kwargs: _Cache())
+    monkeypatch.setattr(pv, "default_packages_dir", lambda: str(tmp_path / "no-packages"))
+
+    with pytest.raises(pytest.fail.Exception) as excinfo:
+        _real_child()
+    assert "benchmark-v2/kit" in str(excinfo.value)
+    assert "Skipping here is what hid the defect" in str(excinfo.value)
+
+
+def test_the_integration_gate_still_skips_when_nothing_was_ever_installed(monkeypatch):
+    for name in (law_mod.ENV_BENCHMARK_V2, law_mod.ENV_MEMORY_RUNTIME, law_mod.ENV_REPO_ROOT):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(law_mod, "find_cache", lambda **kwargs: None)
+    with pytest.raises(pytest.skip.Exception):
+        _real_child()
