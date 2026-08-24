@@ -25,6 +25,8 @@ import pytest
 
 from coretex_validator import law
 
+_UNSET = object()
+
 
 # --------------------------------------------------------------------------- #
 # a synthetic publication set
@@ -52,8 +54,25 @@ def make_tar(extract_to, files):
     return buf.getvalue()
 
 
-def build_publication(trees=None, *, trailing_newline=True):
-    """``(publication_root, manifest_bytes, {relpath: bytes})`` for a complete honest set."""
+#: The REAL seventh sealed root: the candidate-isolation posture FILE, verbatim. It is not a tree
+#: and never was, which is why the publication has to carry it as a single-file object (D-3).
+POSTURE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "law-posture",
+                            "CANDIDATE-ISOLATION.production.json")
+
+
+def posture_bytes():
+    with open(POSTURE_FILE, "rb") as fh:
+        return fh.read()
+
+
+def build_publication(trees=None, *, trailing_newline=True, posture=_UNSET,
+                      posture_install_to=_UNSET, posture_field=_UNSET,
+                      posture_object_kind=None):
+    """``(publication_root, manifest_bytes, {relpath: bytes})`` for a complete honest set.
+
+    ``posture=None`` builds the publication as it SHIPPED before D-3: six verified trees and no
+    way at all to obtain the seventh sealed root.
+    """
     trees = trees or {name: tree_files(name) for name in law.REQUIRED_TREES}
     objects = {}
     entries = []
@@ -63,6 +82,22 @@ def build_publication(trees=None, *, trailing_newline=True):
         objects[root] = blob
         entries.append({"file": f"artifacts/{root}", "bytes": len(blob),
                         "sha256": hashlib.sha256(blob).hexdigest()})
+    posture = posture_bytes() if posture is _UNSET else posture
+    if posture is not None:
+        posture_root = hashlib.sha256(posture).hexdigest()
+        objects[posture_root] = posture
+        entry = {"file": f"artifacts/{posture_root}", "bytes": len(posture),
+                 "sha256": posture_root}
+        field = ("candidate_isolation_posture" if posture_field is _UNSET else posture_field)
+        if field is not None:
+            entry["code_roots_field"] = field
+        install_to = (law.POSTURE_RELPATH if posture_install_to is _UNSET
+                      else posture_install_to)
+        if install_to is not None:
+            entry["install_to"] = install_to
+        if posture_object_kind is not None:
+            entry["object_kind"] = posture_object_kind
+        entries.append(entry)
     entries.append({"file": "README.md", "bytes": 3,
                     "sha256": hashlib.sha256(b"hi\n").hexdigest()})
     manifest = {"format": "coretex.rig-state.admission-closure-manifest/v1",

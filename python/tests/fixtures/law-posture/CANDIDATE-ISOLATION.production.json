@@ -1,0 +1,101 @@
+{
+  "bootstrap": {
+    "image_path": "/usr/local/lib/python3.10/site-packages/sitecustomize.py",
+    "repository_path": "docker/coretex-candidate-sitecustomize.py",
+    "sha256": "1c156b197863852997b348491bb08fb1a6b4e5030b81aa34ec8c195ba4b11a52",
+    "target": "/opt/coretex-v5/benchmark-v2/miner_abi/pack_worker.py"
+  },
+  "candidate_identity": {
+    "gid": 65534,
+    "uid": 65534
+  },
+  "determinism": {
+    "closed_for_arbitrary_python": false,
+    "fixed_environment": {
+      "LANG": "C.UTF-8",
+      "LC_ALL": "C.UTF-8",
+      "PYTHONHASHSEED": "0",
+      "TZ": "UTC"
+    },
+    "residual": "CPython object identity/ASLR, vDSO clocks and other process-local nondeterminism cannot be made consensus-safe by an in-process import guard or denylist; production therefore refuses open execution until the miner ABI moves to a deterministic VM"
+  },
+  "execution_policy": {
+    "allowed_values": [
+      "admission",
+      "allowlist",
+      "open"
+    ],
+    "production_default": "admission",
+    "production_mode_env": "CORETEX_CANDIDATE_PRODUCTION_MODE=1",
+    "production_open_forbidden": true,
+    "selector_env": "CORETEX_CANDIDATE_EXECUTION_POLICY",
+    "sha256_allowlist_env": "CORETEX_CANDIDATE_MODULE_SHA256_ALLOWLIST"
+  },
+  "format": "coretex-candidate-isolation/v1",
+  "image": {
+    "binding": "The operator deployment pins the immutable coretex-memory-evaluator image digest separately and verifies that image contains the exact bootstrap, module, posture, clean source commit and evaluation-law identities",
+    "digest_in_this_record": false,
+    "reason": "The evaluator image is built from the compatibility/evaluation law, so including its digest in the law-bound posture would create a circular build identity"
+  },
+  "isolation_self_report": {
+    "installed_marker": "CORETEX_ISOLATION_INSTALLED:landlock_abi=<n>,path_rules=<n>",
+    "marker_emitted": "by the inner worker on fd 2 immediately after landlock RESTRICT_SELF returns and BEFORE any candidate byte is imported, so it records what the hardening actually did rather than what the module intends",
+    "note": "the trusted outer launcher classifies the inner's outcome and writes it here; worker.isolation.describe().candidate_filesystem_confinement reads it back as enforced / failed(+reason) / not_observed, never a static claim. A failed install exits 70 before the candidate loads, so the FIRST marker occurrence is authoritative even though a later candidate could forge a copy.",
+    "status_path": "/run/coretex/candidate-isolation-status.json"
+  },
+  "landlock": {
+    "deny_by_default": true,
+    "minimum_abi": 3,
+    "readable": [
+      "immutable Python standard library/runtime dependencies",
+      "benchmark-v2/miner_abi only",
+      "coretex-memory only",
+      "exact copied public view and pack spec"
+    ],
+    "writable": [
+      "one randomized tmpfs scratch directory",
+      "one randomized candidate SQLite output directory"
+    ]
+  },
+  "law_identity": {
+    "benchmark_v2_modified": true,
+    "core_version_modified_by_containment": true,
+    "note": "The prospective evaluation-law descriptor transitively binds the exact content hash of this operational posture, including its bootstrap and containment module hashes. The deployment separately pins the built evaluator image digest; it is not a compatibility-lock member. Containment itself is not silently reused as a runtime ABI or canonical-state root."
+  },
+  "limits": {
+    "candidate_store_bytes": 2147483648,
+    "public_view_bytes": 134217728,
+    "stderr_bytes_consumed": 65536,
+    "stderr_failure_tail_bytes_forwarded": 1200,
+    "stdout_bytes": 67108864,
+    "wall_seconds": 5350
+  },
+  "module": {
+    "repository_path": "v5/worker/candidate_isolation.py",
+    "sha256": "9a9216884b5647d7a53b6d244e94dda8d2a0841c40768dba2c801cdb67aaffdf"
+  },
+  "process_controls": {
+    "capabilities_after_drop": [],
+    "dumpable": false,
+    "environment_scrubbed": true,
+    "inherited_file_descriptors": [
+      0,
+      1,
+      2
+    ],
+    "no_new_privileges": true,
+    "stderr_forwarded": true,
+    "stderr_forwarding_policy": "failure paths only: a bounded (<=1200-byte), printable-ASCII-sanitized tail of the inner worker's stderr, emitted to the launcher's own stderr for the operator record and carried no further by the coordinator (which reads only ok/code/reason). A successful run forwards nothing. The candidate process holds no scorer, gold view or credential, so the tail carries no secret; the hazard it removes is log injection.",
+    "wasmtime_parallel_compilation": false,
+    "wasmtime_parallel_compilation_reason": "Wasmtime 46's default Rayon compiler pool requires clone/clone3 on first Module compilation. The trusted pre-seccomp bootstrap forces Config.parallel_compilation=false so policy WASM remains executable without weakening the candidate process's fork/clone denial; compilation scheduling changes, WebAssembly validation/fuel/execution semantics do not.",
+    "syscall_classes_denied": [
+      "all socket creation including AF_UNIX",
+      "fork/clone/exec",
+      "ptrace/process_vm/pidfd/kcmp",
+      "signals and cross-process scheduling/priority",
+      "mount/namespaces/file handles",
+      "SysV and POSIX message/semaphore/shared-memory IPC and kernel keyrings",
+      "perf/bpf/fanotify/userfaultfd/io_uring"
+    ]
+  }
+}

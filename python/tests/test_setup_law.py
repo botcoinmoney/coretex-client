@@ -128,10 +128,13 @@ def test_setup_discovers_the_publication_root_and_installs_the_law(kit, tmp_path
     assert report["synced"] is True
     assert report["publicationRoot"] == kit.root
     assert sorted(report["trees"]) == sorted(law.REQUIRED_TREES)
+    # the SEVENTH sealed root is a file, and `setup` alone has to be enough to obtain it (D-3)
+    assert sorted(report["files"]) == sorted(law.REQUIRED_FILES)
     # the cache is real: it loads, and it re-verifies from what is on disk RIGHT NOW
     cache = law.load_cache(kit.root, cache_dir=str(tmp_path / "law-cache"))
-    assert cache.verify() == report["trees"]
+    assert cache.verify() == {**report["trees"], **report["files"]}
     assert set(cache.env()) == set(law.ENV_PINS)
+    assert os.path.isfile(cache.posture_path)
 
 
 def test_the_local_mirror_is_laid_out_the_way_law_addresses_it(kit, tmp_path):

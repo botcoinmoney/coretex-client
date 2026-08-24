@@ -13,7 +13,8 @@ The trees ARE published (finding F4), as content-addressed objects under a publi
 they are addressed by THE SAME tree-hash rule the signed Benchmark-v2 receipt's ``code_roots``
 binds. So the address is the chain-bound identity, not a courier's promise. This module fetches
 them by that address from any mirror, re-derives every address from the bytes that arrived,
-materializes a verified local cache, and hands back the three pins. Step 5 then runs the real
+materializes a verified local cache, and hands back the three pins. (Six trees plus one FILE — see
+:data:`POSTURE_RELPATH`; the seventh sealed root was never a tree and cannot be packed as one.) Step 5 then runs the real
 pinned admission on a machine that started with nothing but a URL.
 
 WHY THE RULE IS REIMPLEMENTED HERE RATHER THAN IMPORTED
@@ -58,6 +59,12 @@ Every one of these refuses, loudly, and none of them is recoverable by a flag:
 * a tar carries an absolute path, a ``..`` component, a symlink, a hard link, a device or a
   duplicate name; or exceeds the member/size ceilings;
 * a required tree is missing from the publication set;
+* a required single-file object is missing, or its bytes do not reproduce the address they were
+  served under. The seventh sealed root — ``candidate_isolation_posture`` — is the plain sha256 of
+  ONE FILE rather than a tree hash, so it is published as a single-file entry and installed at
+  ``v5/production/CANDIDATE-ISOLATION.production.json`` inside the cache, which is exactly where
+  ``receipt.py::code_roots`` opens it. A cache without it cannot compute the roots any receipt
+  binds, so it is refused at install time rather than at the first replay;
 * a download exceeds its byte ceiling, or the transport fails.
 
 A verified cache is re-verified when it is LOADED, not merely when it is written: a cache is a
@@ -99,6 +106,35 @@ REQUIRED_TREES: Tuple[str, ...] = (
     "benchmark-v2/miner_abi",
     "coretex-memory/coretex_memory",
 )
+
+# --------------------------------------------------------------------------- #
+# THE SEVENTH SEALED ROOT IS A FILE, NOT A TREE
+# --------------------------------------------------------------------------- #
+#: ``benchmark-v2/validator/receipt.py::code_roots`` computes six roots with the tree-hash rule
+#: and one — ``candidate_isolation_posture`` — as the plain ``sha256`` of ONE FILE, opened at
+#: ``<repo_root>/v5/production/CANDIDATE-ISOLATION.production.json``. For a validator running on a
+#: law cache, ``repo_root`` IS the cache (``CORETEX_ADMISSION_REPO_ROOT``), so the file has to land
+#: at exactly this relative path inside it or the seventh root is unobtainable.
+#:
+#: Until this existed, ``verify-receipt`` on a real production receipt refused at ``code_roots``
+#: with ``[Errno 2] No such file or directory`` and the publication had no way to supply it: the
+#: manifest's own ``code_roots_note`` records that the posture "is the sha256 of a single posture
+#: FILE, not a tree hash, so it is gated here but is not published as a tar".
+POSTURE_RELPATH = "v5/production/CANDIDATE-ISOLATION.production.json"
+POSTURE_CODE_ROOTS_FIELD = "candidate_isolation_posture"
+
+#: ``code_roots`` field -> the relative path its bytes install to. A manifest entry naming one of
+#: these fields is a SINGLE-FILE object: addressed by the raw ``sha256`` of its bytes (which is
+#: what ``code_roots`` computes), never unpacked, never tree-hashed.
+SINGLE_FILE_CODE_ROOTS: Dict[str, str] = {POSTURE_CODE_ROOTS_FIELD: POSTURE_RELPATH}
+
+#: Single-file objects a publication MUST carry, by install path.
+#:
+#: Required rather than tolerated-when-absent, for the reason the six trees are: a cache that
+#: cannot satisfy ``code_roots()`` cannot replay a single receipt, and discovering that at the
+#: first replay instead of at install time is exactly the failure D-3 reported. "A partially
+#: installed law is worse than none" applies to the seventh root as much as to the other six.
+REQUIRED_FILES: Tuple[str, ...] = (POSTURE_RELPATH,)
 
 #: THERE IS NO DEFAULT PUBLICATION ROOT, deliberately.
 #:
@@ -581,25 +617,95 @@ def parse_manifest(data: bytes) -> Dict[str, Any]:
     return document
 
 
+#: Manifest spellings for "install these bytes at this relative path". Both are accepted because
+#: the builder and this client are deliberately independent implementations of one format.
+INSTALL_PATH_FIELDS = ("install_to", "install_path")
+#: Spellings a publication may use to say "this entry is one FILE, not a packed tree".
+SINGLE_FILE_KINDS = frozenset({"file", "single-file", "raw", "bytes"})
+
+
+def _single_file_install_path(entry: Mapping[str, Any]) -> Optional[str]:
+    """Where a single-file entry installs, or ``None`` when the entry is a packed tree.
+
+    An explicit ``install_to``/``install_path`` wins. Otherwise a known ``code_roots_field`` names
+    it — the publication builder already tags each entry with the field it satisfies, and the two
+    single-file fields are a closed set here rather than a pattern, because "which code root is a
+    file" is law, not a naming convention.
+    """
+    for field in INSTALL_PATH_FIELDS:
+        value = entry.get(field)
+        if isinstance(value, str) and value.strip():
+            return value.strip().replace("\\", "/")
+    field_name = entry.get("code_roots_field")
+    if isinstance(field_name, str) and field_name in SINGLE_FILE_CODE_ROOTS:
+        return SINGLE_FILE_CODE_ROOTS[field_name]
+    kind = str(entry.get("object_kind") or "").strip().lower()
+    if kind in SINGLE_FILE_KINDS:
+        raise LawVerifyError(
+            f"manifest entry {entry.get('file')!r} declares object_kind={kind!r} but names no "
+            f"install path ({' / '.join(INSTALL_PATH_FIELDS)}) and no known "
+            "code_roots_field. A file the publication will not say where to put is not something "
+            "this client will guess at — guessing would put unaddressed content in the law cache")
+    return None
+
+
+def check_install_path(relpath: str, *, root: str) -> str:
+    """A relative, non-escaping, POSIX path inside the cache. The path-traversal guard."""
+    text = str(relpath or "").replace("\\", "/").strip()
+    parts = text.split("/")
+    if (not text or text.startswith("/") or ".." in parts or "" in parts
+            or (len(text) > 1 and text[1] == ":")):
+        raise LawVerifyError(
+            f"object {root} declares the install path {relpath!r}, which is absolute or escaping. "
+            "A published file installs INSIDE the law cache or not at all")
+    return text
+
+
 def law_objects(manifest: Mapping[str, Any]) -> List[Dict[str, Any]]:
     """The manifest entries that are content-addressed TREE objects.
 
     An entry qualifies when its path's basename is a bare sha256 — which is how the publication set
-    names an object by its code root. Everything else in the set (README, AUDIT, the index) is
-    documentation; this client does not need it to verify the law and does not fetch it, which
-    keeps the trust surface to "the manifest and the six trees".
+    names an object by its code root — AND it is not a single-file object. Everything else in the
+    set (README, AUDIT, the index) is documentation; this client does not need it to verify the law
+    and does not fetch it, which keeps the trust surface to "the manifest, the six trees and the
+    one posture file".
     """
     out = []
     for entry in manifest["files"]:
         name = str(entry["file"]).replace("\\", "/")
         base = name.rsplit("/", 1)[-1]
-        if is_root(base):
+        if is_root(base) and _single_file_install_path(entry) is None:
             out.append({"root": base, "path": name, "sha256": entry["sha256"],
                         "bytes": int(entry["bytes"])})
     if not out:
         raise LawVerifyError(
             "the publication manifest names no content-addressed objects; a law publication set "
             "addresses each tree by its code root")
+    return out
+
+
+def law_files(manifest: Mapping[str, Any]) -> List[Dict[str, Any]]:
+    """The manifest entries that are content-addressed SINGLE FILES (spec D-3).
+
+    Address rule: the raw ``sha256`` of the bytes, which is exactly what
+    ``receipt.py::code_roots`` computes for the posture file. There is no container, so there is
+    no container digest distinct from the address, and both are checked against the same value.
+    """
+    out = []
+    for entry in manifest["files"]:
+        name = str(entry["file"]).replace("\\", "/")
+        base = name.rsplit("/", 1)[-1]
+        install_to = _single_file_install_path(entry)
+        if install_to is None:
+            continue
+        if not is_root(base):
+            raise LawVerifyError(
+                f"manifest entry {name!r} installs to {install_to!r} but is not addressed by a "
+                "bare sha256; a published file is named by its own digest")
+        out.append({"root": base, "path": name, "sha256": entry["sha256"],
+                    "bytes": int(entry["bytes"]),
+                    "install_to": check_install_path(install_to, root=base),
+                    "code_roots_field": entry.get("code_roots_field")})
     return out
 
 
@@ -649,16 +755,30 @@ class LawCache:
         environ.update(pins)
         return pins
 
+    @property
+    def files(self) -> Dict[str, str]:
+        """``{relpath: sha256}`` for the SINGLE-FILE objects this cache installed (D-3)."""
+        recorded = self.receipt.get("files")
+        return dict(recorded) if isinstance(recorded, Mapping) else {}
+
+    @property
+    def posture_path(self) -> Optional[str]:
+        """Where ``receipt.py::code_roots`` will look for the candidate-isolation posture."""
+        if POSTURE_RELPATH not in self.files:
+            return None
+        return os.path.join(self.root_dir, *POSTURE_RELPATH.split("/"))
+
     def as_dict(self) -> Dict[str, Any]:
         return {"cache_dir": self.root_dir, "publication_root": self.publication_root,
                 "env": self.env(), "receipt": self.receipt}
 
     # -- verification ------------------------------------------------------- #
     def verify(self) -> Dict[str, str]:
-        """Recompute EVERY tree hash from what is on disk right now. Raises on any difference.
+        """Recompute EVERY tree hash AND every single-file digest from what is on disk right now.
 
         Run at load, not only at write. A cache is a directory on a machine other processes and
-        other people can reach, so its integrity is a property of the present tense.
+        other people can reach, so its integrity is a property of the present tense — and that
+        applies to the seventh sealed root exactly as it applies to the six trees.
         """
         observed: Dict[str, str] = {}
         for extract_to, expected in sorted(self.receipt["trees"].items()):
@@ -674,6 +794,21 @@ class LawCache:
                     f"{actual}, the cache receipt binds {expected}. Something changed it after it "
                     "was written. Re-run sync-law (with --force) rather than trusting it")
             observed[extract_to] = actual
+        for relpath, expected in sorted(self.files.items()):
+            path = os.path.join(self.root_dir, *relpath.split("/"))
+            try:
+                with open(path, "rb") as handle:
+                    actual = _sha256(handle.read())
+            except OSError as exc:
+                raise LawCacheError(
+                    f"the law cache at {self.root_dir} is missing {relpath}: {exc}. It is "
+                    "incomplete and will not be used") from exc
+            if actual != expected:
+                raise LawCacheError(
+                    f"the law cache at {self.root_dir} no longer verifies: {relpath} hashes to "
+                    f"{actual}, the cache receipt binds {expected}. Something changed it after it "
+                    "was written. Re-run sync-law (with --force) rather than trusting it")
+            observed[relpath] = actual
         return observed
 
 
@@ -744,7 +879,8 @@ def sync_law(publication_root: str, *, mirror: str,
              cache_dir: Optional[str] = None, force: bool = False,
              timeout: float = 30.0, retries: int = 3,
              max_object_bytes: int = MAX_OBJECT_BYTES,
-             required_trees: Sequence[str] = REQUIRED_TREES) -> LawCache:
+             required_trees: Sequence[str] = REQUIRED_TREES,
+             required_files: Sequence[str] = REQUIRED_FILES) -> LawCache:
     """Fetch, verify and materialize the published admission law. The whole of §9.3.
 
     Order matters and is fail-closed at every step:
@@ -775,6 +911,26 @@ def sync_law(publication_root: str, *, mirror: str,
     layout, manifest_bytes, manifest_rule = _locate_manifest(source, publication_root)
     manifest = parse_manifest(manifest_bytes)
     entries = law_objects(manifest)
+    file_entries = law_files(manifest)
+
+    verified_files: List[Dict[str, Any]] = []
+    for entry in file_entries:
+        data = source.fetch(layout["object"].format(root=entry["root"]), limit=max_object_bytes)
+        # NO CONTAINER, so the address and the "container digest" are one value, and both the
+        # manifest's `sha256` and the address itself must equal sha256(bytes). That value is
+        # precisely what `receipt.py::code_roots` computes for this file, which is why a raw-sha
+        # check here is the whole verification rather than a transport check on top of one.
+        if len(data) != entry["bytes"]:
+            raise LawVerifyError(
+                f"file object {entry['root']} is {len(data)} bytes; the publication manifest "
+                f"binds {entry['bytes']}")
+        digest = _sha256(data)
+        if digest != entry["root"] or digest != entry["sha256"]:
+            raise LawVerifyError(
+                f"the bytes served for file object {entry['root']} hash to {digest}. The address "
+                "IS the identity a signed receipt's code_roots binds, so bytes that do not "
+                "reproduce it are not the published law, whatever they claim to be")
+        verified_files.append({**entry, "data": data, "sha256_bytes": digest})
 
     verified: List[Dict[str, Any]] = []
     for entry in entries:
@@ -797,6 +953,19 @@ def sync_law(publication_root: str, *, mirror: str,
             f"publication {publication_root} does not carry {missing}; deterministic admission "
             "needs all of "
             f"{list(required_trees)} and a partially-installed law is worse than none")
+    files = {item["install_to"]: item["root"] for item in verified_files}
+    missing_files = [name for name in required_files if name not in files]
+    if missing_files:
+        fields = ", ".join(sorted(
+            field for field, path in SINGLE_FILE_CODE_ROOTS.items() if path in missing_files))
+        raise LawVerifyError(
+            f"publication {publication_root} does not carry {missing_files}. That file is a "
+            f"SEALED code root ({fields}): benchmark-v2/validator/receipt.py::code_roots opens it "
+            "at <repo_root>/" + POSTURE_RELPATH + " and hashes its bytes, so a cache without it "
+            "cannot compute the roots any receipt binds and every replay refuses at code_roots. "
+            "It is a single FILE rather than a tree, so it is published as a single-file object "
+            "(one manifest entry addressed by sha256(bytes), with an install_to path) rather than "
+            "as a tar")
 
     receipt = {
         "format": CACHE_RECEIPT_FORMAT,
@@ -810,6 +979,12 @@ def sync_law(publication_root: str, *, mirror: str,
                            "'<relpath> NUL <filesha> LF' lines; recomputed here from the bytes "
                            "that arrived, never taken from the container"),
         "trees": trees,
+        "files": files,
+        "file_objects": [{"root": item["root"], "install_to": item["install_to"],
+                          "bytes": len(item["data"]),
+                          "code_roots_field": item.get("code_roots_field"),
+                          "hash_rule": "sha256-bytes"}
+                         for item in sorted(verified_files, key=lambda i: i["install_to"])],
         "objects": [{"root": item["root"], "extract_to": item["extract_to"],
                      "files": len(item["files"]), "hashed_files": item["hashed"],
                      "tar_sha256": item["tar_sha256"],
@@ -817,8 +992,9 @@ def sync_law(publication_root: str, *, mirror: str,
                     for item in sorted(verified, key=lambda i: i["extract_to"])],
         "bytes_fetched": source.bytes_fetched,
         "required_trees": list(required_trees),
+        "required_files": list(required_files),
     }
-    _materialize(base, dest, verified, receipt)
+    _materialize(base, dest, verified, receipt, files=verified_files)
     return load_cache(publication_root, cache_dir=base)
 
 
@@ -855,8 +1031,9 @@ def _locate_manifest(source: Mirror, publication_root: str):
 
 
 def _materialize(base: str, dest: str, verified: Sequence[Mapping[str, Any]],
-                 receipt: Mapping[str, Any]) -> None:
-    """Write the trees to a private directory, then move it into place ATOMICALLY."""
+                 receipt: Mapping[str, Any],
+                 files: Sequence[Mapping[str, Any]] = ()) -> None:
+    """Write the trees and single files to a private directory, then move it into place ATOMICALLY."""
     import shutil
     import tempfile
 
@@ -870,6 +1047,11 @@ def _materialize(base: str, dest: str, verified: Sequence[Mapping[str, Any]],
                 os.makedirs(os.path.dirname(path), exist_ok=True)
                 with open(path, "wb") as fh:
                     fh.write(data)
+        for item in files:
+            path = os.path.join(staging, *item["install_to"].split("/"))
+            os.makedirs(os.path.dirname(path) or staging, exist_ok=True)
+            with open(path, "wb") as fh:
+                fh.write(item["data"])
         _write_receipt(staging, receipt)
         if os.path.exists(dest):
             # `os.replace` onto a non-empty directory fails, so an existing cache is moved aside

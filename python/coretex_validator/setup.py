@@ -355,6 +355,10 @@ def sync_law_from_kit(coordinator: str, manifest: Mapping[str, Any], *, packages
         "synced": True,
         "publicationRoot": publication_root,
         "trees": dict(cache.receipt["trees"]),
+        # The seventh sealed root is a FILE, not a tree (D-3): `receipt.py::code_roots` hashes
+        # `v5/production/CANDIDATE-ISOLATION.production.json` directly, so it is installed and
+        # reported beside the six trees rather than folded into them.
+        "files": dict(cache.files),
         "cache_dir": cache.root_dir,
         "mirror_dir": mirror["dir"],
         "env": cache.env(),

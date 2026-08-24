@@ -102,7 +102,10 @@ def _activate_law(args: argparse.Namespace) -> Optional[Dict[str, Any]]:
     pins = law_mod.activate(cache)
     return {"used": True, "publication_root": cache.publication_root,
             "cache_dir": cache.root_dir, "env": pins,
-            "trees": cache.receipt["trees"], "mirror": cache.receipt.get("mirror")}
+            "trees": cache.receipt["trees"],
+            # The seventh sealed root is a FILE, not a tree (D-3). Reported separately so a reader
+            # can tell at a glance whether this cache can compute `code_roots` at all.
+            "files": cache.files, "mirror": cache.receipt.get("mirror")}
 
 
 def _cmd_reproduce(args: argparse.Namespace) -> int:
