@@ -76,6 +76,7 @@ def test_the_wheel_build_backend_is_an_exact_recorded_toolchain():
         pytest.skip("the installed wheel contains products, not its source build manifest")
     text = PYPROJECT.read_text(encoding="utf-8")
     assert 'requires = ["setuptools==75.3.0", "wheel==0.44.0"]' in text
+    assert 'license = {text = "Apache-2.0"}' in text
     assert "setuptools>=" not in text
 
 
