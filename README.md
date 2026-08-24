@@ -61,10 +61,10 @@ canonical serialisation the root names. That matters for the float-bearing
 
 Zero runtime dependencies. See [docs/V5-RIG-VALIDATOR.md](docs/V5-RIG-VALIDATOR.md).
 
-Version 0.4.3 keeps 0.4.2's exact-parent replay — new artifacts carry the incumbent's release root
-and module SHA-256, and the validator independently fetches and re-hashes those bytes from the
-public CAS before the pinned sandbox runs — and removes what a clean machine still had to be handed
-first. `setup` discovers the deployment's publication root and installs the admission law, so
+Version 0.4.3 verifies exact-parent replay: artifacts carry the incumbent's release root and module
+SHA-256, and the validator independently fetches and re-hashes those bytes from the public CAS
+before the pinned sandbox runs. It also removes what a clean machine still had to be handed first.
+`setup` discovers the deployment's publication root and installs the admission law, so
 deterministic admission runs instead of backlogging; `replay-latest` replays the newest confirmed
 advance without being told which one; `preview-current-parent` scores a candidate against the live
 parent; `verify-receipt` resolves the exact parent's execution itself rather than demanding it.
