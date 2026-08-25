@@ -3192,7 +3192,6 @@ def verify_artifact(artifact: Mapping[str, Any], *, expected_parent_root: str,
                 artifact, store=store)
             done("determinism_witness_source")
     # ---- 12. availability (optional here; MANDATORY at pre-sign) ----------------------------
-    # ---- 12. availability (optional here; MANDATORY at pre-sign) ----------------------------
     if check_availability:
         if store is None:
             raise pub.AvailabilityError(
@@ -3351,6 +3350,19 @@ def verify_canary_block(artifact: Mapping[str, Any],
     entropy_block = sealed.get("entropy")
     if not isinstance(entropy_block, dict):
         return report(False, "malformed_transcript", "sealed transcript carries no entropy block")
+    # A FIXED-SUITE ARTIFACT HAS NO ENTROPY BLOCK, and the canary is optional in that era too —
+    # `ARTIFACT_FIELDS_V3` carries `canary` in `OPTIONAL_ARTIFACT_FIELDS` and `build_artifact_v3`
+    # accepts one. Reading `artifact["entropy"]` unconditionally therefore raised a bare KeyError
+    # on exactly that combination, and a bare KeyError is not a refusal: `replay.canary_evidence`
+    # catches only the typed errors, so it escaped and crashed a public validator at the LAST step
+    # of an advance whose verdict was already computed. The canary's own selection is entropy-bound
+    # by construction, so under a law with no entropy there is nothing for it to bind TO — which is
+    # a refusal to report, not a check to skip and not an exception to leak.
+    if "entropy" not in artifact:
+        return report(False, "canary_era_mismatch",
+                      "this artifact is bound to an entropy-free admission law, so the sealed "
+                      "canary transcript's entropy binding has nothing to be checked against. A "
+                      "canary minted for the walk era cannot attest a fixed-suite evaluation")
     art_entropy = artifact["entropy"].get("gate_value")
     if art_entropy is None:
         if revealed_entropy_secret is None:

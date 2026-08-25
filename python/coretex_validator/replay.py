@@ -695,7 +695,12 @@ _spec.loader.exec_module(_iso)
 _install = _iso.apply_networkless()
 _proof = _iso.prove_networkless(install=_install)
 from validator import evaluate as bench_evaluate, receipt as bench_receipt, select as bench_select
+from validator import evaluation_law as bench_law
 from validator.replay import _burned_set, _minimal_round_rec, _res
+try:
+    from validator import canonical_suite as bench_suite
+except ImportError:                       # a pre-v4 law tree carries no canonical suite
+    bench_suite = None
 from validator._rt import hash_obj
 
 payload = json.loads(sys.stdin.read())
@@ -743,14 +748,45 @@ def _run():
     elif incumbent_execution is not None:
         return _res(False, "incumbent_execution_unexpected", "evaluate",
                     "a historical report does not accept an exact-parent descriptor")
+    # WHERE THE CASES COME FROM IS THE ERA'S DEFINING DIFFERENCE, and it is read off the report's
+    # OWN bound law rather than off anything this host chose. Under the walk law the cases are
+    # re-derived from the committed entropy and compared by `derivation_index`; under the
+    # fixed-suite law they ARE the law document, carry `suite_index` instead (there is no walk to
+    # index into), and re-deriving a walk would both produce the wrong cases and KeyError on the
+    # missing field. Before this dispatch existed, every v4 receipt reached the frozen replayer,
+    # died on `derivation_index`, and came back as a BACKLOG naming a raw KeyError — fail-closed,
+    # but no fixed-suite advance could ever be replayed to PASS.
+    _law_id = (body.get("evaluation_law") or {{}}).get("law_id")
     try:
-        re_sel = bench_select.select_for_candidate(round_rec, ch, burned)
-    except bench_select.SelectionError as exc:
-        return _res(False, "selection_error", "selection", str(exc))
-    fields = ("instance_id", "profile_id", "seed", "scale", "derivation_index")
+        _fixed_suite = bool(bench_law.selects_fixed_suite(_law_id))
+    except Exception as exc:
+        return _res(False, "evaluation_law_unresolved", "selection",
+                    type(exc).__name__ + ": " + str(exc))
+    if _fixed_suite:
+        if bench_suite is None:
+            return _res(False, "canonical_suite_unavailable", "selection",
+                        "the report is bound to a fixed-suite law but the pinned law trees carry "
+                        "no validator.canonical_suite; these trees cannot replay this era")
+        try:
+            re_sel = bench_suite.suite_selection(body["profile_id"])
+        except Exception as exc:
+            return _res(False, "canonical_suite_unavailable", "selection",
+                        type(exc).__name__ + ": " + str(exc))
+        fields = ("instance_id", "profile_id", "seed", "scale", "suite_index")
+    else:
+        try:
+            re_sel = bench_select.select_for_candidate(round_rec, ch, burned)
+        except bench_select.SelectionError as exc:
+            return _res(False, "selection_error", "selection", str(exc))
+        fields = ("instance_id", "profile_id", "seed", "scale", "derivation_index")
     for branch in ("gate", "confirm"):
-        got = [dict((k, c[k]) for k in fields) for c in re_sel[branch]]
-        want = [dict((k, c[k]) for k in fields) for c in body["selection"][branch]]
+        try:
+            got = [dict((k, c[k]) for k in fields) for c in re_sel[branch]]
+            want = [dict((k, c[k]) for k in fields) for c in body["selection"][branch]]
+        except KeyError as exc:
+            return _res(False, "selection_shape_mismatch", "selection",
+                        "the report's " + str(branch) + " selection does not carry "
+                        + str(exc) + ", which the law it binds requires", branch=branch)
         if got != want:
             reason = str(branch) + " re-derivation differs from the eval report"
             return _res(False, "selection_divergence", "selection", reason, branch=branch,
@@ -1524,6 +1560,20 @@ def replay_advance(event: dp.FrontierAdvanced, *, store: pub.ContentStore,
             entropy[f"{label}_value"] = recomputed[label]
         done("entropy_expansion")
 
+        # THE SAME CONSENSUS FIELD, THE SAME FORMULA. `verify_world_seed`'s docstring says it is
+        # applied to both eras and it was not: only the fixed-suite branch called it, so a walk-era
+        # artifact carrying a rig receipt and a SEALED entropy block (commitment only — step 4
+        # checks `{label}_value` "if field in ent", and a sealed artifact has neither) had nothing
+        # tying its signed `worldSeed` to the committed secret either. The opening is in hand right
+        # here, so there is no reason not to close it.
+        if "rig_receipt" in artifact:
+            try:
+                ea.verify_world_seed(artifact, revealed_secret=opening)
+            except (ea.EvalArtifactError, fr.FrontierError) as exc:
+                return _fail("world_seed", type(exc).__name__, str(exc), checks=checks,
+                             new_manifest=new_manifest, **ident)
+            done("world_seed")
+
         # ---- 9. COMPLETE the selection check V5-C left partial ------------------------------------
         if screen is None:
             return _backlog("selection_completeness", bl.oracle_screen_unavailable(
@@ -1685,10 +1735,12 @@ def replay_advance(event: dp.FrontierAdvanced, *, store: pub.ContentStore,
     result = _pass("done",
                    "advance replayed from confirmed chain truth: parent manifest verified, "
                    "transition applied, new root reproduced, artifact rehashed, every binding "
-                   "checked, selection re-derived AND proven complete, candidate executed in the "
-                   "pinned sandbox whose networkless execution was DEMONSTRATED (not asserted) by "
-                   "a real socket probe, and the frozen law confirms it beat the exact parent "
-                   "incumbent",
+                   "checked, "
+                   + ("the canonical suite proved to BE the law's exam, "
+                      if fixed_suite else "selection re-derived AND proven complete, ")
+                   + "candidate executed in the pinned sandbox whose networkless execution was "
+                   "DEMONSTRATED (not asserted) by a real socket probe, and the frozen law "
+                   "confirms it beat the exact parent incumbent",
                    checks=checks, new_manifest=new_manifest, **ident)
     result.detail = {
         "target_profile": target_profile,

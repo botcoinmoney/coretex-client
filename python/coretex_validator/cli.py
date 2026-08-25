@@ -121,8 +121,18 @@ def _activate_law(args: argparse.Namespace) -> Optional[Dict[str, Any]]:
                            "packaged_root": packaged,
                            "agrees_with_packaged": installed == packaged}
         except cs.CanonicalSuiteError as exc:
-            suite_block = {"root": None, "source": "sealed validator tree",
-                           "packaged_root": packaged, "error": str(exc)}
+            # AND REFUSE, rather than carrying on with the wheel's copy. `install_suite_bytes`
+            # assigns nothing on failure, so continuing would leave the PACKAGED suite deciding
+            # while the run reports a verified law cache — and `_resolve_fixed_suite` would then
+            # compare a receipt's `canonical_suite_root` against the wrong document and emit
+            # `CANONICAL_SUITE_MISMATCH`, exit 1. This CLI defines exit 1 as "a check ran and the
+            # chain disagreed". A corrupt local cache must never be reportable as a refutation.
+            raise law_mod.LawCacheError(
+                f"the law cache at {cache.root_dir} carries a canonical suite this validator "
+                f"refuses ({exc}). Refusing to fall back to the copy inside this wheel: a run "
+                "that decided against a different exam than the receipt names would report the "
+                "disagreement as though the chain were wrong. Re-run `sync-law` for publication "
+                f"{cache.publication_root}") from exc
     return {"used": True, "publication_root": cache.publication_root,
             "canonical_suite": suite_block,
             "companion_files": cache.receipt.get("companion_files"),
@@ -199,9 +209,15 @@ def _snapshot_eval_artifact_families(published, *, store_dir):
     from . import eval_artifact as ea
     from . import publication as pub
 
+    # SELECTED BY CHAIN BINDING, NOT BY THE LABEL. Filtering on `kind` would have excluded exactly
+    # the ref this function exists to catch — one the publisher labelled wrongly or not at all. The
+    # `chain_binding` text is what says "this root is an evalReportHash", and it comes from the
+    # same place the root does.
     prefix = "coretex.memory-eval-artifact."
     refs = [ref for ref in (published.get("artifacts") or [])
-            if isinstance(ref, dict) and str(ref.get("kind", "")).startswith(prefix)]
+            if isinstance(ref, dict) and isinstance(ref.get("root"), str)
+            and (str(ref.get("kind", "")).startswith(prefix)
+                 or "evalReportHash" in str(ref.get("chain_binding", "")))]
     if not refs:
         return {"refs": 0}
     out = []
@@ -638,8 +654,20 @@ def _resolve_fixed_suite(wrapper, artifact):
         block["suite"]["counts"] = cs.suite_counts(profile_id)
         expected = cs.suite_cases(profile_id)
         hashes = cs.suite_case_hashes(profile_id)
+        selection = body.get("selection")
+        if not isinstance(selection, _abc.Mapping):
+            block.update({
+                "outcome": "FAIL", "code": "SUITE_SELECTION_MALFORMED",
+                "reason": ("the receipt claims the fixed-suite law but its `selection` is "
+                           f"{type(selection).__name__}, not an object of partitions")})
+            return block
         for label in ea.SELECTION_LABELS:
-            bound = list((body.get("selection") or {}).get(label) or ())
+            bound = list(selection.get(label) or ())
+            if not all(isinstance(case, _abc.Mapping) for case in bound):
+                block.update({
+                    "outcome": "FAIL", "code": "SUITE_SELECTION_MALFORMED",
+                    "reason": f"the receipt's {label!r} partition holds a non-object case"})
+                return block
             want = expected[label]
             if len(bound) != len(want):
                 block.update({
@@ -821,29 +849,22 @@ def _cmd_verify_receipt(args: argparse.Namespace) -> int:
         wrapper, artifact, store=store)
     base["incumbent"] = incumbent_block
     # THE OTHER TWO LAW-BOUND COMPARANDS. Resolved before the sandbox runs, because a receipt that
-    # names an exam this installation does not carry cannot be replayed under it at all.
+    # names an exam this installation does not carry cannot be replayed under it at all. Both are
+    # RESOLVED here and the refusals are RANKED below — a FAIL is a determination about the chain
+    # and outranks any BACKLOG, which is only ever a statement about this host.
     suite_block = _resolve_fixed_suite(wrapper, artifact)
     base["fixed_suite"] = suite_block
-    if suite_block.get("outcome") in ("FAIL", "BACKLOG"):
-        base.update({"outcome": suite_block["outcome"], "code": suite_block["code"],
-                     "reason": suite_block["reason"]})
+    for block in sorted((b for b in (incumbent_block, suite_block)
+                         if b.get("outcome") in ("FAIL", "BACKLOG")),
+                        key=lambda b: 0 if b["outcome"] == "FAIL" else 1):
+        base.update({"outcome": block["outcome"], "code": block["code"],
+                     "reason": block["reason"]})
         _emit(base, pretty=not args.compact)
-        if suite_block["outcome"] == "FAIL":
+        if block["outcome"] == "FAIL":
             return 1
         if args.require_complete:
             sys.stderr.write("--require-complete: the receipt was not replayed: "
-                             f"{suite_block['reason']}\n")
-            return 1
-        return 0
-    if incumbent_block.get("outcome") in ("BACKLOG", "FAIL"):
-        base.update({"outcome": incumbent_block["outcome"], "code": incumbent_block["code"],
-                     "reason": incumbent_block["reason"]})
-        _emit(base, pretty=not args.compact)
-        if incumbent_block["outcome"] == "FAIL":
-            return 1
-        if args.require_complete:
-            sys.stderr.write("--require-complete: the receipt was not replayed: "
-                             f"{incumbent_block['reason']}\n")
+                             f"{block['reason']}\n")
             return 1
         return 0
 

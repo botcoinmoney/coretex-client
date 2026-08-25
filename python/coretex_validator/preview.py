@@ -970,6 +970,21 @@ def _preview_fixed_suite(*, child, store, parent_root, target_profile, module_so
 
     suite_cases = probe["suite_cases"]
     hashes = dict(probe.get("suite_case_hashes") or {})
+    # THE INSTANCE HASH IS WHAT MAKES "the law's case" CHECKABLE, and it must not be optional by
+    # omission. It travels with each case so the child can re-hash what its generators produced and
+    # refuse a mismatch; a missing one is falsy, the child's `if payload.get("instance_hash")`
+    # takes the other branch, and it silently scores a DEV case while this report still claims
+    # `publicDevCasesOnly: false` and `predictsDeterministicAdmission: true`. A probe that returned
+    # cases without their hashes is a partial answer, and a partial answer is a refusal.
+    missing = sorted(case["instance_id"] for label in ("gate", "confirm")
+                     for case in suite_cases[label] if not hashes.get(case["instance_id"]))
+    if missing:
+        raise PreviewError(
+            "the pinned law trees returned canonical-suite cases without their instance hashes "
+            f"({len(missing)} of them, e.g. {missing[0]}). Without the hash there is nothing to "
+            "hold the generated instance against, and scoring anyway would be scoring an unnamed "
+            "case while reporting a deterministic prediction",
+            code="SUITE_CASE_HASHES_MISSING")
     per_partition: Dict[str, Dict[str, List[Dict[str, Any]]]] = {}
     replay_identical = {"candidate": True, "parent": True}
     networkless = True
@@ -1055,7 +1070,7 @@ def _preview_fixed_suite(*, child, store, parent_root, target_profile, module_so
         # confirm branch would let a gate-failing candidate read as admissible.
         "partitions": {
             label: {
-                "admit": bool((partitions.get(label) or {}).get("verdict", {}).get("admit")),
+                "admit": bool(((partitions.get(label) or {}).get("verdict") or {}).get("admit")),
                 "verdict": (partitions.get(label) or {}).get("verdict"),
                 "arms": {"candidate": (partitions.get(label) or {}).get("candidate"),
                          "parent": (partitions.get(label) or {}).get("parent")},

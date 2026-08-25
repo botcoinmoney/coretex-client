@@ -448,3 +448,106 @@ def test_the_published_label_is_reported_but_the_bytes_decide():
     unresolved = cli._snapshot_eval_artifact_families(published, store_dir=None)
     assert unresolved["entries"][0]["observed_format"] is None
     assert "not evidence" in unresolved["entries"][0]["note"]
+
+
+# --------------------------------------------------------------------------- #
+# 10. the review findings — each one, as the shape that would have hurt
+# --------------------------------------------------------------------------- #
+def test_a_canary_on_a_v3_artifact_refuses_instead_of_raising_KeyError(artifact):
+    """`ARTIFACT_FIELDS_V3` carries `canary` in the OPTIONAL set and `build_artifact_v3` accepts
+    one, so this combination is constructible — and `verify_canary_block` read
+    `artifact["entropy"]` unconditionally. A bare KeyError is not a refusal: `replay.canary_evidence`
+    catches only the typed errors, so it escaped and crashed a public validator at the LAST step of
+    an advance whose verdict had already been computed."""
+    import hashlib
+
+    policy = {"format": "benchmark-v2/canary/policy/v1", "model_id": "m", "temperature": 0.0,
+              "max_answer_tokens": 64, "scale": "small", "n_questions": 48,
+              "per_run_usd_cap": 1.0, "max_accuracy_drop_pp": 5.0,
+              "selection_domain": "benchmark-v2/canary/select/v1"}
+    base = hashlib.sha256("|".join(
+        (policy["selection_domain"], "ab" * 32, artifact["candidate"]["candidate_hash"],
+         artifact["frontier"]["parent_frontier_root"], artifact["candidate"]["target_profile"],
+         str(artifact["epoch"]), policy["scale"])).encode("utf-8")).hexdigest()
+    sealed = {
+        "format": ea.CANARY_TRANSCRIPT_FORMAT, "external_model_attestation": True,
+        "policy_hash": ea.canary_policy_hash(policy), "policy": policy,
+        "code_identity": {"format": "benchmark-v2/canary/code-identity/v1",
+                          "scorer_version": "canary-scorer.v3",
+                          "scoring.py_sha256": "40" * 32, "questions.py_sha256": "41" * 32},
+        "epoch_id": str(artifact["epoch"]), "run_id": "r", "mode": "dryrun",
+        "entropy": {"hex": "ab" * 32, "domain": policy["selection_domain"],
+                    "selection_base_sha256": base},
+        "candidate_hash": artifact["candidate"]["candidate_hash"],
+        "incumbent_root": artifact["frontier"]["parent_frontier_root"],
+        "selection": {"profile_id": artifact["candidate"]["target_profile"], "scale": "small",
+                      "n_questions": 48},
+        "verdict": {"verdict": "PASS", "reasons": []},
+    }
+    with_canary = copy.deepcopy(artifact)
+    with_canary["canary"] = ea.build_canary_block(sealed)
+    outcome = ea.verify_canary_block(with_canary, sealed_transcript=sealed)
+    assert outcome["ok"] is False
+    assert outcome["code"] == "canary_era_mismatch"
+    assert outcome["consensus_critical"] is False        # and it still cannot change a verdict
+
+
+def test_the_sandbox_child_takes_a_v4_selection_from_the_law_not_from_a_walk():
+    """The defect that made the headline capability unreachable.
+
+    A v4 eval report's selection carries `suite_index`; the child compared on `derivation_index`
+    and re-derived a WALK. Every fixed-suite receipt therefore died in the child with a raw
+    KeyError and came back as a BACKLOG — fail-closed, but no v3 advance could ever be replayed to
+    PASS through the real sandbox. Asserted on the child SOURCE because running it needs the pinned
+    trees, wasmtime and minutes per case.
+    """
+    source = rp._SANDBOX_CHILD_V2
+    assert "bench_law.selects_fixed_suite" in source
+    assert "bench_suite.suite_selection(body[\"profile_id\"])" in source
+    assert '"suite_index"' in source
+    # the walk path is kept, not replaced
+    assert "bench_select.select_for_candidate(round_rec, ch, burned)" in source
+    assert '"derivation_index"' in source
+    # a tree without the suite loader refuses rather than AttributeError-ing on None
+    assert "canonical_suite_unavailable" in source
+    # and a selection missing the field its own law requires is typed, not a traceback
+    assert "selection_shape_mismatch" in source
+
+
+def test_a_fail_outranks_a_backlog_when_both_resolvers_refuse():
+    """A local BACKLOG must never mask a determination about the chain. `verify-receipt` resolves
+    the incumbent and the suite independently; if the suite BACKLOGs (a pending floor) while the
+    incumbent FAILs (the parent is not what the receipt names), reporting the BACKLOG would turn a
+    refutation into unresolved work and exit 0."""
+    import inspect
+
+    from coretex_validator import cli
+
+    body = inspect.getsource(cli._cmd_verify_receipt)
+    assert 'key=lambda b: 0 if b["outcome"] == "FAIL" else 1' in body
+    assert body.index("suite_block = _resolve_fixed_suite") < body.index("for block in sorted(")
+
+
+def test_a_malformed_suite_selection_is_reported_not_raised():
+    from coretex_validator import cli
+
+    receipt = {"format": ea.EVAL_REPORT_FORMAT, "profile_id": "event.schema.v1",
+               "evaluation_law": {"law_id": ea.FIXED_SUITE_LAW_ID,
+                                  "canonical_suite_root": SUITE_ROOT},
+               "selection": []}
+    assert cli._resolve_fixed_suite(receipt, None)["code"] == "SUITE_SELECTION_MALFORMED"
+    receipt["selection"] = {"gate": ["not-an-object"], "confirm": []}
+    assert cli._resolve_fixed_suite(receipt, None)["code"] == "SUITE_SELECTION_MALFORMED"
+
+
+def test_an_eval_artifact_ref_is_found_by_its_chain_binding_not_by_the_label():
+    """Filtering on `kind` excluded exactly the ref this scan exists to catch — one the publisher
+    labelled wrongly or not at all."""
+    from coretex_validator import cli
+
+    published = {"artifacts": [
+        {"kind": "who-knows", "root": ARTIFACT_ROOT,
+         "chain_binding": "registry log evalReportHash of transition 0"}]}
+    resolved = cli._snapshot_eval_artifact_families(published, store_dir=CAS)
+    assert resolved["refs"] == 1
+    assert resolved["entries"][0]["observed_format"] == ea.ARTIFACT_FORMAT_V3

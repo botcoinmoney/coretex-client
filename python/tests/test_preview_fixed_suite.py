@@ -310,3 +310,38 @@ def test_the_probe_source_calls_the_benchmark_loaders_real_api():
                  "_cs.suite_scales(_pid)", "_cs.suite_counts(_pid)"):
         assert call in source, call
     assert "_cs.genesis_floor_vector(payload[\"profile_id\"], label)" in source
+
+
+def test_cases_without_their_instance_hashes_refuse_rather_than_scoring_dev_cases(graph):
+    """OPTIONAL-BY-OMISSION was the bug. The instance hash is what makes "the law's case"
+    checkable; a missing one is falsy, the child's `if payload.get("instance_hash")` takes the
+    other branch, and it scores a DEV case while the report still says `publicDevCasesOnly: false`
+    and `predictsDeterministicAdmission: true`. A partial probe answer is a refusal."""
+    class NoHashesChild(SuiteChild):
+        def __call__(self, payload):
+            out = super().__call__(payload)
+            if payload["mode"] == "probe":
+                out = dict(out)
+                out.pop("suite_case_hashes", None)
+            return out
+
+    with pytest.raises(pv.PreviewError) as exc:
+        _run(NoHashesChild(profile_id=TARGET), graph)
+    assert exc.value.code == "SUITE_CASE_HASHES_MISSING"
+
+
+def test_one_missing_hash_is_enough_to_refuse(graph):
+    class OneMissingChild(SuiteChild):
+        def __call__(self, payload):
+            out = super().__call__(payload)
+            if payload["mode"] == "probe":
+                out = dict(out)
+                hashes = dict(out["suite_case_hashes"])
+                hashes.pop(sorted(hashes)[0])
+                out["suite_case_hashes"] = hashes
+            return out
+
+    with pytest.raises(pv.PreviewError) as exc:
+        _run(OneMissingChild(profile_id=TARGET), graph)
+    assert exc.value.code == "SUITE_CASE_HASHES_MISSING"
+    assert "1 of them" in str(exc.value)

@@ -798,11 +798,17 @@ class LawCache:
         except OSError:
             return None
 
-    def companion_path(self, install_to: str) -> Optional[str]:
-        """Where a COMPANION record was installed, or ``None`` if this cache carries none."""
+    def companion_path(self, install_to: str = COUNTER_LAW_RELPATH) -> Optional[str]:
+        """Where a COMPANION record was installed, or ``None`` if this cache carries none.
+
+        Companions are NOT sealed roots and are deliberately absent from :meth:`verify` — they did
+        not arrive from the publication and must never be read as though they had. This is how a
+        caller asks whether one is present without going through the receipt by hand.
+        """
         for entry in self.receipt.get("companion_files") or ():
             if entry.get("install_to") == install_to:
-                return os.path.join(self.root_dir, *install_to.split("/"))
+                path = os.path.join(self.root_dir, *install_to.split("/"))
+                return path if os.path.isfile(path) else None
         return None
 
     def as_dict(self) -> Dict[str, Any]:
@@ -1131,6 +1137,18 @@ def sync_law(publication_root: str, *, mirror: str,
     except OSError:                                            # pragma: no cover - packaging fault
         counter_law_bytes = None
     if counter_law_bytes:
+        # A COMPANION MAY NEVER LAND ON A PUBLISHED PATH. `_materialize` writes companions LAST, so
+        # a publication that declared a sealed single file at this path would be silently
+        # overwritten by the wheel's copy — and the cache would then fail `verify()` on every load,
+        # permanently, with `sync-law` unable to repair it. Refusing here costs nothing and the
+        # collision is a law change worth noticing.
+        if COUNTER_LAW_RELPATH in files:
+            raise LawVerifyError(
+                f"publication {publication_root} publishes a sealed single file at "
+                f"{COUNTER_LAW_RELPATH}, which is where this validator installs its companion "
+                "counter-resource-law record. Two documents cannot own one path: the publication "
+                "now carries this record itself, so the companion must be retired rather than "
+                "written over it")
         companion.append({"install_to": COUNTER_LAW_RELPATH, "data": counter_law_bytes,
                           "root": _sha256(counter_law_bytes), "source": "wheel package data"})
     suite_root = None
@@ -1269,9 +1287,13 @@ def activate(cache: LawCache, *, modules=None) -> Dict[str, str]:
     the CLI builds, in every command, because activation happens before construction. Refusing a
     late pin now would reject a run that is about to work.
 
-    What is still refused is the case the guard was really about: a scorer object that ALREADY
-    EXISTS and is bound to a different tree. Those are constructed with explicit directories, so
-    this only fires on a genuine mid-run reconfiguration, never on import order.
+    What is still refused is a ``replay`` module that reads the pins AT IMPORT — an older build, or
+    one injected by a caller — bound to a different tree. It is detected by the ABSENCE of
+    ``replay.benchmark_v2_tree``, which is the construction-time reader; a module that has it
+    cannot have baked the pins in, so there is nothing left to refuse. Against the shipped module
+    this branch is therefore unreachable by design, and that is the point: the trap is gone rather
+    than guarded. It is kept because this package is installed alongside others and a stale
+    ``coretex_validator.replay`` on a host is a real shape.
     """
     import sys
 
