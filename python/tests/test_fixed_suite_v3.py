@@ -365,3 +365,86 @@ def test_a_v3_artifact_may_not_be_checked_against_an_entropy_commitment(artifact
     with pytest.raises(ea.EntropyMismatchError) as exc:
         _verify(artifact, store, expected_entropy_commitment="c" * 64)
     assert "binds no entropy" in str(exc.value)
+
+
+# --------------------------------------------------------------------------- #
+# 8. `verify-receipt` resolves ALL THREE law-bound comparands, not just the parent
+# --------------------------------------------------------------------------- #
+def _report():
+    with open(os.path.join(CAS, REPORT_ROOT), "r", encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+def test_verify_receipt_resolves_the_suite_the_parent_and_the_floor(artifact):
+    from coretex_validator import cli
+
+    block = cli._resolve_fixed_suite(_report(), artifact)
+    assert block["applies"] is True and block["resolved"] is True
+    assert "outcome" not in block                       # nothing refused
+    assert block["law_id"] == ea.FIXED_SUITE_LAW_ID
+    assert block["suite"]["resolved_root"] == block["suite"]["bound_root"] == SUITE_ROOT
+    assert block["suite"]["counts"] == cs.suite_counts("event.schema.v1")
+    assert block["genesis_floor"]["status"] == "resolved"
+    assert block["genesis_floor"]["artifact_agrees"] is True
+
+
+def test_a_walk_era_receipt_is_told_there_is_no_suite_rather_than_being_refused():
+    """Era-aware, not era-blind: those receipts were never decided against a suite."""
+    from coretex_validator import cli
+
+    block = cli._resolve_fixed_suite(
+        {"format": ea.EVAL_REPORT_FORMAT, "evaluation_law": {"law_id": "prior-era"}}, {})
+    assert block == {"applies": False, "law_id": "prior-era", "reason": block["reason"]}
+    assert "prior law era" in block["reason"]
+
+
+def test_a_receipt_bound_to_another_suite_is_refused_before_anything_is_replayed():
+    from coretex_validator import cli
+
+    report = _report()
+    report["evaluation_law"] = dict(report["evaluation_law"], canonical_suite_root="c" * 64)
+    block = cli._resolve_fixed_suite(report, {})
+    assert block["outcome"] == "FAIL"
+    assert block["code"] == "CANONICAL_SUITE_MISMATCH"
+    assert "NEW LAW" in block["reason"]
+
+
+def test_a_receipt_whose_partition_was_trimmed_is_refused(artifact):
+    from coretex_validator import cli
+
+    report = _report()
+    report["selection"] = {label: list(cases) for label, cases in report["selection"].items()}
+    report["selection"]["gate"] = report["selection"]["gate"][:-1]
+    block = cli._resolve_fixed_suite(report, artifact)
+    assert block["outcome"] == "FAIL"
+    assert block["code"] == "SUITE_PARTITION_MISMATCH"
+
+
+def test_malformed_input_is_reported_rather_than_crashing():
+    """It is handed caller-supplied JSON from a file, so every shape has to have an answer."""
+    from coretex_validator import cli
+
+    for bad in (None, [], "receipt", {"evaluation_law": "not a map"}, {}):
+        block = cli._resolve_fixed_suite(bad, None)
+        assert block["applies"] is False and block["reason"]
+
+
+# --------------------------------------------------------------------------- #
+# 9. `reproduce-snapshot` reads the artifact's REAL family off its own bytes
+# --------------------------------------------------------------------------- #
+def test_the_published_label_is_reported_but_the_bytes_decide():
+    """`v5/resolver/artifacts.py` labels every eval-artifact ref v2 without opening the object, so
+    a post-cut snapshot calls a v3 artifact v2. The label is reproduced (that is what reproduction
+    means) and it is not read as evidence."""
+    from coretex_validator import cli
+
+    published = {"artifacts": [{"kind": ea.ARTIFACT_FORMAT, "root": ARTIFACT_ROOT}]}
+    resolved = cli._snapshot_eval_artifact_families(published, store_dir=CAS)
+    entry = resolved["entries"][0]
+    assert entry["published_label"] == ea.ARTIFACT_FORMAT
+    assert entry["observed_format"] == ea.ARTIFACT_FORMAT_V3
+    assert "the BYTES win" in entry["note"]
+
+    unresolved = cli._snapshot_eval_artifact_families(published, store_dir=None)
+    assert unresolved["entries"][0]["observed_format"] is None
+    assert "not evidence" in unresolved["entries"][0]["note"]
