@@ -39,6 +39,10 @@ def _suite_probe(profile_id=PROFILE, *, floor_resolved=True):
         "suite_version": str(cs.suite_version()),
         "dominance_engine": "dominance.componentwise.v1",
         "genesis_floor_resolved": floor_resolved,
+        # THE BENCHMARK LOADER'S NAME. `validator.canonical_suite` spells this `suite_selection`
+        # and the V5 mirror spells it `suite_cases`; the child calls the BENCHMARK one, because the
+        # benchmark tree is what a law cache installs. Calling the mirror's name there made every
+        # fixed-suite preview fall silently back to the walk era through the child's `except`.
         "suite_cases": cs.suite_cases(profile_id),
         "suite_case_hashes": cs.suite_case_hashes(profile_id),
         "suite_scales": list(cs.suite_scales(profile_id)),
@@ -137,6 +141,46 @@ def test_a_walk_era_law_tree_still_gets_the_walk_era_preview(graph):
     assert report["publicDevCasesOnly"] is True
     assert report["predictsAdmission"] is False
     assert "predictsDeterministicAdmission" not in report
+    assert report["lawEra"] == "walk"
+    assert "lawEraReason" not in report          # genuinely walk-era, nothing was downgraded
+
+
+def test_a_fixed_suite_tree_whose_suite_would_not_load_says_so_out_loud(graph):
+    """THE DANGEROUS CASE. The child reports "walk" both for a genuinely walk-era tree and for a
+    fixed-suite tree whose suite it could not load, and the difference matters enormously: the
+    second means this preview scored the WRONG CASES and said so only by omission. The reason the
+    child caught must reach the report."""
+    class BrokenSuiteChild(SuiteChild):
+        def __call__(self, payload):
+            if payload["mode"] == "probe":
+                self.calls.append(dict(payload))
+                return {"dev_seeds": [1002, 1003], "dev_scales": ["small"],
+                        "profiles": [TARGET],
+                        "law_era": "walk",
+                        "law_era_reason": "CanonicalSuiteError: the canonical suite is unavailable"}
+            if payload["mode"] == "aggregate":
+                self.calls.append(copy.deepcopy(payload))
+                sides = {}
+                for name, rows in payload["per_arm"].items():
+                    composite = round(
+                        sum(r["measurement"]["composite"] for r in rows) / len(rows), 6)
+                    sides[name] = {"composite": composite,
+                                   "objectives": {"exact_lookup": composite},
+                                   "rendered_cost": 10.0, "compute_ms": 100.0,
+                                   "storage_bytes": 1024, "latency_ms": 7,
+                                   "corpus_supported": 40}
+                sides["candidate"]["declared_limits"] = dict(payload["declared_limits"])
+                return {"candidate": sides["candidate"], "parent": sides["parent"],
+                        "verdict": {"admit": False, "verdict": "REJECT", "hard_ok": True,
+                                    "pareto_ok": False, "satisfied_clauses": [],
+                                    "reason": "walk-era fallback", "deltas": {}},
+                        "aggregates": {}, "portability": None}
+            return super().__call__(payload)
+
+    report = _run(BrokenSuiteChild(profile_id=TARGET), graph)
+    assert report["lawEra"] == "walk"
+    assert report["predictsAdmission"] is False
+    assert "CanonicalSuiteError" in report["lawEraReason"]
 
 
 # --------------------------------------------------------------------------- #
@@ -240,3 +284,29 @@ def test_a_pending_genesis_floor_refuses_rather_than_predicting(graph):
         _run(SuiteChild(profile_id=TARGET, floor_resolved=False), graph)
     assert exc.value.code == "GENESIS_FLOOR_PENDING"
     assert "PENDING" in str(exc.value)
+
+
+# --------------------------------------------------------------------------- #
+# 6. the child's probe must call the names the BENCHMARK loader actually exposes
+# --------------------------------------------------------------------------- #
+def test_the_probe_source_calls_the_benchmark_loaders_real_api():
+    """The bug this exists to prevent, found by running the probe against the real trees.
+
+    `benchmark-v2/validator/canonical_suite` exposes `suite_selection`; the V5 mirror (and this
+    client's own `canonical_suite`) exposes `suite_cases`. The child imports the BENCHMARK one,
+    because that is what a law cache installs — and the child wraps the whole era probe in a bare
+    `except`, so calling the wrong name did not raise: it reported `law_era: "walk"` and every
+    fixed-suite preview silently scored the dev cases instead of the law's.
+
+    Asserted on the child SOURCE because the real child cannot run without the pinned trees, and a
+    test that needed them would not run here at all.
+    """
+    source = pv._PREVIEW_CHILD
+    assert "_cs.suite_selection(_pid)" in source
+    assert "_cs.suite_cases(" not in source
+    # and the names the rest of the probe uses are the benchmark loader's too
+    for call in ("_cs.suite_root()", "_cs.suite_law_id()", "_cs.suite_version()",
+                 "_cs.genesis_floor_resolved()", "_cs.suite_case_hashes(_pid)",
+                 "_cs.suite_scales(_pid)", "_cs.suite_counts(_pid)"):
+        assert call in source, call
+    assert "_cs.genesis_floor_vector(payload[\"profile_id\"], label)" in source

@@ -8,7 +8,17 @@ pass the self-check comfortably and still LOSE the adjudicated comparison, becau
 compares it against the live parent, not against the reference. This command runs the same public
 dev cases against the arm the adjudicator will actually put on the other side.
 
-WHAT IT IS NOT. It is not an admission prediction and it must never read as one:
+WHICH OF TWO PROMISES THIS MAKES DEPENDS ON THE PINNED LAW, AND IS READ OFF IT.
+The child's ``probe`` reports whether the installed trees carry a canonical suite
+(``validator.canonical_suite``) and the componentwise engine (``frontier.dominance``). If they do,
+the deployment being previewed against decides under LAW §3A — one IMMUTABLE PUBLIC exam, the same
+cases for every candidate, componentwise dominance over the exact parent plus a law-bound
+constructor-genesis floor, with no input from the epoch secret or the candidate id — and this
+command scores THOSE cases and reports ``predictsDeterministicAdmission: true``. See
+:func:`_preview_fixed_suite`. Everything below describes the WALK ERA, which is what a tree
+without those modules is, and is unchanged.
+
+WHAT IT IS NOT (WALK ERA). It is not an admission prediction and it must never read as one:
 
 * the corpus here is the kit's PUBLIC dev seeds, resolved at runtime from the pinned tree's own
   ``kit/dev_instances.py``. The adjudicator draws CONFIRMATION cases from future public entropy
@@ -19,7 +29,7 @@ WHAT IT IS NOT. It is not an admission prediction and it must never read as one:
   massaged into a pass;
 * consequently the report's comparison is the PARETO comparison against the parent
   (``pareto_ok``), never "you will be admitted". ``predictsAdmission`` is a hard ``false`` in every
-  report this module emits.
+  WALK-ERA report this module emits, and in every refusal.
 
 Losing to the current parent is INFORMATION, not an error: the command exits 0 either way, and
 non-zero only when it could not run.
@@ -56,7 +66,8 @@ an allow-listed ``sys.path`` and an enforced+proven networkless filter — the s
 result out, three modes (``probe``/``score``/``aggregate``). Everything above it — chain
 resolution, arm construction, the comparison and the report — is plain data manipulation that a
 test can drive with a fake child, so the parts that are ours are tested for real instead of being
-gated behind a host that has ``wasmtime`` and a law cache.
+gated behind a host that has ``wasmtime`` and a law cache. The seam has four modes:
+``probe`` / ``score`` / ``aggregate`` (walk era) / ``aggregate_suite`` (fixed suite).
 """
 from __future__ import annotations
 
@@ -639,7 +650,10 @@ if mode == "probe":
         out["genesis_floor_resolved"] = bool(_cs.genesis_floor_resolved())
         _pid = payload.get("profile_id")
         if _pid:
-            out["suite_cases"] = _cs.suite_cases(_pid)
+            # THE BENCHMARK LOADER'S NAME IS `suite_selection`, not `suite_cases` — the V5 mirror
+            # spells it the other way and calling the mirror's name here would have made every
+            # fixed-suite preview silently fall back to the walk-era one via the except below.
+            out["suite_cases"] = _cs.suite_selection(_pid)
             out["suite_case_hashes"] = _cs.suite_case_hashes(_pid)
             out["suite_scales"] = list(_cs.suite_scales(_pid))
             out["suite_counts"] = dict(_cs.suite_counts(_pid))
@@ -1076,6 +1090,12 @@ def preview_current_parent(*, child, store: pub.ContentStore, parent_root: str,
 
     probe = child({"mode": "probe", "profile_id": target_profile})
     law_era = str(probe.get("law_era") or "walk")
+    # A DOWNGRADE MUST BE VISIBLE. The child reports "walk" both for a genuinely walk-era tree and
+    # for a fixed-suite tree whose suite it could not load, and the difference matters enormously
+    # to a miner: the second case means this preview is scoring the wrong cases and saying so only
+    # by omission. `law_era_reason` carries the exception the child caught, and it is put in the
+    # report rather than dropped.
+    law_era_reason = probe.get("law_era_reason")
     if law_era == "fixed-suite" and probe.get("suite_cases"):
         return _preview_fixed_suite(
             child=child, store=store, parent_root=parent_root, target_profile=target_profile,
@@ -1138,6 +1158,8 @@ def preview_current_parent(*, child, store: pub.ContentStore, parent_root: str,
         "publicDevCasesOnly": True,
         "predictsAdmission": False,
         "disclaimer": DISCLAIMER,
+        "lawEra": "walk",
+        **({"lawEraReason": law_era_reason} if law_era_reason else {}),
         "profile": target_profile,
         "scale": scale,
         "dev_seeds": dev_seeds,
