@@ -351,10 +351,16 @@ def check_against_canonical(manifest: Dict[str, Any], canonical_root: str) -> Li
     recorded = manifest.get("canonical_commit")
     observed_commit = current["canonical_commit"]
     if recorded != observed_commit and "unknown" not in (recorded, observed_commit):
+        # INFORMATIONAL, NEVER FATAL, and it is expected to lag. The recorded commit names where
+        # the pinned LAW VALUES were sealed, not the tip of canonical: canonical moves for reasons
+        # that touch no law value (and re-pinning it here would move this wheel's bytes, which
+        # moves the canonical pins that name the wheel, which moves canonical again — a loop with
+        # no fixed point). So a mismatch here means "canonical has commits since the seal", which
+        # is normal; a LAW divergence would have been reported above as a DRIFT line instead.
         problems.append(
-            f"NOTE: manifest was generated at canonical {recorded}, this tree is at "
-            f"{observed_commit}. Every pinned value above still agrees, so this is a stale "
-            "provenance note rather than a law divergence — regenerate to clear it.")
+            f"NOTE: pins were sealed at canonical {recorded}; this tree is at {observed_commit}. "
+            "Every pinned value still agrees, so this is provenance lag, NOT a law divergence. "
+            "Re-record it only when a law value actually moves.")
     return problems
 
 
