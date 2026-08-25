@@ -2,14 +2,14 @@
   "format": "coretex.memory-suite-bridge-vector.v1",
   "law_id": "benchmark-v2-law/dominance-fixed-suite-2026-08-25.v4",
   "measured_by": {
-    "evidence": "ever-improving-run-20260825/p4p5/m-event/vector-event-c8585724.json",
+    "evidence": "ever-improving-run-20260825/r2/m-event/vector-event-c8585724.json",
     "exec": "reference",
-    "image_git_commit": "2ae6c13b38639f44e1679d02c5c2878fa58ebca8",
+    "image_git_commit": "e6da2ce09a2e9e5c4260ae5fe04b75b499c75542",
     "image_target": "coretex-memory-evaluator",
     "measurement_policy": "final-render-trusted-hostwork.v4",
     "module_sha256": "c64131b508553d43631324da8c9d8cf9f6c3947da87f4707cd2c9f6c9a63d20d",
-    "phase": "P5-bridge",
-    "run": "ever-improving-invariant-cut/p4p5"
+    "phase": "R2-bridge",
+    "run": "ever-improving-invariant-cut/r2"
   },
   "partitions": {
     "confirm": {

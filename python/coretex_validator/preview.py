@@ -1,5 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Preview a candidate against the CURRENT CONFIRMED PARENT, on public dev cases only.
+"""Preview a candidate against the CURRENT CONFIRMED PARENT, under whichever law is pinned.
+
+WHAT IS SCORED DEPENDS ON THE ERA, and this module reads the era off the pinned trees rather than
+assuming one. Under the CURRENT fixed-suite law the cases ARE the law's own immutable public exam,
+so the verdict computed here is the verdict the adjudicator computes. Under the RETIRED walk law
+the adjudicator re-drew cases this command could not see, so it scored the kit's public dev cases
+and predicted nothing. Both wordings are kept, each fires only for its own era, and the report's
+``lawEra`` / ``publicDevCasesOnly`` / ``predictsAdmission`` fields say which one applied.
 
 THE GAP THIS CLOSES. The miner kit's ``kit/self_check.py`` scores a submission against the FROZEN
 REFERENCE BASELINE — the initial release the benchmark shipped with. The live incumbent is whatever

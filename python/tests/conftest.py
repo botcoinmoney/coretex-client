@@ -260,7 +260,8 @@ def make_parts(*, admit=True, epoch=EPOCH, secret=ENTROPY_SECRET,
     wrapper = make_receipt_wrapper(gate_entropy=gate_entropy, confirm_entropy=confirm_entropy,
                                    gate_cases=cases["gate"], confirm_cases=cases["confirm"],
                                    admit=admit, candidate_hash=candidate_hash, **receipt_kwargs)
-    law = ea.load_counter_resource_law()
+    # walk-era fixture -> the walk-era counter law (LAW 3A.6). See tests/test_law_vendoring.py.
+    law = ea.load_counter_resource_law(ea.WALK_ERA_COUNTER_RESOURCE_LAW_PATH)
     return {"parent": parent, "transition": transition, "parent_root": parent_root,
             "new_root": fr.frontier_root(fr.apply_transition(parent, transition)),
             "secret": secret, "epoch": epoch, "candidate_hash": candidate_hash,

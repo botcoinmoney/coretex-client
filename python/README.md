@@ -1,24 +1,34 @@
 # coretex-validator
 
 ```bash
-pip install https://github.com/botcoinmoney/coretex-client/releases/download/v0.4.4/coretex_validator-0.4.4-py3-none-any.whl
+pip install https://github.com/botcoinmoney/coretex-client/releases/download/v0.5.0/coretex_validator-0.5.0-py3-none-any.whl
 coretex-validator setup
 ```
 
-> The install line names **v0.4.4**, the release this repository builds. Until that release's
+> The install line names **v0.5.0**, the release this repository builds. Until that release's
 > assets are published the URL 404s; `python/reproduce.sh` builds the identical wheel from
 > committed source, and is the authority either way — the published asset is that build, not a
 > separate artifact.
 
-Version 0.4.4 independently resolves and re-hashes the parent composition, release, and module
-bytes before replaying a new five-field incumbent identity. The frozen pre-cut code-root set is
-embedded in the wheel so existing three-field production artifacts remain replayable without
-opening a three-field path for new law roots. It adds `setup`'s law install, `replay-latest`,
-`preview-current-parent`, and a rule-carrying object transport; it removes the rehearsal default
-publication root. 0.4.4 adds public compatibility-lock support: `setup` fetches the lock the
-confirmed epoch's `coreVersionHash` addresses, verifies it here rather than trusting the
-server's report, caches the exact verified bytes under their root, and records that root in
-`ACTIVE-INSTALL.json`.
+Version 0.5.0 replays the FIXED-SUITE era. Under the current law an advance publishes a
+`coretex.memory-eval-artifact.v3`: no entropy block and no selection walk, and in their place the
+immutable public canonical suite, a determinism witness naming the published document that backs
+the exact parent's stored vector, the constructor-genesis floor, and a componentwise dominance
+block. 0.5.0 reads that artifact, recomputes the componentwise decision from the receipt's own
+measured scores rather than believing its stated verdict, resolves the witness through the
+publication surface, and derives `worldSeed` itself instead of taking the coordinator's word for
+it. Versions before 0.5.0 cannot parse a v3 artifact at all and therefore cannot replay any
+advance made under the current law.
+
+It carries forward 0.4.4's exact-parent replay — the parent composition, release and module bytes
+are independently resolved and re-hashed before the pinned sandbox runs, against a five-field
+incumbent identity, with the frozen pre-cut code-root set embedded so existing three-field
+production artifacts stay replayable without opening a three-field path for new law roots — along
+with `setup`'s law install, `replay-latest`, `preview-current-parent`, the rule-carrying object
+transport, the removal of the rehearsal default publication root, and public compatibility-lock
+support (`setup` fetches the lock the confirmed epoch's `coreVersionHash` addresses, verifies it
+here rather than trusting the server's report, caches the exact verified bytes under their root,
+and records that root in `ACTIVE-INSTALL.json`).
 
 ## `reproduce` — the whole verification, in one command
 
@@ -187,10 +197,11 @@ permanent refutation — never the retryable `ObjectNotFoundError`.
 
 ## Version status
 
-0.4.4 is the one canonical validator production release; there is no supported prior/current
-version split. `GET /coretex/v5/status` → `productionRelease.validatorWheel` is the deployment byte
-authority: it names the exact wheel filename, version and sha256 parsed from the bytes the
-coordinator will hand you. A deployment is current only when that tuple names the canonical 0.4.4
-artifact.
+0.5.0 is the one canonical validator production release; there is no supported prior/current
+version split, and earlier versions are not fallbacks — they cannot read
+`coretex.memory-eval-artifact.v3`. `GET /coretex/v5/status` → `productionRelease.validatorWheel` is
+the deployment byte authority: it names the exact wheel filename, version and sha256 parsed from
+the bytes the coordinator will hand you. A deployment is current only when that tuple names the
+canonical 0.5.0 artifact.
 
 See the repository root README for commands and contracts.

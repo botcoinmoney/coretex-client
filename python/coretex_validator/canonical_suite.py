@@ -108,6 +108,28 @@ FIXED_SUITE_AUTHOR_ID = "coretex.fixed-suite/author/v1"
 #: epoch, no parent root, no candidate.
 FIXED_SUITE_ENTROPY_DOMAIN = "coretex.fixed-suite/inert-entropy/v1"
 
+#: THE CLOSED HARD-GATE VOCABULARY — mirror of
+#: ``benchmark-v2/validator/report_body.HARD_GATE_VOCABULARY`` (itself derived from
+#: ``frontier.gates.GATE_NAMES`` plus the ``profile_floors`` clause both engines append). It is a
+#: sealed table here for the same reason :data:`PROTECTED_QUALITY_VOCABULARY` is: the artifact
+#: layer must stay usable without the ``benchmark-v2`` packages, and ``frontier.gates`` lives
+#: there.
+#:
+#: WHY IT IS CLOSED AT ALL. The artifact layer used to accept ANY non-empty hard map whose values
+#: rolled up consistently with ``hard_ok`` — so a report could drop the gates that failed, state
+#: the rest true, and self-consistently reach a signature. A hard map is not a set of claims a
+#: report chooses; it is exactly these eight names, recomputed by the law.
+HARD_GATE_VOCABULARY: Tuple[str, ...] = (
+    "canonical_event_integrity",
+    "declared_resource_limits",
+    "deterministic_replay",
+    "host_portability_matrix",
+    "profile_floors",
+    "provenance",
+    "validity",
+    "zero_stale_retracted_disclosure",
+)
+
 
 class CanonicalSuiteError(RuntimeError):
     code = CANONICAL_SUITE_INVALID

@@ -48,7 +48,18 @@ include-package-data = false
 [tool.setuptools.package-data]
 coretex_validator = [
   "COUNTER_RESOURCE_LAW.v1.json",
+  # The SUPERSEDED walk-era counter law, shipped beside the current one. Every artifact minted
+  # before the fixed-suite cut binds it BY ROOT
+  # (`049fe98ec08a3a47e2bf4582afa70ad45506a465584f3cec1a53286617c7b207`) and must keep resolving
+  # to those exact bytes, so replaying published history offline needs both documents present.
+  # Prior eras are never reinterpreted (LAW §3A.6); nothing new is ever minted against it.
+  "COUNTER_RESOURCE_LAW.walk-era.v1.json",
   "EXACT-PARENT-AUTHORITY.production.json",
+  # Records the canonical provenance of every vendored law document and law-bearing constant in
+  # this hand-maintained mirror. `tests/test_law_sync.py` fails if the vendored tree drifts from
+  # it, so a silent divergence from the canonical law tree becomes a red test rather than a
+  # wrong verdict. See `tools/check_law_sync.py`.
+  "LAW-SYNC.v1.json",
   # The canonical suite is DATA the validator cannot re-derive and must not be asked to supply.
   # `eval_artifact.validate_artifact` resolves a profile's declared objective vocabulary from it,
   # so even the pure schema check of a v3 artifact needs it — a clean install with no law mirror

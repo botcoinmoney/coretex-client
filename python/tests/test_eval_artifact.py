@@ -88,7 +88,10 @@ def _reanchored_artifact(*, parent_epoch):
     wrapper = make_receipt_wrapper(
         gate_entropy=entropy_values["gate"], confirm_entropy=entropy_values["confirm"],
         gate_cases=cases["gate"], confirm_cases=cases["confirm"])
-    law = ea.load_counter_resource_law()
+    # walk-era artifact -> the walk-era counter law (LAW 3A.6: prior eras are never
+    # reinterpreted). The current document's storage term reads
+    # `resource.logical_durable_storage_bytes`, an axis a walk-era measured side does not carry.
+    law = ea.load_counter_resource_law(ea.WALK_ERA_COUNTER_RESOURCE_LAW_PATH)
     parts = {"parent": parent, "wrapper": wrapper, "law": law}
     store = pub.InMemoryCAS()
     artifact = ea.build_artifact(
@@ -638,15 +641,44 @@ def test_tampered_resource_accounting_is_rejected(built):
             ea.verify_artifact(tampered, **verify_kwargs(tampered, parts))
 
 
-def test_the_committed_counter_law_file_is_the_bound_root(built):
-    artifact, _, _ = built
-    law = ea.load_counter_resource_law()
-    path = ea.COUNTER_RESOURCE_LAW_PATH
+@pytest.mark.parametrize("path", [ea.COUNTER_RESOURCE_LAW_PATH,
+                                  ea.WALK_ERA_COUNTER_RESOURCE_LAW_PATH])
+def test_every_committed_counter_law_file_is_its_own_canonical_bytes(path):
+    law = ea.load_counter_resource_law(path)
     with open(path, "rb") as fh:
         raw = fh.read()
     assert raw == fr.canonical_bytes(law)              # the file IS its canonical bytes
     assert fr.sha256_hex(raw) == ea.counter_resource_law_root(law)
-    assert artifact["counter_resource_law_root"] == ea.counter_resource_law_root(law)
+
+
+def test_the_walk_era_counter_law_is_preserved_verbatim_at_its_own_root(built):
+    """A walk-era artifact binds the WALK-ERA document, byte for byte, forever.
+
+    The fixed-suite cut moved the current document's storage term from ``resource.storage_bytes``
+    (the historical-law alias for input corpus bytes) onto
+    ``resource.logical_durable_storage_bytes`` -- the axis it always CALLED itself. LAW 3A.6
+    preserves prior eras rather than reinterpreting them, so the superseded bytes stay in this
+    wheel at their original root and every pre-cut artifact keeps resolving to them.
+
+    This wheel shipped NEITHER document correctly before the R3 law sync: its only counter law was
+    two revisions old -- not the current one and not this one -- so a cache populated by
+    ``sync-law`` carried a law matching no artifact ever minted.
+    """
+    artifact, _, _ = built
+    walk_era = ea.load_counter_resource_law(ea.WALK_ERA_COUNTER_RESOURCE_LAW_PATH)
+    assert ea.counter_resource_law_root(walk_era) == \
+        "049fe98ec08a3a47e2bf4582afa70ad45506a465584f3cec1a53286617c7b207"
+    assert artifact["counter_resource_law_root"] == ea.counter_resource_law_root(walk_era)
+    current = ea.load_counter_resource_law()
+    assert ea.counter_resource_law_root(current) == \
+        "310fe9e411909d6a091590d71d94adf67c3101dc75f0ac9ec3fb510afbe7aba3"
+    assert ea.counter_resource_law_root(current) != ea.counter_resource_law_root(walk_era)
+
+    # exactly one field differs, and it is the storage axis's source
+    def _axis(law):
+        return next(a for a in law["resource_axes"] if a["id"] == "logical_durable_storage_bytes")
+    assert _axis(walk_era)["source"] == "resource.storage_bytes"
+    assert _axis(current)["source"] == "resource.logical_durable_storage_bytes"
 
 
 def test_counter_law_weights_must_sum_to_one_million():

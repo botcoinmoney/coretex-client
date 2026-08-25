@@ -150,6 +150,16 @@ MAX_UINT64 = 2 ** 64 - 1
 #: The committed counter-resource law document shipped with this lane.
 COUNTER_RESOURCE_LAW_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                          "COUNTER_RESOURCE_LAW.v1.json")
+#: THE SUPERSEDED WALK-ERA COUNTER LAW, kept in this wheel verbatim (root
+#: ``049fe98ec08a3a47e2bf4582afa70ad45506a465584f3cec1a53286617c7b207``). It differs from the
+#: current document in ONE field: its storage term read ``resource.storage_bytes`` — the
+#: historical-law alias for INPUT CORPUS BYTES — while calling itself
+#: "logical-durable-storage.cbor.v1 bytes". The fixed-suite cut pointed that term at the axis it
+#: always named. Every artifact minted before the cut binds this document BY ROOT and must keep
+#: resolving to these exact bytes, so it is preserved rather than migrated (LAW §3A.6: prior eras
+#: are never reinterpreted). Nothing new is ever minted against it.
+WALK_ERA_COUNTER_RESOURCE_LAW_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "COUNTER_RESOURCE_LAW.walk-era.v1.json")
 
 REQUIRED_AVAILABILITY_V2 = (
     "candidate_bundle", "composition_manifest", "counter_resource_law",
@@ -245,12 +255,30 @@ SIDE_FIELDS = ("composite_micro", "compute_micro", "corpus_supported", "events_s
                "hook_compute_fuel", "hook_fuel", "host_profile", "latency_micro",
                "objectives_micro", "rendered_cost_micro", "storage_bytes", "store_events",
                "store_ops", "work_fuel")
+#: v3. The fixed-suite law PROTECTS ``logical_durable_storage_bytes`` as a dominance-vector
+#: component, so a v3 measured side MEASURES it — as its own field, next to the unchanged
+#: ``storage_bytes`` slot, which keeps its documented meaning (the historical-law alias for input
+#: corpus bytes) and stays telemetry. Two different axes, both measured by
+#: ``final-render-trusted-hostwork.v4``, now both projected. The walk-era set above is FROZEN: a
+#: v1/v2 artifact's measurement block is not edited, and its reprojection stays byte-identical.
+SIDE_FIELDS_V3 = tuple(sorted(SIDE_FIELDS + ("logical_durable_storage_bytes",)))
 RECEIPT_FIELDS = ("code_roots", "eval_report_root", "measurement_policy", "outputs_hash")
 RECEIPT_FIELDS_V1_SIGNED_ERA = (
     "code_roots", "measurement_policy", "outputs_hash", "receipt_hash",
     "signature_key_id", "wrapper_root")
 REPLAY_INPUT_FIELDS = ("candidate_declaration_id", "candidate_exec", "candidate_manifest_hash",
                        "incumbent", "parent_manifest")
+#: v3. ``candidate_module_bytes`` is the UTF-8 length of the submitted miner module —
+#: NON-CONSENSUS TELEMETRY, and the schema says so by construction: nothing compares it, no rule
+#: reads it, no floor bounds it. It is reported because LAW §3A.7 names module footprint as the one
+#: place a candidate can carry per-case specialization WITHOUT paying
+#: ``logical_durable_storage_bytes`` (the logical meter charges sanctioned durable tables only;
+#: modules are bounded solely by the 256 KiB ``MAX_ARTIFACT_BYTES`` admission cap). Metering it
+#: into a protected axis would be unsatisfiable — every real module exceeds the ~1 KB
+#: constructor-genesis wrapper, so nothing could ever dominate that floor — so the law reports it
+#: and lets a reviewer watch it instead. It re-derives from the bound report body, so a verifier
+#: RECOMPUTES it rather than believing it.
+REPLAY_INPUT_FIELDS_V3 = tuple(sorted(REPLAY_INPUT_FIELDS + ("candidate_module_bytes",)))
 INCUMBENT_FIELDS = ("candidate_hash", "exec", "id")
 INCUMBENT_EXACT_FIELDS = INCUMBENT_FIELDS + ("module_sha256", "release_root")
 RESOURCE_ACCOUNTING_FIELDS = ("branch", "resource_after_ppm", "resource_before_ppm",
@@ -874,13 +902,23 @@ def evaluate_counter_resource_law(law: Mapping[str, Any], candidate: Mapping[str
 # --------------------------------------------------------------------------- #
 # Measurement projection (spec §8.1)
 # --------------------------------------------------------------------------- #
-def project_side(side: Mapping[str, Any], where: str, *, logical_storage: bool = False
-                 ) -> Dict[str, Any]:
+def project_side(side: Mapping[str, Any], where: str, *, logical_storage: bool = False,
+                 bind_logical_axis: bool = False) -> Dict[str, Any]:
     """The EXACT micro-integer projection of one Benchmark-v2 measured side.
 
     ``hook_fuel`` / ``hook_compute_fuel`` are surfaced only when non-zero in a receipt (a
     reference/oracle arm has neither), so the projection normalizes an absent axis to ``0`` — the
     artifact schema is closed, and "absent" must not become a second way to say zero.
+
+    ``bind_logical_axis`` projects ``logical_durable_storage_bytes`` as its OWN measured field,
+    alongside the stable ``storage_bytes`` slot. The two are DIFFERENT AXES and this policy
+    measures both (``scoring/measurement_policy.py``: ``storage_bytes`` is the "HISTORICAL-LAW
+    alias for input corpus bytes", ``logical_durable_storage_bytes`` is "the prospective WP-C
+    axis" — candidate-affectable durable state under ``logical-durable-storage.cbor.v1``). The
+    fixed-suite law PROTECTS the logical one: it is a dominance vector component, a floor
+    component and a determinism-witness component. Projecting it makes the decided value and the
+    measured value the same number instead of two numbers nobody compared — see
+    :func:`assert_decided_vectors_are_measured`.
     """
     if not isinstance(side, dict):
         raise ArtifactTypeError(f"{where} must be an object, got {type(side).__name__}")
@@ -899,7 +937,16 @@ def project_side(side: Mapping[str, Any], where: str, *, logical_storage: bool =
     if _check_int(side.get(storage_key), f"{where}.{storage_key}") != storage:
         raise ReceiptBindingError(
             f"{where}: {storage_key} disagrees between the Pareto slot and the resource block")
-    return {
+    logical: Optional[int] = None
+    if bind_logical_axis:
+        logical = _check_int(resource.get("logical_durable_storage_bytes"),
+                             f"{where}.resource.logical_durable_storage_bytes")
+        if _check_int(side.get("logical_durable_storage_bytes"),
+                      f"{where}.logical_durable_storage_bytes") != logical:
+            raise ReceiptBindingError(
+                f"{where}: logical_durable_storage_bytes disagrees between the Pareto slot and "
+                "the resource block")
+    projected = {
         "composite_micro": to_micro(side["composite"], f"{where}.composite"),
         "compute_micro": to_micro(side["compute_ms"], f"{where}.compute_ms"),
         "corpus_supported": _check_int(side["corpus_supported"], f"{where}.corpus_supported"),
@@ -918,6 +965,50 @@ def project_side(side: Mapping[str, Any], where: str, *, logical_storage: bool =
         "store_ops": _check_int(resource["store_ops"], f"{where}.resource.store_ops"),
         "work_fuel": _check_int(resource["work_fuel"], f"{where}.resource.work_fuel"),
     }
+    if logical is not None:
+        projected["logical_durable_storage_bytes"] = logical
+    return projected
+
+
+def candidate_module_bytes(receipt_body: Mapping[str, Any]) -> int:
+    """The submitted miner module's UTF-8 length — NON-CONSENSUS TELEMETRY (LAW §3A.7).
+
+    Zero for a reference/oracle arm, which submits no module. It re-derives from the report body's
+    own bound module source, so a verifier recomputes it rather than believing it — but NOTHING
+    compares it to anything: it is not a vector component, not a protected axis, not a floor
+    component and not a counter-law term. Metering module bytes into a protected axis would be
+    unsatisfiable (every real module dwarfs the ~1 KB constructor-genesis wrapper that sets the
+    floor), so the law reports the footprint and lets a reviewer watch it grow.
+    """
+    candidate = receipt_body.get("candidate")
+    module = candidate.get("module") if isinstance(candidate, Mapping) else None
+    source = module.get("source") if isinstance(module, Mapping) else None
+    if source is None:
+        return 0
+    if isinstance(source, bytes):
+        return len(source)
+    if isinstance(source, str):
+        return len(source.encode("utf-8"))
+    raise ReceiptBindingError(
+        f"candidate.module.source must be text or bytes, got {type(source).__name__}")
+
+
+def projects_logical_storage_axis(receipt_body: Mapping[str, Any]) -> bool:
+    """Does this report's bound law protect ``logical_durable_storage_bytes`` as a vector axis?
+
+    Read off the report's own bound law id, NOT off the measurement policy: the policy measures
+    both storage axes and always did (it names them separately, and every v4 side carries both),
+    while it is the LAW that says which one is a protected dominance component. The fixed-suite
+    law's fixed identities have declared ``storage_axis: logical_durable_storage_bytes`` since the
+    v4 cut; this predicate is what makes the projection agree with that declaration instead of
+    quietly projecting the other axis.
+
+    Walk-era bodies answer False and project exactly the block they always did, so every frozen
+    v1/v2 artifact still reprojects byte-identically.
+    """
+    descriptor = receipt_body.get("evaluation_law")
+    law_id = descriptor.get("law_id") if isinstance(descriptor, Mapping) else None
+    return law_id == FIXED_SUITE_LAW_ID
 
 
 def project_measurements(receipt_body: Mapping[str, Any]) -> Dict[str, Any]:
@@ -927,6 +1018,10 @@ def project_measurements(receipt_body: Mapping[str, Any]) -> Dict[str, Any]:
     # versioned law. Historical receipts retain their input-byte meaning. The frozen CEF law binds
     # canonical logical durable storage, so silently falling back to input bytes is forbidden.
     logical_storage = policy == "final-render-metered.v2"
+    # ...and under the fixed-suite law the logical axis is projected as its OWN field, so the
+    # ``storage_bytes`` slot keeps its documented input-byte meaning and the protected axis stops
+    # being decided-but-unmeasured.
+    bind_logical_axis = projects_logical_storage_axis(receipt_body)
     scores = receipt_body.get("scores")
     if not isinstance(scores, dict):
         raise ReceiptBindingError("receipt body carries no scores object")
@@ -940,9 +1035,11 @@ def project_measurements(receipt_body: Mapping[str, Any]) -> Dict[str, Any]:
                 f"receipt scores[{branch!r}] must be {{candidate, incumbent}}")
         branches[branch] = {
             "candidate": project_side(pair["candidate"], f"scores[{branch}].candidate",
-                                      logical_storage=logical_storage),
+                                      logical_storage=logical_storage,
+                                      bind_logical_axis=bind_logical_axis),
             "incumbent": project_side(pair["incumbent"], f"scores[{branch}].incumbent",
-                                      logical_storage=logical_storage),
+                                      logical_storage=logical_storage,
+                                      bind_logical_axis=bind_logical_axis),
         }
     return {"branches": branches, "micro_scale": MICRO, "policy": policy}
 
@@ -1058,7 +1155,14 @@ def artifact_law(artifact: Any) -> str:
         raise ArtifactSchemaError(str(exc)) from exc
 
 
-def _validate_measurements_block(artifact: Mapping[str, Any]) -> Dict[str, Any]:
+def _validate_measurements_block(artifact: Mapping[str, Any], *,
+                                 fixed_suite_era: bool = False) -> Dict[str, Any]:
+    side_fields = SIDE_FIELDS_V3 if fixed_suite_era else SIDE_FIELDS
+    integer_fields = ("composite_micro", "compute_micro", "corpus_supported",
+                      "events_scanned", "hook_compute_fuel", "hook_fuel", "latency_micro",
+                      "rendered_cost_micro", "storage_bytes", "store_events", "store_ops",
+                      "work_fuel") + (("logical_durable_storage_bytes",)
+                                      if fixed_suite_era else ())
     meas = _check_closed(artifact["measurements"], MEASUREMENT_FIELDS, "measurements")
     _check_str(meas["policy"], "measurements.policy")
     if meas["micro_scale"] != MICRO:
@@ -1070,11 +1174,8 @@ def _validate_measurements_block(artifact: Mapping[str, Any]) -> Dict[str, Any]:
                              f"measurements.branches[{label!r}]")
         for side_name in ("candidate", "incumbent"):
             where = f"measurements.branches[{label!r}].{side_name}"
-            side = _check_closed(pair[side_name], SIDE_FIELDS, where)
-            for field in ("composite_micro", "compute_micro", "corpus_supported",
-                          "events_scanned", "hook_compute_fuel", "hook_fuel", "latency_micro",
-                          "rendered_cost_micro", "storage_bytes", "store_events", "store_ops",
-                          "work_fuel"):
+            side = _check_closed(pair[side_name], side_fields, where)
+            for field in integer_fields:
                 _check_int(side[field], f"{where}.{field}")
             _check_str(side["host_profile"], f"{where}.host_profile")
             objectives = side["objectives_micro"]
@@ -1107,9 +1208,15 @@ def _validate_receipt_block(artifact: Mapping[str, Any], *, signed_era: bool) ->
 
 
 def _validate_replay_inputs_block(artifact: Mapping[str, Any], *,
-                                  signed_era: bool) -> Dict[str, Any]:
+                                  signed_era: bool,
+                                  fixed_suite_era: bool = False) -> Dict[str, Any]:
     roots = artifact["receipt"]["code_roots"]
-    replay = _check_closed(artifact["replay_inputs"], REPLAY_INPUT_FIELDS, "replay_inputs")
+    replay = _check_closed(
+        artifact["replay_inputs"],
+        REPLAY_INPUT_FIELDS_V3 if fixed_suite_era else REPLAY_INPUT_FIELDS, "replay_inputs")
+    if fixed_suite_era:
+        _check_int(replay["candidate_module_bytes"], "replay_inputs.candidate_module_bytes",
+                   minimum=0)
     fr.validate_manifest(replay["parent_manifest"])
     fr.check_root(replay["candidate_manifest_hash"], "replay_inputs.candidate_manifest_hash")
     fr.check_root(replay["candidate_declaration_id"], "replay_inputs.candidate_declaration_id")
@@ -1315,6 +1422,17 @@ def _validate_fixed_suite_blocks(artifact: Mapping[str, Any]) -> None:
         for name, value in hard.items():
             _check_str(name, f"{where}.hard key")
             _check_bool(value, f"{where}.hard[{name!r}]")
+        # THE CLOSED EIGHT-NAME VOCABULARY. This used to accept any non-empty map whose values
+        # rolled up consistently with ``hard_ok``, which is exactly the forgery a compromised
+        # minter reaches for: drop the gates that failed and state the rest true. The names are
+        # the law's, not the report's — a missing gate is a REFUSAL, never an unchecked one.
+        if tuple(sorted(hard)) != cs.HARD_GATE_VOCABULARY:
+            unknown = sorted(set(hard) - set(cs.HARD_GATE_VOCABULARY))
+            missing = sorted(set(cs.HARD_GATE_VOCABULARY) - set(hard))
+            raise ArtifactSchemaError(
+                f"{where}.hard names {sorted(hard)}; this law's hard-gate vocabulary is the "
+                f"closed set {list(cs.HARD_GATE_VOCABULARY)} (unknown={unknown}, "
+                f"missing={missing})")
         for field in ("composite_after_ppm", "composite_before_ppm"):
             _check_int(part[field], f"{where}.{field}", maximum=MAX_UINT32)
         gain = part["composite_gain_ppm"]
@@ -1465,9 +1583,9 @@ def validate_artifact(artifact: Any) -> Dict[str, Any]:
 
     if fixed_suite_era:
         _validate_fixed_suite_blocks(artifact)
-        _validate_measurements_block(artifact)
+        _validate_measurements_block(artifact, fixed_suite_era=True)
         _validate_receipt_block(artifact, signed_era=False)
-        _validate_replay_inputs_block(artifact, signed_era=False)
+        _validate_replay_inputs_block(artifact, signed_era=False, fixed_suite_era=True)
         _validate_accounting_and_verdict(artifact)
         pub.validate_availability(artifact["availability"])
         if "canary" in artifact:
@@ -2168,10 +2286,11 @@ def _vector_from_verdict(verdict: Mapping[str, Any], side: str, label: str) -> D
 
 
 #: The components of an ABSOLUTE VECTOR that :func:`project_measurements` also measures, so the
-#: decided vector and the measured one can be compared field for field.
-#: ``logical_durable_storage_bytes`` is deliberately ABSENT — see
-#: :func:`assert_decided_vectors_are_measured`.
-MEASURABLE_VECTOR_FIELDS = ("composite_micro", "rendered_cost_micro", "work_fuel")
+#: decided vector and the measured one can be compared field for field. ALL FIVE components of
+#: LAW §3A.2 are covered: the three scalars, the objectives map (compared separately, by name),
+#: and — since the logical axis became a projected field — ``logical_durable_storage_bytes``.
+MEASURABLE_VECTOR_FIELDS = ("composite_micro", "logical_durable_storage_bytes",
+                            "rendered_cost_micro", "work_fuel")
 
 
 def assert_decided_vectors_are_measured(dominance: Mapping[str, Any],
@@ -2194,16 +2313,21 @@ def assert_decided_vectors_are_measured(dominance: Mapping[str, Any],
     Only benchmark-side receipt recomputation or a full sandbox replay would have caught it, and
     the V5 artifact layer runs neither.
 
-    WHY THREE SCALARS AND THE OBJECTIVES, NOT ALL FIVE COMPONENTS.
-    ``logical_durable_storage_bytes`` is NOT in the projection under
-    ``final-render-trusted-hostwork.v4``: :func:`project_side` fills the artifact's stable
-    ``storage_bytes`` slot from the raw input-byte axis for that policy (the logical axis is
-    selected only by ``final-render-metered.v2``), so there is no projected value to compare it
-    against here. It stays covered by the witness/bridge chain — the stored vector carries it, the
-    re-executed parent arm must reproduce it, and the published bridge document must publish it —
-    which binds the incumbent side directly and the candidate side at the next accept. Closing
-    that last gap properly means projecting the logical axis for this policy too, which is a
-    MEASUREMENT-LAW change and belongs to a law cut, not to a verifier.
+    ALL FIVE COMPONENTS ARE COVERED — and the fifth was the last gap. For one revision this
+    function compared four (the three scalars plus the objectives) and NAMED the one it could
+    not: ``logical_durable_storage_bytes`` was decided on, floor-compared and witnessed, but the
+    projection did not carry it, because :func:`project_side` filled the artifact's stable
+    ``storage_bytes`` slot from the raw input-byte axis and stopped there. The two are DIFFERENT
+    AXES that ``final-render-trusted-hostwork.v4`` has always measured separately, and the v4
+    law's own fixed identities have always declared ``storage_axis:
+    logical_durable_storage_bytes`` — so the projection, not the policy, was the thing out of
+    step. It now projects the logical axis as its own field and this comparison covers it, which
+    makes decided == measured == witnessed == counter-metered, one value.
+
+    The witness/bridge chain still carries it too, and that redundancy is deliberate: the witness
+    binds the INCUMBENT side against a published document measured on another run, this check
+    binds BOTH sides against the report's own raw scores, and neither is a restatement of the
+    other.
     """
     for label in SELECTION_LABELS:
         for side, key in (("candidate", "candidate_vector"), ("incumbent", "incumbent_vector")):
@@ -2384,6 +2508,7 @@ def build_artifact_v3(*, epoch: int, parent_manifest: Mapping[str, Any], epoch_p
             "candidate_declaration_id": body["candidate"]["declaration_id"],
             "candidate_exec": body["candidate"]["exec"],
             "candidate_manifest_hash": body["candidate"]["manifest_hash"],
+            "candidate_module_bytes": candidate_module_bytes(body),
             "incumbent": project_incumbent(body["incumbent"]),
             "parent_manifest": dict(parent_manifest),
         },
@@ -2923,6 +3048,14 @@ def verify_artifact(artifact: Mapping[str, Any], *, expected_parent_root: str,
              "receipt candidate declaration_id != replay_inputs.candidate_declaration_id")
     _require(body["candidate"]["exec"] == artifact["replay_inputs"]["candidate_exec"],
              ReceiptBindingError, "receipt candidate exec != replay_inputs.candidate_exec")
+    if fixed_suite:
+        # NON-CONSENSUS TELEMETRY, still RECOMPUTED rather than believed (LAW §3A.7). It decides
+        # nothing; what it must not become is a number the artifact can quietly restate, because
+        # the whole reason it is reported is so a reviewer can watch module footprint grow.
+        _require(candidate_module_bytes(body)
+                 == artifact["replay_inputs"]["candidate_module_bytes"], ReceiptBindingError,
+                 "replay_inputs.candidate_module_bytes does not recompute from the bound report's "
+                 "own module source")
     inc_bound = artifact["replay_inputs"]["incumbent"]
     _require(project_incumbent(body["incumbent"]) == inc_bound, ReceiptBindingError,
              "receipt incumbent identity != replay_inputs.incumbent")
@@ -3056,13 +3189,14 @@ def verify_artifact(artifact: Mapping[str, Any], *, expected_parent_root: str,
     # Only benchmark-side receipt recomputation or a full sandbox replay would have caught it,
     # neither of which the V5 artifact layer runs.
     #
-    # WHY FOUR COMPONENTS AND NOT FIVE. ``logical_durable_storage_bytes`` is NOT in the projection
-    # under ``final-render-trusted-hostwork.v4``: ``project_side`` fills the artifact's stable
-    # ``storage_bytes`` slot from the raw input-byte axis for this policy (the logical axis is
-    # selected only by ``final-render-metered.v2``), so there is no projected value to compare it
-    # against here. It stays covered by the witness/bridge chain — the stored vector carries it,
-    # the re-executed parent arm must reproduce it, and the published bridge document must publish
-    # it — which binds the incumbent side and, on the next accept, the candidate side too.
+    # ALL FIVE COMPONENTS, INCLUDING THE STORAGE AXIS. ``logical_durable_storage_bytes`` used to
+    # be decided-but-unprojected under ``final-render-trusted-hostwork.v4`` — ``project_side``
+    # filled the artifact's stable ``storage_bytes`` slot from the raw input-byte axis and carried
+    # the logical axis nowhere — so the one protected axis a memorising candidate would inflate
+    # was the one this comparison could not see. The v4 policy measures both axes and the v4 law
+    # declares the logical one as its ``storage_axis``; the projection now carries it as its own
+    # field and this check covers it. The witness/bridge chain still binds the incumbent side
+    # independently, which is redundancy on purpose, not a restatement.
     if fixed_suite:
         assert_decided_vectors_are_measured(artifact["dominance"], projected)
         done("decided_vectors_are_measured")

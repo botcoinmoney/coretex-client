@@ -5,11 +5,11 @@ Public validator for the live CoreTex descriptor-v3 rig on Base.
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-pip install https://github.com/botcoinmoney/coretex-client/releases/download/v0.4.4/coretex_validator-0.4.4-py3-none-any.whl
+pip install https://github.com/botcoinmoney/coretex-client/releases/download/v0.5.0/coretex_validator-0.5.0-py3-none-any.whl
 coretex-validator setup
 ```
 
-> The install line names **v0.4.4**, the release this repository builds. Until that release's
+> The install line names **v0.5.0**, the release this repository builds. Until that release's
 > assets are published the URL 404s; `python/reproduce.sh` builds the identical wheel from
 > committed source, and is the authority either way — the published asset is that build, not a
 > separate artifact.
@@ -66,18 +66,23 @@ canonical serialisation the root names. That matters for the float-bearing
 
 Zero runtime dependencies. See [docs/V5-RIG-VALIDATOR.md](docs/V5-RIG-VALIDATOR.md).
 
-Version 0.4.4 verifies exact-parent replay: artifacts carry the incumbent's release root and module
-SHA-256, and the validator independently fetches and re-hashes those bytes from the public CAS
-before the pinned sandbox runs. It also removes what a clean machine still had to be handed first.
-`setup` discovers the deployment's publication root and installs the admission law, so
-deterministic admission runs instead of backlogging; `replay-latest` replays the newest confirmed
-advance without being told which one; `preview-current-parent` scores a candidate against the live
-parent; `verify-receipt` resolves the exact parent's execution itself rather than demanding it.
-There is no longer a default publication root: a rehearsal root pinned by default is a validator
-that reports a verified cache for the wrong law. 0.4.4 adds the last thing a clean machine still
-had to be handed out of band: the compatibility lock is fetched from the coordinator's public
-object route, re-addressed here under its domain-separated Keccak rule, cached under its root by
-`setup` and consumed from that cache by descriptor-v3 snapshot reproduction.
+Version 0.5.0 replays the FIXED-SUITE era. `coretex.memory-eval-artifact.v3` is a different
+artifact shape from v1/v2 — it drops the entropy and selection-walk blocks and adds the canonical
+suite, the determinism witness, the genesis floor and the componentwise dominance block — and a
+validator that cannot read it cannot replay any advance made under the current law. 0.5.0 reads it,
+recomputes the componentwise decision, resolves the determinism witness to the published document
+that backs it, and stops trusting the coordinator on `worldSeed` (it derives the value and compares).
+
+It carries forward everything 0.4.4 established: exact-parent replay (artifacts carry the
+incumbent's release root and module SHA-256, and the validator independently fetches and re-hashes
+those bytes from the public CAS before the pinned sandbox runs); `setup` discovering the
+deployment's publication root and installing the admission law, so deterministic admission runs
+instead of backlogging; `replay-latest`; `preview-current-parent`; `verify-receipt` resolving the
+exact parent's execution itself. There is no default publication root: a rehearsal root pinned by
+default is a validator that reports a verified cache for the wrong law. The compatibility lock is
+fetched from the coordinator's public object route, re-addressed here under its domain-separated
+Keccak rule, cached under its root by `setup` and consumed from that cache by descriptor-v3
+snapshot reproduction.
 
 **Two publications, not one, and `setup` fetches both.** The law publication seals seven code
 roots — five `benchmark-v2` subtrees, `coretex-memory`, and the candidate-isolation posture FILE.
@@ -92,9 +97,11 @@ retired lane's and no live command consults them.
 one miner-kit tar and an explicit law-publication root. Missing components and a publication
 without the posture file are refused rather than installed partially.
 
-**One canonical validator release.** 0.4.4 is the validator this repository builds and the only
-current production release; there is no supported prior/current version split. The deployment byte
-authority is `GET /coretex/v5/status` → `productionRelease.validatorWheel`: that tuple names the
-exact wheel, version and sha256 the coordinator will hand you, parsed from the bytes it serves. A
-deployment is on the canonical release only when that tuple names the canonical 0.4.4 artifact;
-documentation, tags and a local cache are not substitutes for those served bytes.
+**One canonical validator release.** 0.5.0 is the validator this repository builds and the only
+current production release; there is no supported prior/current version split. Earlier versions are
+not alternatives — 0.4.4 and before cannot read `coretex.memory-eval-artifact.v3` at all, so they
+cannot replay an advance made under the current law. The deployment byte authority is
+`GET /coretex/v5/status` → `productionRelease.validatorWheel`: that tuple names the exact wheel,
+version and sha256 the coordinator will hand you, parsed from the bytes it serves. A deployment is
+on the canonical release only when that tuple names the canonical 0.5.0 artifact; documentation,
+tags and a local cache are not substitutes for those served bytes.

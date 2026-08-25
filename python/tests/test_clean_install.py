@@ -197,6 +197,18 @@ def test_the_counter_resource_law_ships_with_the_package():
         f"the law did load, but not from {PACKAGE_DIR} — the package under test is not the one "
         "this test located")
 
+    # BOTH ERAS SHIP. Every artifact minted before the fixed-suite cut binds the walk-era document
+    # by root; prior eras are never reinterpreted, so replaying published history from a clean
+    # install needs those exact bytes too. A wheel carrying only the current law can verify the
+    # present and not the past, which is a partial validator wearing a complete one's name.
+    walk_era = ea.load_counter_resource_law(ea.WALK_ERA_COUNTER_RESOURCE_LAW_PATH)
+    assert walk_era["format"] == "coretex.counter-resource-law.v1"
+    assert (PACKAGE_DIR / "COUNTER_RESOURCE_LAW.walk-era.v1.json").is_file()
+    assert ea.counter_resource_law_root(walk_era) != ea.counter_resource_law_root(law)
+
+    # The vendoring manifest ships too, or the offline drift check cannot run on an installed wheel.
+    assert (PACKAGE_DIR / "LAW-SYNC.v1.json").is_file()
+
 
 def test_the_exact_parent_authority_ships_with_the_package():
     """Historical replay authority is data and must not depend on a sibling source checkout."""

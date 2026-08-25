@@ -15,8 +15,12 @@
     coretex-validator replay-advance --logs F --artifacts DIR   confirmed advances from a feed file
     coretex-validator verify-receipt RECEIPT.json         Benchmark-v2 receipt replay
     coretex-validator preview-current-parent MODULE.py    OPTIONAL miner aid: score a candidate
-        --manifest M.json --profile P --parent-root ROOT  against the CURRENT confirmed parent on
-                                                          PUBLIC dev cases (never an admission)
+        --manifest M.json --profile P --parent-root ROOT  against the CURRENT confirmed parent.
+                                                          Under the fixed-suite law it scores the
+                                                          LAW'S OWN exam and predicts the verdict;
+                                                          under the retired walk law it scored
+                                                          public dev cases and predicted nothing.
+                                                          Read `lawEra` in the report.
     coretex-validator topics                              the dispatch table, V4 and rig
     coretex-validator selftest                            keccak/ecrecover/canonical-JSON vectors
 
@@ -907,7 +911,16 @@ def _cmd_verify_receipt(args: argparse.Namespace) -> int:
 
 
 def _cmd_preview_current_parent(args: argparse.Namespace) -> int:
-    """Score a candidate against the CURRENT confirmed parent, on public dev cases only.
+    """Score a candidate against the CURRENT confirmed parent, under whichever law is pinned.
+
+    WHAT THIS PREDICTS IS ERA-DEPENDENT, and the report says which era it used (``lawEra``).
+    Under the RETIRED walk law the official evaluation re-drew cases from future entropy, so this
+    scored the kit's public dev cases, ``predictsAdmission`` was a hard ``false``, and the number
+    was a sanity check. Under the CURRENT fixed-suite law the exam is the immutable public
+    canonical suite and the rule is componentwise dominance over the exact parent plus the genesis
+    floor, with no input from any secret, the candidate id, the rig or the author — so this scores
+    THE SAME CASES the adjudicator scores and ``predictsDeterministicAdmission`` is ``true``. What
+    it still cannot predict is the chain race and the adjudicating host's own hard prerequisites.
 
     WHY THE EXIT CODES LOOK LIKE THIS. Losing to the live parent is the single most useful thing
     this command can tell a miner, so it is exit 0 — the same as winning. Non-zero means the

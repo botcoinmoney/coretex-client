@@ -166,7 +166,12 @@ class Scenario:
             gate_entropy=self.gate_entropy, confirm_entropy=self.confirm_entropy,
             gate_cases=self.cases["gate"], confirm_cases=self.cases["confirm"], admit=admit,
             candidate_hash=candidate_hash, **receipt_kwargs)
-        self.law = ea.load_counter_resource_law()
+        # walk-era artifact -> the walk-era counter law. The fixed-suite cut moved the CURRENT
+        # document's storage term onto `resource.logical_durable_storage_bytes`, which a walk-era
+        # measured side does not carry; prior eras are never reinterpreted (LAW 3A.6), so a
+        # walk-era fixture resolves the preserved document by path exactly as a replay resolves
+        # it by root.
+        self.law = ea.load_counter_resource_law(ea.WALK_ERA_COUNTER_RESOURCE_LAW_PATH)
         self.parts = {"parent": self.parent, "law": self.law, "wrapper": self.wrapper}
         self.availability = publish_required(self.parts, self.store)
         self.artifact = ea.build_artifact(

@@ -31,9 +31,17 @@ FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures")
 CAS = os.path.join(FIXTURES, "v3-cas")
 BRIDGE = os.path.join(FIXTURES, "bridge-vector.event.schema.genesis.json")
 
-ARTIFACT_ROOT = "b56b8d24307f3448d5c434e84d299e271aa694f5f43592f8481b9f73acb5f3c7"
-REPORT_ROOT = "869feaf443d599b0c49be95645c6d3a1ae6eb14096db923b3a1486fb3e15d591"
-WITNESS_SOURCE_ROOT = "60dc89e29888ef34de7f4eff617cb4edb8472a7469a34bf10cb2219b9aa2730b"
+#: RE-SEEDED at the remediation-round-2 re-seal. The previous fixture
+#: (`b56b8d24…` / report `869feaf4…` / witness source `60dc89e2…`) was minted under the FIRST
+#: fixed-suite seal and is superseded: the law cut that followed bound `logical_durable_storage_
+#: bytes` as a measured field and added the `candidate_module_bytes` telemetry, so a pre-cut v3
+#: artifact no longer satisfies the closed v3 schema. These objects are the RIG-BEARING artifact a
+#: real `eval.candidate.v2` job minted against the final seal, copied verbatim out of the
+#: evaluator's own content-addressed store — so the fixture is still a real artifact rather than a
+#: synthesised one, and it is now one a consumer can actually receive.
+ARTIFACT_ROOT = "ff73475c723853797e6cbee37e5a6dd9cd8ff31438ea0974f20bfcca27b4e51b"
+REPORT_ROOT = "9b05cdeceabe18efb56fab0bd5e7b71bdb6a96d9669f784376281c4668c4a9a0"
+WITNESS_SOURCE_ROOT = "b6e9004e168f0f36458289d6baa758b8bcd247a407389f07e77ce4bd321c8980"
 SUITE_ROOT = "dbb6582dca25d466c6eda4a0c5d30bf29437f74068531a7ee272b9a6462c410e"
 
 #: The rehearsal opening the shadow run committed to. `world_seed` is a pure function of it, and

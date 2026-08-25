@@ -1861,23 +1861,38 @@ def _beat_incumbent(artifact: Mapping[str, Any], parent_manifest: Mapping[str, A
     """Confirm the candidate beat THE EXACT PARENT INCUMBENT under the frozen law.
 
     "Exact" is load-bearing: the incumbent is the release the PARENT frontier serves for the
-    target profile at this parent root — not the current champion, not the profile's default, not
+    target profile at this parent root — not the current head, not the profile's default, not
     whatever the receipt happened to name. The receipt's incumbent identity is checked against it,
     and the admission floor (utility strictly improves by >= 1 ppm, ppm bounded, resource ppm
     non-zero, incumbent side == exactly 1_000_000 ppm) is enforced here.
 
-    WHERE THAT FLOOR IS ACTUALLY ENFORCED (§10 rig era). NOWHERE ON CHAIN. These refusals used to
-    cite ``InvalidUtilityScore`` and ``InvalidResourceScore`` as contract reverts; both are errors
-    of the RETIRED ``CoreTexMemoryMining`` (``:414`` and ``:416``) and neither appears anywhere in
-    ``BotcoinMiningRigsV1`` or ``RigCoreTexStateRegistry``. The rig mining contract takes
-    ``scoreBeforePpm`` / ``scoreAfterPpm`` into the EIP-712 digest (``:73``, ``:895-896``) and
-    validates neither: no range check, no improvement check, no zero check, and no ``_validateScores``.
+    WHERE THAT FLOOR IS ACTUALLY ENFORCED (§10 rig era). THE TWO HALVES SIT IN DIFFERENT PLACES,
+    and an earlier revision of this docstring got it flatly wrong by saying "NOWHERE ON CHAIN".
 
-    The behaviour here is unchanged and remains the conservative one — the floor is enforced, so a
-    candidate that would fail it is refused. What changes is the CLAIM: an auditor reading this was
-    told the chain would reject such a receipt, and it would not. The refusal reasons now say
-    "OFF-CHAIN admission rule" because that is what they are, and this validator plus the
-    coordinator's pre-sign checks are the ONLY places the floor exists.
+    * **The scalar improvement rule IS enforced on chain.**
+      ``RigCoreTexVerifier._validateStateAdvanceReceipt`` calls
+      ``_requireStrictImprovement(r.scoreBeforePpm, r.scoreAfterPpm, 1)``, which reverts
+      ``InvalidCoreTexScore`` unless both values are within ``MAX_SCORE_PPM`` and
+      ``scoreAfterPpm > scoreBeforePpm`` by at least 1 ppm. So a receipt that failed the utility
+      floor would NOT confirm. What is true — and is what the earlier text was reaching for — is
+      that the errors this code used to cite, ``InvalidUtilityScore`` and ``InvalidResourceScore``,
+      are errors of the RETIRED ``CoreTexMemoryMining`` and appear nowhere in the rig contracts;
+      the rig rule is one error with a different name, enforced from the SIGNED score members and
+      from nothing else (a descriptor copy of ``scoreDeltaPpm`` was deliberately removed, because
+      a copy of a chain-bound value cannot make a rule stricter — it can only let two legible
+      facts disagree).
+
+    * **Everything else is OFF CHAIN.** The chain sees two uint32 scalars and checks that one
+      exceeds the other. It does not see, and cannot check, the componentwise rule that actually
+      decides admission: per-objective no-regression, per-protected-resource-axis no-regression,
+      both suite partitions, the genesis floor, the exact-parent identity, or the aggregate
+      counter-resource rule below. Those exist HERE, in the coordinator's pre-sign checks, and in
+      the sealed benchmark law — nowhere else. A refusal whose reason says "OFF-CHAIN admission
+      rule" means exactly that, and the ones that do are the resource-side and aggregate rules,
+      not the utility scalar.
+
+    The behaviour is unchanged either way and remains the conservative one: the whole floor is
+    enforced here, so a candidate that would fail any part of it is refused.
     """
     prior = parent_manifest["profiles"][target_profile]
     if artifact["candidate"]["prior_release_root"] != prior:

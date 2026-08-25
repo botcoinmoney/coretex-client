@@ -140,6 +140,17 @@ COUNTER_LAW_RELPATH = "v5/COUNTER_RESOURCE_LAW.v1.json"
 _COUNTER_LAW_PACKAGE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                          "COUNTER_RESOURCE_LAW.v1.json")
 
+#: The SUPERSEDED walk-era counter law, installed beside the current one. Every artifact minted
+#: before the fixed-suite cut binds it BY ROOT
+#: (``049fe98ec08a3a47e2bf4582afa70ad45506a465584f3cec1a53286617c7b207``), so replaying published
+#: HISTORY needs these exact bytes reachable, and the current document is not a substitute for
+#: them: the two differ in the storage term's ``source`` and therefore hash differently and price
+#: differently. Prior eras are never reinterpreted (LAW §3A.6); nothing new is ever minted against
+#: it. Installed as a COMPANION for the same reason as the current one — it is not a sealed root.
+WALK_ERA_COUNTER_LAW_RELPATH = "v5/COUNTER_RESOURCE_LAW.walk-era.v1.json"
+_WALK_ERA_COUNTER_LAW_PACKAGE_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "COUNTER_RESOURCE_LAW.walk-era.v1.json")
+
 #: The canonical suite's path inside the sealed ``validator`` tree — a MEMBER of a sealed root, so
 #: it arrives with that tree and is addressed by the root a receipt's ``code_roots`` binds.
 CANONICAL_SUITE_RELPATH = "benchmark-v2/validator/CANONICAL-SUITE.v1.json"
@@ -1021,6 +1032,39 @@ def find_cache(*, cache_dir: Optional[str] = None,
 # --------------------------------------------------------------------------- #
 # sync-law
 # --------------------------------------------------------------------------- #
+
+
+def _install_counter_law_companion(companion: list, publication_root: str, files, relpath: str,
+                                   package_path: str) -> None:
+    """Record ONE counter-resource-law document as a companion, or refuse a path collision.
+
+    Factored out because there are now two of these — the current law and the preserved walk-era
+    one — and a second hand-rolled copy of the collision check is exactly how one of them would
+    quietly lose it.
+    """
+    try:
+        with open(package_path, "rb") as fh:
+            data = fh.read()
+    except OSError:                                            # pragma: no cover - packaging fault
+        return
+    if not data:                                               # pragma: no cover - packaging fault
+        return
+    # A COMPANION MAY NEVER LAND ON A PUBLISHED PATH. `_materialize` writes companions LAST, so a
+    # publication that declared a sealed single file at this path would be silently overwritten by
+    # the wheel's copy — and the cache would then fail `verify()` on every load, permanently, with
+    # `sync-law` unable to repair it. Refusing here costs nothing and the collision is a law change
+    # worth noticing.
+    if relpath in files:
+        raise LawVerifyError(
+            f"publication {publication_root} publishes a sealed single file at "
+            f"{relpath}, which is where this validator installs a companion "
+            "counter-resource-law record. Two documents cannot own one path: the publication "
+            "now carries this record itself, so the companion must be retired rather than "
+            "written over it")
+    companion.append({"install_to": relpath, "data": data, "root": _sha256(data),
+                      "source": "wheel package data"})
+
+
 def sync_law(publication_root: str, *, mirror: str,
              cache_dir: Optional[str] = None, force: bool = False,
              timeout: float = 30.0, retries: int = 3,
@@ -1126,31 +1170,21 @@ def sync_law(publication_root: str, *, mirror: str,
     # where it matters. It is recorded as a COMPANION, never among the sealed roots, because it was
     # not fetched from the publication and must not be read as if it had been.
     #
+    # TWO of them are installed, not one. The fixed-suite cut moved the current document's storage
+    # term onto the axis it had always NAMED, which changed its bytes and therefore its root. Every
+    # artifact minted before that cut binds the PREVIOUS document by root, and prior eras are never
+    # reinterpreted (LAW §3A.6) — so `v5/COUNTER_RESOURCE_LAW.walk-era.v1.json` is installed beside
+    # the current one and published history keeps resolving offline. Nothing new mints against it.
+    #
     # The canonical suite needs no companion: it is a MEMBER of the sealed `validator` tree, so it
     # arrives addressed by the root a receipt's `code_roots` binds. Its sha256 is recorded so a
     # caller can install those exact bytes into `canonical_suite` rather than deciding against
     # whatever this wheel happened to be built with.
     companion: list = []
-    try:
-        with open(_COUNTER_LAW_PACKAGE_PATH, "rb") as fh:
-            counter_law_bytes = fh.read()
-    except OSError:                                            # pragma: no cover - packaging fault
-        counter_law_bytes = None
-    if counter_law_bytes:
-        # A COMPANION MAY NEVER LAND ON A PUBLISHED PATH. `_materialize` writes companions LAST, so
-        # a publication that declared a sealed single file at this path would be silently
-        # overwritten by the wheel's copy — and the cache would then fail `verify()` on every load,
-        # permanently, with `sync-law` unable to repair it. Refusing here costs nothing and the
-        # collision is a law change worth noticing.
-        if COUNTER_LAW_RELPATH in files:
-            raise LawVerifyError(
-                f"publication {publication_root} publishes a sealed single file at "
-                f"{COUNTER_LAW_RELPATH}, which is where this validator installs its companion "
-                "counter-resource-law record. Two documents cannot own one path: the publication "
-                "now carries this record itself, so the companion must be retired rather than "
-                "written over it")
-        companion.append({"install_to": COUNTER_LAW_RELPATH, "data": counter_law_bytes,
-                          "root": _sha256(counter_law_bytes), "source": "wheel package data"})
+    for relpath, package_path in ((COUNTER_LAW_RELPATH, _COUNTER_LAW_PACKAGE_PATH),
+                                  (WALK_ERA_COUNTER_LAW_RELPATH,
+                                   _WALK_ERA_COUNTER_LAW_PACKAGE_PATH)):
+        _install_counter_law_companion(companion, publication_root, files, relpath, package_path)
     suite_root = None
     for item in verified:
         if item["extract_to"] == "benchmark-v2/validator":
