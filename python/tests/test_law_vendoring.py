@@ -20,7 +20,7 @@ WHAT THIS TEST CAN AND CANNOT PROVE, stated plainly because the distinction is t
 It runs OFFLINE — the canonical tree is private and absent on a public machine — so it proves the
 vendored tree still matches its RECORDED PROVENANCE (``coretex_validator/LAW-SYNC.v1.json``). It
 does NOT prove the recorded provenance is current. That second half is
-``tools/check_law_sync.py --canonical <canonical tree>``, a standing obligation of every law cut,
+``python -m coretex_validator.law_sync --canonical <canonical tree>``, a standing obligation of every law cut,
 and :func:`test_the_manifest_names_the_canonical_commit_it_was_generated_from` keeps the provenance
 legible so a reviewer can tell at a glance which canonical commit these pins came from.
 """
@@ -28,15 +28,10 @@ from __future__ import annotations
 
 import json
 import os
-import sys
 
 import pytest
 
-TOOLS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools")
-if TOOLS not in sys.path:
-    sys.path.insert(0, TOOLS)
-
-import check_law_sync as sync                                          # noqa: E402
+from coretex_validator import law_sync as sync
 
 
 @pytest.fixture(scope="module")
@@ -51,7 +46,7 @@ def test_the_vendored_law_tree_matches_its_recorded_provenance(manifest):
         "the vendored law tree has drifted from LAW-SYNC.v1.json:\n  "
         + "\n  ".join(problems)
         + "\n\nFix by RE-VENDORING from the canonical tree and regenerating the manifest "
-          "(tools/check_law_sync.py --write --canonical <tree>), never by editing a pin.")
+          "(python -m coretex_validator.law_sync --write --canonical <tree>), never by editing a pin.")
 
 
 def test_every_vendored_document_is_pinned_and_present(manifest):

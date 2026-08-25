@@ -1,0 +1,55 @@
+{
+  "format": "coretex.memory-suite-bridge-vector.v1",
+  "law_id": "benchmark-v2-law/dominance-fixed-suite-2026-08-25.v4",
+  "measured_by": {
+    "evidence": "ever-improving-run-20260825/r2/m-event/vector-event-c8585724.json",
+    "exec": "reference",
+    "image_git_commit": "e6da2ce09a2e9e5c4260ae5fe04b75b499c75542",
+    "image_target": "coretex-memory-evaluator",
+    "measurement_policy": "final-render-trusted-hostwork.v4",
+    "module_sha256": "c64131b508553d43631324da8c9d8cf9f6c3947da87f4707cd2c9f6c9a63d20d",
+    "phase": "R2-bridge",
+    "run": "ever-improving-invariant-cut/r2"
+  },
+  "partitions": {
+    "confirm": {
+      "composite_micro": 66776250,
+      "logical_durable_storage_bytes": 1599914,
+      "objectives_micro": {
+        "abstention": 81692500,
+        "asof_correctness": 86718750,
+        "conflict_supersession": 91015000,
+        "evidence_support": 90625000,
+        "exact_lookup": 34375000,
+        "join_completeness": 44141250,
+        "multihop_completeness": 36111250,
+        "provenance_citations": 62151250,
+        "retraction_disclosure": 86251250,
+        "schema_evolution": 54686250
+      },
+      "rendered_cost_micro": 141957500,
+      "work_fuel": 3905666
+    },
+    "gate": {
+      "composite_micro": 66892500,
+      "logical_durable_storage_bytes": 1558500,
+      "objectives_micro": {
+        "abstention": 80887500,
+        "asof_correctness": 78907500,
+        "conflict_supersession": 90622500,
+        "evidence_support": 89062500,
+        "exact_lookup": 42187500,
+        "join_completeness": 45312500,
+        "multihop_completeness": 35415000,
+        "provenance_citations": 61317500,
+        "retraction_disclosure": 87917500,
+        "schema_evolution": 57292500
+      },
+      "rendered_cost_micro": 141467500,
+      "work_fuel": 1939475
+    }
+  },
+  "profile_id": "event.schema.v1",
+  "release_root": "c85857242b434cec35ae2cb0b67bd33f96d1f0f425bc6265fec3758321e98ce5",
+  "suite_root": "dbb6582dca25d466c6eda4a0c5d30bf29437f74068531a7ee272b9a6462c410e"
+}

@@ -39,6 +39,11 @@ THE TWO MODES, AND WHAT EACH ACTUALLY PROVES.
 the only way to change a pinned value: a divergence is resolved by re-vendoring and regenerating,
 never by editing the pin to match whatever the wheel currently holds.
 
+THIS MODULE SHIPS INSIDE THE WHEEL, and that is the point rather than a convenience: the check must
+be runnable against an INSTALLED package on a machine that has no checkout, because "the wheel you
+actually installed still carries the law it claims" is the property a third-party validator needs
+and a source-tree-only script cannot give. Run it as ``python -m coretex_validator.law_sync``.
+
 Constants are read by IMPORTING both modules rather than by parsing them, because several of the
 field sets are derived (``SIDE_FIELDS_V3 = tuple(sorted(SIDE_FIELDS + (...)))``) and a parser that
 understood only literals would silently record nothing for exactly the entries that drifted.
@@ -55,8 +60,7 @@ import subprocess
 import sys
 from typing import Any, Dict, List, Tuple
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-PACKAGE_DIR = os.path.join(os.path.dirname(HERE), "coretex_validator")
+PACKAGE_DIR = os.path.dirname(os.path.abspath(__file__))
 MANIFEST_PATH = os.path.join(PACKAGE_DIR, "LAW-SYNC.v1.json")
 
 MANIFEST_FORMAT = "coretex.client-law-vendoring/v1"
@@ -168,19 +172,12 @@ def _normalize(value: Any) -> Any:
 
 
 def _import_client_module(name: str):
-    """Import a vendored module, preferring an INSTALLED ``coretex_validator`` if one is present.
+    """Import a vendored module from the SAME distribution this module was loaded from.
 
-    Falling back to the source tree beside this script is what lets the check run from a checkout
-    (and from ``--write``) without an install; it is a fallback rather than the default so that a
-    clean-install run really does check the installed wheel's bytes.
+    Not by path: by name, so an installed wheel checks the installed wheel's bytes and a checkout
+    checks the checkout's, and neither can accidentally validate the other one's law.
     """
-    try:
-        return importlib.import_module(name)
-    except ModuleNotFoundError:
-        source_root = os.path.dirname(PACKAGE_DIR)
-        if source_root not in sys.path:
-            sys.path.insert(0, source_root)
-        return importlib.import_module(name)
+    return importlib.import_module(name)
 
 
 def _import_canonical_module(canonical_root: str, relpath: str):
