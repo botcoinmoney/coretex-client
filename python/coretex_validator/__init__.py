@@ -104,4 +104,38 @@ __all__ = [
 #:   * descriptor-v3 snapshot reproduction consumes that verified fetch: the cached lock is read
 #:     from the artifacts directory rather than seeded by hand, so a clean machine reproduces a
 #:     published snapshot without being trusted to supply the lock itself.
-__version__ = "0.4.4"
+#:
+#: 0.5.0 replays the FIXED-SUITE ERA — Benchmark-v2 law
+#: ``benchmark-v2-law/dominance-fixed-suite-2026-08-25.v4`` and artifact family
+#: ``coretex.memory-eval-artifact.v3``. Under it, admission stopped being "beat the incumbent on a
+#: paper drawn from the epoch secret" and became componentwise dominance over the exact parent, on
+#: one immutable public exam, plus a law-bound constructor-genesis floor. Every v1/v2 artifact keeps
+#: its bytes, its ``evalReportHash`` and its verification path; the eras are dispatched from the
+#: artifact's own ``format``, never from this client's configuration.
+#:   * ``verify_artifact`` gains the v3 era: canonical-suite MEMBERSHIP replaces walk re-derivation,
+#:     the genesis floor and the dominance block are recomputed from the artifact's own bound
+#:     vectors, the dominance block must DERIVE from the addressed report's verdicts, the decided
+#:     vectors must equal the measured ones, and the exact parent's stored vector must be the one
+#:     the parent arm re-executed here produced.
+#:   * ``resolve_witness_source=True`` (public replay always passes it) fetches the object the
+#:     determinism witness names — a published bridge-vector document, or the accepting v3 artifact
+#:     — so the stored parent vector is provenance rather than a number. Unpublished is a BACKLOG,
+#:     contradicting is a FAIL.
+#:   * ERA-AWARE ``worldSeed``. The fixed-suite exam is entropy-free and the coordinator hands the
+#:     evaluator the DERIVED gate value, so nothing else in the chain ties the signed ``worldSeed``
+#:     to the committed secret. It is recomputed from ``EpochSecretRevealed`` and a mismatch is
+#:     refused; before the reveal it is reported UNRESOLVED, never assumed good.
+#:   * AGGREGATE RESOURCE NON-REGRESSION is enforced in replay, in BOTH eras. The public law always
+#:     promised it and this client did not check it — a walk-era advance that spent more to score
+#:     more would have replayed to PASS here.
+#:   * ``verify-receipt`` resolves all three law-bound comparands (suite, exact parent, floor), not
+#:     just the parent. ``reproduce-snapshot`` states that admission is UNRESOLVED — it reproduces
+#:     an index of roots and re-executes nothing — and reads each eval artifact's REAL family off
+#:     its own bytes rather than from the publisher's label.
+#:   * ``preview-current-parent`` becomes a DETERMINISTIC prediction under the fixed suite: it
+#:     scores the same immutable cases, against the same exact parent, under the same engine and
+#:     floor, and reports ``predictsDeterministicAdmission: true`` with the chain race named as the
+#:     only remaining caveat. Under the walk law it is unchanged and still predicts nothing.
+#:   * the law pins are read when a scorer is CONSTRUCTED rather than when ``replay`` is imported,
+#:     which removes the trap ``law.activate`` used to have to refuse.
+__version__ = "0.5.0"

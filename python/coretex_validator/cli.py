@@ -104,7 +104,28 @@ def _activate_law(args: argparse.Namespace) -> Optional[Dict[str, Any]]:
                            "Run `coretex-validator setup` to activate the current kit and law"),
                 "cache_dir": cache_dir or law_mod.default_cache_dir()}
     pins = law_mod.activate(cache)
+    # THE SUITE COMES FROM THE SEALED TREE, NOT FROM THIS WHEEL. `canonical_suite` defaults to the
+    # copy shipped inside the package so that a clean install can still validate a v3 artifact's
+    # schema; once a verified law cache is active the SEALED bytes supersede it, because those are
+    # the bytes inside the `validator` tree whose root every receipt's `code_roots` binds. A
+    # mismatch is reported, never reconciled: a changed suite is a new law (LAW §3A.6).
+    suite_block = None
+    suite_bytes = cache.canonical_suite_bytes()
+    if suite_bytes is not None:
+        from . import canonical_suite as cs
+        packaged = cs.packaged_suite_root()
+        try:
+            installed = cs.install_suite_bytes(
+                suite_bytes, source=f"law cache {cache.publication_root}")
+            suite_block = {"root": installed, "source": "sealed validator tree",
+                           "packaged_root": packaged,
+                           "agrees_with_packaged": installed == packaged}
+        except cs.CanonicalSuiteError as exc:
+            suite_block = {"root": None, "source": "sealed validator tree",
+                           "packaged_root": packaged, "error": str(exc)}
     return {"used": True, "publication_root": cache.publication_root,
+            "canonical_suite": suite_block,
+            "companion_files": cache.receipt.get("companion_files"),
             "cache_dir": cache.root_dir, "env": pins,
             "trees": cache.receipt["trees"],
             # The seventh sealed root is a FILE, not a tree (D-3). Reported separately so a reader
@@ -167,6 +188,48 @@ def _cmd_verify_release(args: argparse.Namespace) -> int:
     return 0 if verification.ok else 1
 
 
+def _snapshot_eval_artifact_families(published, *, store_dir):
+    """Read each eval-artifact ref's REAL family off its own bytes, where they are on this host.
+
+    The published `kind` is a label the publisher wrote without opening the object. An artifact's
+    law is fixed in the bytes `evalReportHash` addresses (`eval_artifact.artifact_law`), so it is
+    read from there or reported UNRESOLVED — never inferred from the label, and never from the
+    transition-descriptor version, which is a different versioning axis entirely.
+    """
+    from . import eval_artifact as ea
+    from . import publication as pub
+
+    prefix = "coretex.memory-eval-artifact."
+    refs = [ref for ref in (published.get("artifacts") or [])
+            if isinstance(ref, dict) and str(ref.get("kind", "")).startswith(prefix)]
+    if not refs:
+        return {"refs": 0}
+    out = []
+    store = None
+    if store_dir:
+        try:
+            store = pub.FilesystemCAS(os.path.expanduser(store_dir))
+        except Exception:                                    # pragma: no cover - defensive
+            store = None
+    for ref in refs:
+        row = {"root": ref.get("root"), "published_label": ref.get("kind"),
+               "observed_format": None,
+               "note": "not resolved on this host; the published label is not evidence"}
+        if store is not None:
+            try:
+                artifact = pub.fetch_json(ref["root"], hash_rule=pub.HASH_RULE_FRONTIER_JSON,
+                                          store=store)
+                row["observed_format"] = artifact.get("format")
+                row["authority_law"] = ea.artifact_law(artifact)
+                row["note"] = ("read from the artifact's own bytes"
+                               + ("" if row["observed_format"] == ref.get("kind")
+                                  else "; the published label disagrees and the BYTES win"))
+            except Exception as exc:
+                row["note"] = f"not resolvable from --artifacts: {type(exc).__name__}: {exc}"
+        out.append(row)
+    return {"refs": len(out), "entries": out}
+
+
 def _cmd_reproduce_snapshot(args: argparse.Namespace) -> int:
     """Rebuild a published resolver snapshot from chain truth, then check its signature.
 
@@ -185,6 +248,29 @@ def _cmd_reproduce_snapshot(args: argparse.Namespace) -> int:
         "reproduction": comparison.as_dict(),
         "authority": ("reconstruction equality from chain truth — the downloaded snapshot is a "
                       "CACHE and no signature is consulted"),
+        # ADMISSION IS NOT WHAT THIS COMMAND CHECKS, and saying so is the point. A reproduced
+        # snapshot proves the published index of roots is the one chain truth implies; it fetches
+        # no eval artifact, runs no exam and re-executes nothing, so whether each advance was a
+        # legal admission is UNRESOLVED here and only `reproduce` (steps 5-8) settles it. This
+        # block exists because a reader who saw `"reproduction": {"identical": true}` and nothing
+        # else had no way to tell which of the two questions had been answered.
+        "admission": {
+            "outcome": "UNRESOLVED",
+            "reason": ("reproduce-snapshot rebuilds the resolver snapshot from chain truth and "
+                       "compares it; it does not fetch eval artifacts, resolve the canonical "
+                       "suite or the genesis floor, or re-execute a candidate. Admission is "
+                       "settled by `coretex-validator reproduce`, which runs the full replay"),
+            "settled_by": "coretex-validator reproduce --rpc URL --release ROOT",
+        },
+        # ERA-AWARE ARTIFACT KIND. The snapshot's `kind` label for an eval-artifact ref is the
+        # PUBLISHER's descriptive label — `ArtifactRef.kind` is documented as descriptive, the ROOT
+        # is the identity — and it is emitted without fetching the artifact, so it cannot tell a
+        # walk-era v1/v2 from a fixed-suite v3. It is reproduced byte-for-byte (that is what
+        # reproduction means) and it is NOT read here as evidence of which law an advance was
+        # decided under. Where the local store actually holds the artifact, its real family is
+        # read off its own bytes and reported beside the label.
+        "eval_artifact_families": _snapshot_eval_artifact_families(
+            published, store_dir=args.artifacts),
     }
     if args.out:
         with open(os.path.expanduser(args.out), "wb") as fh:
@@ -497,6 +583,110 @@ def _cmd_replay_latest(args: argparse.Namespace) -> int:
     return 0
 
 
+def _resolve_fixed_suite(wrapper, artifact):
+    """Resolve the LAW-BOUND exam and the constructor-genesis floor a v4 receipt decided against.
+
+    THE GAP THIS CLOSES. ``verify-receipt`` resolved the exact PARENT and nothing else, which was
+    the whole comparison under the walk law: the cases came from committed entropy and the rule was
+    a Pareto clause over two measured sides. Under the fixed suite a decision has THREE law-bound
+    comparands — the immutable suite, the exact parent's stored vector, and the constructor-genesis
+    floor — and two of them were being taken on the receipt's word. They are resolved here, from
+    this installation's own suite document, and any disagreement is stated rather than replayed
+    past.
+
+    Returns the ``fixed_suite`` section of the report. It is ``{"applies": False, ...}`` for a
+    walk-era receipt, which is not a gap: those receipts were never decided against a suite, and
+    saying so is the era-aware answer.
+    """
+    from collections import abc as _abc
+
+    from . import canonical_suite as cs
+    from . import eval_artifact as ea
+
+    body = wrapper.get("receipt") if isinstance(wrapper, _abc.Mapping) \
+        and isinstance(wrapper.get("receipt"), _abc.Mapping) else wrapper
+    if not isinstance(body, _abc.Mapping):
+        return {"applies": False, "reason": "the receipt carries no report body"}
+    descriptor = body.get("evaluation_law") or {}
+    law_id = descriptor.get("law_id") if isinstance(descriptor, _abc.Mapping) else None
+    if law_id != ea.FIXED_SUITE_LAW_ID:
+        return {"applies": False, "law_id": law_id,
+                "reason": ("this receipt is bound to a prior law era, whose cases were drawn from "
+                           "committed entropy rather than from a canonical suite; there is no "
+                           "suite or floor for it to be resolved against")}
+
+    block = {"applies": True, "law_id": law_id,
+             "decision_engine": descriptor.get("decision_engine")}
+    try:
+        block["suite"] = {
+            "resolved_root": cs.suite_root(),
+            "version": cs.suite_version(),
+            "source": cs.suite_source(),
+            "bound_root": descriptor.get("canonical_suite_root"),
+        }
+        if descriptor.get("canonical_suite_root") != cs.suite_root():
+            block.update({
+                "outcome": "FAIL", "code": "CANONICAL_SUITE_MISMATCH",
+                "reason": (f"the receipt is bound to canonical suite "
+                           f"{descriptor.get('canonical_suite_root')} and this installation "
+                           f"carries {cs.suite_root()}. A changed suite is a NEW LAW (LAW "
+                           "§3A.6), never a variation of this one — replaying it here would "
+                           "decide one exam's answers under another exam's rules")})
+            return block
+        profile_id = str(body.get("profile_id") or "")
+        block["suite"]["profile_id"] = profile_id
+        block["suite"]["counts"] = cs.suite_counts(profile_id)
+        expected = cs.suite_cases(profile_id)
+        hashes = cs.suite_case_hashes(profile_id)
+        for label in ea.SELECTION_LABELS:
+            bound = list((body.get("selection") or {}).get(label) or ())
+            want = expected[label]
+            if len(bound) != len(want):
+                block.update({
+                    "outcome": "FAIL", "code": "SUITE_PARTITION_MISMATCH",
+                    "reason": (f"the receipt's {label!r} partition holds {len(bound)} cases; the "
+                               f"canonical suite declares {len(want)} and a partition is never "
+                               "subsetted, extended or re-ordered")})
+                return block
+            for index, (case, suite_case) in enumerate(zip(bound, want)):
+                for field in ("instance_id", "profile_id", "scale", "seed"):
+                    if case.get(field) != suite_case[field]:
+                        block.update({
+                            "outcome": "FAIL", "code": "SUITE_CASE_MISMATCH",
+                            "reason": (f"selection[{label!r}][{index}].{field} is "
+                                       f"{case.get(field)!r}; the canonical suite declares "
+                                       f"{suite_case[field]!r}")})
+                        return block
+                if case.get("instance_hash") != hashes[suite_case["instance_id"]]:
+                    block.update({
+                        "outcome": "FAIL", "code": "SUITE_INSTANCE_HASH_MISMATCH",
+                        "reason": (f"selection[{label!r}][{index}] was scored on an instance that "
+                                   "is not the one the law names")})
+                    return block
+        # THE FLOOR IS A REFUSAL WHEN PENDING, never a skipped check (LAW §3A.3).
+        authority = cs.genesis_floor_authority()
+        block["genesis_floor"] = {"status": authority.get("status"),
+                                  "source": authority.get("source")}
+        if not cs.genesis_floor_resolved():
+            block.update({
+                "outcome": "BACKLOG", "code": cs.GENESIS_FLOOR_PENDING,
+                "reason": ("this installation's constructor-genesis floor is pending, so no v4 "
+                           "admission is computable and none can be checked here")})
+            return block
+        block["genesis_floor"]["partitions"] = {
+            label: cs.genesis_floor_vector(profile_id, label) for label in ea.SELECTION_LABELS}
+        if isinstance(artifact, _abc.Mapping) and artifact.get("genesis_floor"):
+            block["genesis_floor"]["artifact_agrees"] = all(
+                artifact["genesis_floor"]["partitions"].get(label)
+                == block["genesis_floor"]["partitions"][label] for label in ea.SELECTION_LABELS)
+        block["resolved"] = True
+        return block
+    except cs.CanonicalSuiteError as exc:
+        block.update({"outcome": "FAIL", "code": getattr(exc, "code", "CANONICAL_SUITE_INVALID"),
+                      "reason": str(exc)})
+        return block
+
+
 def _resolve_incumbent_execution(wrapper, artifact, *, store):
     """Resolve the EXACT-PARENT incumbent this receipt names, from public content-addressed bytes.
 
@@ -630,6 +820,21 @@ def _cmd_verify_receipt(args: argparse.Namespace) -> int:
     incumbent_execution, incumbent_block = _resolve_incumbent_execution(
         wrapper, artifact, store=store)
     base["incumbent"] = incumbent_block
+    # THE OTHER TWO LAW-BOUND COMPARANDS. Resolved before the sandbox runs, because a receipt that
+    # names an exam this installation does not carry cannot be replayed under it at all.
+    suite_block = _resolve_fixed_suite(wrapper, artifact)
+    base["fixed_suite"] = suite_block
+    if suite_block.get("outcome") in ("FAIL", "BACKLOG"):
+        base.update({"outcome": suite_block["outcome"], "code": suite_block["code"],
+                     "reason": suite_block["reason"]})
+        _emit(base, pretty=not args.compact)
+        if suite_block["outcome"] == "FAIL":
+            return 1
+        if args.require_complete:
+            sys.stderr.write("--require-complete: the receipt was not replayed: "
+                             f"{suite_block['reason']}\n")
+            return 1
+        return 0
     if incumbent_block.get("outcome") in ("BACKLOG", "FAIL"):
         base.update({"outcome": incumbent_block["outcome"], "code": incumbent_block["code"],
                      "reason": incumbent_block["reason"]})

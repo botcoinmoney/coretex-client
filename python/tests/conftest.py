@@ -357,3 +357,39 @@ def make_sealed_transcript(artifact, *, verdict="PASS", policy=None, **overrides
     }
     sealed.update(overrides)
     return sealed
+
+
+# --------------------------------------------------------------------------- #
+# Process-environment isolation for the law pins and the law cache
+#
+# `law.LawCache.apply()` sets CORETEX_ADMISSION_REPO_ROOT / CORETEX_BENCHMARK_V2_DIR /
+# CORETEX_MEMORY_RUNTIME_DIR in `os.environ`, because that is how the CLI hands a verified law
+# cache to its child interpreters. Any test that drives a CLI command in-process therefore leaks
+# those pins into the pytest process, and from 0.5.0 the scorers read them when they are
+# CONSTRUCTED rather than when `replay` was imported — so a later test that expected an
+# unconfigured host would build a scorer pointed at an earlier test's tree and shell out to it.
+#
+# `law.default_cache_dir()` resolves under $XDG_DATA_HOME (else ~/.local/share), so on a machine
+# where an operator has actually run `sync-law` the suite would find that REAL law cache, activate
+# it, and run the real oracle screen against the real generators — minutes per case, and a
+# different outcome on every host. A suite whose result depends on whether the developer has
+# synced a law is not a suite. Both are ambient state, and both are isolated here.
+# --------------------------------------------------------------------------- #
+from coretex_validator import law as _law                          # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _isolate_law_environment(tmp_path_factory):
+    names = tuple(_law.ENV_PINS) + ("XDG_DATA_HOME",)
+    saved = {name: os.environ.get(name) for name in names}
+    for name in _law.ENV_PINS:
+        os.environ.pop(name, None)
+    os.environ["XDG_DATA_HOME"] = str(tmp_path_factory.mktemp("xdg"))
+    try:
+        yield
+    finally:
+        for name, value in saved.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value

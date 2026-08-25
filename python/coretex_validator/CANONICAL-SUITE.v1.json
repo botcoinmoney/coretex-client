@@ -1,0 +1,571 @@
+{
+ "aggregation": {
+  "composite_min_gain_ppm": 1,
+  "composite_ppm_rule": "composite_ppm = composite_micro // 100",
+  "partition_rule": "both partitions must independently satisfy the whole rule; admit = gate_admit AND confirm_admit",
+  "partitions_required": [
+   "gate",
+   "confirm"
+  ],
+  "quality_tolerance": "zero \u2014 every declared objective must be >= the parent's",
+  "quality_units": "objectives_micro (per declared objective, integer micro units)",
+  "resource_tolerance": "zero \u2014 every protected raw axis must be <= the parent's",
+  "resource_units": "rendered_cost = rendered_cost_micro; work_fuel = trusted work_fuel; logical_durable_storage_bytes = raw byte count",
+  "signed_scalar_source": "confirm partition composite_ppm (unchanged from prior eras)"
+ },
+ "committed_before_any_candidate_scoring": true,
+ "decision_engine": "dominance.componentwise.v1",
+ "format": "benchmark-v2/canonical-suite/v1",
+ "genesis_floor_authority": {
+  "decision_time_rule": "a pending floor is a REFUSAL, never a skipped check: no v4 admission is computable without a resolved floor",
+  "resolved_requires": [
+   "status == 'resolved'",
+   "vectors present for every profile and both partitions"
+  ],
+  "source": {
+   "arm": "parent/incumbent arm on the sealed canonical suite, both fixed partitions",
+   "evidence_root": "ever-improving-run-20260825/p4p5",
+   "exec": "reference",
+   "measurement": "coretex ever-improving-invariant-cut P5 bridge run 2026-08-25",
+   "policy": "final-render-trusted-hostwork.v4",
+   "profiles": {
+    "conv.pref.v1": {
+     "evidence": "ever-improving-run-20260825/p4p5/m-conv/vector-conv-86deac65.json",
+     "exec": "reference",
+     "module_sha256": "c64131b508553d43631324da8c9d8cf9f6c3947da87f4707cd2c9f6c9a63d20d",
+     "release_root": "86deac65e365619c3601655b6768b6ef1738943ab620f67d62368089d727919b"
+    },
+    "doc.tool.v1": {
+     "evidence": "ever-improving-run-20260825/p4p5/m-doc/vector-doc-4e81744e.json",
+     "exec": "reference",
+     "module_sha256": "c64131b508553d43631324da8c9d8cf9f6c3947da87f4707cd2c9f6c9a63d20d",
+     "release_root": "4e81744ee61fd58602c04b23210b8ac7dad66cc126986ac82db2af66200dbe9c"
+    },
+    "event.schema.v1": {
+     "evidence": "ever-improving-run-20260825/p4p5/m-event/vector-event-c8585724.json",
+     "exec": "reference",
+     "module_sha256": "c64131b508553d43631324da8c9d8cf9f6c3947da87f4707cd2c9f6c9a63d20d",
+     "release_root": "c85857242b434cec35ae2cb0b67bd33f96d1f0f425bc6265fec3758321e98ce5"
+    }
+   }
+  },
+  "status": "resolved",
+  "vectors": {
+   "conv.pref.v1": {
+    "confirm": {
+     "composite_micro": 68028750,
+     "logical_durable_storage_bytes": 559294,
+     "objectives_micro": {
+      "abstention": 90235000,
+      "alias_resolution": 27083750,
+      "asof_correctness": 86327500,
+      "conflict_supersession": 75785000,
+      "evidence_support": 52733750,
+      "multihop_completeness": 51338750,
+      "provenance_citations": 52698750,
+      "retraction_disclosure": 87396250,
+      "selective_forgetting": 88647500
+     },
+     "rendered_cost_micro": 109885000,
+     "work_fuel": 2914116
+    },
+    "gate": {
+     "composite_micro": 66787500,
+     "logical_durable_storage_bytes": 562764,
+     "objectives_micro": {
+      "abstention": 94845000,
+      "alias_resolution": 22917500,
+      "asof_correctness": 83592500,
+      "conflict_supersession": 72655000,
+      "evidence_support": 50000000,
+      "multihop_completeness": 50000000,
+      "provenance_citations": 49875000,
+      "retraction_disclosure": 93875000,
+      "selective_forgetting": 83332500
+     },
+     "rendered_cost_micro": 109742500,
+     "work_fuel": 1443206
+    }
+   },
+   "doc.tool.v1": {
+    "confirm": {
+     "composite_micro": 71450000,
+     "logical_durable_storage_bytes": 2545817,
+     "objectives_micro": {
+      "abstention": 90235000,
+      "asof_correctness": 87500000,
+      "conflict_supersession": 79296250,
+      "consolidation": 75000000,
+      "evidence_support": 75962500,
+      "multihop_completeness": 24107500,
+      "provenance_citations": 52462500,
+      "retraction_disclosure": 85843750,
+      "workflow_provenance": 72656250
+     },
+     "rendered_cost_micro": 218932500,
+     "work_fuel": 4010971
+    },
+    "gate": {
+     "composite_micro": 73310000,
+     "logical_durable_storage_bytes": 2512123,
+     "objectives_micro": {
+      "abstention": 90625000,
+      "asof_correctness": 90180000,
+      "conflict_supersession": 78907500,
+      "consolidation": 68750000,
+      "evidence_support": 73075000,
+      "multihop_completeness": 26785000,
+      "provenance_citations": 55362500,
+      "retraction_disclosure": 90187500,
+      "workflow_provenance": 85937500
+     },
+     "rendered_cost_micro": 223407500,
+     "work_fuel": 2051550
+    }
+   },
+   "event.schema.v1": {
+    "confirm": {
+     "composite_micro": 66776250,
+     "logical_durable_storage_bytes": 1599914,
+     "objectives_micro": {
+      "abstention": 81692500,
+      "asof_correctness": 86718750,
+      "conflict_supersession": 91015000,
+      "evidence_support": 90625000,
+      "exact_lookup": 34375000,
+      "join_completeness": 44141250,
+      "multihop_completeness": 36111250,
+      "provenance_citations": 62151250,
+      "retraction_disclosure": 86251250,
+      "schema_evolution": 54686250
+     },
+     "rendered_cost_micro": 141957500,
+     "work_fuel": 3905666
+    },
+    "gate": {
+     "composite_micro": 66892500,
+     "logical_durable_storage_bytes": 1558500,
+     "objectives_micro": {
+      "abstention": 80887500,
+      "asof_correctness": 78907500,
+      "conflict_supersession": 90622500,
+      "evidence_support": 89062500,
+      "exact_lookup": 42187500,
+      "join_completeness": 45312500,
+      "multihop_completeness": 35415000,
+      "provenance_citations": 61317500,
+      "retraction_disclosure": 87917500,
+      "schema_evolution": 57292500
+     },
+     "rendered_cost_micro": 141467500,
+     "work_fuel": 1939475
+    }
+   }
+  },
+  "why_pending": "RESOLVED 2026-08-25 by the one-time P5 bridge run; the text below records why the P2 seal could not carry these numbers: the constructor-genesis floor vectors are measured on THIS suite by the one-time bridge run and filled in then; they cannot be minted before the suite exists"
+ },
+ "instance_hash_rule": "sha256 of the instance canonical JSON, computed by validator/eval_worker.py task 'hash_only' \u2014 the same value validator/evaluate.hash_case returns and validator/receipt.py _bind_cases binds",
+ "law_id": "benchmark-v2-law/dominance-fixed-suite-2026-08-25.v4",
+ "profiles": {
+  "conv.pref.v1": {
+   "confirm": [
+    {
+     "instance_hash": "538fa54909f92a4cea80cf4ed2b1be57737cb62bc2eda87aa08003e24e9dab81",
+     "instance_id": "conv.pref.v1@small#s1348888956",
+     "profile_id": "conv.pref.v1",
+     "scale": "small",
+     "seed": 1348888956
+    },
+    {
+     "instance_hash": "d88ac2b8bd1df8a4a754126e096dd8089784c86229a7427a21a7897fe84be44d",
+     "instance_id": "conv.pref.v1@small#s1348888957",
+     "profile_id": "conv.pref.v1",
+     "scale": "small",
+     "seed": 1348888957
+    },
+    {
+     "instance_hash": "3845c301f8b04dc3a595ab654df04a337c5a7af5e4c6ff0a623c2d9a15e84e1a",
+     "instance_id": "conv.pref.v1@small#s1348888958",
+     "profile_id": "conv.pref.v1",
+     "scale": "small",
+     "seed": 1348888958
+    },
+    {
+     "instance_hash": "bc99bffe6708bfdd1236c93d4142b980bd148d400917a7be84d708db11811672",
+     "instance_id": "conv.pref.v1@small#s1348888959",
+     "profile_id": "conv.pref.v1",
+     "scale": "small",
+     "seed": 1348888959
+    },
+    {
+     "instance_hash": "7f94c29328705a4f7aac39f557ee456e501d5440a5eae97ce0f1eae21fe74251",
+     "instance_id": "conv.pref.v1@small#s1348888960",
+     "profile_id": "conv.pref.v1",
+     "scale": "small",
+     "seed": 1348888960
+    },
+    {
+     "instance_hash": "94206b7f3f1d93c70f6bed6364417f573ff301b1e22756b69a2387c1aff33a7a",
+     "instance_id": "conv.pref.v1@small#s1348888961",
+     "profile_id": "conv.pref.v1",
+     "scale": "small",
+     "seed": 1348888961
+    },
+    {
+     "instance_hash": "7a1b625c85e3783d8f590a5f43d6ac502919cab47e09334b7323026d832760d8",
+     "instance_id": "conv.pref.v1@small#s1348888962",
+     "profile_id": "conv.pref.v1",
+     "scale": "small",
+     "seed": 1348888962
+    },
+    {
+     "instance_hash": "8b29a22132abd9f89173b77c3f4ddf0fb22f3a31ca196ac634ec8a0130ac5176",
+     "instance_id": "conv.pref.v1@small#s1348888963",
+     "profile_id": "conv.pref.v1",
+     "scale": "small",
+     "seed": 1348888963
+    }
+   ],
+   "counts": {
+    "confirm": 8,
+    "gate": 4
+   },
+   "gate": [
+    {
+     "instance_hash": "2578f7647f75b13b1605ec74d75cc30a98a852232b598e82f7d9d873f0b5e2dc",
+     "instance_id": "conv.pref.v1@small#s1348888952",
+     "profile_id": "conv.pref.v1",
+     "scale": "small",
+     "seed": 1348888952
+    },
+    {
+     "instance_hash": "2354386279365bbb062eb09c93bc6ef2916e03a36f8c9adf0e07537019efbc13",
+     "instance_id": "conv.pref.v1@small#s1348888953",
+     "profile_id": "conv.pref.v1",
+     "scale": "small",
+     "seed": 1348888953
+    },
+    {
+     "instance_hash": "a5e130cea66d092f6ec16afa93c092e1e02fa01845c0dc8a0b9ba7fbaaa07b3e",
+     "instance_id": "conv.pref.v1@small#s1348888954",
+     "profile_id": "conv.pref.v1",
+     "scale": "small",
+     "seed": 1348888954
+    },
+    {
+     "instance_hash": "b9d52fe94efe07f54bcd03e379b547f3eb20fd7ba741d982b45c010d296c176f",
+     "instance_id": "conv.pref.v1@small#s1348888955",
+     "profile_id": "conv.pref.v1",
+     "scale": "small",
+     "seed": 1348888955
+    }
+   ],
+   "profile_id": "conv.pref.v1",
+   "profile_version": "1",
+   "protected_quality_objectives": [
+    "abstention",
+    "alias_resolution",
+    "asof_correctness",
+    "conflict_supersession",
+    "evidence_support",
+    "multihop_completeness",
+    "provenance_citations",
+    "retraction_disclosure",
+    "selective_forgetting"
+   ],
+   "protected_resource_axes": [
+    "rendered_cost",
+    "work_fuel",
+    "logical_durable_storage_bytes"
+   ],
+   "scales": [
+    "small"
+   ],
+   "screening": {
+    "highest_seed_screened": 1348888963,
+    "n_seeds_screened": 12,
+    "seeds_skipped_not_oracle_clean": []
+   },
+   "seed_start": 1348888952,
+   "suite_version": "1"
+  },
+  "doc.tool.v1": {
+   "confirm": [
+    {
+     "instance_hash": "d2148a1b6cdbeaffcd1d5d35dcda3a2c81a5cf19693ec171091986bf663800e5",
+     "instance_id": "doc.tool.v1@small#s2085897833",
+     "profile_id": "doc.tool.v1",
+     "scale": "small",
+     "seed": 2085897833
+    },
+    {
+     "instance_hash": "b9d1eb141bdb07264c0abe3c4bc07e66f104ca8069e2de8789ed7decc96094da",
+     "instance_id": "doc.tool.v1@small#s2085897834",
+     "profile_id": "doc.tool.v1",
+     "scale": "small",
+     "seed": 2085897834
+    },
+    {
+     "instance_hash": "0a235d4458eca039a469c245cd38d9e448f503b9b7a1bcad1f16f5fab2b42630",
+     "instance_id": "doc.tool.v1@small#s2085897838",
+     "profile_id": "doc.tool.v1",
+     "scale": "small",
+     "seed": 2085897838
+    },
+    {
+     "instance_hash": "a61173f2fe891b367bdbfdec61c7a15e9f902d9138ffe0cec47d63c906a5ca52",
+     "instance_id": "doc.tool.v1@small#s2085897839",
+     "profile_id": "doc.tool.v1",
+     "scale": "small",
+     "seed": 2085897839
+    },
+    {
+     "instance_hash": "ae316298a84f3c15a6882bb5d70131e0c810190fb236e7205aa9586b086c5b48",
+     "instance_id": "doc.tool.v1@small#s2085897840",
+     "profile_id": "doc.tool.v1",
+     "scale": "small",
+     "seed": 2085897840
+    },
+    {
+     "instance_hash": "8468efe32e50f39470d2ac9121d4bac706c612b3add841d037f5b44e9244af61",
+     "instance_id": "doc.tool.v1@small#s2085897842",
+     "profile_id": "doc.tool.v1",
+     "scale": "small",
+     "seed": 2085897842
+    },
+    {
+     "instance_hash": "18220fac2adbe54ab1496ab1ace64c5973a203b918cd2f6dfed9d03cee4dc95b",
+     "instance_id": "doc.tool.v1@small#s2085897843",
+     "profile_id": "doc.tool.v1",
+     "scale": "small",
+     "seed": 2085897843
+    },
+    {
+     "instance_hash": "005a306620680127f94c4431231f23a4e29c36f1aed4442789c8e58460c8198a",
+     "instance_id": "doc.tool.v1@small#s2085897844",
+     "profile_id": "doc.tool.v1",
+     "scale": "small",
+     "seed": 2085897844
+    }
+   ],
+   "counts": {
+    "confirm": 8,
+    "gate": 4
+   },
+   "gate": [
+    {
+     "instance_hash": "6f460b0dae45bb7c5171ca57a97b7233cbc8cb5e955ce2205914d04be8388576",
+     "instance_id": "doc.tool.v1@small#s2085897827",
+     "profile_id": "doc.tool.v1",
+     "scale": "small",
+     "seed": 2085897827
+    },
+    {
+     "instance_hash": "772eed4c76a7ebadd44b4933ae69f9d01b94bf5f61652ebcd15825b5c7bf51ae",
+     "instance_id": "doc.tool.v1@small#s2085897828",
+     "profile_id": "doc.tool.v1",
+     "scale": "small",
+     "seed": 2085897828
+    },
+    {
+     "instance_hash": "c7b4585aad878f9758de4b629d1bf74ed759e747f0175048b9a81629212cd3b8",
+     "instance_id": "doc.tool.v1@small#s2085897830",
+     "profile_id": "doc.tool.v1",
+     "scale": "small",
+     "seed": 2085897830
+    },
+    {
+     "instance_hash": "ac6de0632f3b08468423a5c00249788bb5a34f3fabd138f37de8917596be52e3",
+     "instance_id": "doc.tool.v1@small#s2085897831",
+     "profile_id": "doc.tool.v1",
+     "scale": "small",
+     "seed": 2085897831
+    }
+   ],
+   "profile_id": "doc.tool.v1",
+   "profile_version": "1",
+   "protected_quality_objectives": [
+    "abstention",
+    "asof_correctness",
+    "conflict_supersession",
+    "consolidation",
+    "evidence_support",
+    "multihop_completeness",
+    "provenance_citations",
+    "retraction_disclosure",
+    "workflow_provenance"
+   ],
+   "protected_resource_axes": [
+    "rendered_cost",
+    "work_fuel",
+    "logical_durable_storage_bytes"
+   ],
+   "scales": [
+    "small"
+   ],
+   "screening": {
+    "highest_seed_screened": 2085897844,
+    "n_seeds_screened": 18,
+    "seeds_skipped_not_oracle_clean": [
+     2085897829,
+     2085897832,
+     2085897835,
+     2085897836,
+     2085897837,
+     2085897841
+    ]
+   },
+   "seed_start": 2085897827,
+   "suite_version": "1"
+  },
+  "event.schema.v1": {
+   "confirm": [
+    {
+     "instance_hash": "dd0e80634a1858eaf0bb624dde9ce61764d815304673be81de4a201cad75f8de",
+     "instance_id": "event.schema.v1@small#s860332664",
+     "profile_id": "event.schema.v1",
+     "scale": "small",
+     "seed": 860332664
+    },
+    {
+     "instance_hash": "14c2f29a77563751d14f41e85cc2db28b72e45789dc879db0ed0f5ff027e7ccd",
+     "instance_id": "event.schema.v1@small#s860332665",
+     "profile_id": "event.schema.v1",
+     "scale": "small",
+     "seed": 860332665
+    },
+    {
+     "instance_hash": "8a8c21642557deda82bb21f35f8f6c85cedfd0308c4fcbc93479103b5ffd71a2",
+     "instance_id": "event.schema.v1@small#s860332666",
+     "profile_id": "event.schema.v1",
+     "scale": "small",
+     "seed": 860332666
+    },
+    {
+     "instance_hash": "5e4a30e1881ed0f32f8f49fb5214f588a2656652a2466a643631e9cdcab1156d",
+     "instance_id": "event.schema.v1@small#s860332667",
+     "profile_id": "event.schema.v1",
+     "scale": "small",
+     "seed": 860332667
+    },
+    {
+     "instance_hash": "a830774c60a4ffa04f8f906036c8ae71dc70231efebf751d527fb4f4255649bf",
+     "instance_id": "event.schema.v1@small#s860332668",
+     "profile_id": "event.schema.v1",
+     "scale": "small",
+     "seed": 860332668
+    },
+    {
+     "instance_hash": "801e4d49e39694b1f3f925f857af3e3cc70343d85e03d38817040f62e8c33ad2",
+     "instance_id": "event.schema.v1@small#s860332669",
+     "profile_id": "event.schema.v1",
+     "scale": "small",
+     "seed": 860332669
+    },
+    {
+     "instance_hash": "f04c24d89ee526e796728bf438ac172fe2570ba7d6dab286a29c6dd0b64cddc2",
+     "instance_id": "event.schema.v1@small#s860332670",
+     "profile_id": "event.schema.v1",
+     "scale": "small",
+     "seed": 860332670
+    },
+    {
+     "instance_hash": "63f6eae55aa2e6d3d90313ba7b7317cbf87fb1f44182e2b6117dc7314aaebe36",
+     "instance_id": "event.schema.v1@small#s860332671",
+     "profile_id": "event.schema.v1",
+     "scale": "small",
+     "seed": 860332671
+    }
+   ],
+   "counts": {
+    "confirm": 8,
+    "gate": 4
+   },
+   "gate": [
+    {
+     "instance_hash": "50692239351a93b03697e16bce53d17f7af036499f2b9c304769175b1edac074",
+     "instance_id": "event.schema.v1@small#s860332660",
+     "profile_id": "event.schema.v1",
+     "scale": "small",
+     "seed": 860332660
+    },
+    {
+     "instance_hash": "dbd5310b08d3505d12bc1b840d2a3aeecb644babf45ae268cdc681b6ac66be19",
+     "instance_id": "event.schema.v1@small#s860332661",
+     "profile_id": "event.schema.v1",
+     "scale": "small",
+     "seed": 860332661
+    },
+    {
+     "instance_hash": "8a7bbbe7840aee6a98048cdf48628d1e5e53d8520626426954d4ed4f0fc895ed",
+     "instance_id": "event.schema.v1@small#s860332662",
+     "profile_id": "event.schema.v1",
+     "scale": "small",
+     "seed": 860332662
+    },
+    {
+     "instance_hash": "6e900bebdff4091afe100eb11ab04814a8b596cdd44859b8ebc3398fbacfe014",
+     "instance_id": "event.schema.v1@small#s860332663",
+     "profile_id": "event.schema.v1",
+     "scale": "small",
+     "seed": 860332663
+    }
+   ],
+   "profile_id": "event.schema.v1",
+   "profile_version": "1",
+   "protected_quality_objectives": [
+    "abstention",
+    "asof_correctness",
+    "conflict_supersession",
+    "evidence_support",
+    "exact_lookup",
+    "join_completeness",
+    "multihop_completeness",
+    "provenance_citations",
+    "retraction_disclosure",
+    "schema_evolution"
+   ],
+   "protected_resource_axes": [
+    "rendered_cost",
+    "work_fuel",
+    "logical_durable_storage_bytes"
+   ],
+   "scales": [
+    "small"
+   ],
+   "screening": {
+    "highest_seed_screened": 860332671,
+    "n_seeds_screened": 12,
+    "seeds_skipped_not_oracle_clean": []
+   },
+   "seed_start": 860332660,
+   "suite_version": "1"
+  }
+ },
+ "protected_resource_axes": [
+  "rendered_cost",
+  "work_fuel",
+  "logical_durable_storage_bytes"
+ ],
+ "provenance": {
+  "built_by": "P2 of the ever-improving-invariant cut, 2026-08-25",
+  "built_in_image": "botcoin-v5-coretex-memory-evaluator:live-10ed76f2",
+  "built_in_image_digest": "sha256:e01f4d493c314ac90d46a81e941fafd65824a67d66a475804385ee17592ab910",
+  "generators_code_root": "20a8402bc5de5ca791963efd33a31df09ab9cd451e926399a546d8e431d65d15",
+  "note": "provenance only \u2014 these values record HOW the case hashes were produced and are not re-verified at decision time; the instance hashes themselves are the binding record"
+ },
+ "scales_claimed": [
+  "small"
+ ],
+ "seed_derivation": {
+  "domain": "coretex.canonical-suite/v1|",
+  "enumeration_rule": "ascending seed_start, seed_start+1, ...; a seed is KEPT iff scoring.oracle_screen.is_oracle_clean(profile_id, seed, 'small') is true (it generates AND has zero oracle violations); gate = the first counts.gate kept seeds, confirm = the next counts.confirm kept seeds, so the partitions are disjoint by construction",
+  "reproducible": "re-running the screen from seed_start reproduces this exact seed list; the screen is deterministic and memoised per (profile, seed, scale)",
+  "screen": "scoring.oracle_screen.is_oracle_clean",
+  "screen_scale": "small",
+  "seed_start_rule": "seed_start(profile_id) = int.from_bytes(sha256((domain + profile_id).encode()).digest()[:8], 'big') % 2**31"
+ },
+ "slice_threshold_corpus_events": 800,
+ "suite_version": "1",
+ "why": "The immutable consensus exam of LAW.md 3A. One suite per profile, fixed forever under this law id: the cases never vary with candidate, candidate_id, author, epoch, epoch secret, parent frontier root, delegation hash, round id or burn state. This document lives inside code_roots.validator, so any edit to any case, partition, count or protected vocabulary moves the law root and is a NEW law identity (LAW.md 3A.6). Committed BEFORE any candidate was ever scored against it."
+}

@@ -14,8 +14,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "coretex-validator"
-version = "0.4.4"
-description = "Public CoreTex descriptor-v3, one-shape schema-4 production validator."
+version = "0.5.0"
+description = "Public CoreTex descriptor-v3 validator: fixed-suite (v4) admission replay."
 readme = "README.md"
 license = {text = "Apache-2.0"}
 requires-python = ">=3.9"
@@ -49,6 +49,13 @@ include-package-data = false
 coretex_validator = [
   "COUNTER_RESOURCE_LAW.v1.json",
   "EXACT-PARENT-AUTHORITY.production.json",
+  # The canonical suite is DATA the validator cannot re-derive and must not be asked to supply.
+  # `eval_artifact.validate_artifact` resolves a profile's declared objective vocabulary from it,
+  # so even the pure schema check of a v3 artifact needs it — a clean install with no law mirror
+  # must still be able to say what a v3 artifact's vectors are supposed to cover. A verified law
+  # cache SUPERSEDES this copy with the bytes from the sealed `validator` tree (see
+  # `canonical_suite.install_suite_bytes`), so this is the floor, never the authority.
+  "CANONICAL-SUITE.v1.json",
 ]
 
 [tool.pytest.ini_options]

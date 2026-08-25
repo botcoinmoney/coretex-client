@@ -83,6 +83,7 @@ import os
 from typing import Any, Dict, Mapping, Optional, Tuple
 
 from . import authority_law as al
+from . import canonical_suite as cs
 from . import frontier as fr
 from . import parent_execution as parent_exec
 from . import publication as pub
@@ -91,10 +92,29 @@ from .keccak256 import keccak256_hex
 # --------------------------------------------------------------------------- #
 ARTIFACT_FORMAT = "coretex.memory-eval-artifact.v2"
 ARTIFACT_FORMAT_V1_SIGNED_ERA = "coretex.memory-eval-artifact.v1"
+#: It is a new family and not a v2 with extra fields for the reason every family split here exists:
+#: the v2 schema is CLOSED, so a v2 artifact with a ``suite`` block is invalid, and a v3 artifact
+#: with no ``entropy`` block would be invalid as a v2. Neither direction is cross-satisfiable, which
+#: is exactly what stops a post-cut evaluation from presenting as pre-cut evidence, or the reverse.
+#: Every v1 and v2 artifact keeps its bytes, its ``evalReportHash`` and its verification path.
+ARTIFACT_FORMAT_V3 = "coretex.memory-eval-artifact.v3"
+
+#: The closed family -> law table :func:`authority_law.law_of_artifact` dispatches on. An artifact's
+#: law is read from the bytes ``evalReportHash`` addresses, so it is fixed when the artifact is
+#: minted and cannot be restated by whoever presents it afterwards. v3 joins v2 under the
+#: CHAIN-COMMITTED authority law: the authorization story did not change at the v4 cut (it is still
+#: the coordinator's EIP-712 receipt over ``evalReportHash``), only the admission rule did.
 ARTIFACT_FAMILY_LAWS = {
     ARTIFACT_FORMAT_V1_SIGNED_ERA: al.LAW_OFF_CHAIN_SIGNATURE_V1,
     ARTIFACT_FORMAT: al.LAW_CHAIN_COMMITTED_V2,
+    ARTIFACT_FORMAT_V3: al.LAW_CHAIN_COMMITTED_V2,
 }
+
+#: The Benchmark-v2 law id a v3 artifact's evaluation report must be bound to. Stated here so the
+#: artifact layer refuses a mismatched pairing instead of inferring one.
+FIXED_SUITE_LAW_ID = "benchmark-v2-law/dominance-fixed-suite-2026-08-25.v4"
+#: The decision engine that law names. Mirrors ``benchmark-v2/frontier/dominance.ENGINE_ID``.
+DOMINANCE_ENGINE_ID = "dominance.componentwise.v1"
 CANARY_BLOCK_FORMAT = "coretex.memory-eval-artifact.v1/canary-reference"
 COUNTER_RESOURCE_LAW_FORMAT = "coretex.counter-resource-law.v1"
 
@@ -156,6 +176,55 @@ ARTIFACT_FIELDS: Tuple[str, ...] = (
 #: passes) refuses an artifact that is about to be bound to a rig receipt but carries none of the
 #: nine fields such a receipt signs.
 OPTIONAL_ARTIFACT_FIELDS: Tuple[str, ...] = ("canary", "rig_receipt")
+
+ARTIFACT_FIELDS_V3: Tuple[str, ...] = (
+    "availability", "candidate", "counter_resource_law_root", "determinism_witness", "dominance",
+    "epoch", "format", "frontier", "genesis_floor", "measurements", "receipt", "replay_inputs",
+    "resource_accounting", "suite", "verdict",
+)
+
+#: The law-bound exam this evaluation was scored on. ``suite_root`` is the sha256 of the suite
+#: document's exact on-disk bytes — the same value ``evaluation_law``'s fixed identities bind — so
+#: an artifact naming a different exam than the law it cites is a mismatch, not a variation.
+SUITE_FIELDS = ("cases", "counts", "format", "law_id", "profile_id", "scales", "suite_root",
+                "suite_version")
+#: One suite case. ``suite_index`` is the case's ordinal inside its partition; there is no
+#: ``derivation_index`` because there is no walk.
+SUITE_CASE_FIELDS = ("instance_hash", "instance_id", "profile_id", "scale", "seed", "suite_index")
+
+#: One ABSOLUTE VECTOR (LAW §3A.2) — the DETERMINISTIC subset, and only it. ``latency_micro`` /
+#: ``compute_micro`` / ``host_profile`` are host-dependent telemetry: they are measured, projected
+#: and bound in ``measurements`` exactly as before, and they are NEVER witness or floor inputs,
+#: because a stored vector that depended on them could not be reproduced on another host.
+VECTOR_FIELDS = ("composite_micro", "logical_durable_storage_bytes", "objectives_micro",
+                 "rendered_cost_micro", "work_fuel")
+
+#: The exact parent's STORED qualifying vector, carried into the job and bound here.
+#: ``source_kind`` is ``bridge`` for the one-time re-scoring that qualified a pre-cut release, and
+#: ``prior_accept`` for a parent that earned its vector by being admitted under this law.
+DETERMINISM_WITNESS_FIELDS = ("law_id", "partitions", "profile_id", "release_root", "source_kind",
+                              "source_root", "suite_root", "witness_root")
+WITNESS_SOURCE_KINDS = ("bridge", "prior_accept")
+
+#: The PUBLISHED object a ``source_kind == "bridge"`` witness resolves to (P5 mints one per
+#: profile). A ``prior_accept`` witness resolves to the accepting v3 artifact itself, addressed by
+#: its ``evalReportHash`` — there is no second document for that case, because the accepting
+#: artifact already publishes the candidate vector that release stores.
+BRIDGE_VECTOR_FORMAT = "coretex.memory-suite-bridge-vector.v1"
+BRIDGE_VECTOR_FIELDS = ("format", "law_id", "measured_by", "partitions", "profile_id",
+                        "release_root", "suite_root")
+
+#: The law-bound constructor-genesis floor, as it was resolved for this decision.
+GENESIS_FLOOR_FIELDS = ("partitions", "source", "status", "suite_root")
+
+#: The componentwise decision, DERIVED from the evaluation report's bound verdicts — never
+#: restated. ``partitions.<label>.incumbent_vector`` is the parent arm's RECOMPUTED vector; the
+#: determinism witness holds the STORED one, and their equality is the witness check.
+DOMINANCE_FIELDS = ("admit", "engine", "partitions")
+DOMINANCE_PARTITION_FIELDS = ("admit", "candidate_vector", "composite_after_ppm",
+                              "composite_before_ppm", "composite_gain_ppm", "floor_regressions",
+                              "hard", "hard_ok", "incumbent_vector", "regressed_objectives",
+                              "regressed_resource_axes")
 
 CANDIDATE_FIELDS = ("candidate_hash", "prior_release_root", "release_root", "target_profile")
 FRONTIER_FIELDS = ("benchmark_law_root", "composition_root", "new_frontier_root",
@@ -343,6 +412,63 @@ class EntropyOpeningUnavailableError(EvalArtifactError):
 
 class SelectionMismatchError(BindingMismatchError):
     """The recorded fresh selection is not what the committed entropy derives."""
+
+
+class SuiteMembershipError(BindingMismatchError):
+    """A v3 artifact's cases are not the immutable canonical suite's cases (LAW §3A.1).
+
+    Refusal code ``SUITE_MEMBERSHIP_MISMATCH``. Under the fixed suite this replaces the walk
+    re-derivation: a stripped, re-ordered, substituted or extra case is caught by MEMBERSHIP.
+    """
+
+    code = "SUITE_MEMBERSHIP_MISMATCH"
+
+
+class DeterminismWitnessMismatchError(BindingMismatchError):
+    """The re-executed parent arm did not reproduce the parent's STORED qualifying vector.
+
+    Refusal code ``DETERMINISM_WITNESS_MISMATCH``. LAW §3A.3: this is an ENVIRONMENT-DRIFT
+    DETECTOR and it fails closed. It never makes a candidate pass and it never adjusts a number —
+    if the same parent bytes on the same fixed cases no longer produce the same vector, the thing
+    that changed is the evaluator, and no admission computed on this run means anything.
+    """
+
+    code = "DETERMINISM_WITNESS_MISMATCH"
+
+
+class WitnessSourceMismatchError(DeterminismWitnessMismatchError):
+    """The object ``determinism_witness.source_root`` names does not carry the stored vector.
+
+    Refusal code ``DETERMINISM_WITNESS_SOURCE_MISMATCH``. The witness is self-addressing, so
+    nobody can restate it in transport — but self-addressing only proves the document is internally
+    whole. It says nothing about whether the vector inside it was ever MEASURED by the bridge run
+    or EARNED by a prior accepting artifact. Resolving ``source_root`` against the published object
+    is what turns "this document says the parent scored X" into "the bridge/prior accept published
+    X for this exact release".
+    """
+
+    code = "DETERMINISM_WITNESS_SOURCE_MISMATCH"
+
+
+class WitnessSourceUnavailableError(EvalArtifactError):
+    """``determinism_witness.source_root`` names an object that is not published here.
+
+    Refusal code ``DETERMINISM_WITNESS_SOURCE_UNAVAILABLE``. Distinct from a MISMATCH on purpose:
+    an object that cannot be fetched is UNPROVEN (a public validator records a backlog entry and
+    retries), while an object that is fetched and disagrees is a refusal that never becomes a pass.
+    """
+
+    code = "DETERMINISM_WITNESS_SOURCE_UNAVAILABLE"
+
+
+class GenesisFloorPendingError(EvalArtifactError):
+    """The law-bound constructor-genesis floor is not resolved.
+
+    Refusal code ``GENESIS_FLOOR_PENDING``. LAW §3A.3: a pending floor is a REFUSAL, never a
+    skipped check — a v4 admission is not computable without one.
+    """
+
+    code = "GENESIS_FLOOR_PENDING"
 
 
 class ReceiptBindingError(BindingMismatchError):
@@ -932,12 +1058,393 @@ def artifact_law(artifact: Any) -> str:
         raise ArtifactSchemaError(str(exc)) from exc
 
 
+def _validate_measurements_block(artifact: Mapping[str, Any]) -> Dict[str, Any]:
+    meas = _check_closed(artifact["measurements"], MEASUREMENT_FIELDS, "measurements")
+    _check_str(meas["policy"], "measurements.policy")
+    if meas["micro_scale"] != MICRO:
+        raise ArtifactValueError(
+            f"measurements.micro_scale must be {MICRO}, got {meas['micro_scale']!r}")
+    _check_closed(meas["branches"], SELECTION_LABELS, "measurements.branches")
+    for label in SELECTION_LABELS:
+        pair = _check_closed(meas["branches"][label], ("candidate", "incumbent"),
+                             f"measurements.branches[{label!r}]")
+        for side_name in ("candidate", "incumbent"):
+            where = f"measurements.branches[{label!r}].{side_name}"
+            side = _check_closed(pair[side_name], SIDE_FIELDS, where)
+            for field in ("composite_micro", "compute_micro", "corpus_supported",
+                          "events_scanned", "hook_compute_fuel", "hook_fuel", "latency_micro",
+                          "rendered_cost_micro", "storage_bytes", "store_events", "store_ops",
+                          "work_fuel"):
+                _check_int(side[field], f"{where}.{field}")
+            _check_str(side["host_profile"], f"{where}.host_profile")
+            objectives = side["objectives_micro"]
+            if not isinstance(objectives, dict) or not objectives:
+                raise ArtifactTypeError(f"{where}.objectives_micro must be a non-empty object")
+            for name, value in objectives.items():
+                _check_str(name, f"{where}.objectives_micro key")
+                _check_int(value, f"{where}.objectives_micro[{name!r}]")
+    return meas
+
+
+def _validate_receipt_block(artifact: Mapping[str, Any], *, signed_era: bool) -> Dict[str, Any]:
+    if signed_era:
+        rec = _check_closed(artifact["receipt"], RECEIPT_FIELDS_V1_SIGNED_ERA, "receipt")
+        for field in ("outputs_hash", "receipt_hash", "wrapper_root"):
+            fr.check_root(rec[field], f"receipt.{field}")
+        _check_str(rec["signature_key_id"], "receipt.signature_key_id")
+    else:
+        rec = _check_closed(artifact["receipt"], RECEIPT_FIELDS, "receipt")
+        for field in ("eval_report_root", "outputs_hash"):
+            fr.check_root(rec[field], f"receipt.{field}")
+    _check_str(rec["measurement_policy"], "receipt.measurement_policy")
+    roots = rec["code_roots"]
+    if not isinstance(roots, dict) or not roots:
+        raise ArtifactTypeError("receipt.code_roots must be a non-empty object")
+    for tree, digest in roots.items():
+        _check_str(tree, "receipt.code_roots key")
+        fr.check_root(digest, f"receipt.code_roots[{tree!r}]")
+    return rec
+
+
+def _validate_replay_inputs_block(artifact: Mapping[str, Any], *,
+                                  signed_era: bool) -> Dict[str, Any]:
+    roots = artifact["receipt"]["code_roots"]
+    replay = _check_closed(artifact["replay_inputs"], REPLAY_INPUT_FIELDS, "replay_inputs")
+    fr.validate_manifest(replay["parent_manifest"])
+    fr.check_root(replay["candidate_manifest_hash"], "replay_inputs.candidate_manifest_hash")
+    fr.check_root(replay["candidate_declaration_id"], "replay_inputs.candidate_declaration_id")
+    _check_str(replay["candidate_exec"], "replay_inputs.candidate_exec")
+    incumbent_fields = set(replay["incumbent"]) if isinstance(replay["incumbent"], dict) else set()
+    expected_incumbent_fields = (INCUMBENT_EXACT_FIELDS
+                                 if incumbent_fields == set(INCUMBENT_EXACT_FIELDS)
+                                 else INCUMBENT_FIELDS)
+    inc = _check_closed(replay["incumbent"], expected_incumbent_fields,
+                        "replay_inputs.incumbent")
+    _check_str(inc["id"], "replay_inputs.incumbent.id")
+    _check_str(inc["exec"], "replay_inputs.incumbent.exec")
+    fr.check_root(inc["candidate_hash"], "replay_inputs.incumbent.candidate_hash")
+    if expected_incumbent_fields == INCUMBENT_EXACT_FIELDS:
+        fr.check_root(inc["release_root"], "replay_inputs.incumbent.release_root")
+        fr.check_root(inc["module_sha256"], "replay_inputs.incumbent.module_sha256")
+    elif replay["candidate_exec"] == "candidate_module" and not signed_era \
+            and not parent_exec.is_pre_exact_parent_code_roots(roots):
+        raise ArtifactSchemaError(
+            "a prospective candidate-module artifact under this code-root set requires the "
+            "exact five-field incumbent release/module identity")
+    return replay
+
+
+def _validate_accounting_and_verdict(artifact: Mapping[str, Any]) -> None:
+    acct = _check_closed(artifact["resource_accounting"], RESOURCE_ACCOUNTING_FIELDS,
+                         "resource_accounting")
+    if acct["branch"] not in SELECTION_LABELS:
+        raise ArtifactValueError(
+            f"resource_accounting.branch must be one of {SELECTION_LABELS}")
+    for field in ("resource_after_ppm", "resource_before_ppm", "utility_after_ppm",
+                  "utility_before_ppm"):
+        _check_int(acct[field], f"resource_accounting.{field}", maximum=MAX_UINT32)
+
+    verdict = _check_closed(artifact["verdict"], VERDICT_FIELDS, "verdict")
+    _check_bool(verdict["admit"], "verdict.admit")
+    fr.check_root(verdict["decision_hash"], "verdict.decision_hash")
+    if verdict["verdict"] not in ("ADMIT", "REJECT"):
+        raise ArtifactValueError(
+            f"verdict.verdict must be 'ADMIT' or 'REJECT', got {verdict['verdict']!r}")
+    if verdict["verdict"] != ("ADMIT" if verdict["admit"] else "REJECT"):
+        raise VerdictMismatchError(
+            f"verdict.verdict {verdict['verdict']!r} does not agree with admit="
+            f"{verdict['admit']!r}")
+    if _check_bool(verdict["consensus_critical"], "verdict.consensus_critical") is not True:
+        raise ArtifactValueError(
+            "verdict.consensus_critical MUST be true: the deterministic Benchmark-v2 result is "
+            "the SOLE mining admission and state-advance law (§17.236)")
+
+
+def declared_objectives(profile_id: str) -> Tuple[str, ...]:
+    """The profile's FULL declared objective vocabulary, from the law-bound suite document.
+
+    One resolver, so "which objectives does this law protect" is answered in exactly one place on
+    the V5 side (:mod:`canonical_suite`, the mirror of the benchmark loader) rather than inferred
+    from whatever a document happens to carry.
+    """
+    try:
+        return tuple(cs.protected_quality_objectives(profile_id))
+    except cs.CanonicalSuiteError as exc:
+        raise SuiteMembershipError(
+            f"this law tree's canonical suite declares no protected objective vocabulary for "
+            f"profile {profile_id!r}: {exc}") from exc
+
+
+def _validate_vector(vector: Any, where: str, profile_id: Optional[str] = None) -> Dict[str, Any]:
+    """One ABSOLUTE VECTOR (LAW §3A.2), closed and exact-integer.
+
+    ``profile_id`` binds the vector to the profile's FULL declared objective set, exactly as
+    ``benchmark-v2/validator/canonical_suite.validate_vector`` does on the law side. A MISSING
+    objective is a MALFORMED VECTOR, never an unprotected one: dropping a key from both compared
+    vectors is precisely how a componentwise recomputation can be made to see no regression, so
+    the vocabulary is checked before anything is compared. An extra key is a vector for a
+    different profile. It is optional only so the walk-era callers that have no profile in hand
+    keep their historical shape check unchanged.
+    """
+    vec = _check_closed(vector, VECTOR_FIELDS, where)
+    for field in ("composite_micro", "logical_durable_storage_bytes", "rendered_cost_micro",
+                  "work_fuel"):
+        _check_int(vec[field], f"{where}.{field}")
+    objectives = vec["objectives_micro"]
+    if not isinstance(objectives, dict) or not objectives:
+        raise ArtifactTypeError(f"{where}.objectives_micro must be a non-empty object")
+    for name, value in objectives.items():
+        _check_str(name, f"{where}.objectives_micro key")
+        _check_int(value, f"{where}.objectives_micro[{name!r}]")
+    if profile_id is not None:
+        declared = sorted(declared_objectives(profile_id))
+        if sorted(objectives) != declared:
+            raise ArtifactSchemaError(
+                f"{where}.objectives_micro covers {sorted(objectives)}; the law protects "
+                f"{declared} for {profile_id!r}. A missing objective is a MALFORMED vector, not "
+                "an unprotected one")
+    return vec
+
+
+def _validate_fixed_suite_blocks(artifact: Mapping[str, Any]) -> None:
+    """The four blocks that exist only in the v3 (fixed-suite) era."""
+    profile_id = artifact["candidate"]["target_profile"]
+
+    suite = _check_closed(artifact["suite"], SUITE_FIELDS, "suite")
+    if suite["format"] != cs.SUITE_FORMAT:
+        raise ArtifactSchemaError(
+            f"suite.format {suite['format']!r} is not {cs.SUITE_FORMAT!r}")
+    if suite["law_id"] != FIXED_SUITE_LAW_ID:
+        raise ArtifactSchemaError(
+            f"suite.law_id {suite['law_id']!r} is not the fixed-suite law "
+            f"{FIXED_SUITE_LAW_ID!r}; a v3 artifact records an evaluation under that law and no "
+            "other")
+    fr.check_root(suite["suite_root"], "suite.suite_root")
+    _check_str(suite["suite_version"], "suite.suite_version")
+    fr.check_profile_id(suite["profile_id"], "suite.profile_id")
+    if suite["profile_id"] != profile_id:
+        raise ArtifactSchemaError(
+            f"suite.profile_id {suite['profile_id']!r} != the target profile {profile_id!r}")
+    scales = suite["scales"]
+    if not isinstance(scales, list) or not scales or \
+            not all(isinstance(s, str) and s for s in scales):
+        raise ArtifactTypeError("suite.scales must be a non-empty array of strings")
+    _check_closed(suite["counts"], SELECTION_LABELS, "suite.counts")
+    _check_closed(suite["cases"], SELECTION_LABELS, "suite.cases")
+    seen = set()
+    for label in SELECTION_LABELS:
+        _check_int(suite["counts"][label], f"suite.counts[{label!r}]", minimum=1)
+        cases = suite["cases"][label]
+        if not isinstance(cases, list) or len(cases) != suite["counts"][label]:
+            raise ArtifactSchemaError(
+                f"suite.cases[{label!r}] does not hold suite.counts[{label!r}] cases")
+        for i, case in enumerate(cases):
+            where = f"suite.cases[{label!r}][{i}]"
+            _check_closed(case, SUITE_CASE_FIELDS, where)
+            if _check_int(case["suite_index"], f"{where}.suite_index") != i:
+                raise ArtifactSchemaError(
+                    f"{where}.suite_index is {case['suite_index']}, the case sits at {i}")
+            _check_int(case["seed"], f"{where}.seed", maximum=2 ** 31 - 1)
+            _check_str(case["scale"], f"{where}.scale")
+            _check_str(case["instance_id"], f"{where}.instance_id")
+            fr.check_profile_id(case["profile_id"], f"{where}.profile_id")
+            fr.check_root(case["instance_hash"], f"{where}.instance_hash")
+            if case["profile_id"] != profile_id:
+                raise ArtifactSchemaError(f"{where}.profile_id != the target profile")
+            if case["instance_id"] in seen:
+                raise ArtifactSchemaError(
+                    f"{where} repeats instance {case['instance_id']!r}; the partitions are "
+                    "disjoint by construction")
+            seen.add(case["instance_id"])
+
+    witness = _check_closed(artifact["determinism_witness"], DETERMINISM_WITNESS_FIELDS,
+                            "determinism_witness")
+    if witness["law_id"] != FIXED_SUITE_LAW_ID:
+        raise ArtifactSchemaError(
+            "determinism_witness.law_id is not the fixed-suite law; a vector measured under "
+            "another law is not comparable and is never carried across (LAW §3A.6)")
+    if witness["suite_root"] != suite["suite_root"]:
+        raise ArtifactSchemaError(
+            "determinism_witness.suite_root != suite.suite_root; a stored vector measured on a "
+            "different exam is not this parent's vector")
+    if witness["profile_id"] != profile_id:
+        raise ArtifactSchemaError("determinism_witness.profile_id != the target profile")
+    if witness["source_kind"] not in WITNESS_SOURCE_KINDS:
+        raise ArtifactValueError(
+            f"determinism_witness.source_kind must be one of {list(WITNESS_SOURCE_KINDS)}")
+    for field in ("release_root", "source_root", "witness_root"):
+        fr.check_root(witness[field], f"determinism_witness.{field}")
+    _check_closed(witness["partitions"], SELECTION_LABELS, "determinism_witness.partitions")
+    for label in SELECTION_LABELS:
+        _validate_vector(witness["partitions"][label],
+                         f"determinism_witness.partitions[{label!r}]", profile_id)
+    recomputed = witness_root(witness)
+    if recomputed != witness["witness_root"]:
+        raise ArtifactSchemaError(
+            f"determinism_witness.witness_root {witness['witness_root']} is not the sha256 of "
+            f"its own canonical body {recomputed}")
+
+    floor = _check_closed(artifact["genesis_floor"], GENESIS_FLOOR_FIELDS, "genesis_floor")
+    if floor["status"] != "resolved":
+        raise ArtifactValueError(
+            "genesis_floor.status must be 'resolved': LAW §3A.3 makes a pending floor a REFUSAL, "
+            "never a skipped check, so no admission artifact can carry one")
+    if floor["suite_root"] != suite["suite_root"]:
+        raise ArtifactSchemaError("genesis_floor.suite_root != suite.suite_root")
+    _check_str(floor["source"], "genesis_floor.source")
+    _check_closed(floor["partitions"], SELECTION_LABELS, "genesis_floor.partitions")
+    for label in SELECTION_LABELS:
+        _validate_vector(floor["partitions"][label], f"genesis_floor.partitions[{label!r}]",
+                         profile_id)
+
+    dom = _check_closed(artifact["dominance"], DOMINANCE_FIELDS, "dominance")
+    _check_str(dom["engine"], "dominance.engine")
+    if dom["engine"] != DOMINANCE_ENGINE_ID:
+        raise ArtifactSchemaError(
+            f"dominance.engine {dom['engine']!r} is not {DOMINANCE_ENGINE_ID!r}")
+    _check_bool(dom["admit"], "dominance.admit")
+    _check_closed(dom["partitions"], SELECTION_LABELS, "dominance.partitions")
+    for label in SELECTION_LABELS:
+        where = f"dominance.partitions[{label!r}]"
+        part = _check_closed(dom["partitions"][label], DOMINANCE_PARTITION_FIELDS, where)
+        _check_bool(part["admit"], f"{where}.admit")
+        _check_bool(part["hard_ok"], f"{where}.hard_ok")
+        hard = part["hard"]
+        if not isinstance(hard, dict) or not hard:
+            raise ArtifactTypeError(f"{where}.hard must be a non-empty object")
+        for name, value in hard.items():
+            _check_str(name, f"{where}.hard key")
+            _check_bool(value, f"{where}.hard[{name!r}]")
+        for field in ("composite_after_ppm", "composite_before_ppm"):
+            _check_int(part[field], f"{where}.{field}", maximum=MAX_UINT32)
+        gain = part["composite_gain_ppm"]
+        if not isinstance(gain, int) or isinstance(gain, bool):
+            raise ArtifactTypeError(f"{where}.composite_gain_ppm must be an integer")
+        if gain != part["composite_after_ppm"] - part["composite_before_ppm"]:
+            raise ArtifactValueError(
+                f"{where}.composite_gain_ppm is not after - before")
+        for field in ("floor_regressions", "regressed_objectives", "regressed_resource_axes"):
+            names = part[field]
+            if not isinstance(names, list) or names != sorted(names) or \
+                    not all(isinstance(n, str) and n for n in names):
+                raise ArtifactTypeError(
+                    f"{where}.{field} must be a sorted array of names")
+        _validate_vector(part["candidate_vector"], f"{where}.candidate_vector", profile_id)
+        _validate_vector(part["incumbent_vector"], f"{where}.incumbent_vector", profile_id)
+        # ``hard_ok`` is a PROJECTION of ``hard``, never a second statement of it. Recomputed
+        # here, at the schema layer, so an artifact that flips a gate to false and leaves the
+        # rollup true is malformed rather than merely inconsistent-once-verified.
+        if part["hard_ok"] != all(hard.values()):
+            raise VerdictMismatchError(
+                f"{where}.hard_ok is {part['hard_ok']}, the bound hard-gate map evaluates to "
+                f"{all(hard.values())} (failing: "
+                f"{sorted(name for name, ok in hard.items() if not ok)})")
+        if part["admit"] and (part["regressed_objectives"] or part["regressed_resource_axes"]
+                              or part["floor_regressions"] or not part["hard_ok"]):
+            raise VerdictMismatchError(
+                f"{where} claims admit with a recorded regression or a failed hard gate")
+        # THE DETERMINISM WITNESS, as an ARTIFACT-LEVEL binding (LAW §3A.3). The incumbent vector
+        # in the dominance block is the parent arm RE-EXECUTED in this job; the witness carries the
+        # vector STORED for that exact release by its qualifying bridge or prior accept. Their
+        # equality IS the witness check, and it is decidable from the artifact alone — so it holds
+        # for a reader who has the document and not the evaluation report.
+        if part["incumbent_vector"] != witness["partitions"][label]:
+            differing = sorted(
+                k for k in set(part["incumbent_vector"]) | set(witness["partitions"][label])
+                if part["incumbent_vector"].get(k) != witness["partitions"][label].get(k))
+            raise DeterminismWitnessMismatchError(
+                f"{where}.incumbent_vector is not determinism_witness.partitions[{label!r}]; the "
+                f"re-executed parent arm and the stored vector for release "
+                f"{witness['release_root']} differ on {differing}. This is an environment-drift "
+                "detector and it fails closed")
+    if dom["admit"] != all(dom["partitions"][label]["admit"] for label in SELECTION_LABELS):
+        raise VerdictMismatchError(
+            "dominance.admit is not gate_admit AND confirm_admit")
+    if dom["admit"] != artifact["verdict"]["admit"]:
+        raise VerdictMismatchError(
+            "dominance.admit disagrees with the artifact verdict; the componentwise decision IS "
+            "the verdict")
+
+
+def witness_root(witness: Mapping[str, Any]) -> str:
+    """``sha256`` over the determinism-witness body, ``witness_root`` itself excluded.
+
+    Self-addressing so the stored parent vector is a content-addressed object the coordinator can
+    carry, cache and re-present without a second registry: whoever hands it over cannot restate it.
+    """
+    body = {k: v for k, v in witness.items() if k != "witness_root"}
+    return fr.sha256_hex(fr.canonical_bytes(body))
+
+
+class WorldSeedMismatchError(BindingMismatchError):
+    """The signed ``worldSeed`` is not the epoch secret's gate expansion."""
+
+
+def derive_world_seed(*, revealed_secret: str, epoch: int, parent_frontier_root: str) -> int:
+    """The signed ``worldSeed``, from the CHAIN-COMMITTED epoch secret. One rule, both eras.
+
+    ``worldSeed`` is the low 16 bytes of the gate entropy expansion
+    ``sha256(ENTROPY_DOMAIN|"gate"|secret|epoch|parent_frontier_root)``. It is stated once, here,
+    for the same reason the evaluator states it once: a consensus field with the truncation rule
+    written down twice is a drift surface.
+    """
+    gate = derive_entropy_value(revealed_secret=revealed_secret, epoch=epoch,
+                                parent_frontier_root=parent_frontier_root, label="gate")
+    return int(gate[-32:], 16)
+
+
+def verify_world_seed(artifact: Mapping[str, Any], *, revealed_secret: str) -> Dict[str, Any]:
+    """Recompute the rig receipt's ``world_seed`` from the revealed secret and REFUSE a mismatch.
+
+    WHY THIS IS A SEPARATE, ERA-AWARE STEP. Under the walk law the evaluator derived ``world_seed``
+    itself, from an opening it held, and the artifact carried the same expansion in its own entropy
+    block — so a validator that checked the entropy block had checked the seed by implication.
+    Under the fixed suite the exam is entropy-free and the evaluator is HANDED the derived gate
+    value by the coordinator (the raw opening never travels). That is the right design for the
+    secret, and it leaves exactly one gap: a v3 artifact carries no entropy block, so nothing else
+    in the verification chain ties the signed ``worldSeed`` to the chain-committed secret. Without
+    this check the coordinator would be TRUSTED on a consensus field, which is the split-authority
+    shape the v4 cut exists to close.
+
+    It is applied to BOTH eras, because the formula is the same one and a walk-era artifact whose
+    seed disagrees with its own entropy is no more acceptable than a v3 one that disagrees with the
+    chain.
+
+    Before ``EpochSecretRevealed`` lands the value is UNVERIFIABLE, and the caller is told so —
+    :func:`replay.replay_advance` reports it UNRESOLVED rather than assuming it good.
+    """
+    block = artifact.get("rig_receipt")
+    if not isinstance(block, dict):
+        return {"checked": False, "reason": "the artifact binds no rig receipt"}
+    expected = derive_world_seed(
+        revealed_secret=fr.check_root(revealed_secret, "revealed_secret"),
+        epoch=artifact["epoch"],
+        parent_frontier_root=artifact["frontier"]["parent_frontier_root"])
+    bound = block["world_seed"]
+    if bound != expected:
+        raise WorldSeedMismatchError(
+            f"the rig receipt signs world_seed {bound}, but the chain-revealed epoch secret "
+            f"expands under {ENTROPY_DOMAIN}|gate to {expected}. The signed seed must be a "
+            "function of the committed secret and of nothing anyone chooses")
+    return {"checked": True, "world_seed": expected}
+
+
 def validate_artifact(artifact: Any) -> Dict[str, Any]:
-    """Fail-closed structural validation. Returns the artifact unchanged; never a copy."""
+    """Fail-closed structural validation. Returns the artifact unchanged; never a copy.
+
+    LAW-DISPATCHED where the eras differ. The walk era (v1/v2) and the fixed-suite era (v3) share
+    every block that describes a MEASUREMENT, a receipt binding or a verdict — those did not change
+    at the v4 cut — and differ in how the cases were chosen and what the decision compared. So the
+    shared blocks are validated by one implementation for both, and only the era-specific blocks
+    branch.
+    """
     law = artifact_law(artifact)
     signed_era = law == al.LAW_OFF_CHAIN_SIGNATURE_V1
-    family = ARTIFACT_FORMAT_V1_SIGNED_ERA if signed_era else ARTIFACT_FORMAT
-    _check_closed(artifact, ARTIFACT_FIELDS, family, OPTIONAL_ARTIFACT_FIELDS)
+    fixed_suite_era = isinstance(artifact, dict) and artifact.get("format") == ARTIFACT_FORMAT_V3
+    family = (ARTIFACT_FORMAT_V1_SIGNED_ERA if signed_era else
+              ARTIFACT_FORMAT_V3 if fixed_suite_era else ARTIFACT_FORMAT)
+    _check_closed(artifact, ARTIFACT_FIELDS_V3 if fixed_suite_era else ARTIFACT_FIELDS,
+                  family, OPTIONAL_ARTIFACT_FIELDS)
     fr.check_epoch(artifact["epoch"])
     fr.check_root(artifact["counter_resource_law_root"], "counter_resource_law_root")
 
@@ -955,6 +1462,20 @@ def validate_artifact(artifact: Any) -> Dict[str, Any]:
     fr.validate_transition(front["transition"])
     _check_int(front["transition_bytes_len"], "frontier.transition_bytes_len", minimum=1,
                maximum=fr.MAX_TRANSITION_BYTES)
+
+    if fixed_suite_era:
+        _validate_fixed_suite_blocks(artifact)
+        _validate_measurements_block(artifact)
+        _validate_receipt_block(artifact, signed_era=False)
+        _validate_replay_inputs_block(artifact, signed_era=False)
+        _validate_accounting_and_verdict(artifact)
+        pub.validate_availability(artifact["availability"])
+        if "canary" in artifact:
+            validate_canary_block(artifact["canary"])
+        if "rig_receipt" in artifact:
+            validate_rig_receipt_block(artifact["rig_receipt"])
+        fr.canonical_bytes(artifact)     # fail closed before anyone addresses it
+        return artifact
 
     ent = artifact["entropy"]
     if not isinstance(ent, dict):
@@ -1009,95 +1530,10 @@ def validate_artifact(artifact: Any) -> Dict[str, Any]:
             fr.check_profile_id(case["profile_id"], f"{where}.profile_id")
             fr.check_root(case["instance_hash"], f"{where}.instance_hash")
 
-    meas = _check_closed(artifact["measurements"], MEASUREMENT_FIELDS, "measurements")
-    _check_str(meas["policy"], "measurements.policy")
-    if meas["micro_scale"] != MICRO:
-        raise ArtifactValueError(
-            f"measurements.micro_scale must be {MICRO}, got {meas['micro_scale']!r}")
-    _check_closed(meas["branches"], SELECTION_LABELS, "measurements.branches")
-    for label in SELECTION_LABELS:
-        pair = _check_closed(meas["branches"][label], ("candidate", "incumbent"),
-                             f"measurements.branches[{label!r}]")
-        for side_name in ("candidate", "incumbent"):
-            where = f"measurements.branches[{label!r}].{side_name}"
-            side = _check_closed(pair[side_name], SIDE_FIELDS, where)
-            for field in ("composite_micro", "compute_micro", "corpus_supported",
-                          "events_scanned", "hook_compute_fuel", "hook_fuel", "latency_micro",
-                          "rendered_cost_micro", "storage_bytes", "store_events", "store_ops",
-                          "work_fuel"):
-                _check_int(side[field], f"{where}.{field}")
-            _check_str(side["host_profile"], f"{where}.host_profile")
-            objectives = side["objectives_micro"]
-            if not isinstance(objectives, dict) or not objectives:
-                raise ArtifactTypeError(f"{where}.objectives_micro must be a non-empty object")
-            for name, value in objectives.items():
-                _check_str(name, f"{where}.objectives_micro key")
-                _check_int(value, f"{where}.objectives_micro[{name!r}]")
-
-    if signed_era:
-        rec = _check_closed(
-            artifact["receipt"], RECEIPT_FIELDS_V1_SIGNED_ERA, "receipt")
-        for field in ("outputs_hash", "receipt_hash", "wrapper_root"):
-            fr.check_root(rec[field], f"receipt.{field}")
-        _check_str(rec["signature_key_id"], "receipt.signature_key_id")
-    else:
-        rec = _check_closed(artifact["receipt"], RECEIPT_FIELDS, "receipt")
-        for field in ("eval_report_root", "outputs_hash"):
-            fr.check_root(rec[field], f"receipt.{field}")
-    _check_str(rec["measurement_policy"], "receipt.measurement_policy")
-    roots = rec["code_roots"]
-    if not isinstance(roots, dict) or not roots:
-        raise ArtifactTypeError("receipt.code_roots must be a non-empty object")
-    for tree, digest in roots.items():
-        _check_str(tree, "receipt.code_roots key")
-        fr.check_root(digest, f"receipt.code_roots[{tree!r}]")
-
-    replay = _check_closed(artifact["replay_inputs"], REPLAY_INPUT_FIELDS, "replay_inputs")
-    fr.validate_manifest(replay["parent_manifest"])
-    fr.check_root(replay["candidate_manifest_hash"], "replay_inputs.candidate_manifest_hash")
-    fr.check_root(replay["candidate_declaration_id"], "replay_inputs.candidate_declaration_id")
-    _check_str(replay["candidate_exec"], "replay_inputs.candidate_exec")
-    incumbent_fields = set(replay["incumbent"]) if isinstance(replay["incumbent"], dict) else set()
-    expected_incumbent_fields = (INCUMBENT_EXACT_FIELDS
-                                 if incumbent_fields == set(INCUMBENT_EXACT_FIELDS)
-                                 else INCUMBENT_FIELDS)
-    inc = _check_closed(replay["incumbent"], expected_incumbent_fields,
-                        "replay_inputs.incumbent")
-    _check_str(inc["id"], "replay_inputs.incumbent.id")
-    _check_str(inc["exec"], "replay_inputs.incumbent.exec")
-    fr.check_root(inc["candidate_hash"], "replay_inputs.incumbent.candidate_hash")
-    if expected_incumbent_fields == INCUMBENT_EXACT_FIELDS:
-        fr.check_root(inc["release_root"], "replay_inputs.incumbent.release_root")
-        fr.check_root(inc["module_sha256"], "replay_inputs.incumbent.module_sha256")
-    elif replay["candidate_exec"] == "candidate_module" and not signed_era \
-            and not parent_exec.is_pre_exact_parent_code_roots(roots):
-        raise ArtifactSchemaError(
-            "a prospective candidate-module artifact under this code-root set requires the "
-            "exact five-field incumbent release/module identity")
-
-    acct = _check_closed(artifact["resource_accounting"], RESOURCE_ACCOUNTING_FIELDS,
-                         "resource_accounting")
-    if acct["branch"] not in SELECTION_LABELS:
-        raise ArtifactValueError(
-            f"resource_accounting.branch must be one of {SELECTION_LABELS}")
-    for field in ("resource_after_ppm", "resource_before_ppm", "utility_after_ppm",
-                  "utility_before_ppm"):
-        _check_int(acct[field], f"resource_accounting.{field}", maximum=MAX_UINT32)
-
-    verdict = _check_closed(artifact["verdict"], VERDICT_FIELDS, "verdict")
-    _check_bool(verdict["admit"], "verdict.admit")
-    fr.check_root(verdict["decision_hash"], "verdict.decision_hash")
-    if verdict["verdict"] not in ("ADMIT", "REJECT"):
-        raise ArtifactValueError(
-            f"verdict.verdict must be 'ADMIT' or 'REJECT', got {verdict['verdict']!r}")
-    if verdict["verdict"] != ("ADMIT" if verdict["admit"] else "REJECT"):
-        raise VerdictMismatchError(
-            f"verdict.verdict {verdict['verdict']!r} does not agree with admit="
-            f"{verdict['admit']!r}")
-    if _check_bool(verdict["consensus_critical"], "verdict.consensus_critical") is not True:
-        raise ArtifactValueError(
-            "verdict.consensus_critical MUST be true: the deterministic Benchmark-v2 result is "
-            "the SOLE mining admission and state-advance law (§17.236)")
+    _validate_measurements_block(artifact)
+    _validate_receipt_block(artifact, signed_era=signed_era)
+    _validate_replay_inputs_block(artifact, signed_era=signed_era)
+    _validate_accounting_and_verdict(artifact)
 
     pub.validate_availability(artifact["availability"])
 
@@ -1474,6 +1910,735 @@ def _eval_report(report: Any) -> Dict[str, Any]:
 # --------------------------------------------------------------------------- #
 # Verification (spec §11)
 # --------------------------------------------------------------------------- #
+def suite_block_for(profile_id: str, report_selection: Mapping[str, Any]) -> Dict[str, Any]:
+    """Build the artifact's ``suite`` block and PROVE the report's cases are the law's cases.
+
+    The block is not copied from the evaluation report — it is built from the LAW DOCUMENT and then
+    the report is checked against it. A builder that transcribed the report would only ever prove
+    the report agrees with itself.
+    """
+    expected = cs.suite_cases(profile_id)
+    hashes = cs.suite_case_hashes(profile_id)
+    cases: Dict[str, Any] = {}
+    for label in SELECTION_LABELS:
+        bound = report_selection.get(label)
+        want = expected[label]
+        if not isinstance(bound, list) or len(bound) != len(want):
+            raise SuiteMembershipError(
+                f"the evaluation report's {label!r} selection holds "
+                f"{len(bound) if isinstance(bound, list) else 'a non-list'} cases; the canonical "
+                f"suite for {profile_id!r} declares {len(want)}")
+        rows = []
+        for index, (case, suite_case) in enumerate(zip(bound, want)):
+            where = f"report selection[{label!r}][{index}]"
+            for field in ("instance_id", "profile_id", "scale", "seed", "suite_index"):
+                if case.get(field) != suite_case[field]:
+                    raise SuiteMembershipError(
+                        f"{where}.{field} is {case.get(field)!r}; the canonical suite declares "
+                        f"{suite_case[field]!r}")
+            measured = case.get("instance_hash")
+            if measured != hashes[suite_case["instance_id"]]:
+                raise SuiteMembershipError(
+                    f"{where}.instance_hash {measured} is not the suite-bound instance hash "
+                    f"{hashes[suite_case['instance_id']]} — the scored instance is not the case "
+                    "the law names")
+            rows.append(dict(suite_case, instance_hash=measured))
+        cases[label] = rows
+    return {
+        "cases": cases,
+        "counts": {label: len(cases[label]) for label in SELECTION_LABELS},
+        "format": cs.SUITE_FORMAT,
+        "law_id": FIXED_SUITE_LAW_ID,
+        "profile_id": profile_id,
+        "scales": cs.suite_scales(profile_id),
+        "suite_root": cs.suite_root(),
+        "suite_version": cs.suite_version(),
+    }
+
+
+def genesis_floor_block_for(profile_id: str) -> Dict[str, Any]:
+    """The law-bound constructor-genesis floor, as this decision resolved it."""
+    try:
+        partitions = {label: cs.genesis_floor_vector(profile_id, label)
+                      for label in SELECTION_LABELS}
+    except cs.GenesisFloorPendingError as exc:
+        raise GenesisFloorPendingError(str(exc)) from exc
+    authority = cs.genesis_floor_authority()
+    source = authority.get("source")
+    return {
+        "partitions": partitions,
+        "source": source if isinstance(source, str) else json.dumps(source, sort_keys=True),
+        "status": "resolved",
+        "suite_root": cs.suite_root(),
+    }
+
+
+def build_determinism_witness(*, profile_id: str, release_root: str, source_kind: str,
+                              source_root: str, partitions: Mapping[str, Any]
+                              ) -> Dict[str, Any]:
+    """Assemble a self-addressing STORED PARENT VECTOR document.
+
+    This is the object a v2 job carries for its exact parent, and the object a bridge run publishes
+    for a pre-cut release. ``witness_root`` is sha256 over the rest of the body, so the coordinator
+    transports a content address rather than a claim.
+    """
+    body = {
+        "law_id": FIXED_SUITE_LAW_ID,
+        "partitions": {label: dict(partitions[label]) for label in SELECTION_LABELS},
+        "profile_id": profile_id,
+        "release_root": release_root,
+        "source_kind": source_kind,
+        "source_root": source_root,
+        "suite_root": cs.suite_root(),
+    }
+    return dict(body, witness_root=witness_root(body))
+
+
+def build_bridge_vector_document(*, profile_id: str, release_root: str,
+                                 partitions: Mapping[str, Any],
+                                 measured_by: Mapping[str, Any]) -> Dict[str, Any]:
+    """The published BRIDGE measurement a ``source_kind == "bridge"`` witness resolves to.
+
+    P5's one-time bridge run measures the constructor-genesis release and each profile's CURRENT
+    pre-cut release on the sealed suite. Those vectors are the stored vectors of the first
+    post-cut job for each slot, and until they are PUBLISHED under a content address, a witness
+    carrying them is an unbacked claim: whoever assembles the job states the number.
+
+    ``measured_by`` is free-form provenance (image tag/digest, run id, evidence root) — it is
+    recorded, hashed into the root, and never interpreted by the decision.
+    """
+    body = {
+        "format": BRIDGE_VECTOR_FORMAT,
+        "law_id": FIXED_SUITE_LAW_ID,
+        "measured_by": json.loads(json.dumps(measured_by, sort_keys=True)),
+        "partitions": {label: dict(partitions[label]) for label in SELECTION_LABELS},
+        "profile_id": profile_id,
+        "release_root": release_root,
+        "suite_root": cs.suite_root(),
+    }
+    return validate_bridge_vector_document(body)
+
+
+def validate_bridge_vector_document(document: Any) -> Dict[str, Any]:
+    """Fail-closed structural validation of a :data:`BRIDGE_VECTOR_FORMAT` document."""
+    doc = _check_closed(document, BRIDGE_VECTOR_FIELDS, BRIDGE_VECTOR_FORMAT)
+    if doc["format"] != BRIDGE_VECTOR_FORMAT:
+        raise ArtifactSchemaError(
+            f"format {doc['format']!r} is not {BRIDGE_VECTOR_FORMAT!r}")
+    if doc["law_id"] != FIXED_SUITE_LAW_ID:
+        raise ArtifactSchemaError(
+            "a bridge vector document records a measurement under the fixed-suite law and no "
+            "other; a vector measured under another law is never carried across (LAW §3A.6)")
+    fr.check_profile_id(doc["profile_id"], "profile_id")
+    for field in ("release_root", "suite_root"):
+        fr.check_root(doc[field], field)
+    if not isinstance(doc["measured_by"], (dict, str)) or not doc["measured_by"]:
+        raise ArtifactSchemaError(
+            "a bridge vector document must name the measurement it came from")
+    _check_closed(doc["partitions"], SELECTION_LABELS, "partitions")
+    for label in SELECTION_LABELS:
+        _validate_vector(doc["partitions"][label], f"partitions[{label!r}]", doc["profile_id"])
+    return doc
+
+
+def bridge_vector_root(document: Mapping[str, Any]) -> str:
+    """``sha256`` over the bridge document's V5-A canonical bytes — its publication address."""
+    return fr.sha256_hex(fr.canonical_bytes(validate_bridge_vector_document(document)))
+
+
+def resolve_determinism_witness_source(artifact: Mapping[str, Any], *,
+                                       store: pub.ContentStore) -> Dict[str, Any]:
+    """Resolve ``determinism_witness.source_root`` against the PUBLIC object it names.
+
+    ``verify_artifact`` proves the witness is whole and that the parent arm re-executed in THIS job
+    reproduced it. Neither answers "where did that stored vector come from" — for that the named
+    object has to be fetched and made to carry the same vector:
+
+    ``source_kind == "bridge"``
+        ``source_root`` addresses a :data:`BRIDGE_VECTOR_FORMAT` document (P5 publishes one per
+        profile). Its law, suite, profile, release and both partition vectors must equal the
+        witness's.
+
+    ``source_kind == "prior_accept"``
+        ``source_root`` is the ``evalReportHash`` of the ACCEPTING v3 artifact that installed this
+        release. Its CANDIDATE vector is by construction the vector that release stores, so that
+        is what must equal the witness's partitions — and the artifact must actually have admitted.
+
+    Raises :class:`WitnessSourceUnavailableError` when the object is not published here and
+    :class:`WitnessSourceMismatchError` when it is published and disagrees. The two are different
+    outcomes and are never conflated.
+    """
+    witness = artifact["determinism_witness"]
+    kind = witness["source_kind"]
+    root = witness["source_root"]
+    try:
+        obj = pub.fetch_json(root, hash_rule=pub.HASH_RULE_FRONTIER_JSON, store=store)
+    except pub.ObjectNotFoundError as exc:
+        raise WitnessSourceUnavailableError(
+            f"determinism_witness.source_root {root} ({kind}) is not published on this "
+            f"surface: {exc}") from exc
+    except pub.PublicationError as exc:
+        raise WitnessSourceMismatchError(
+            f"determinism_witness.source_root {root} does not fetch as a canonical object: "
+            f"{exc}") from exc
+
+    if kind == "bridge":
+        try:
+            doc = validate_bridge_vector_document(obj)
+        except EvalArtifactError as exc:
+            raise WitnessSourceMismatchError(
+                f"the object at determinism_witness.source_root {root} is not a valid "
+                f"{BRIDGE_VECTOR_FORMAT!r}: {exc}") from exc
+        for field, value in (("law_id", witness["law_id"]), ("suite_root", witness["suite_root"]),
+                             ("profile_id", witness["profile_id"]),
+                             ("release_root", witness["release_root"])):
+            _require(doc[field] == value, WitnessSourceMismatchError,
+                     f"the bridge document at {root} records {field}={doc[field]!r}; the witness "
+                     f"claims {value!r}")
+        source_partitions = doc["partitions"]
+        source_kind_detail = doc["measured_by"]
+    else:                                             # "prior_accept" — the only other kind
+        try:
+            prior = validate_artifact(obj)
+        except EvalArtifactError as exc:
+            raise WitnessSourceMismatchError(
+                f"the object at determinism_witness.source_root {root} is not a valid eval "
+                f"artifact: {exc}") from exc
+        _require(prior.get("format") == ARTIFACT_FORMAT_V3, WitnessSourceMismatchError,
+                 f"the artifact at {root} is a {prior.get('format')!r}; only a fixed-suite (v3) "
+                 "artifact stores an absolute vector for the release it installed")
+        rehashed = eval_report_hash(prior)
+        _require(rehashed == root, WitnessSourceMismatchError,
+                 f"the artifact fetched for source_root {root} rehashes to {rehashed}")
+        _require(prior["verdict"]["admit"] is True, WitnessSourceMismatchError,
+                 f"the artifact at {root} is a REJECT; a rejected candidate never became a "
+                 "release and stores no vector")
+        for field, value, where in (
+                ("suite_root", witness["suite_root"], prior["suite"]["suite_root"]),
+                ("profile_id", witness["profile_id"], prior["candidate"]["target_profile"]),
+                ("release_root", witness["release_root"], prior["candidate"]["release_root"])):
+            _require(where == value, WitnessSourceMismatchError,
+                     f"the accepting artifact at {root} records {field}={where!r}; the witness "
+                     f"claims {value!r}")
+        source_partitions = {label: prior["dominance"]["partitions"][label]["candidate_vector"]
+                             for label in SELECTION_LABELS}
+        source_kind_detail = {"epoch": prior["epoch"],
+                              "candidate_hash": prior["candidate"]["candidate_hash"]}
+
+    for label in SELECTION_LABELS:
+        if source_partitions[label] != witness["partitions"][label]:
+            differing = sorted(
+                k for k in set(source_partitions[label]) | set(witness["partitions"][label])
+                if source_partitions[label].get(k) != witness["partitions"][label].get(k))
+            raise WitnessSourceMismatchError(
+                f"the {kind} object at {root} publishes a different {label!r} vector for release "
+                f"{witness['release_root']} than the witness carries; differing components: "
+                f"{differing}")
+    return {"resolved": True, "source_kind": kind, "source_root": root,
+            "release_root": witness["release_root"], "profile_id": witness["profile_id"],
+            "source": source_kind_detail}
+
+
+def parent_vector_from_verdicts(verdicts: Mapping[str, Any]) -> Dict[str, Any]:
+    """The parent arm's RECOMPUTED absolute vector per partition, read off the bound verdicts."""
+    return {label: _vector_from_verdict(verdicts[label], "incumbent", label)
+            for label in SELECTION_LABELS}
+
+
+def candidate_vector_from_verdicts(verdicts: Mapping[str, Any]) -> Dict[str, Any]:
+    """The candidate arm's absolute vector per partition — the vector this release would STORE."""
+    return {label: _vector_from_verdict(verdicts[label], "candidate", label)
+            for label in SELECTION_LABELS}
+
+
+def _vector_from_verdict(verdict: Mapping[str, Any], side: str, label: str) -> Dict[str, Any]:
+    vectors = verdict.get("vectors") if isinstance(verdict, Mapping) else None
+    vector = vectors.get(side) if isinstance(vectors, Mapping) else None
+    if not isinstance(vector, Mapping):
+        raise ReceiptBindingError(
+            f"the {label!r} verdict carries no {side} absolute vector; a fixed-suite decision is "
+            "made on vectors and cannot be projected from a verdict that does not record them")
+    # The verdict names the profile it was decided for (``dominance.decide`` emits it), so the
+    # projection is bound to that profile's full declared vocabulary here too — the projection is
+    # what the artifact then carries, and a vector that lost an objective on the way in would
+    # never be caught by a comparison made after it.
+    profile_id = verdict.get("profile") if isinstance(verdict, Mapping) else None
+    return _validate_vector(dict(vector), f"verdicts[{label!r}].vectors.{side}",
+                            profile_id if isinstance(profile_id, str) and profile_id else None)
+
+
+#: The components of an ABSOLUTE VECTOR that :func:`project_measurements` also measures, so the
+#: decided vector and the measured one can be compared field for field.
+#: ``logical_durable_storage_bytes`` is deliberately ABSENT — see
+#: :func:`assert_decided_vectors_are_measured`.
+MEASURABLE_VECTOR_FIELDS = ("composite_micro", "rendered_cost_micro", "work_fuel")
+
+
+def assert_decided_vectors_are_measured(dominance: Mapping[str, Any],
+                                        projected: Mapping[str, Any]) -> None:
+    """The vectors the componentwise rule DECIDED on must be the ones the report MEASURED.
+
+    A Benchmark-v2 report states each side twice: once as raw ``scores`` (from which
+    :func:`project_measurements` projects) and once as ``verdicts[*].vectors``, the absolute
+    vectors the rule actually compared. Everything downstream of the verdicts — the dominance
+    block, the determinism witness, the bridge document the witness resolves to — derives from the
+    SECOND statement, and nothing tied it to the first.
+
+    That gap was exploitable end to end. Raise one objective inside
+    ``verdicts[*].vectors.candidate``, leave ``scores`` untouched, flip the branch verdicts and the
+    decision, and the REAL builder minted an ADMIT artifact whose every internal binding was honest
+    by construction: measurements still projected exactly (they come from ``scores``), the
+    dominance block still derived from the verdicts, the witness still matched the re-executed
+    parent arm, and the published bridge document still backed it. Both verify shapes passed. The
+    artifact contradicted ITSELF — dominance against measurements — and nobody compared the two.
+    Only benchmark-side receipt recomputation or a full sandbox replay would have caught it, and
+    the V5 artifact layer runs neither.
+
+    WHY THREE SCALARS AND THE OBJECTIVES, NOT ALL FIVE COMPONENTS.
+    ``logical_durable_storage_bytes`` is NOT in the projection under
+    ``final-render-trusted-hostwork.v4``: :func:`project_side` fills the artifact's stable
+    ``storage_bytes`` slot from the raw input-byte axis for that policy (the logical axis is
+    selected only by ``final-render-metered.v2``), so there is no projected value to compare it
+    against here. It stays covered by the witness/bridge chain — the stored vector carries it, the
+    re-executed parent arm must reproduce it, and the published bridge document must publish it —
+    which binds the incumbent side directly and the candidate side at the next accept. Closing
+    that last gap properly means projecting the logical axis for this policy too, which is a
+    MEASUREMENT-LAW change and belongs to a law cut, not to a verifier.
+    """
+    for label in SELECTION_LABELS:
+        for side, key in (("candidate", "candidate_vector"), ("incumbent", "incumbent_vector")):
+            vector = dominance["partitions"][label][key]
+            measured = projected["branches"][label][side]
+            where = f"dominance.partitions[{label!r}].{key}"
+            for field in MEASURABLE_VECTOR_FIELDS:
+                _require(vector[field] == measured[field], VerdictMismatchError,
+                         f"{where}.{field} is {vector[field]}, the receipt's own "
+                         f"scores[{label!r}][{side!r}] measure {measured[field]}; the vector the "
+                         "componentwise rule decided on is not the vector that was measured")
+            bound_objectives = vector["objectives_micro"]
+            measured_objectives = measured["objectives_micro"]
+            differing = sorted(oid for oid in set(bound_objectives) | set(measured_objectives)
+                               if bound_objectives.get(oid) != measured_objectives.get(oid))
+            _require(not differing, VerdictMismatchError,
+                     f"{where}.objectives_micro does not equal the receipt's measured "
+                     f"scores[{label!r}][{side!r}] objectives on {differing}; a decision made on "
+                     "numbers the report did not measure is not a decision under this law")
+
+
+def assert_determinism_witness(recomputed: Mapping[str, Any],
+                               witness: Mapping[str, Any]) -> None:
+    """LAW §3A.3's determinism witness. Fails closed on ANY component difference."""
+    stored = witness["partitions"]
+    for label in SELECTION_LABELS:
+        got = recomputed[label]
+        want = stored[label]
+        if got != want:
+            differing = sorted(k for k in set(got) | set(want) if got.get(k) != want.get(k))
+            raise DeterminismWitnessMismatchError(
+                f"the re-executed parent arm's {label!r} vector does not equal the vector stored "
+                f"for release {witness['release_root']} by its {witness['source_kind']} "
+                f"qualification; differing components: {differing}. This is an environment-drift "
+                "detector and it fails closed — it never adjusts a number and never admits.")
+
+
+def dominance_block_for(verdicts: Mapping[str, Any], decision: Mapping[str, Any]
+                        ) -> Dict[str, Any]:
+    """The ``dominance`` block, DERIVED from the evaluation report's own bound verdicts."""
+    partitions = {}
+    candidate_vectors = candidate_vector_from_verdicts(verdicts)
+    incumbent_vectors = parent_vector_from_verdicts(verdicts)
+    for label in SELECTION_LABELS:
+        verdict = verdicts[label]
+        deltas = verdict.get("deltas") or {}
+        if verdict.get("engine") != DOMINANCE_ENGINE_ID:
+            raise VerdictMismatchError(
+                f"the {label!r} verdict was produced by {verdict.get('engine')!r}, not "
+                f"{DOMINANCE_ENGINE_ID!r}; a v3 artifact records a componentwise decision")
+        partitions[label] = {
+            "admit": bool(verdict["admit"]),
+            "candidate_vector": candidate_vectors[label],
+            "composite_after_ppm": int(deltas["composite_after_ppm"]),
+            "composite_before_ppm": int(deltas["composite_before_ppm"]),
+            "composite_gain_ppm": int(deltas["composite_gain_ppm"]),
+            "floor_regressions": sorted(deltas.get("floor_regressions") or ()),
+            "hard": {name: bool(value) for name, value in sorted(verdict["hard"].items())},
+            "hard_ok": bool(verdict["hard_ok"]),
+            "incumbent_vector": incumbent_vectors[label],
+            "regressed_objectives": sorted(deltas.get("regressed_objectives") or ()),
+            "regressed_resource_axes": sorted(deltas.get("regressed_resource_axes") or ()),
+        }
+    return {"admit": bool(decision["admit"]), "engine": DOMINANCE_ENGINE_ID,
+            "partitions": partitions}
+
+
+def build_artifact_v3(*, epoch: int, parent_manifest: Mapping[str, Any], epoch_pins: Any = None,
+                      transition: Mapping[str, Any], candidate_hash: str,
+                      eval_report: Mapping[str, Any],
+                      counter_resource_law: Mapping[str, Any],
+                      availability: Mapping[str, Any],
+                      parent_stored_vector: Mapping[str, Any],
+                      counter_resource_law_root_hex: Optional[str] = None,
+                      canary: Optional[Mapping[str, Any]] = None,
+                      rig_receipt: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
+    """Assemble a complete ``coretex.memory-eval-artifact.v3`` (fixed-suite era).
+
+    THE DIFFERENCES FROM :func:`build_artifact`, and nothing else:
+
+      * there is no ``revealed_entropy_secret`` parameter and no ``entropy`` block. Under LAW §3A.4
+        the epoch secret is not a case selector, so a v2 evaluation job is never handed one and
+        this builder could not derive a commitment even if a reader expected the field;
+      * ``selection`` is replaced by ``suite``, built FROM THE LAW DOCUMENT and checked against the
+        report's cases (:func:`suite_block_for`);
+      * ``determinism_witness``, ``genesis_floor`` and ``dominance`` are added. The witness is
+        supplied (it is the exact parent's stored qualifying vector, which this job cannot
+        measure); the floor is read from the law; the dominance block is DERIVED from the report's
+        own verdicts. The witness equality is asserted here, so a drifting evaluator cannot mint an
+        artifact at all.
+
+    Everything else — the frontier replay, the measurement projection, the counter-law accounting,
+    the receipt bindings and the rig block — is the identical code path v2 uses.
+    """
+    fr.validate_manifest(parent_manifest)
+    fr.validate_transition(transition)
+    fr.check_root(candidate_hash, "candidate_hash")
+    validate_counter_resource_law(counter_resource_law)
+
+    parent_root = fr.frontier_root(parent_manifest)
+    child = fr.apply_transition(parent_manifest, transition, epoch=epoch, epoch_pins=epoch_pins)
+    new_root = fr.frontier_root(child)
+    tbytes = fr.canonical_bytes(transition)
+
+    body = _eval_report(eval_report)
+    law_descriptor = body.get("evaluation_law")
+    bound_law_id = law_descriptor.get("law_id") if isinstance(law_descriptor, Mapping) else None
+    if bound_law_id != FIXED_SUITE_LAW_ID:
+        raise ReceiptBindingError(
+            f"a v3 artifact records an evaluation under {FIXED_SUITE_LAW_ID!r}; the supplied "
+            f"report is bound to {bound_law_id!r}")
+    if law_descriptor.get("canonical_suite_root") != cs.suite_root():
+        raise SuiteMembershipError(
+            "the evaluation report's bound law names a different canonical suite than the one "
+            "this builder carries; a changed suite is a new law (LAW §3A.6)")
+    if set(body.get("incumbent") or {}) == set(INCUMBENT_FIELDS):
+        raise ReceiptBindingError(
+            "a v3 artifact requires the exact five-field incumbent release/module identity; the "
+            "historical three-field reference shape is closed to pre-cut artifacts")
+    target = transition["target_profile"]
+
+    suite = suite_block_for(target, body["selection"])
+    floor = genesis_floor_block_for(target)
+    witness = _check_closed(dict(parent_stored_vector), DETERMINISM_WITNESS_FIELDS,
+                            "parent_stored_vector")
+    if witness["release_root"] != transition["expected_prior_release_root"]:
+        raise DeterminismWitnessMismatchError(
+            f"the supplied stored vector is for release {witness['release_root']}, but this "
+            f"evaluation's exact parent is {transition['expected_prior_release_root']}")
+    assert_determinism_witness(parent_vector_from_verdicts(body["verdicts"]), witness)
+
+    measurements = project_measurements(body)
+    # THE DECIDED VECTORS ARE THE MEASURED ONES, at MINT time as well as at verification. The
+    # forgery this closes is a report whose ``verdicts[*].vectors`` disagree with its own
+    # ``scores``; every binding this builder makes afterwards would then be honest by
+    # construction, so the projection is the only thing that can see it. Refusing here means an
+    # evaluator handed such a report cannot mint an artifact from it at all.
+    assert_decided_vectors_are_measured(dominance_block_for(body["verdicts"], body["decision"]),
+                                        measurements)
+    branch = counter_resource_law["branch"]
+    ppm = evaluate_counter_resource_law(counter_resource_law,
+                                        measurements["branches"][branch]["candidate"],
+                                        measurements["branches"][branch]["incumbent"])
+    artifact = {
+        "availability": {name: dict(item) for name, item in availability.items()},
+        "candidate": {
+            "candidate_hash": candidate_hash,
+            "prior_release_root": transition["expected_prior_release_root"],
+            "release_root": transition["new_release_root"],
+            "target_profile": target,
+        },
+        "counter_resource_law_root": (counter_resource_law_root_hex
+                                      or counter_resource_law_root(counter_resource_law)),
+        "determinism_witness": dict(witness),
+        "dominance": dominance_block_for(body["verdicts"], body["decision"]),
+        "epoch": epoch,
+        "format": ARTIFACT_FORMAT_V3,
+        "frontier": {
+            "benchmark_law_root": child["benchmark_law_root"],
+            "composition_root": transition["resulting_composition_root"],
+            "new_frontier_root": new_root,
+            "parent_frontier_root": parent_root,
+            "runtime_abi_root": child["runtime_abi_root"],
+            "transition": dict(transition),
+            "transition_bytes_len": len(tbytes),
+            "transition_hash_keccak256": transition_hash_keccak256(tbytes),
+            "transition_id_sha256": fr.transition_hash(transition),
+        },
+        "genesis_floor": floor,
+        "measurements": measurements,
+        "receipt": {
+            "code_roots": dict(body["code_roots"]),
+            "eval_report_root": eval_report_root(body),
+            "measurement_policy": body["measurement_policy"],
+            "outputs_hash": body["outputs_hash"],
+        },
+        "replay_inputs": {
+            "candidate_declaration_id": body["candidate"]["declaration_id"],
+            "candidate_exec": body["candidate"]["exec"],
+            "candidate_manifest_hash": body["candidate"]["manifest_hash"],
+            "incumbent": project_incumbent(body["incumbent"]),
+            "parent_manifest": dict(parent_manifest),
+        },
+        "resource_accounting": dict(ppm, branch=branch),
+        "suite": suite,
+        "verdict": {
+            "admit": bool(body["decision"]["admit"]),
+            "consensus_critical": True,
+            "decision_hash": fr.sha256_hex(pub.benchmark_canonical_bytes(body["decision"])),
+            "verdict": body["decision"]["verdict"],
+        },
+    }
+    if canary is not None:
+        artifact["canary"] = dict(canary)
+    if rig_receipt is not None:
+        artifact["rig_receipt"] = dict(rig_receipt)
+    return validate_artifact(artifact)
+
+
+def verify_suite_membership(artifact: Mapping[str, Any]) -> Dict[str, Any]:
+    """The v3 sibling of :func:`verify_selection_walk`: MEMBERSHIP, not re-derivation.
+
+    Under the walk era the honest thing a pure function could prove was that each recorded case sat
+    at its claimed index of a walk — and it had to say out loud that whether a SKIPPED index was
+    legitimate needed the generators and the oracle screen (that is ``replay.verify_selection_complete``).
+    Under a fixed suite that whole question disappears: there are no skipped indices because there
+    is no walk. What must be true is that the artifact's cases ARE the law's cases, in the law's
+    order, with the law's instance hashes — which is decidable offline, from the law document,
+    with nothing but the stdlib.
+
+    The suite is re-read from ``benchmark-v2/validator/CANONICAL-SUITE.v1.json`` rather than
+    trusted from the artifact, and the artifact's ``suite_root`` must equal the sha256 of those
+    exact bytes. An artifact carrying a suite nobody else has is therefore a mismatch, not a
+    variation.
+    """
+    suite = artifact["suite"]
+    profile_id = suite["profile_id"]
+    expected_root = cs.suite_root()
+    _require(suite["suite_root"] == expected_root, SuiteMembershipError,
+             f"the artifact names canonical suite {suite['suite_root']}; this law tree carries "
+             f"{expected_root}. A changed suite is a NEW LAW (LAW §3A.6), never a variation of "
+             "this one")
+    _require(suite["suite_version"] == cs.suite_version(), SuiteMembershipError,
+             "the artifact's suite_version is not this law tree's suite version")
+    _require(list(suite["scales"]) == list(cs.suite_scales(profile_id)), SuiteMembershipError,
+             "the artifact's suite scales are not the law's scales for this profile")
+    expected_cases = cs.suite_cases(profile_id)
+    hashes = cs.suite_case_hashes(profile_id)
+    for label in SELECTION_LABELS:
+        bound = suite["cases"][label]
+        want = expected_cases[label]
+        _require(len(bound) == len(want), SuiteMembershipError,
+                 f"the artifact's {label!r} partition holds {len(bound)} cases; the canonical "
+                 f"suite for {profile_id!r} declares {len(want)} and a partition is never "
+                 "subsetted, extended or re-ordered")
+        for index, (case, suite_case) in enumerate(zip(bound, want)):
+            for field in ("instance_id", "profile_id", "scale", "seed", "suite_index"):
+                _require(case[field] == suite_case[field], SuiteMembershipError,
+                         f"suite.cases[{label!r}][{index}].{field} is {case[field]!r}; the "
+                         f"canonical suite declares {suite_case[field]!r}")
+            _require(case["instance_hash"] == hashes[case["instance_id"]], SuiteMembershipError,
+                     f"suite.cases[{label!r}][{index}].instance_hash "
+                     f"{case['instance_hash']} is not the suite-bound instance hash "
+                     f"{hashes[case['instance_id']]} — the scored instance is not the case the "
+                     "law names")
+    return {"profile_id": profile_id, "suite_root": expected_root,
+            "counts": dict(suite["counts"])}
+
+
+def verify_genesis_floor(artifact: Mapping[str, Any]) -> Dict[str, Any]:
+    """The artifact's floor block must be the law's resolved floor, vector for vector."""
+    floor = artifact["genesis_floor"]
+    profile_id = artifact["candidate"]["target_profile"]
+    if not cs.genesis_floor_resolved():
+        raise GenesisFloorPendingError(
+            "this law tree's constructor-genesis floor is pending, so no v4 admission is "
+            "computable and no artifact claiming one can be verified (LAW §3A.3)")
+    _require(floor["suite_root"] == cs.suite_root(), SuiteMembershipError,
+             "genesis_floor.suite_root is not this law tree's canonical suite root")
+    # THE PROVENANCE IS LAW TOO. ``source`` names the bridge measurement the floor came from, and
+    # it was free text nobody compared to anything: an artifact could restate it as any string at
+    # all while carrying the correct vectors. It is projected from the authority document exactly
+    # as ``genesis_floor_block_for`` builds it, so it is a checkable claim rather than a label.
+    authority_source = cs.genesis_floor_authority().get("source")
+    expected_source = (authority_source if isinstance(authority_source, str)
+                       else json.dumps(authority_source, sort_keys=True))
+    _require(floor["source"] == expected_source, BindingMismatchError,
+             f"genesis_floor.source is {floor['source']!r}; this law tree's floor was measured by "
+             f"{expected_source!r}. The provenance of the floor is part of the floor")
+    for label in SELECTION_LABELS:
+        expected = cs.genesis_floor_vector(profile_id, label)
+        _require(floor["partitions"][label] == expected, BindingMismatchError,
+                 f"genesis_floor.partitions[{label!r}] is not the law-bound constructor-genesis "
+                 f"floor vector for {profile_id!r}")
+    return {"profile_id": profile_id, "status": floor["status"]}
+
+
+def verify_dominance_block(artifact: Mapping[str, Any]) -> Dict[str, Any]:
+    """Re-derive the componentwise outcome from the artifact's OWN bound vectors.
+
+    The vectors are the evidence; the flags are a projection of them. This recomputes the
+    projection — the composite gain, which objectives regressed, which resource axes regressed and
+    which floor components were missed — and refuses any disagreement. It is a self-consistency
+    check, deliberately: whether those vectors are the RIGHT ones is settled by
+    :func:`verify_suite_membership`, :func:`verify_genesis_floor`, the measurement projection in
+    step 7 and the receipt's own decision recomputation in the benchmark-v2 validator.
+    """
+    dom = artifact["dominance"]
+    floor = artifact["genesis_floor"]["partitions"]
+    for label in SELECTION_LABELS:
+        part = dom["partitions"][label]
+        cand_vec = part["candidate_vector"]
+        inc_vec = part["incumbent_vector"]
+        where = f"dominance.partitions[{label!r}]"
+        _require(cand_vec["composite_micro"] // 100 == part["composite_after_ppm"],
+                 VerdictMismatchError,
+                 f"{where}.composite_after_ppm is not composite_micro // 100 of the bound "
+                 "candidate vector")
+        _require(inc_vec["composite_micro"] // 100 == part["composite_before_ppm"],
+                 VerdictMismatchError,
+                 f"{where}.composite_before_ppm is not composite_micro // 100 of the bound "
+                 "incumbent vector")
+        # ``hard_ok`` is recomputed from the bound map here as well as at the schema layer: this
+        # function is the one a caller reaches for to re-derive the componentwise outcome, and a
+        # rollup it took on trust would be a rollup an artifact could state.
+        _require(bool(part["hard_ok"]) == all(bool(v) for v in part["hard"].values()),
+                 VerdictMismatchError,
+                 f"{where}.hard_ok does not recompute from the bound hard-gate map")
+        # A KEY ABSENT FROM THE COMPARAND IS A REFUSAL, never "compare it against itself". The
+        # old `.get(oid, value)` default made a dropped objective invisible to the recomputation,
+        # which is exactly the shape a forger reaches for: strip the regressed axis from both
+        # vectors and nothing recomputes as regressed.
+        for oid in cand_vec["objectives_micro"]:
+            _require(oid in inc_vec["objectives_micro"], VerdictMismatchError,
+                     f"{where}.incumbent_vector carries no objective {oid!r} the candidate vector "
+                     "measures; a componentwise comparison has no default for a missing component")
+        for oid in inc_vec["objectives_micro"]:
+            _require(oid in cand_vec["objectives_micro"], VerdictMismatchError,
+                     f"{where}.candidate_vector carries no objective {oid!r} the incumbent vector "
+                     "measures")
+        regressed_objectives = sorted(
+            oid for oid, value in cand_vec["objectives_micro"].items()
+            if value < inc_vec["objectives_micro"][oid])
+        _require(regressed_objectives == list(part["regressed_objectives"]),
+                 VerdictMismatchError,
+                 f"{where}.regressed_objectives does not recompute from the bound vectors "
+                 f"(bound {part['regressed_objectives']}, recomputed {regressed_objectives})")
+        regressed_axes = sorted(
+            axis for axis, key in (("logical_durable_storage_bytes",
+                                    "logical_durable_storage_bytes"),
+                                   ("rendered_cost", "rendered_cost_micro"),
+                                   ("work_fuel", "work_fuel"))
+            if cand_vec[key] > inc_vec[key])
+        _require(regressed_axes == list(part["regressed_resource_axes"]), VerdictMismatchError,
+                 f"{where}.regressed_resource_axes does not recompute from the bound vectors "
+                 f"(bound {part['regressed_resource_axes']}, recomputed {regressed_axes})")
+        floor_vec = floor[label]
+        for oid in cand_vec["objectives_micro"]:
+            _require(oid in floor_vec["objectives_micro"], VerdictMismatchError,
+                     f"genesis_floor.partitions[{label!r}] carries no objective {oid!r}; the "
+                     "floor comparison has no default for a missing component")
+        for oid in floor_vec["objectives_micro"]:
+            _require(oid in cand_vec["objectives_micro"], VerdictMismatchError,
+                     f"{where}.candidate_vector carries no objective {oid!r} the law-bound floor "
+                     "protects")
+        floor_regressions = sorted(
+            ["composite_ppm"] * (cand_vec["composite_micro"] // 100
+                                 < floor_vec["composite_micro"] // 100)
+            + [oid for oid, value in cand_vec["objectives_micro"].items()
+               if value < floor_vec["objectives_micro"][oid]]
+            + [axis for axis, key in (("logical_durable_storage_bytes",
+                                       "logical_durable_storage_bytes"),
+                                      ("rendered_cost", "rendered_cost_micro"),
+                                      ("work_fuel", "work_fuel"))
+               if cand_vec[key] > floor_vec[key]])
+        _require(floor_regressions == list(part["floor_regressions"]), VerdictMismatchError,
+                 f"{where}.floor_regressions does not recompute against the law-bound floor "
+                 f"(bound {part['floor_regressions']}, recomputed {floor_regressions})")
+        admit = bool(part["hard_ok"] and not regressed_objectives and not regressed_axes
+                     and not floor_regressions
+                     and part["composite_gain_ppm"] >= 1)
+        _require(admit == bool(part["admit"]), VerdictMismatchError,
+                 f"{where}.admit does not follow from the componentwise rule over the bound "
+                 "vectors")
+    return {"engine": dom["engine"], "admit": bool(dom["admit"])}
+
+
+def _verify_walk_era_selection(artifact, *, expected_entropy_commitment,
+                               revealed_entropy_secret, done):
+    """Steps 4+5 of the WALK ERA (v1/v2), lifted verbatim into a named function.
+
+    Moved out of :func:`verify_artifact` unchanged when the fixed-suite era landed, so the two
+    eras read as "which of these two things happened here" rather than as one function with a
+    flag threaded through forty lines. Every ``_require`` below is byte-for-byte what it was,
+    which is what keeps every already-published v1/v2 artifact verifying exactly as before.
+    """
+    front = artifact["frontier"]
+    cand = artifact["candidate"]
+    # ---- 4. entropy: commitment opening + the two derived selection values -----------------
+    ent = artifact["entropy"]
+    _require(ent["derivation_domain"] == ENTROPY_DOMAIN, EntropyMismatchError,
+             f"entropy.derivation_domain {ent['derivation_domain']!r} != {ENTROPY_DOMAIN!r}")
+    _require(ent["commitment"] == fr.check_root(expected_entropy_commitment,
+                                                "expected_entropy_commitment"),
+             EntropyMismatchError,
+             f"artifact entropy commitment {ent['commitment']} != the on-chain commitment "
+             f"{expected_entropy_commitment}")
+    embedded_opening = ent.get("revealed_secret")
+    if revealed_entropy_secret is not None:
+        fr.check_root(revealed_entropy_secret, "revealed_entropy_secret")
+    if embedded_opening is not None and revealed_entropy_secret is not None:
+        _require(embedded_opening == revealed_entropy_secret, EntropyMismatchError,
+                 "the external chain opening disagrees with the artifact's historical embedded "
+                 "opening")
+    opening = revealed_entropy_secret or embedded_opening
+    if opening is None:
+        raise EntropyOpeningUnavailableError(
+            "the eval artifact is sealed and EpochSecretRevealed has not supplied its opening")
+    opened = entropy_commitment_of(opening)
+    _require(opened == ent["commitment"], EntropyMismatchError,
+             f"the revealed epoch secret opens to {opened}, not the bound commitment "
+             f"{ent['commitment']} — keccak256(abi.encodePacked(bytes32 secret))")
+    for label in SELECTION_LABELS:
+        field = f"{label}_value"
+        expected = derive_entropy_value(revealed_secret=opening,
+                                        epoch=artifact["epoch"],
+                                        parent_frontier_root=front["parent_frontier_root"],
+                                        label=label)
+        if field in ent:
+            _require(ent[field] == expected, EntropyMismatchError,
+                     f"entropy.{field} {ent[field]} is not the committed secret expanded under "
+                     f"{ENTROPY_DOMAIN}|{label}")
+    expanded_entropy = dict(ent)
+    for label in SELECTION_LABELS:
+        expanded_entropy[f"{label}_value"] = derive_entropy_value(
+            revealed_secret=opening, epoch=artifact["epoch"],
+            parent_frontier_root=front["parent_frontier_root"], label=label)
+    _require(expanded_entropy["gate_value"] != expanded_entropy["confirm_value"],
+             EntropyMismatchError,
+             "the gate and confirmation entropies are equal; the two selections must draw from "
+             "independent values so no single input co-steers both")
+    done("entropy_commitment")
+
+    # ---- 5. the fresh selection re-derives from that entropy -------------------------------
+    sel = artifact["selection"]
+    _require(sel["domain"] == SELECTION_DOMAIN, SelectionMismatchError,
+             f"selection.domain {sel['domain']!r} != {SELECTION_DOMAIN!r}")
+    _require(sel["profile_id"] == cand["target_profile"], SelectionMismatchError,
+             f"selection profile {sel['profile_id']!r} != the target profile "
+             f"{cand['target_profile']!r}")
+    verify_selection_walk(sel, entropy=expanded_entropy, candidate_hash=cand["candidate_hash"])
+    done("selection_walk")
+    return expanded_entropy, sel
+
+
 def verify_artifact(artifact: Mapping[str, Any], *, expected_parent_root: str,
                     expected_new_root: str, expected_release_root: str,
                     expected_composition_root: str, expected_runtime_abi_root: str,
@@ -1492,7 +2657,8 @@ def verify_artifact(artifact: Mapping[str, Any], *, expected_parent_root: str,
                     expected_work_policy_hash: Optional[str] = None,
                     signature_verifier=None,
                     revealed_entropy_secret: Optional[str] = None,
-                    epoch_pins: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
+                    epoch_pins: Optional[Mapping[str, Any]] = None,
+                    resolve_witness_source: bool = False) -> Dict[str, Any]:
     """Verify EVERY binding of ``artifact`` against the values a confirmed chain state asserts.
 
     The expected roots come from the chain (the registry's live root and epoch pins, the receipt's
@@ -1526,6 +2692,7 @@ def verify_artifact(artifact: Mapping[str, Any], *, expected_parent_root: str,
     """
     law = artifact_law(artifact)
     signed_era = law == al.LAW_OFF_CHAIN_SIGNATURE_V1
+    fixed_suite = artifact.get("format") == ARTIFACT_FORMAT_V3
     validate_artifact(artifact)
     report: Dict[str, Any] = {"checks": [], "authority_law": law}
 
@@ -1675,60 +2842,29 @@ def verify_artifact(artifact: Mapping[str, Any], *, expected_parent_root: str,
         epoch_pins=verified_frontier_pins)                                 # raises on divergence
     done("frontier_replay")
 
-    # ---- 4. entropy: commitment opening + the two derived selection values -----------------
-    ent = artifact["entropy"]
-    _require(ent["derivation_domain"] == ENTROPY_DOMAIN, EntropyMismatchError,
-             f"entropy.derivation_domain {ent['derivation_domain']!r} != {ENTROPY_DOMAIN!r}")
-    _require(ent["commitment"] == fr.check_root(expected_entropy_commitment,
-                                                "expected_entropy_commitment"),
-             EntropyMismatchError,
-             f"artifact entropy commitment {ent['commitment']} != the on-chain commitment "
-             f"{expected_entropy_commitment}")
-    embedded_opening = ent.get("revealed_secret")
-    if revealed_entropy_secret is not None:
-        fr.check_root(revealed_entropy_secret, "revealed_entropy_secret")
-    if embedded_opening is not None and revealed_entropy_secret is not None:
-        _require(embedded_opening == revealed_entropy_secret, EntropyMismatchError,
-                 "the external chain opening disagrees with the artifact's historical embedded "
-                 "opening")
-    opening = revealed_entropy_secret or embedded_opening
-    if opening is None:
-        raise EntropyOpeningUnavailableError(
-            "the eval artifact is sealed and EpochSecretRevealed has not supplied its opening")
-    opened = entropy_commitment_of(opening)
-    _require(opened == ent["commitment"], EntropyMismatchError,
-             f"the revealed epoch secret opens to {opened}, not the bound commitment "
-             f"{ent['commitment']} — keccak256(abi.encodePacked(bytes32 secret))")
-    for label in SELECTION_LABELS:
-        field = f"{label}_value"
-        expected = derive_entropy_value(revealed_secret=opening,
-                                        epoch=artifact["epoch"],
-                                        parent_frontier_root=front["parent_frontier_root"],
-                                        label=label)
-        if field in ent:
-            _require(ent[field] == expected, EntropyMismatchError,
-                     f"entropy.{field} {ent[field]} is not the committed secret expanded under "
-                     f"{ENTROPY_DOMAIN}|{label}")
-    expanded_entropy = dict(ent)
-    for label in SELECTION_LABELS:
-        expanded_entropy[f"{label}_value"] = derive_entropy_value(
-            revealed_secret=opening, epoch=artifact["epoch"],
-            parent_frontier_root=front["parent_frontier_root"], label=label)
-    _require(expanded_entropy["gate_value"] != expanded_entropy["confirm_value"],
-             EntropyMismatchError,
-             "the gate and confirmation entropies are equal; the two selections must draw from "
-             "independent values so no single input co-steers both")
-    done("entropy_commitment")
+    # ---- 4+5 (FIXED-SUITE ERA). There is no entropy to open and no walk to re-derive: the cases
+    #      are LAW. What replaces both steps is MEMBERSHIP plus the three law-bound comparands the
+    #      componentwise rule decides against — the suite, the exact parent's stored vector, and
+    #      the constructor-genesis floor. Each is re-resolved HERE from the law document rather
+    #      than read out of the artifact, so an artifact that only agrees with itself proves
+    #      nothing (the same discipline the chain-asserted roots follow in step 1).
+    if fixed_suite:
+        _require(expected_entropy_commitment is None, EntropyMismatchError,
+                 "a fixed-suite (v3) artifact binds no entropy: under LAW §3A.4 the epoch secret "
+                 "is not a case selector, so there is no commitment for it to be checked against")
+        verify_suite_membership(artifact)
+        done("suite_membership")
+        verify_genesis_floor(artifact)
+        done("genesis_floor")
+        verify_dominance_block(artifact)
+        done("dominance")
+        expanded_entropy = None
+        sel = None
+    else:
+        expanded_entropy, sel = _verify_walk_era_selection(
+            artifact, expected_entropy_commitment=expected_entropy_commitment,
+            revealed_entropy_secret=revealed_entropy_secret, done=done)
 
-    # ---- 5. the fresh selection re-derives from that entropy -------------------------------
-    sel = artifact["selection"]
-    _require(sel["domain"] == SELECTION_DOMAIN, SelectionMismatchError,
-             f"selection.domain {sel['domain']!r} != {SELECTION_DOMAIN!r}")
-    _require(sel["profile_id"] == cand["target_profile"], SelectionMismatchError,
-             f"selection profile {sel['profile_id']!r} != the target profile "
-             f"{cand['target_profile']!r}")
-    verify_selection_walk(sel, entropy=expanded_entropy, candidate_hash=cand["candidate_hash"])
-    done("selection_walk")
 
     # ---- 6. the deterministic evaluation report, dispatched by the artifact's own law --------
     if signed_era:
@@ -1793,24 +2929,84 @@ def verify_artifact(artifact: Mapping[str, Any], *, expected_parent_root: str,
     _require(body["profile_id"] == cand["target_profile"], ReceiptBindingError,
              f"receipt profile {body['profile_id']!r} != the target profile "
              f"{cand['target_profile']!r}")
-    _require(body["entropy"]["value"] == expanded_entropy["gate_value"], EntropyMismatchError,
-             "the receipt's gate entropy value is not the chain-committed entropy expanded for "
-             "the gate label — the scored instances did not come from the committed entropy")
-    _require(body["confirm_entropy"]["value"] == expanded_entropy["confirm_value"], EntropyMismatchError,
-             "the receipt's confirmation entropy value is not the chain-committed entropy "
-             "expanded for the confirm label")
-    _require(body["season_root"] == sel["season_root"] and body["round_id"] == sel["round_id"]
-             and list(body["scales"]) == list(sel["scales"]), ReceiptBindingError,
-             "receipt season_root/round_id/scales do not match the artifact's selection block")
-    _require(dict(body["burned_head"]) == dict(sel["burned_head"]), ReceiptBindingError,
-             "receipt burned_head != the artifact's selection.burned_head")
-    for label in SELECTION_LABELS:
-        rec_cases = [{"derivation_index": c["derivation_index"],
-                      "instance_hash": c["instance_hash"], "instance_id": c["instance_id"],
-                      "profile_id": c["profile_id"], "scale": c["scale"], "seed": c["seed"]}
-                     for c in body["selection"][label]]
-        _require(rec_cases == sel["cases"][label], SelectionMismatchError,
-                 f"the artifact's {label!r} selection is not the receipt's {label!r} selection")
+    if fixed_suite:
+        # The report's cases are the artifact's suite cases, field for field. The suite block was
+        # already proved to BE the law's suite by `verify_suite_membership`, so this equality is
+        # what closes "the evaluation the artifact addresses was run on the law's exam".
+        suite = artifact["suite"]
+        _require(body["profile_id"] == suite["profile_id"], ReceiptBindingError,
+                 "receipt profile_id != the artifact's suite profile")
+        for label in SELECTION_LABELS:
+            rec_cases = [{"instance_hash": c["instance_hash"], "instance_id": c["instance_id"],
+                          "profile_id": c["profile_id"], "scale": c["scale"], "seed": c["seed"],
+                          "suite_index": c["suite_index"]}
+                         for c in body["selection"][label]]
+            _require(rec_cases == suite["cases"][label], SuiteMembershipError,
+                     f"the artifact's {label!r} suite partition is not the receipt's {label!r} "
+                     "selection")
+        # The report's bound law must be the fixed-suite law AND must name this exact suite.
+        descriptor = body.get("evaluation_law") or {}
+        _require(descriptor.get("law_id") == FIXED_SUITE_LAW_ID, ReceiptBindingError,
+                 f"the evaluation report is bound to {descriptor.get('law_id')!r}, not the "
+                 f"fixed-suite law {FIXED_SUITE_LAW_ID!r}")
+        _require(descriptor.get("canonical_suite_root") == suite["suite_root"],
+                 SuiteMembershipError,
+                 "the evaluation report's bound law names a different canonical suite than the "
+                 "artifact's suite block; a changed suite is a new law (LAW §3A.6)")
+        # THE DOMINANCE BLOCK IS THE REPORT'S OWN VERDICTS, RE-DERIVED. Without this the block was
+        # only self-consistent: `verify_dominance_block` recomputes the flags from the vectors the
+        # block itself carries, so a forger who edits BOTH vectors coherently passes it while the
+        # addressed report still records the regression. Deriving the whole block from the bound
+        # report and comparing it makes the report the sole source of every number in it.
+        expected_dominance = dominance_block_for(body["verdicts"], body["decision"])
+        if expected_dominance != artifact["dominance"]:
+            differing = sorted(
+                label for label in SELECTION_LABELS
+                if expected_dominance["partitions"][label]
+                != artifact["dominance"]["partitions"][label])
+            raise VerdictMismatchError(
+                "the artifact's dominance block does not derive from the addressed evaluation "
+                f"report's own verdicts (partitions differing: {differing or ['admit']}); the "
+                "vectors ARE the evidence and the block is a projection of them, not a second "
+                "statement of them")
+        done("dominance_report_binding")
+        # The parent arm re-executed in THIS job must reproduce the stored qualifying vector.
+        assert_determinism_witness(parent_vector_from_verdicts(body["verdicts"]),
+                                   artifact["determinism_witness"])
+        done("determinism_witness")
+        # LAW §3A.4 / the v4 fixed round identity: candidate_id reaches nothing consensus is
+        # derived from, and the values that used to carry it are law constants.
+        _require(body["round_id"] == cs.FIXED_SUITE_ROUND_ID, ReceiptBindingError,
+                 f"the evaluation report's round_id {body['round_id']!r} is not the fixed-suite "
+                 f"constant {cs.FIXED_SUITE_ROUND_ID!r}; under LAW §3A.4 the round identity is a "
+                 "law constant and a caller-derived one is how the retry lottery entered")
+        for label in SELECTION_LABELS:
+            field = "entropy" if label == "gate" else "confirm_entropy"
+            expected_value = cs.fixed_suite_entropy(label)
+            _require((body[field] or {}).get("value") == expected_value, EntropyMismatchError,
+                     f"the evaluation report's {field}.value is not the inert fixed-suite "
+                     f"constant {expected_value}; nothing is derived from it and nothing else may "
+                     "be filled in there")
+        done("fixed_round_identity")
+    else:
+        _require(body["entropy"]["value"] == expanded_entropy["gate_value"], EntropyMismatchError,
+                 "the receipt's gate entropy value is not the chain-committed entropy expanded for "
+                 "the gate label — the scored instances did not come from the committed entropy")
+        _require(body["confirm_entropy"]["value"] == expanded_entropy["confirm_value"], EntropyMismatchError,
+                 "the receipt's confirmation entropy value is not the chain-committed entropy "
+                 "expanded for the confirm label")
+        _require(body["season_root"] == sel["season_root"] and body["round_id"] == sel["round_id"]
+                 and list(body["scales"]) == list(sel["scales"]), ReceiptBindingError,
+                 "receipt season_root/round_id/scales do not match the artifact's selection block")
+        _require(dict(body["burned_head"]) == dict(sel["burned_head"]), ReceiptBindingError,
+                 "receipt burned_head != the artifact's selection.burned_head")
+        for label in SELECTION_LABELS:
+            rec_cases = [{"derivation_index": c["derivation_index"],
+                          "instance_hash": c["instance_hash"], "instance_id": c["instance_id"],
+                          "profile_id": c["profile_id"], "scale": c["scale"], "seed": c["seed"]}
+                         for c in body["selection"][label]]
+            _require(rec_cases == sel["cases"][label], SelectionMismatchError,
+                     f"the artifact's {label!r} selection is not the receipt's {label!r} selection")
     _require(body["outputs_hash"] == artifact["receipt"]["outputs_hash"], ReceiptBindingError,
              "receipt.outputs_hash != the artifact's bound outputs hash")
     _require(dict(body["code_roots"]) == dict(artifact["receipt"]["code_roots"]),
@@ -1840,6 +3036,36 @@ def verify_artifact(artifact: Mapping[str, Any], *, expected_parent_root: str,
                     f"measurements[{label}][{side}] does not project from the receipt; "
                     f"differing: {differing}")
     done("measurements")
+
+    # ---- 7b. THE DECIDED VECTORS ARE THE MEASURED ONES ---------------------------------------
+    #
+    # A Benchmark-v2 report states each side twice: once as raw ``scores`` (from which
+    # ``measurements`` projects, checked immediately above) and once as ``verdicts[*].vectors``,
+    # the absolute vectors the componentwise rule actually compared. Everything downstream of the
+    # verdicts — the dominance block, the determinism witness, the bridge document the witness
+    # resolves to — is derived from the SECOND statement, and until this check nothing tied it to
+    # the first.
+    #
+    # That gap was exploitable end to end: raise one objective inside
+    # ``verdicts[*].vectors.candidate``, leave ``scores`` untouched, flip the branch verdicts and
+    # the decision, and the REAL builder minted an ADMIT artifact whose every internal binding was
+    # honest by construction — measurements still projected exactly (they come from ``scores``),
+    # the dominance block still derived from the verdicts, the witness still matched the parent
+    # arm, and the published bridge document still backed it. Both verify shapes passed. The
+    # artifact contradicted ITSELF, dominance against measurements, and nobody compared the two.
+    # Only benchmark-side receipt recomputation or a full sandbox replay would have caught it,
+    # neither of which the V5 artifact layer runs.
+    #
+    # WHY FOUR COMPONENTS AND NOT FIVE. ``logical_durable_storage_bytes`` is NOT in the projection
+    # under ``final-render-trusted-hostwork.v4``: ``project_side`` fills the artifact's stable
+    # ``storage_bytes`` slot from the raw input-byte axis for this policy (the logical axis is
+    # selected only by ``final-render-metered.v2``), so there is no projected value to compare it
+    # against here. It stays covered by the witness/bridge chain — the stored vector carries it,
+    # the re-executed parent arm must reproduce it, and the published bridge document must publish
+    # it — which binds the incumbent side and, on the next accept, the candidate side too.
+    if fixed_suite:
+        assert_decided_vectors_are_measured(artifact["dominance"], projected)
+        done("decided_vectors_are_measured")
 
     # ---- 8. the counter-resource law, recomputed ------------------------------------------
     law = counter_resource_law
@@ -1938,6 +3164,34 @@ def verify_artifact(artifact: Mapping[str, Any], *, expected_parent_root: str,
         report["rig_receipt"] = dict(rig)
         done("rig_receipt_fields")
 
+    # ---- 11b. WHERE THE STORED PARENT VECTOR CAME FROM ---------------------------------------
+    # Steps 4-6 prove the witness is whole and that the parent arm re-executed HERE reproduced it.
+    # Neither proves the stored vector was ever measured by anyone else. Resolving it needs the
+    # public object surface, which not every caller has — so the outcome is REPORTED rather than
+    # assumed: a caller that did not ask for resolution is told, in the report, that the witness's
+    # provenance is UNRESOLVED. Silence would read as proof.
+    if fixed_suite:
+        witness_block = artifact["determinism_witness"]
+        if not resolve_witness_source:
+            report["witness_provenance"] = {
+                "resolved": False,
+                "source_kind": witness_block["source_kind"],
+                "source_root": witness_block["source_root"],
+                "reason": "verification ran without an object resolver; the stored parent vector "
+                          "was checked for INTERNAL consistency and against the re-executed parent "
+                          "arm, but the bridge document / prior accepting artifact it names was "
+                          "not fetched. Pass resolve_witness_source=True with a store (public "
+                          "replay does) to prove where the number came from",
+            }
+        else:
+            if store is None:
+                raise ReceiptUnavailableError(
+                    "resolve_witness_source=True needs a store to fetch the object "
+                    "determinism_witness.source_root names")
+            report["witness_provenance"] = resolve_determinism_witness_source(
+                artifact, store=store)
+            done("determinism_witness_source")
+    # ---- 12. availability (optional here; MANDATORY at pre-sign) ----------------------------
     # ---- 12. availability (optional here; MANDATORY at pre-sign) ----------------------------
     if check_availability:
         if store is None:

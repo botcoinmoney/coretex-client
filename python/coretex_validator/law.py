@@ -133,6 +133,17 @@ POSTURE_CODE_ROOTS_FIELD = "candidate_isolation_posture"
 #: what ``code_roots`` computes), never unpacked, never tree-hashed.
 SINGLE_FILE_CODE_ROOTS: Dict[str, str] = {POSTURE_CODE_ROOTS_FIELD: POSTURE_RELPATH}
 
+#: The resource half of the admission arithmetic. NOT a sealed root and not published with them;
+#: it travels in this wheel and is installed beside the cache. See the COMPANION RECORDS block in
+#: :func:`sync_law` for why a benchmark-v2-only distribution needs it.
+COUNTER_LAW_RELPATH = "v5/COUNTER_RESOURCE_LAW.v1.json"
+_COUNTER_LAW_PACKAGE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                         "COUNTER_RESOURCE_LAW.v1.json")
+
+#: The canonical suite's path inside the sealed ``validator`` tree — a MEMBER of a sealed root, so
+#: it arrives with that tree and is addressed by the root a receipt's ``code_roots`` binds.
+CANONICAL_SUITE_RELPATH = "benchmark-v2/validator/CANONICAL-SUITE.v1.json"
+
 #: Single-file objects a publication MUST carry, by install path.
 #:
 #: Required rather than tolerated-when-absent, for the reason the six trees are: a cache that
@@ -773,6 +784,27 @@ class LawCache:
             return None
         return os.path.join(self.root_dir, *POSTURE_RELPATH.split("/"))
 
+    def canonical_suite_bytes(self) -> Optional[bytes]:
+        """The SEALED suite document's bytes, from the fetched ``validator`` tree.
+
+        These are the bytes to decide against, not the copy this wheel was built with: they arrived
+        inside a tree whose root a signed receipt's ``code_roots`` binds, so installing them makes
+        "which exam" a question the chain answers rather than the packager.
+        """
+        path = os.path.join(self.root_dir, *CANONICAL_SUITE_RELPATH.split("/"))
+        try:
+            with open(path, "rb") as fh:
+                return fh.read()
+        except OSError:
+            return None
+
+    def companion_path(self, install_to: str) -> Optional[str]:
+        """Where a COMPANION record was installed, or ``None`` if this cache carries none."""
+        for entry in self.receipt.get("companion_files") or ():
+            if entry.get("install_to") == install_to:
+                return os.path.join(self.root_dir, *install_to.split("/"))
+        return None
+
     def as_dict(self) -> Dict[str, Any]:
         return {"cache_dir": self.root_dir, "publication_root": self.publication_root,
                 "env": self.env(), "receipt": self.receipt}
@@ -1075,9 +1107,47 @@ def sync_law(publication_root: str, *, mirror: str,
             "(one manifest entry addressed by sha256(bytes), with an install_to path) rather than "
             "as a tar")
 
+    # ---- COMPANION RECORDS ------------------------------------------------------------------
+    #
+    # `v5/COUNTER_RESOURCE_LAW.v1.json` is the resource half of the admission arithmetic, and the
+    # publication does not carry it because it is not one of the seven sealed roots. The published
+    # `frontier` tree's own test
+    # (`frontier/tests/test_dominance.py::test_the_metered_axes_are_exactly_the_pinned_counter_laws
+    # _source_axes`) reads it at `<repo_root>/v5/` and SELF-SKIPS when it is absent — which is
+    # exactly the shape a benchmark-v2-only distribution has, so the aggregate-resource theorem's
+    # premise went unchecked in precisely the tree published for third-party verification. This
+    # wheel ships the record as package data; installing it into the cache makes that test runnable
+    # where it matters. It is recorded as a COMPANION, never among the sealed roots, because it was
+    # not fetched from the publication and must not be read as if it had been.
+    #
+    # The canonical suite needs no companion: it is a MEMBER of the sealed `validator` tree, so it
+    # arrives addressed by the root a receipt's `code_roots` binds. Its sha256 is recorded so a
+    # caller can install those exact bytes into `canonical_suite` rather than deciding against
+    # whatever this wheel happened to be built with.
+    companion: list = []
+    try:
+        with open(_COUNTER_LAW_PACKAGE_PATH, "rb") as fh:
+            counter_law_bytes = fh.read()
+    except OSError:                                            # pragma: no cover - packaging fault
+        counter_law_bytes = None
+    if counter_law_bytes:
+        companion.append({"install_to": COUNTER_LAW_RELPATH, "data": counter_law_bytes,
+                          "root": _sha256(counter_law_bytes), "source": "wheel package data"})
+    suite_root = None
+    for item in verified:
+        if item["extract_to"] == "benchmark-v2/validator":
+            suite_bytes = item["files"].get("CANONICAL-SUITE.v1.json")
+            if suite_bytes is not None:
+                suite_root = _sha256(suite_bytes)
+
     receipt = {
         "format": CACHE_RECEIPT_FORMAT,
         "publication_root": publication_root,
+        "canonical_suite_root": suite_root,
+        "companion_files": [{"install_to": item["install_to"], "sha256": item["root"],
+                             "bytes": len(item["data"]), "source": item["source"],
+                             "sealed": False}
+                            for item in sorted(companion, key=lambda i: i["install_to"])],
         "manifest_hash_rule": manifest_rule,
         "manifest_sha256": _sha256(manifest_bytes),
         "manifest_format": manifest["format"],
@@ -1102,7 +1172,7 @@ def sync_law(publication_root: str, *, mirror: str,
         "required_trees": list(required_trees),
         "required_files": list(required_files),
     }
-    _materialize(base, dest, verified, receipt, files=verified_files)
+    _materialize(base, dest, verified, receipt, files=list(verified_files) + companion)
     return load_cache(publication_root, cache_dir=base)
 
 
@@ -1186,24 +1256,34 @@ class LawActivationError(LawError):
 
 
 def activate(cache: LawCache, *, modules=None) -> Dict[str, str]:
-    """Apply the pins, refusing if the modules that read them have ALREADY been imported.
+    """Apply the pins, and REFUSE if a scorer that already read them is bound to different trees.
 
-    ``replay.py`` reads the three env vars at IMPORT time — they become the default arguments of
-    the sandbox and the oracle screen — so setting them afterwards is a no-op that LOOKS like it
-    worked. That is the worst possible failure mode for this feature: the run would BACKLOG at
-    step 5 with a law cache sitting right there, and the report would say the trees were not
-    configured. So it is refused with the reason, rather than silently ignored.
+    THE TRAP THIS USED TO GUARD, AND WHY THE GUARD SHRANK. ``replay.py`` used to read the three env
+    vars at IMPORT time, baking them into the DEFAULT ARGUMENTS of the sandbox and the oracle
+    screen; pinning a law cache afterwards was then a no-op that looked like it worked, and the run
+    BACKLOGged at deterministic admission with a verified cache sitting right there. This function
+    refused that, loudly, which was correct while the trap existed.
+
+    The trap is gone: ``replay.benchmark_v2_tree()`` and its siblings are read when a scorer is
+    CONSTRUCTED, so a late pin takes effect for every scorer built after it — which is every scorer
+    the CLI builds, in every command, because activation happens before construction. Refusing a
+    late pin now would reject a run that is about to work.
+
+    What is still refused is the case the guard was really about: a scorer object that ALREADY
+    EXISTS and is bound to a different tree. Those are constructed with explicit directories, so
+    this only fires on a genuine mid-run reconfiguration, never on import order.
     """
     import sys
 
     modules = sys.modules if modules is None else modules
     already = modules.get(__package__ + ".replay")
     pins = cache.env()
-    if already is not None and getattr(already, "_BENCH_V2_TREE", "") != pins[ENV_BENCHMARK_V2]:
+    bound = getattr(already, "_BENCH_V2_TREE", "") if already is not None else ""
+    resolver = getattr(already, "benchmark_v2_tree", None) if already is not None else None
+    if already is not None and not callable(resolver) and bound != pins[ENV_BENCHMARK_V2]:
         raise LawActivationError(
-            "the admission trees were pinned AFTER coretex_validator.replay was imported, so the "
-            "sandbox and oracle screen are still bound to "
-            f"{getattr(already, '_BENCH_V2_TREE', '') or '(nothing)'}. Those defaults are read at "
-            "import time; set the pins first (the CLI does this before importing anything that "
-            "reads them) or pass the directories explicitly")
+            "the admission trees were pinned AFTER coretex_validator.replay was imported by a "
+            f"build that reads them at import time, so the sandbox and oracle screen are still "
+            f"bound to {bound or '(nothing)'}. Set the pins first, or pass the directories "
+            "explicitly")
     return cache.apply()

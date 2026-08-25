@@ -95,6 +95,21 @@ DISCLAIMER = (
     "and applies the full composite law including the hard prerequisites (portability above all) "
     "that an adjudicating host executes and a local preview does not.")
 
+#: The fixed-suite era's wording. It says the opposite of the line above, on purpose, because the
+#: fact it describes is the opposite: the exam is immutable, public and identical for every
+#: candidate, so the verdict this command computes is the verdict the adjudicator computes. What
+#: is left is the chain race and the local hard prerequisites, and both are named rather than
+#: hidden behind a blanket "this predicts nothing".
+FIXED_SUITE_DISCLAIMER = (
+    "This scores the IMMUTABLE CANONICAL SUITE — the same cases, in the same partitions, that "
+    "the adjudicator scores for every candidate under this law — against the exact parent "
+    "observed here, under the same componentwise engine and the same law-bound "
+    "constructor-genesis floor. The verdict is therefore DETERMINISTIC and is the one the "
+    "adjudicator will reach for THIS parent. Two things remain outside it: the CHAIN RACE (if "
+    "another advance lands first, the next job's exact parent is a different release with a "
+    "different stored vector), and any hard prerequisite this host did not execute — "
+    "portability above all, which is reported as not established rather than assumed.")
+
 _PKG_DIR = os.path.dirname(os.path.abspath(__file__))
 
 #: Mirrors ``replay.PINNED_RUNTIME_DEPENDENCIES``. Kept as its own literal so importing this module
@@ -608,13 +623,53 @@ if mode == "probe":
     from kit.dev_instances import DEV_SCALES, DEV_SEEDS
     out = {{"dev_seeds": [int(s) for s in DEV_SEEDS], "dev_scales": list(DEV_SCALES),
             "profiles": list(GENERATOR_PROFILE_IDS)}}
+    # THE ERA IS READ OFF THE PINNED LAW TREES, never off this client's build. If the installed
+    # `validator` tree carries a canonical suite and the installed `frontier` tree carries the
+    # componentwise engine, then the deployment being previewed against decides under the
+    # fixed-suite law and the preview must score that exam. If they are absent, this is a
+    # walk-era deployment and the public dev cases remain the only honest preview.
+    try:
+        from validator import canonical_suite as _cs
+        from frontier import dominance as _dom
+        out["law_era"] = "fixed-suite"
+        out["suite_root"] = _cs.suite_root()
+        out["suite_law_id"] = _cs.suite_law_id()
+        out["suite_version"] = str(_cs.suite_version())
+        out["dominance_engine"] = _dom.ENGINE_ID
+        out["genesis_floor_resolved"] = bool(_cs.genesis_floor_resolved())
+        _pid = payload.get("profile_id")
+        if _pid:
+            out["suite_cases"] = _cs.suite_cases(_pid)
+            out["suite_case_hashes"] = _cs.suite_case_hashes(_pid)
+            out["suite_scales"] = list(_cs.suite_scales(_pid))
+            out["suite_counts"] = dict(_cs.suite_counts(_pid))
+    except Exception as _exc:
+        out["law_era"] = "walk"
+        out["law_era_reason"] = type(_exc).__name__ + ": " + str(_exc)
 elif mode == "score":
     from kit.dev_instances import dev_instance
     from miner_abi import seam as _seam
     from scoring import layer_b as _layer_b
-    # FAIL CLOSED on any non-public (profile, seed, scale): the kit refuses to generate a
-    # held-out instance and this command inherits that refusal rather than working around it.
-    inst = dev_instance(payload["profile_id"], int(payload["seed"]), payload["scale"])
+    if payload.get("instance_hash"):
+        # A CANONICAL-SUITE CASE. The suite is PUBLIC law (LAW §3A.1), so it is generated from the
+        # pinned generators directly rather than through the dev-case allow-list — and the
+        # generated instance is re-hashed and required to equal the hash the SUITE DOCUMENT binds.
+        # Without that equality this would score whatever the local generators produced and call it
+        # the law's case.
+        import hashlib as _hashlib
+        from generators import generate as _generate
+        inst = _generate(payload["profile_id"], int(payload["seed"]), payload["scale"])
+        _got = _hashlib.sha256(inst.canonical_json().encode("utf-8")).hexdigest()
+        if _got != payload["instance_hash"]:
+            raise SystemExit(
+                "the pinned generators produced instance " + _got + " for "
+                + payload["profile_id"] + "@" + payload["scale"] + "#s" + str(payload["seed"])
+                + ", and the canonical suite binds " + payload["instance_hash"]
+                + "; the law's case is not what this host generated")
+    else:
+        # FAIL CLOSED on any non-public (profile, seed, scale): the kit refuses to generate a
+        # held-out instance and this command inherits that refusal rather than working around it.
+        inst = dev_instance(payload["profile_id"], int(payload["seed"]), payload["scale"])
     corpus_bytes = sum(len(e["content"].encode("utf-8")) for e in inst.all_envelopes())
     arms = {{}}
     replay_identical = {{}}
@@ -658,6 +713,37 @@ elif mode == "aggregate":
     verdict = _pareto2.decide(candidate, parent, profile, tuple(payload["targeted"]))
     out = {{"candidate": candidate, "parent": parent, "verdict": verdict,
             "aggregates": aggregates, "portability": portability}}
+elif mode == "aggregate_suite":
+    from frontier import dominance as _dominance
+    from frontier import profiles as _profiles
+    from kit import self_check as _self_check
+    from validator import canonical_suite as _cs
+    for _name in ("_aggregate", "_measurements"):
+        if not hasattr(_self_check, _name):
+            raise SystemExit(
+                "the pinned kit does not expose kit.self_check." + _name + "; refusing to "
+                "re-implement the aggregation law in the client")
+    profile = _profiles.get_profile(payload["profile_id"])
+    portability = _local_portability(payload.get("portability_breadth"))
+    out = {{"partitions": {{}}, "portability": portability,
+            "engine": _dominance.ENGINE_ID, "suite_root": _cs.suite_root()}}
+    for label in ("gate", "confirm"):
+        rows = payload["per_partition"][label]
+        aggregates = {{name: _self_check._aggregate(arm_rows, profile)
+                       for name, arm_rows in rows.items()}}
+        candidate, parent = _self_check._measurements(
+            aggregates["candidate"], aggregates["parent"], payload["declared_limits"],
+            bool(payload["replay_identical"]), portability)
+        # THE FLOOR IS RESOLVED FROM THE LAW, not supplied by the caller: a pending floor is a
+        # refusal at the resolver, so "no floor" can never arrive here as "no floor check".
+        floor = _cs.genesis_floor_vector(payload["profile_id"], label)
+        verdict = _dominance.decide(candidate, parent, profile, label, floor_vector=floor,
+                                    targeted_objectives=tuple(payload["targeted"]))
+        out["partitions"][label] = {{"candidate": candidate, "parent": parent,
+                                     "verdict": verdict, "aggregates": aggregates,
+                                     "floor_vector": floor}}
+    out["admit"] = bool(out["partitions"]["gate"]["verdict"]["admit"]
+                        and out["partitions"]["confirm"]["verdict"]["admit"])
 else:
     raise SystemExit("unknown preview child mode " + repr(mode))
 
@@ -837,6 +923,143 @@ def _comparison(candidate: Mapping[str, Any], parent: Mapping[str, Any],
     }
 
 
+def _preview_fixed_suite(*, child, store, parent_root, target_profile, module_source,
+                         candidate_manifest, probe, portability_breadth):
+    """Score the candidate and the current parent on THE LAW'S OWN EXAM, and predict the verdict.
+
+    WHY THIS IS A DIFFERENT PROMISE FROM THE WALK-ERA PREVIEW. Under the walk law the official
+    evaluation drew fresh cases from future public entropy, so a preview on the public dev cases
+    was a sanity check and ``predictsAdmission`` was a hard ``false`` — anything else would have
+    been a lie about a number that was going to be re-rolled. Under the fixed suite the exam is
+    IMMUTABLE and PUBLIC (LAW §3A.1) and the decision is componentwise dominance over the exact
+    parent plus the constructor-genesis floor, with no input from the epoch secret, the candidate
+    id, the rig or the author (LAW §3A.4). So this scores the same cases, against the same parent,
+    under the same engine, with the same law-bound floor, and reports the verdict it computed as a
+    DETERMINISTIC prediction.
+
+    The one caveat that survives, and it is named in the report rather than buried: the chain race.
+    The prediction is for the parent OBSERVED here; if another advance lands first, the next job's
+    exact parent is a different release and its stored vector is a different comparand.
+    """
+    resolved = resolve_parent(store=store, parent_root=parent_root,
+                              target_profile=target_profile)
+    execution = resolved["execution"]
+    arms = {"candidate": build_candidate_arm(module_source=module_source,
+                                             manifest=candidate_manifest),
+            "parent": build_parent_arm(execution)}
+
+    if not probe.get("genesis_floor_resolved"):
+        raise PreviewError(
+            "the pinned law tree's constructor-genesis floor is PENDING, so no v4 admission is "
+            "computable and none can be predicted (LAW §3A.3)",
+            code="GENESIS_FLOOR_PENDING")
+
+    suite_cases = probe["suite_cases"]
+    hashes = dict(probe.get("suite_case_hashes") or {})
+    per_partition: Dict[str, Dict[str, List[Dict[str, Any]]]] = {}
+    replay_identical = {"candidate": True, "parent": True}
+    networkless = True
+    for label in ("gate", "confirm"):
+        rows: Dict[str, List[Dict[str, Any]]] = {"candidate": [], "parent": []}
+        for case in suite_cases[label]:
+            scored = child({"mode": "score", "profile_id": case["profile_id"],
+                            "scale": case["scale"], "seed": int(case["seed"]),
+                            "instance_hash": hashes.get(case["instance_id"]),
+                            "arms": arms})
+            for name in rows:
+                row = (scored.get("arms") or {}).get(name)
+                if not isinstance(row, abc.Mapping):
+                    raise PreviewError(
+                        f"the scorer returned no {name} arm for suite case "
+                        f"{case['instance_id']}", code="SCORER_FAILED")
+                rows[name].append(dict(row))
+                replay_identical[name] = replay_identical[name] and bool(
+                    (scored.get("replay_identical") or {}).get(name, True))
+            networkless = networkless and bool(scored.get("networkless", True))
+        per_partition[label] = rows
+
+    limits = candidate_manifest.get("resource_requirements")
+    decided = child({
+        "mode": "aggregate_suite", "profile_id": target_profile,
+        "declared_limits": dict(limits) if isinstance(limits, abc.Mapping) else {},
+        "targeted": list(candidate_manifest.get("objectives_targeted") or ()),
+        "replay_identical": bool(replay_identical["candidate"]),
+        "portability_breadth": portability_breadth,
+        "per_partition": per_partition})
+
+    partitions = decided.get("partitions") or {}
+    confirm = partitions.get("confirm") or {}
+    gate = partitions.get("gate") or {}
+    admit = bool(decided.get("admit"))
+    return {
+        "ok": True,
+        "format": REPORT_FORMAT,
+        # THE HONESTY FIELDS, ERA-AWARE. The walk-era values were true of the walk era and would
+        # be false here: these cases are not dev cases, and the verdict is not a hint.
+        "publicDevCasesOnly": False,
+        "predictsAdmission": admit,
+        "predictsDeterministicAdmission": True,
+        "disclaimer": FIXED_SUITE_DISCLAIMER,
+        "lawEra": "fixed-suite",
+        "canonicalSuite": {
+            "root": probe.get("suite_root"),
+            "version": probe.get("suite_version"),
+            "law_id": probe.get("suite_law_id"),
+            "engine": decided.get("engine"),
+            "counts": probe.get("suite_counts"),
+            "scales": probe.get("suite_scales"),
+            "cases": {label: [case["instance_id"] for case in suite_cases[label]]
+                      for label in ("gate", "confirm")},
+        },
+        "profile": target_profile,
+        "candidate": {
+            "module_sha256": arms["candidate"]["sha256"],
+            "capabilities": arms["candidate"]["capabilities"],
+            "fuel_ceiling": arms["candidate"]["fuel_ceiling"],
+            "declared_limits": dict(limits) if isinstance(limits, abc.Mapping) else {},
+            "objectives_targeted": list(candidate_manifest.get("objectives_targeted") or ()),
+            "replay_identical": bool(replay_identical["candidate"]),
+        },
+        "parent": {
+            "frontier_root": parent_root,
+            "epoch": resolved["epoch"],
+            "composition_root": resolved["composition_root"],
+            "release_root": execution["release_root"],
+            "exec": execution["exec"],
+            "id": execution["id"],
+            "candidate_hash": execution["candidate_hash"],
+            "module_sha256": (arms["parent"].get("sha256")
+                              if arms["parent"]["kind"] == "module" else None),
+            "capabilities": arms["parent"].get("capabilities"),
+            "fuel_ceiling": arms["parent"].get("fuel_ceiling"),
+            "replay_identical": bool(replay_identical["parent"]),
+            "chain": resolved["chain"],
+            "authority": ("classified by EXACT release-root equality against the packaged "
+                          "EXACT-PARENT-AUTHORITY.production.json; never by similarity"),
+        },
+        # BOTH PARTITIONS DECIDE, and the admission is their conjunction — reporting only the
+        # confirm branch would let a gate-failing candidate read as admissible.
+        "partitions": {
+            label: {
+                "admit": bool((partitions.get(label) or {}).get("verdict", {}).get("admit")),
+                "verdict": (partitions.get(label) or {}).get("verdict"),
+                "arms": {"candidate": (partitions.get(label) or {}).get("candidate"),
+                         "parent": (partitions.get(label) or {}).get("parent")},
+                "floor_vector": (partitions.get(label) or {}).get("floor_vector"),
+            }
+            for label in ("gate", "confirm")
+        },
+        "arms": {"candidate": confirm.get("candidate"), "parent": confirm.get("parent")},
+        "comparison": _comparison(confirm.get("candidate") or {}, confirm.get("parent") or {},
+                                  confirm.get("verdict") or {}),
+        "verdict": confirm.get("verdict"),
+        "gate_verdict": gate.get("verdict"),
+        "portability": decided.get("portability"),
+        "scorer": {"name": getattr(child, "name", type(child).__name__),
+                   "networkless": networkless},
+    }
+
+
 def preview_current_parent(*, child, store: pub.ContentStore, parent_root: str,
                            target_profile: str, module_source: str,
                            candidate_manifest: Mapping[str, Any],
@@ -851,7 +1074,13 @@ def preview_current_parent(*, child, store: pub.ContentStore, parent_root: str,
                            remedy=getattr(child, "unavailable_remedy",
                                           "run `coretex-validator setup` first"))
 
-    probe = child({"mode": "probe"})
+    probe = child({"mode": "probe", "profile_id": target_profile})
+    law_era = str(probe.get("law_era") or "walk")
+    if law_era == "fixed-suite" and probe.get("suite_cases"):
+        return _preview_fixed_suite(
+            child=child, store=store, parent_root=parent_root, target_profile=target_profile,
+            module_source=module_source, candidate_manifest=candidate_manifest, probe=probe,
+            portability_breadth=portability_breadth)
     dev_seeds = [int(seed) for seed in probe.get("dev_seeds") or ()]
     dev_scales = list(probe.get("dev_scales") or ())
     profiles = list(probe.get("profiles") or ())

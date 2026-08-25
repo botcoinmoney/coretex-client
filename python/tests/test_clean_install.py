@@ -205,3 +205,26 @@ def test_the_exact_parent_authority_ships_with_the_package():
     assert pe.PRODUCTION_REFERENCE_RELEASE_ROOTS
     assert pe.PRE_EXACT_PARENT_CODE_ROOT_SETS
     assert (PACKAGE_DIR / "EXACT-PARENT-AUTHORITY.production.json").is_file()
+
+
+def test_the_canonical_suite_ships_with_the_package():
+    """A v3 artifact's schema check needs the suite, so a clean install must carry it.
+
+    `eval_artifact.validate_artifact` resolves a profile's declared objective vocabulary from the
+    canonical suite: a vector missing an objective is a MALFORMED vector, not an unprotected one,
+    and deciding which is which needs the document. Before 0.5.0 only the `verify_*` steps needed
+    it; now the pure schema check does, so a wheel without it cannot validate a v3 artifact at all.
+
+    Loading it IS the check — it resolves relative to the installed module. A verified law cache
+    supersedes this copy with the SEALED bytes from the `validator` tree, which is why the packaged
+    root is exposed separately rather than being the only answer to "which suite".
+    """
+    from coretex_validator import canonical_suite as cs
+
+    assert cs.suite_root() == cs.packaged_suite_root()
+    assert len(cs.suite_root()) == 64
+    assert cs.suite_law_id()
+    assert cs.genesis_floor_resolved() is True
+    assert (PACKAGE_DIR / "CANONICAL-SUITE.v1.json").is_file(), (
+        f"the suite did load, but not from {PACKAGE_DIR} — the package under test is not the one "
+        "this test located")

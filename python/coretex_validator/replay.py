@@ -227,11 +227,36 @@ def _tree(env_name: str) -> str:
     return os.environ.get(env_name, "").strip()
 
 
-_REPO = _tree("CORETEX_ADMISSION_REPO_ROOT")
-_BENCH_V2_TREE = _tree("CORETEX_BENCHMARK_V2_DIR") or (
-    os.path.join(_REPO, "benchmark-v2") if _REPO else "")
-_CORETEX_MEMORY_TREE = _tree("CORETEX_MEMORY_RUNTIME_DIR") or (
-    os.path.join(_REPO, "coretex-memory") if _REPO else "")
+def admission_repo_root() -> str:
+    return _tree("CORETEX_ADMISSION_REPO_ROOT")
+
+
+def benchmark_v2_tree() -> str:
+    repo = admission_repo_root()
+    return _tree("CORETEX_BENCHMARK_V2_DIR") or (os.path.join(repo, "benchmark-v2")
+                                                 if repo else "")
+
+
+def coretex_memory_tree() -> str:
+    repo = admission_repo_root()
+    return _tree("CORETEX_MEMORY_RUNTIME_DIR") or (os.path.join(repo, "coretex-memory")
+                                                   if repo else "")
+
+
+#: THE PINS ARE READ WHEN A SCORER IS CONSTRUCTED, NOT WHEN THIS MODULE IS IMPORTED.
+#:
+#: They used to be module constants that became DEFAULT ARGUMENT VALUES of the two child-interpreter
+#: classes, which froze them at import time. That is why :func:`law.activate` had to REFUSE when the
+#: law cache was pinned after this module was imported: the assignment would have looked like it
+#: worked and quietly changed nothing, which is the worst available failure mode — the run would
+#: BACKLOG at deterministic admission with a verified law cache sitting right there.
+#:
+#: Reading them per construction removes the trap instead of guarding it, and the guard relaxes to
+#: match. The module-level names below are kept because callers and tests read them; they are the
+#: value AT IMPORT and are no longer what the classes default to.
+_REPO = admission_repo_root()
+_BENCH_V2_TREE = benchmark_v2_tree()
+_CORETEX_MEMORY_TREE = coretex_memory_tree()
 
 #: The screen runs in a CHILD INTERPRETER. ``benchmark-v2`` ships a package named ``frontier`` and
 #: this lane's module is also called ``frontier``; giving the child a ``sys.path`` with only the
@@ -295,10 +320,10 @@ class ChildInterpreterOracleScreen:
 
     name = "scoring.oracle_screen(child-interpreter)"
 
-    def __init__(self, *, bench_v2_dir: str = _BENCH_V2_TREE,
-                 coretex_dir: str = _CORETEX_MEMORY_TREE, timeout: int = 3600) -> None:
-        self.bench_v2_dir = bench_v2_dir
-        self.coretex_dir = coretex_dir
+    def __init__(self, *, bench_v2_dir: Optional[str] = None,
+                 coretex_dir: Optional[str] = None, timeout: int = 3600) -> None:
+        self.bench_v2_dir = benchmark_v2_tree() if bench_v2_dir is None else bench_v2_dir
+        self.coretex_dir = coretex_memory_tree() if coretex_dir is None else coretex_dir
         self.timeout = timeout
         self._cache: Dict[Tuple[str, int, str], bool] = {}
         self.child_calls = 0
@@ -821,9 +846,12 @@ class BenchmarkV2Sandbox(CandidateSandbox):
 
     name = "benchmark-v2/validator/replay.replay_receipt(child-interpreter)"
 
-    def __init__(self, *, repo_root: str = _REPO, bench_v2_dir: str = _BENCH_V2_TREE,
-                 coretex_dir: str = _CORETEX_MEMORY_TREE, pin_path: Optional[str] = None,
+    def __init__(self, *, repo_root: Optional[str] = None, bench_v2_dir: Optional[str] = None,
+                 coretex_dir: Optional[str] = None, pin_path: Optional[str] = None,
                  timeout: int = 7200, isolation_path: Optional[str] = None) -> None:
+        repo_root = admission_repo_root() if repo_root is None else repo_root
+        bench_v2_dir = benchmark_v2_tree() if bench_v2_dir is None else bench_v2_dir
+        coretex_dir = coretex_memory_tree() if coretex_dir is None else coretex_dir
         self.repo_root = repo_root
         self.bench_v2_dir = bench_v2_dir
         self.coretex_dir = coretex_dir
@@ -1270,11 +1298,16 @@ def replay_advance(event: dp.FrontierAdvanced, *, store: pub.ContentStore,
     # auxiliary evidence is even looked at. Everything downstream reads THIS.
     deterministic = ea.deterministic_verdict(ea.strip_canary(artifact))
     signed_era = ea.artifact_law(artifact) == al.LAW_OFF_CHAIN_SIGNATURE_V1
+    # THE ERA IS READ OFF THE ARTIFACT'S OWN FORMAT, never off this host's configuration. An
+    # artifact minted under the fixed-suite law scored a LAW-BOUND exam: there is no entropy to
+    # open, no walk to re-derive and no oracle screen to run, and every one of those steps is
+    # replaced by checks `verify_artifact` performs against the suite document itself.
+    fixed_suite = artifact.get("format") == ea.ARTIFACT_FORMAT_V3
 
     # The opening is not needed to check that the published artifact binds the commitment from
     # this event's own confirmed epoch. Refuse a mismatched commitment immediately instead of
     # misclassifying an already-provable binding failure as work waiting on the future reveal.
-    if artifact["entropy"]["commitment"] != epoch_pins.entropy_commitment:
+    if not fixed_suite and artifact["entropy"]["commitment"] != epoch_pins.entropy_commitment:
         return _fail(
             "bindings", "EntropyMismatchError",
             f"artifact entropy commitment {artifact['entropy']['commitment']} != the on-chain "
@@ -1285,13 +1318,14 @@ def replay_advance(event: dp.FrontierAdvanced, *, store: pub.ContentStore,
     # sealed. Deterministic replay cannot begin until the chain publishes the opening. This is
     # unresolved work, not a failed transition and never a pass inferred from the artifact's
     # carried verdict. Historical artifacts embed their opening and continue through unchanged.
-    if "revealed_secret" not in artifact["entropy"] and epoch_pins.revealed_secret is None:
+    if not fixed_suite and "revealed_secret" not in artifact["entropy"] \
+            and epoch_pins.revealed_secret is None:
         return _backlog("entropy_opening", bl.entropy_opening_unavailable(
             f"eval artifact {event.eval_report_hash} rehashed successfully, but epoch "
             f"{event.epoch} has no confirmed EpochSecretRevealed opening yet",
             event=event, subject=f"epoch:{event.epoch}", observed_at=observed_at),
             checks=checks, new_manifest=new_manifest, **ident)
-    embedded_opening = artifact["entropy"].get("revealed_secret")
+    embedded_opening = (None if fixed_suite else artifact["entropy"].get("revealed_secret"))
     if epoch_pins.revealed_secret is not None and embedded_opening is not None \
             and embedded_opening != epoch_pins.revealed_secret:
         return _fail("bindings", "revealed_secret_mismatch",
@@ -1387,7 +1421,8 @@ def replay_advance(event: dp.FrontierAdvanced, *, store: pub.ContentStore,
             expected_runtime_abi_root=epoch_pins.runtime_abi_root,
             expected_benchmark_law_root=epoch_pins.benchmark_law_root,
             expected_counter_resource_law_root=epoch_pins.counter_resource_law_root,
-            expected_entropy_commitment=epoch_pins.entropy_commitment,
+            expected_entropy_commitment=(None if fixed_suite
+                                         else epoch_pins.entropy_commitment),
             expected_epoch=event.epoch,
             expected_target_profile=target_profile,
             counter_resource_law=counter_law,
@@ -1396,7 +1431,11 @@ def replay_advance(event: dp.FrontierAdvanced, *, store: pub.ContentStore,
                 "benchmark_law_root": epoch_pins.benchmark_law_root,
                 "runtime_abi_root": epoch_pins.runtime_abi_root,
             },
-            revealed_entropy_secret=epoch_pins.revealed_secret,
+            revealed_entropy_secret=(None if fixed_suite else epoch_pins.revealed_secret),
+            # PUBLIC REPLAY ALWAYS RESOLVES THE WITNESS. The stored parent vector a v3 artifact
+            # decides against is only a number until the object it names is fetched: an
+            # unpublished source is a BACKLOG (never a pass) and a contradicting one is a FAIL.
+            resolve_witness_source=fixed_suite,
             **verification_evidence)
     except (ea.EvalArtifactError, fr.FrontierError) as exc:
         return _fail("bindings", type(exc).__name__, str(exc), checks=checks,
@@ -1412,70 +1451,113 @@ def replay_advance(event: dp.FrontierAdvanced, *, store: pub.ContentStore,
     if epoch_pins.revealed_secret is not None:
         done("chain_revealed_secret")
 
-    # ---- 8. the fresh selection, re-derived from the COMMITTED entropy ------------------------
-    opening = epoch_pins.revealed_secret or embedded_opening
-    if opening is None:
-        # Defensive reachability guard: sealed artifacts without a chain opening return above.
-        return _backlog("entropy_opening", bl.entropy_opening_unavailable(
-            f"epoch {event.epoch} has no entropy opening for deterministic replay",
-            event=event, subject=f"epoch:{event.epoch}", observed_at=observed_at),
-            checks=checks, new_manifest=new_manifest, **ident)
-    entropy = dict(artifact["entropy"])
-    try:
-        recomputed = {label: expand_entropy(revealed_secret=opening,
-                                            epoch=event.epoch,
-                                            parent_frontier_root=event.parent_frontier_root,
-                                            label=label) for label in ENTROPY_LABELS}
-    except EntropyDomainDriftError as exc:
-        return _fail("entropy_expansion", "entropy_domain_drift", str(exc), checks=checks,
-                     new_manifest=new_manifest, **ident)
-    except fr.FrontierError as exc:
-        return _fail("entropy_expansion", "entropy_invalid", str(exc), checks=checks,
-                     new_manifest=new_manifest, **ident)
-    for label in ENTROPY_LABELS:
-        if f"{label}_value" in entropy and entropy[f"{label}_value"] != recomputed[label]:
-            return _fail("entropy_expansion", "entropy_value_mismatch",
-                         f"entropy.{label}_value {entropy[f'{label}_value']} is not the "
-                         f"chain-committed secret expanded under {ENTROPY_DOMAIN}|{label} "
-                         f"({recomputed[label]})", checks=checks, new_manifest=new_manifest,
-                         **ident)
-        entropy[f"{label}_value"] = recomputed[label]
-    done("entropy_expansion")
+    # ---- 8/9 (FIXED-SUITE ERA) -----------------------------------------------------------------
+    #
+    # Both steps below exist to answer one question — "were these the cases the law says?" — and
+    # under the walk law that took the committed entropy, a re-derived walk, and a consensus-grade
+    # oracle screen to answer, which is why a host without the screen could only BACKLOG. Under the
+    # fixed suite the cases are the law document, `verify_artifact` already compared the artifact's
+    # partitions to it case for case and instance hash for instance hash, and there is nothing left
+    # to re-derive. So this era skips both stages rather than backlogging on machinery its law does
+    # not use.
+    #
+    # WHAT IT DOES NOT SKIP is the one consensus field the entropy-free exam left unverified: the
+    # signed `worldSeed`. The coordinator DERIVES it from the epoch secret and hands the evaluator
+    # the derived value, so nothing between here and the chain ties it to the committed secret. It
+    # is recomputed here once `EpochSecretRevealed` has landed, and REPORTED UNRESOLVED before
+    # that — never assumed good.
+    completeness = None
+    opening = None
+    if fixed_suite:
+        completeness = {
+            "basis": "canonical-suite membership",
+            "law_id": ea.FIXED_SUITE_LAW_ID,
+            "suite_root": artifact["suite"]["suite_root"],
+            "counts": dict(artifact["suite"]["counts"]),
+            "note": "the cases are the law document; there is no walk to skip an index of, and "
+                    "membership was proved against the suite bytes in the bindings stage",
+        }
+        if "rig_receipt" in artifact:
+            if epoch_pins.revealed_secret is None:
+                return _backlog("world_seed", bl.entropy_opening_unavailable(
+                    f"the rig receipt in eval artifact {event.eval_report_hash} signs a "
+                    f"worldSeed that is a function of epoch {event.epoch}'s secret, and no "
+                    "confirmed EpochSecretRevealed opening is in the synced window yet, so it "
+                    "cannot be recomputed. It is UNRESOLVED, not verified",
+                    event=event, subject=f"epoch:{event.epoch}", observed_at=observed_at),
+                    checks=checks, new_manifest=new_manifest, **ident)
+            try:
+                ea.verify_world_seed(artifact, revealed_secret=epoch_pins.revealed_secret)
+            except (ea.EvalArtifactError, fr.FrontierError) as exc:
+                return _fail("world_seed", type(exc).__name__, str(exc), checks=checks,
+                             new_manifest=new_manifest, **ident)
+            done("world_seed")
+        done("suite_selection_is_law")
+    if not fixed_suite:
+        # ---- 8. the fresh selection, re-derived from the COMMITTED entropy ------------------------
+        opening = epoch_pins.revealed_secret or embedded_opening
+        if opening is None:
+            # Defensive reachability guard: sealed artifacts without a chain opening return above.
+            return _backlog("entropy_opening", bl.entropy_opening_unavailable(
+                f"epoch {event.epoch} has no entropy opening for deterministic replay",
+                event=event, subject=f"epoch:{event.epoch}", observed_at=observed_at),
+                checks=checks, new_manifest=new_manifest, **ident)
+        entropy = dict(artifact["entropy"])
+        try:
+            recomputed = {label: expand_entropy(revealed_secret=opening,
+                                                epoch=event.epoch,
+                                                parent_frontier_root=event.parent_frontier_root,
+                                                label=label) for label in ENTROPY_LABELS}
+        except EntropyDomainDriftError as exc:
+            return _fail("entropy_expansion", "entropy_domain_drift", str(exc), checks=checks,
+                         new_manifest=new_manifest, **ident)
+        except fr.FrontierError as exc:
+            return _fail("entropy_expansion", "entropy_invalid", str(exc), checks=checks,
+                         new_manifest=new_manifest, **ident)
+        for label in ENTROPY_LABELS:
+            if f"{label}_value" in entropy and entropy[f"{label}_value"] != recomputed[label]:
+                return _fail("entropy_expansion", "entropy_value_mismatch",
+                             f"entropy.{label}_value {entropy[f'{label}_value']} is not the "
+                             f"chain-committed secret expanded under {ENTROPY_DOMAIN}|{label} "
+                             f"({recomputed[label]})", checks=checks, new_manifest=new_manifest,
+                             **ident)
+            entropy[f"{label}_value"] = recomputed[label]
+        done("entropy_expansion")
 
-    # ---- 9. COMPLETE the selection check V5-C left partial ------------------------------------
-    if screen is None:
-        return _backlog("selection_completeness", bl.oracle_screen_unavailable(
-            "no G6b oracle-cleanliness screen was supplied, so it is UNDETERMINED whether the "
-            "selection walk skipped a legitimate index. V5-C proves every recorded case sits at "
-            "its claimed index; completeness is this stage's job and it did not run.",
-            event=event, subject="scoring.oracle_screen", observed_at=observed_at),
-            checks=checks, new_manifest=new_manifest, **ident)
-    available = getattr(screen, "available", None)
-    if callable(available) and not available():
-        return _backlog("selection_completeness", bl.oracle_screen_unavailable(
-            f"the oracle screen {getattr(screen, 'name', type(screen).__name__)!r} reports itself "
-            "unavailable on this host (frozen generators/runtime absent)", event=event,
-            subject=getattr(screen, "name", "oracle_screen"), observed_at=observed_at),
-            checks=checks, new_manifest=new_manifest, **ident)
-    if not allow_test_doubles and getattr(screen, "consensus_grade", True) is False:
-        return _backlog("selection_completeness", bl.oracle_screen_unavailable(
-            f"the supplied screen {getattr(screen, 'name', type(screen).__name__)!r} declares "
-            "itself NOT consensus-grade, so it cannot establish selection-skip completeness; the "
-            "result is unresolved work, not a pass", event=event,
-            subject=getattr(screen, "name", "oracle_screen"), observed_at=observed_at),
-            checks=checks, new_manifest=new_manifest, **ident)
-    try:
-        completeness = verify_selection_complete(
-            artifact["selection"], entropy=entropy,
-            candidate_hash=artifact["candidate"]["candidate_hash"], screen=screen, burned=burned)
-    except OracleScreenUnavailable as exc:
-        return _backlog("selection_completeness", bl.oracle_screen_unavailable(
-            str(exc), event=event, subject=getattr(screen, "name", "oracle_screen"),
-            observed_at=observed_at), checks=checks, new_manifest=new_manifest, **ident)
-    except (ea.EvalArtifactError, fr.FrontierError) as exc:
-        return _fail("selection_completeness", "selection_incomplete", str(exc), checks=checks,
-                     new_manifest=new_manifest, **ident)
-    done("selection_completeness")
+        # ---- 9. COMPLETE the selection check V5-C left partial ------------------------------------
+        if screen is None:
+            return _backlog("selection_completeness", bl.oracle_screen_unavailable(
+                "no G6b oracle-cleanliness screen was supplied, so it is UNDETERMINED whether the "
+                "selection walk skipped a legitimate index. V5-C proves every recorded case sits at "
+                "its claimed index; completeness is this stage's job and it did not run.",
+                event=event, subject="scoring.oracle_screen", observed_at=observed_at),
+                checks=checks, new_manifest=new_manifest, **ident)
+        available = getattr(screen, "available", None)
+        if callable(available) and not available():
+            return _backlog("selection_completeness", bl.oracle_screen_unavailable(
+                f"the oracle screen {getattr(screen, 'name', type(screen).__name__)!r} reports itself "
+                "unavailable on this host (frozen generators/runtime absent)", event=event,
+                subject=getattr(screen, "name", "oracle_screen"), observed_at=observed_at),
+                checks=checks, new_manifest=new_manifest, **ident)
+        if not allow_test_doubles and getattr(screen, "consensus_grade", True) is False:
+            return _backlog("selection_completeness", bl.oracle_screen_unavailable(
+                f"the supplied screen {getattr(screen, 'name', type(screen).__name__)!r} declares "
+                "itself NOT consensus-grade, so it cannot establish selection-skip completeness; the "
+                "result is unresolved work, not a pass", event=event,
+                subject=getattr(screen, "name", "oracle_screen"), observed_at=observed_at),
+                checks=checks, new_manifest=new_manifest, **ident)
+        try:
+            completeness = verify_selection_complete(
+                artifact["selection"], entropy=entropy,
+                candidate_hash=artifact["candidate"]["candidate_hash"], screen=screen, burned=burned)
+        except OracleScreenUnavailable as exc:
+            return _backlog("selection_completeness", bl.oracle_screen_unavailable(
+                str(exc), event=event, subject=getattr(screen, "name", "oracle_screen"),
+                observed_at=observed_at), checks=checks, new_manifest=new_manifest, **ident)
+        except (ea.EvalArtifactError, fr.FrontierError) as exc:
+            return _fail("selection_completeness", "selection_incomplete", str(exc), checks=checks,
+                         new_manifest=new_manifest, **ident)
+        done("selection_completeness")
 
     # ---- 10. execute the candidate in the pinned sandbox, networkless PROVEN ------------------
     runner = sandbox if sandbox is not None else NullSandbox()
@@ -1844,14 +1926,50 @@ def _beat_incumbent(artifact: Mapping[str, Any], parent_manifest: Mapping[str, A
         return {"code": "incumbent_not_unit",
                 "reason": f"resource_before_ppm is {ppm['resource_before_ppm']}; the incumbent is "
                           f"the unit of comparison and must evaluate to exactly {ea.MICRO}"}
-    return {"code": None,
-            "report": {"target_profile": target_profile, "parent_release_root": prior,
-                       "incumbent": dict(artifact["replay_inputs"]["incumbent"]),
-                       "utility_before_ppm": before, "utility_after_ppm": after,
-                       "utility_gain_ppm": after - before,
-                       "resource_before_ppm": ppm["resource_before_ppm"],
-                       "resource_after_ppm": ppm["resource_after_ppm"],
-                       "verdict": deterministic["verdict"]}}
+    # AGGREGATE RESOURCE NON-REGRESSION — the rule the public law promised and this replayer did
+    # not enforce. `v5/COUNTER_RESOURCE_LAW.v1.json` prices the candidate's rendered cost, work
+    # fuel and durable storage against the incumbent's, normalised so the incumbent is exactly
+    # 1e6; a candidate whose aggregate exceeds that is spending more to be better, which the
+    # coordinator's pre-sign check has always refused. Until now this client would have replayed
+    # such an advance to PASS — the split-authority gap the v4 cut exists to close, on the public
+    # side of it. Under the fixed suite the per-axis rule in `dominance` implies this one; it is
+    # checked in BOTH eras because for the walk era it is the ONLY statement of it.
+    if ppm["resource_after_ppm"] > ppm["resource_before_ppm"]:
+        return {"code": "resource_regression",
+                "reason": f"resource_after_ppm {ppm['resource_after_ppm']} exceeds "
+                          f"resource_before_ppm {ppm['resource_before_ppm']}; the counter-resource "
+                          "law admits no aggregate resource regression. This is an OFF-CHAIN "
+                          "admission rule, not a chain revert"}
+    report = {"target_profile": target_profile, "parent_release_root": prior,
+              "incumbent": dict(artifact["replay_inputs"]["incumbent"]),
+              "utility_before_ppm": before, "utility_after_ppm": after,
+              "utility_gain_ppm": after - before,
+              "resource_before_ppm": ppm["resource_before_ppm"],
+              "resource_after_ppm": ppm["resource_after_ppm"],
+              "verdict": deterministic["verdict"]}
+    if artifact.get("format") == ea.ARTIFACT_FORMAT_V3:
+        # THE COMPONENTWISE RULE IS THE ADMISSION LAW under the fixed suite, and the scalars above
+        # are its projection, not a second rule. `verify_artifact` already recomputed the whole
+        # dominance block from the artifact's own vectors and refused any disagreement; what is
+        # added here is the summary a reader needs to see WHY it admitted, per partition.
+        dom = artifact["dominance"]
+        report["dominance"] = {
+            "engine": dom["engine"],
+            "admit": bool(dom["admit"]),
+            "partitions": {
+                label: {
+                    "composite_gain_ppm": part["composite_gain_ppm"],
+                    "regressed_objectives": list(part["regressed_objectives"]),
+                    "regressed_resource_axes": list(part["regressed_resource_axes"]),
+                    "floor_regressions": list(part["floor_regressions"]),
+                    "admit": bool(part["admit"]),
+                }
+                for label, part in sorted(dom["partitions"].items())
+            },
+        }
+        report["genesis_floor"] = {"status": artifact["genesis_floor"]["status"],
+                                   "suite_root": artifact["genesis_floor"]["suite_root"]}
+    return {"code": None, "report": report}
 
 
 # --------------------------------------------------------------------------- #
