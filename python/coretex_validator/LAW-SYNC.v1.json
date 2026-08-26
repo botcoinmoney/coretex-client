@@ -1,5 +1,5 @@
 {
-  "canonical_commit": "c670df617cc6097c2dd7b4448cffa18f59165118",
+  "canonical_commit": "a1ff8bd6e45b064d7113f16cc4cfd70de012e361",
   "documents": [
     {
       "canonical": "v5/COUNTER_RESOURCE_LAW.v1.json",
@@ -13,7 +13,7 @@
     },
     {
       "canonical": "benchmark-v2/validator/CANONICAL-SUITE.v1.json",
-      "sha256": "1399d9bc3cf7dc2f9b65a48a36a6e339fa0a907e2bf55600fcda9eac4251c1e2",
+      "sha256": "22665225059b3cd4d2bcdc949e5de2044bfdaf4c89692819c52ab57f38d6acc7",
       "vendored": "CANONICAL-SUITE.v1.json"
     },
     {

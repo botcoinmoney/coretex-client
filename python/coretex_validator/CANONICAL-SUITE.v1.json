@@ -17,7 +17,7 @@
  "decision_engine": "dominance.componentwise.v1",
  "format": "benchmark-v2/canonical-suite/v1",
  "genesis_floor_authority": {
-  "decision_time_rule": "a pending floor is a REFUSAL, never a skipped check: no v4 admission is computable without a resolved floor",
+  "decision_time_rule": "a pending floor is a REFUSAL, never a skipped check: no admission under this suite's law is computable without a resolved floor",
   "resolved_requires": [
    "status == 'resolved'",
    "vectors present for every profile and both partitions"

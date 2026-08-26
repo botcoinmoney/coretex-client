@@ -31,22 +31,22 @@ FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures")
 CAS = os.path.join(FIXTURES, "v3-cas")
 BRIDGE = os.path.join(FIXTURES, "bridge-vector.event.schema.genesis.json")
 
-#: RE-EXPRESSED under the `.v5` fixed-suite law id (was `.v4`: artifact `ff73475c…` / report
-#: `9b05cdec…` / witness source `b6e9004e…`, suite root `dbb6582d…`). The `.v5` re-seal changed
-#: neither the decision engine nor any measured value — it moved only the embedded `law_id` and the
-#: `canonical_suite_root` it hashes to (`dbb6582d…`→`1399d9bc…`). These bytes are that same RIG-
-#: BEARING artifact a real `eval.candidate.v2` job minted, deterministically re-threaded through
-#: those two moved identities (`suite.{law_id,suite_root}`, `genesis_floor.suite_root`,
-#: `determinism_witness.{law_id,suite_root,source_root,witness_root}`, `receipt.eval_report_root`)
-#: and the report it addresses, with every code root, measurement and score left untouched. The
-#: re-threaded witness source root reproduces the canonical `.v5` `event.schema` genesis bridge
-#: vector root, and `verify_artifact` admits the result end to end — so this is the real artifact a
-#: `.v5` consumer receives, not a synthesised one. The PRIOR `.v4` seal minted zero receipts on any
-#: chain and is historically closed; nothing reads its bytes.
-ARTIFACT_ROOT = "ce904152f4fd11d2d9f905e0e249c2d840d0f83a338d914cbae78e5da264878c"
-REPORT_ROOT = "b800aa3c4dcbf783ffd71aa02156633b57894423cedf7ecb73936ee2d27540c9"
-WITNESS_SOURCE_ROOT = "d37d98171f2cf5447e56f0f535289e16abe0680ab2e697d6c0c5668d7a1e0a00"
-SUITE_ROOT = "1399d9bc3cf7dc2f9b65a48a36a6e339fa0a907e2bf55600fcda9eac4251c1e2"
+#: RE-THREADED under the R17 canonical suite-prose move — the `law_id` is UNCHANGED at `.v5`
+#: (prior bytes: artifact `ce904152…` / report `b800aa3c…` / witness source `d37d9817…`, suite root
+#: `1399d9bc…`). R17 Phase 1 edited only the suite document's family-generic `decision_time_rule`
+#: prose (`CANONICAL-SUITE.v1.json:20`), so the sealed suite re-hashes `1399d9bc…`→`22665225…` while
+#: neither the decision engine, the `law_id`, nor any measured value moved. These bytes are that same
+#: RIG-BEARING artifact a real `eval.candidate.v2` job minted, deterministically re-threaded through
+#: the moved suite root alone (`suite.suite_root`, `genesis_floor.suite_root`,
+#: `determinism_witness.{suite_root,source_root,witness_root}`, `receipt.eval_report_root`) and the
+#: report it addresses, with every `law_id`, code root, measurement and score left untouched, and
+#: `verify_artifact` admits the result end to end. (Cross-check to the canonical `event.schema`
+#: genesis bridge vector is deferred: at R17 Phase 1 the canonical bridge vectors are not yet
+#: resealed to `22665225…`; the Phase 3 reseal restores that byte match.)
+ARTIFACT_ROOT = "fa02a3358bf94f06943cfc6f291776a91c1396b044ff7d3c1f5efc64982bf2b8"
+REPORT_ROOT = "ff2585363b8d6529187e8eda8fe68389dc590e62a7cb13c81dc100cd1fd213a9"
+WITNESS_SOURCE_ROOT = "b1640ea9383592366ab1fd47b07446ab833136272cbb866b6a99762b041c4012"
+SUITE_ROOT = "22665225059b3cd4d2bcdc949e5de2044bfdaf4c89692819c52ab57f38d6acc7"
 
 #: The rehearsal opening the shadow run committed to. `world_seed` is a pure function of it, and
 #: the fixture's signed value is what the coordinator's own derivation predicted independently.
