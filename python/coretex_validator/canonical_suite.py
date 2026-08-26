@@ -94,7 +94,7 @@ PROTECTED_QUALITY_VOCABULARY: Dict[str, Tuple[str, ...]] = {
 GENESIS_FLOOR_PENDING = "GENESIS_FLOOR_PENDING"
 CANONICAL_SUITE_INVALID = "CANONICAL_SUITE_INVALID"
 
-#: THE FIXED ROUND IDENTITY OF THE v4 ERA (LAW §3A.4), mirrored from
+#: THE FIXED ROUND IDENTITY OF THE FIXED-SUITE ERA (LAW §3A.4), mirrored from
 #: ``benchmark-v2/validator/evaluation_law``. ``round_id`` used to be
 #: ``f"v5-{epoch}-{candidate_id}"`` and the author id was the caller's ``candidate_id``; both were
 #: bound into the receipt body, and ``round_id`` additionally fed the selection walk — which is
@@ -442,7 +442,7 @@ def genesis_floor_vector(profile_id: str, partition: str) -> Dict[str, Any]:
     floor = _load()["genesis_floor_authority"]
     if floor.get("status") != "resolved":
         raise GenesisFloorPendingError(
-            f"the canonical suite's constructor-genesis floor is {floor.get('status')!r}: no v4 "
+            f"the canonical suite's constructor-genesis floor is {floor.get('status')!r}: no "
             "admission is computable without a resolved floor (LAW §3A.3)")
     vectors = floor["vectors"]
     if profile_id not in vectors:

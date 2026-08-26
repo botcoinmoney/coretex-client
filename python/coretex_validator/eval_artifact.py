@@ -493,7 +493,7 @@ class GenesisFloorPendingError(EvalArtifactError):
     """The law-bound constructor-genesis floor is not resolved.
 
     Refusal code ``GENESIS_FLOOR_PENDING``. LAW §3A.3: a pending floor is a REFUSAL, never a
-    skipped check — a v4 admission is not computable without one.
+    skipped check — an admission is not computable without one.
     """
 
     code = "GENESIS_FLOOR_PENDING"
@@ -997,7 +997,7 @@ def projects_logical_storage_axis(receipt_body: Mapping[str, Any]) -> bool:
     """Does this report's bound law protect ``logical_durable_storage_bytes`` as a vector axis?
 
     Read off the report's own bound law id, NOT off the measurement policy: the policy measures
-    both storage axes and always did (it names them separately, and every v4 side carries both),
+    both storage axes and always did (it names them separately, and every fixed-suite side carries both),
     while it is the LAW that says which one is a protected dominance component. The fixed-suite
     law's fixed identities have declared ``storage_axis: logical_durable_storage_bytes`` since the
     v4 cut; this predicate is what makes the projection agree with that declaration instead of
@@ -2318,7 +2318,7 @@ def assert_decided_vectors_are_measured(dominance: Mapping[str, Any],
     not: ``logical_durable_storage_bytes`` was decided on, floor-compared and witnessed, but the
     projection did not carry it, because :func:`project_side` filled the artifact's stable
     ``storage_bytes`` slot from the raw input-byte axis and stopped there. The two are DIFFERENT
-    AXES that ``final-render-trusted-hostwork.v4`` has always measured separately, and the v4
+    AXES that ``final-render-trusted-hostwork.v4`` has always measured separately, and the fixed-suite
     law's own fixed identities have always declared ``storage_axis:
     logical_durable_storage_bytes`` — so the projection, not the policy, was the thing out of
     step. It now projects the logical axis as its own field and this comparison covers it, which
@@ -2584,7 +2584,7 @@ def verify_genesis_floor(artifact: Mapping[str, Any]) -> Dict[str, Any]:
     profile_id = artifact["candidate"]["target_profile"]
     if not cs.genesis_floor_resolved():
         raise GenesisFloorPendingError(
-            "this law tree's constructor-genesis floor is pending, so no v4 admission is "
+            "this law tree's constructor-genesis floor is pending, so no admission is "
             "computable and no artifact claiming one can be verified (LAW §3A.3)")
     _require(floor["suite_root"] == cs.suite_root(), SuiteMembershipError,
              "genesis_floor.suite_root is not this law tree's canonical suite root")
@@ -3107,7 +3107,7 @@ def verify_artifact(artifact: Mapping[str, Any], *, expected_parent_root: str,
         assert_determinism_witness(parent_vector_from_verdicts(body["verdicts"]),
                                    artifact["determinism_witness"])
         done("determinism_witness")
-        # LAW §3A.4 / the v4 fixed round identity: candidate_id reaches nothing consensus is
+        # LAW §3A.4 / the fixed-suite round identity: candidate_id reaches nothing consensus is
         # derived from, and the values that used to carry it are law constants.
         _require(body["round_id"] == cs.FIXED_SUITE_ROUND_ID, ReceiptBindingError,
                  f"the evaluation report's round_id {body['round_id']!r} is not the fixed-suite "
@@ -3193,7 +3193,7 @@ def verify_artifact(artifact: Mapping[str, Any], *, expected_parent_root: str,
     # be decided-but-unprojected under ``final-render-trusted-hostwork.v4`` — ``project_side``
     # filled the artifact's stable ``storage_bytes`` slot from the raw input-byte axis and carried
     # the logical axis nowhere — so the one protected axis a memorising candidate would inflate
-    # was the one this comparison could not see. The v4 policy measures both axes and the v4 law
+    # was the one this comparison could not see. The measurement policy measures both axes and the fixed-suite law
     # declares the logical one as its ``storage_axis``; the projection now carries it as its own
     # field and this check covers it. The witness/bridge chain still binds the incumbent side
     # independently, which is redundancy on purpose, not a restatement.

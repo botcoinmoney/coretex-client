@@ -105,6 +105,11 @@ __all__ = [
 #:     from the artifacts directory rather than seeded by hand, so a clean machine reproduces a
 #:     published snapshot without being trusted to supply the lock itself.
 #:
+#: 0.5.3 is a re-vendor of 0.5.2: the standalone validator's genesis-floor REFUSAL messages no
+#: longer name a concrete ``.vN`` ("no v4 admission is computable" -> "no admission is computable"),
+#: matching the canonical family-generic sweep. No check, symbol value, packaged suite, or replay
+#: behaviour changed (the code ``__version__`` stays 0.5.0); it packages the same canonical suite.
+#:
 #: 0.5.2 replays the FIXED-SUITE ERA — Benchmark-v2 law
 #: ``benchmark-v2-law/dominance-fixed-suite-2026-08-25.v5`` and artifact family
 #: ``coretex.memory-eval-artifact.v3``. Under it, admission stopped being "beat the incumbent on a
