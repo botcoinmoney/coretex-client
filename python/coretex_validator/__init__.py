@@ -105,8 +105,8 @@ __all__ = [
 #:     from the artifacts directory rather than seeded by hand, so a clean machine reproduces a
 #:     published snapshot without being trusted to supply the lock itself.
 #:
-#: 0.5.0 replays the FIXED-SUITE ERA — Benchmark-v2 law
-#: ``benchmark-v2-law/dominance-fixed-suite-2026-08-25.v4`` and artifact family
+#: 0.5.1 replays the FIXED-SUITE ERA — Benchmark-v2 law
+#: ``benchmark-v2-law/dominance-fixed-suite-2026-08-25.v5`` and artifact family
 #: ``coretex.memory-eval-artifact.v3``. Under it, admission stopped being "beat the incumbent on a
 #: paper drawn from the epoch secret" and became componentwise dominance over the exact parent, on
 #: one immutable public exam, plus a law-bound constructor-genesis floor. Every v1/v2 artifact keeps

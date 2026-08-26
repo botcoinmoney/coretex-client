@@ -1,6 +1,6 @@
 {
   "format": "coretex.memory-suite-bridge-vector.v1",
-  "law_id": "benchmark-v2-law/dominance-fixed-suite-2026-08-25.v4",
+  "law_id": "benchmark-v2-law/dominance-fixed-suite-2026-08-25.v5",
   "measured_by": {
     "evidence": "ever-improving-run-20260825/r2/m-event/vector-event-c8585724.json",
     "exec": "reference",
@@ -51,5 +51,5 @@
   },
   "profile_id": "event.schema.v1",
   "release_root": "c85857242b434cec35ae2cb0b67bd33f96d1f0f425bc6265fec3758321e98ce5",
-  "suite_root": "dbb6582dca25d466c6eda4a0c5d30bf29437f74068531a7ee272b9a6462c410e"
+  "suite_root": "1399d9bc3cf7dc2f9b65a48a36a6e339fa0a907e2bf55600fcda9eac4251c1e2"
 }

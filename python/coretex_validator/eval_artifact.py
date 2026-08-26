@@ -112,7 +112,7 @@ ARTIFACT_FAMILY_LAWS = {
 
 #: The Benchmark-v2 law id a v3 artifact's evaluation report must be bound to. Stated here so the
 #: artifact layer refuses a mismatched pairing instead of inferring one.
-FIXED_SUITE_LAW_ID = "benchmark-v2-law/dominance-fixed-suite-2026-08-25.v4"
+FIXED_SUITE_LAW_ID = "benchmark-v2-law/dominance-fixed-suite-2026-08-25.v5"
 #: The decision engine that law names. Mirrors ``benchmark-v2/frontier/dominance.ENGINE_ID``.
 DOMINANCE_ENGINE_ID = "dominance.componentwise.v1"
 CANARY_BLOCK_FORMAT = "coretex.memory-eval-artifact.v1/canary-reference"

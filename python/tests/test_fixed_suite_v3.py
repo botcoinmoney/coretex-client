@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""The fixed-suite (v4) era, against a REAL minted artifact.
+"""The fixed-suite (v5) era, against a REAL minted artifact.
 
 WHY THE FIXTURE IS A REAL ONE. Every check here could be made to pass on a synthesised artifact,
 and several of them would then be checking the synthesiser. `v3-cas/` holds the objects a real
@@ -31,18 +31,22 @@ FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures")
 CAS = os.path.join(FIXTURES, "v3-cas")
 BRIDGE = os.path.join(FIXTURES, "bridge-vector.event.schema.genesis.json")
 
-#: RE-SEEDED at the remediation-round-2 re-seal. The previous fixture
-#: (`b56b8d24…` / report `869feaf4…` / witness source `60dc89e2…`) was minted under the FIRST
-#: fixed-suite seal and is superseded: the law cut that followed bound `logical_durable_storage_
-#: bytes` as a measured field and added the `candidate_module_bytes` telemetry, so a pre-cut v3
-#: artifact no longer satisfies the closed v3 schema. These objects are the RIG-BEARING artifact a
-#: real `eval.candidate.v2` job minted against the final seal, copied verbatim out of the
-#: evaluator's own content-addressed store — so the fixture is still a real artifact rather than a
-#: synthesised one, and it is now one a consumer can actually receive.
-ARTIFACT_ROOT = "ff73475c723853797e6cbee37e5a6dd9cd8ff31438ea0974f20bfcca27b4e51b"
-REPORT_ROOT = "9b05cdeceabe18efb56fab0bd5e7b71bdb6a96d9669f784376281c4668c4a9a0"
-WITNESS_SOURCE_ROOT = "b6e9004e168f0f36458289d6baa758b8bcd247a407389f07e77ce4bd321c8980"
-SUITE_ROOT = "dbb6582dca25d466c6eda4a0c5d30bf29437f74068531a7ee272b9a6462c410e"
+#: RE-EXPRESSED under the `.v5` fixed-suite law id (was `.v4`: artifact `ff73475c…` / report
+#: `9b05cdec…` / witness source `b6e9004e…`, suite root `dbb6582d…`). The `.v5` re-seal changed
+#: neither the decision engine nor any measured value — it moved only the embedded `law_id` and the
+#: `canonical_suite_root` it hashes to (`dbb6582d…`→`1399d9bc…`). These bytes are that same RIG-
+#: BEARING artifact a real `eval.candidate.v2` job minted, deterministically re-threaded through
+#: those two moved identities (`suite.{law_id,suite_root}`, `genesis_floor.suite_root`,
+#: `determinism_witness.{law_id,suite_root,source_root,witness_root}`, `receipt.eval_report_root`)
+#: and the report it addresses, with every code root, measurement and score left untouched. The
+#: re-threaded witness source root reproduces the canonical `.v5` `event.schema` genesis bridge
+#: vector root, and `verify_artifact` admits the result end to end — so this is the real artifact a
+#: `.v5` consumer receives, not a synthesised one. The PRIOR `.v4` seal minted zero receipts on any
+#: chain and is historically closed; nothing reads its bytes.
+ARTIFACT_ROOT = "ce904152f4fd11d2d9f905e0e249c2d840d0f83a338d914cbae78e5da264878c"
+REPORT_ROOT = "b800aa3c4dcbf783ffd71aa02156633b57894423cedf7ecb73936ee2d27540c9"
+WITNESS_SOURCE_ROOT = "d37d98171f2cf5447e56f0f535289e16abe0680ab2e697d6c0c5668d7a1e0a00"
+SUITE_ROOT = "1399d9bc3cf7dc2f9b65a48a36a6e339fa0a907e2bf55600fcda9eac4251c1e2"
 
 #: The rehearsal opening the shadow run committed to. `world_seed` is a pure function of it, and
 #: the fixture's signed value is what the coordinator's own derivation predicted independently.

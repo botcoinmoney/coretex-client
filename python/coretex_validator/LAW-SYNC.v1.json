@@ -1,5 +1,5 @@
 {
-  "canonical_commit": "d961fb359a79bb9074e1ac7dacd40d6395f2444d",
+  "canonical_commit": "c670df617cc6097c2dd7b4448cffa18f59165118",
   "documents": [
     {
       "canonical": "v5/COUNTER_RESOURCE_LAW.v1.json",
@@ -13,7 +13,7 @@
     },
     {
       "canonical": "benchmark-v2/validator/CANONICAL-SUITE.v1.json",
-      "sha256": "dbb6582dca25d466c6eda4a0c5d30bf29437f74068531a7ee272b9a6462c410e",
+      "sha256": "1399d9bc3cf7dc2f9b65a48a36a6e339fa0a907e2bf55600fcda9eac4251c1e2",
       "vendored": "CANONICAL-SUITE.v1.json"
     },
     {
@@ -210,7 +210,7 @@
           "suite_root",
           "witness_root"
         ],
-        "FIXED_SUITE_LAW_ID": "benchmark-v2-law/dominance-fixed-suite-2026-08-25.v4",
+        "FIXED_SUITE_LAW_ID": "benchmark-v2-law/dominance-fixed-suite-2026-08-25.v5",
         "INCUMBENT_EXACT_FIELDS": [
           "candidate_hash",
           "exec",

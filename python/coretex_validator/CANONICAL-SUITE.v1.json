@@ -165,7 +165,7 @@
   "why_pending": "RESOLVED 2026-08-25 by the one-time P5 bridge run; the text below records why the P2 seal could not carry these numbers: the constructor-genesis floor vectors are measured on THIS suite by the one-time bridge run and filled in then; they cannot be minted before the suite exists"
  },
  "instance_hash_rule": "sha256 of the instance canonical JSON, computed by validator/eval_worker.py task 'hash_only' \u2014 the same value validator/evaluate.hash_case returns and validator/receipt.py _bind_cases binds",
- "law_id": "benchmark-v2-law/dominance-fixed-suite-2026-08-25.v4",
+ "law_id": "benchmark-v2-law/dominance-fixed-suite-2026-08-25.v5",
  "profiles": {
   "conv.pref.v1": {
    "confirm": [
