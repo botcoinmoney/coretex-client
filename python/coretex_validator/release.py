@@ -1,580 +1,683 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Step 1-2: discover a rig release, and verify the deployed bytecode against it.
+"""Load and verify the closed first-public release directory.
 
-THE TWO AUTHORITIES, WHICH ARE NOT THE SAME THING AND MUST NEVER BE COLLAPSED.
-
-* The **release artifact** is the DEPLOYMENT authority. It records the addresses that were
-  deployed and the ``keccak256`` of the runtime bytecode each of them actually carries. If the
-  chain disagrees with it, the chain is right and the release is stale or wrong — but either way
-  something is broken and the run must stop.
-* The **pinned source commit** is the SOURCE / INTERFACE authority. It is where the event
-  signatures, the receipt tuple layout, the typehash and the join recipe come from.
-
-The rehearsal deployment was built from an EARLIER tree than the pinned source HEAD. So the two
-authorities *legitimately* disagree about bytecode, and a validator that compiled HEAD and
-compared the result to the chain would report a false alarm on every single deployment. It is
-modelled explicitly instead: :class:`Release` carries both, :func:`verify_deployment` checks the
-chain against the RELEASE, and :meth:`Release.source_divergence` states in the report that the
-interface authority is a different tree. What is NOT tolerated is a release that fails to say
-which source it was built from — that turns "we know they differ" into "we have no idea".
-
-WHAT IS DELIBERATELY NOT DONE HERE. This module does not compile anything. Reproducing a build
-from source needs a pinned solc, pinned settings and a pinned dependency tree, and getting any of
-them wrong produces a mismatch that looks exactly like tampering. Bytecode reproduction is a
-separate, opt-in claim; conflating it with deployment verification would make the everyday check
-fail for boring reasons and train operators to ignore it.
+The release binds this validator wheel; the validator independently verifies the supplied release
+and all of its reachable bytes. No package tag, branch, signer list, or prior packet participates
+in this authority.
 """
 from __future__ import annotations
 
-import json
 import hashlib
+import base64
+import configparser
+import csv
+import io
+import json
 import os
-import urllib.request
+import re
+import stat
+import unicodedata
+import zipfile
+from email.parser import Parser
 from dataclasses import dataclass
-from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Dict, Mapping, Optional
 
 from . import frontier as fr
-from . import rehearsal_deployment as rd
-from . import rig_events as rig
-from .keccak256 import keccak256_hex
+from . import release_schema as schema
+from .activation import PublicActivation
+from .keccak256 import keccak256
+from .rig_receipt_binding import RIG_BINDING_AUTHORITY_SHA256
 
-RELEASE_FORMAT = "coretex.rig-rehearsal-release/v1"
-PRODUCTION_RELEASE_FORMAT = "botcoin-rig-release/v1"
-BUILTIN_PRODUCTION_RELEASE_FORMAT = "coretex.canonical-production-release/v1"
-DEFAULT_PRODUCTION_RELEASE_URL = "builtin:base-mainnet"
-PRODUCTION_COORDINATOR = "0x6463f89F102e9f53168ABe557173f53c0bBbF635"
-PRODUCTION_CONTRACTS = {
-    "registry": "0xa4d8a7Bb3Ba2D023af29Bf77601A61673ED89ad3",
-    "mining": "0xB61BC7487424172CB9fa9dD381a9eC06C7067dCd",
-    "verifier": "0x82384E4DA334a4e3E1d8d2623359dC8c4d931Ed4",
+MAX_FILE_BYTES = 64 * 1024 * 1024
+LOCK_DOMAIN = b"\x19coretex.compatibility-lock/v1\n"
+_PACKAGE_DIR = os.path.dirname(os.path.abspath(__file__))
+_EMBEDDED_RELEASE_INPUTS = {
+    "benchmark_law_root": "LAW.md",
+    "canonical_suite_root": "CANONICAL-SUITE.v1.json",
+    "counter_resource_law_root": "COUNTER_RESOURCE_LAW.v1.json",
+    "rig_contract_authority_root": "RIG-CONTRACT-AUTHORITY.base-mainnet.json",
 }
-PRODUCTION_GENESIS_STATE_ROOT = (
-    "8f2455e5cbf49cd4bb5e1b148c1828a9c79aa7fd27d3db7035fe7fb5e0287788")
-PRODUCTION_CUTOVER_EPOCH = 171
-PRODUCTION_SOURCE_COMMIT = "1f8ba5c11b6fc4bc97e4e23000e9fefea5ba6252"
-PRODUCTION_DEPLOY_BLOCK = 49773104
-PRODUCTION_RELEASE_PAYLOAD_HASH = (
-    "959ab7028bc90fd71995fcfc6f7498e8912c18d66de5a454f98fd0660b9632ba")
-PRODUCTION_RELEASE_SIGNATURE = (
-    "0xbae09cdb7b623f1cfd8574eded6bd507888f6808fb2ad183f78f48d63ec1e2e0"
-    "36e2a014f2d8f1595215eff5446d7e4e1fc9b2fadf224e733c87c5560f32201a1b")
-PRODUCTION_CODE_HASHES = {
-    "registry": "c38537574e711e069118f9ade2e92a04df768ed0ad3d59f813ce144fbed04c25",
-    "mining": "61b768d6678405bf286757dcfd931bde1586e089871d6cbc906454d263d3039d",
-    "verifier": "a27ea294e4acf6062f7cc1cf57fb02bb372c628b7ccd40255fad0a21cb213d7b",
+_LOCK_ROOT_RULES = {
+    "benchmark_law_root": "sha256-bytes",
+    "counter_resource_law_root": "sha256-frontier-canonical-json",
+    "counter_root": "sha256-benchmark-canonical-json",
+    "evaluation_law_root": "sha256-benchmark-canonical-json",
+    "evaluation_law_scorer_root": "sha256-benchmark-canonical-json",
+    "miner_module_abi_root": "sha256-frontier-canonical-json",
+    "renderer_root": "sha256-benchmark-canonical-json",
+    "rig_contract_authority_root": "sha256-bytes",
+    "runtime_artifact_root": "sha256-file-tree",
+    "runtime_protocol_abi_root": "sha256-frontier-canonical-json",
+    "runtime_wheel_root": "sha256-bytes",
 }
-
-#: The ONLY classification this package will produce a snapshot under. Stated here as well as in
-#: :mod:`.export` because it is a property of the release, not only of the output.
-CLASSIFICATION_REHEARSAL = "MAINNET_REHEARSAL"
-#: Named so it can be REFUSED by name. A release that claims it is rejected: this package has
-#: never been through the process that would justify the claim.
-CLASSIFICATION_CANONICAL = "MAINNET_CANONICAL"
-CLASSIFICATION_PRODUCTION = "CANONICAL_PRODUCTION"
-
-#: The three contracts a rig lane is. Every one of them must be pinned by the release, because
-#: verifying two of three leaves the unverified one free to be anything.
-CONTRACT_ROLES = ("registry", "mining", "verifier")
-
-
-class ReleaseError(Exception):
-    """A release that cannot be trusted to be about a real deployment."""
-
-    def __init__(self, code: str, message: str) -> None:
-        super().__init__(f"{code}: {message}")
-        self.code = code
-        self.message = message
-
-
-@dataclass(frozen=True)
-class SourcePin:
-    """Where the INTERFACE authority lives. Repo + commit, never a branch."""
-
-    repo: str
-    commit: str
-    #: Free-form, e.g. ``"contracts/rig/mining"``. Recorded so a reader can find the files.
-    paths: Tuple[str, ...] = ()
-    #: ``True`` when the repo is fetchable by an anonymous clean machine. See
-    #: ``docs/V5-RIG-VALIDATOR.md``: at the time of writing it is NOT, which is a finding about
-    #: whether the public validator can exist, not a detail of this dataclass.
-    public: bool = False
+_LOCK_LITERALS = {
+    "input_envelope_schema": {"kind": "literal", "schema": "envelope.v1", "version": 1},
+    "module_manifest_schema": {
+        "kind": "literal", "schema": "coretex-memory/release-manifest", "version": 4},
+    "store_schema": {"kind": "literal", "schema": "coretex-memory/store", "version": 1},
+    "transition_descriptor_schema": {
+        "kind": "literal", "schema": "coretex-transition-descriptor-v3", "version": 33},
+}
+_LOCK_ROOT_RULES.update({
+    "wasmtime_aarch64_wheel_root": "sha256-bytes",
+    "wasmtime_amd64_wheel_root": "sha256-bytes",
+})
+_VALIDATOR_MEMBERS = frozenset({
+    "CANONICAL-SUITE.v1.json", "COUNTER_RESOURCE_LAW.v1.json", "LAW.md",
+    "RELEASE-CONTRACT.v1.json", "RIG-CONTRACT-AUTHORITY.base-mainnet.json",
+    "RIG-WIRE-BINDING.v1.json", "__init__.py", "abi.py", "activation.py",
+    "benchmark_replay.py", "compat_lock.py", "canonical_suite.py", "cli.py", "discovery.py",
+    "dispatch.py", "epoch_law.py",
+    "eval_artifact.py", "frontier.py", "join.py", "keccak256.py", "parent_execution.py",
+    "publication.py", "receipt_chain.py", "release.py", "release_schema.py", "replay.py",
+    "rig_events.py", "rig_receipt_binding.py", "rpc.py", "secp256k1.py", "snapshot.py",
+})
+_MAX_ARCHIVE_MEMBER_BYTES = 64 * 1024 * 1024
+_MAX_ARCHIVE_TOTAL_BYTES = 256 * 1024 * 1024
 
 
-@dataclass(frozen=True)
-class Release:
-    """A rehearsal release artifact, parsed and range-checked.
-
-    Nothing here is derived from the chain. That is the point: the release is the CLAIM, and
-    :func:`verify_deployment` is where the claim meets the state.
-    """
-
-    format: str
-    classification: str
-    chain_id: int
-    network: str
-    addresses: Dict[str, str]
-    #: ``role -> keccak256(runtime bytecode)`` as bare lowercase 64-hex.
-    runtime_code_hashes: Dict[str, str]
-    deploy_block: int
-    #: The block the release wants read as the deployment's settled observation point. A run may
-    #: choose a later one; it may not choose an earlier one.
-    observation_block: Optional[int]
-    source: SourcePin
-    #: Where content-addressed artifacts (eval artifact, candidate manifest) can be fetched.
-    artifact_base_url: Optional[str]
-    #: The frozen runtime packet this deployment's admission law is pinned to.
-    runtime_packet_sha256: Optional[str]
-    #: The resolver's signing address. TRANSPORT authentication only — see :mod:`.snapshot`.
-    resolver_signer: Optional[str]
-    raw: Mapping[str, Any]
-    production_authority: bool = False
-
-    @property
-    def deployment(self) -> rig.RigDeployment:
-        return rig.RigDeployment(chain_id=self.chain_id, registry=self.addresses["registry"],
-                                 mining=self.addresses["mining"],
-                                 verifier=self.addresses["verifier"])
-
-    def source_divergence(self) -> Dict[str, Any]:
-        """The statement every report must carry: which authority is which.
-
-        Not a warning and not an error. It exists so no reader can come away thinking the
-        bytecode on chain was proved to be a build of the pinned source — it was not, and the
-        release is the only thing that says what was deployed.
-        """
-        if self.production_authority:
-            signature = self.raw.get("operatorSignature", {})
-            return {
-                "deployment_authority": "operator_signed_canonical_release",
-                "production_authority": True,
-                "release_payload_sha256": signature.get("payloadHash"),
-                "release_signer": signature.get("signer"),
-                "source_interface_authority": {
-                    "repo": self.source.repo, "commit": self.source.commit,
-                    "publicly_fetchable": self.source.public},
-                "note": ("the canonical deployment artifact is authenticated by its production "
-                         "coordinator signature; runtime bytecode and immutable wiring are still "
-                         "read independently from the pinned chain block"),
-            }
-        return {
-            "deployment_authority": "release_artifact",
-            "source_interface_authority": {"repo": self.source.repo, "commit": self.source.commit,
-                                           "publicly_fetchable": self.source.public},
-            "note": ("the deployed rehearsal was built from an EARLIER tree than the pinned "
-                     "source commit. Bytecode is verified against the RELEASE's recorded runtime "
-                     "hashes; the pinned commit is the authority for ABI/event/typehash "
-                     "interfaces ONLY. These are not the same claim and this run does not "
-                     "compile anything"),
-        }
+class ReleaseError(ValueError):
+    """The supplied directory is not one closed release graph."""
 
 
-def _require(document: Mapping[str, Any], field: str) -> Any:
-    if field not in document:
-        raise ReleaseError("RELEASE_INCOMPLETE", f"the release carries no {field!r}")
-    return document[field]
+def _reject_duplicates(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ReleaseError(f"duplicate JSON key {key!r}")
+        result[key] = value
+    return result
 
 
-def parse_release(document: Mapping[str, Any]) -> Release:
-    """Parse and range-check. Refuses anything it cannot fully understand."""
-    if not isinstance(document, Mapping):
-        raise ReleaseError("RELEASE_MALFORMED", "a release is a JSON object")
-    fmt = _require(document, "format")
-    if fmt == BUILTIN_PRODUCTION_RELEASE_FORMAT:
-        return _parse_builtin_production_release(document)
-    if fmt == PRODUCTION_RELEASE_FORMAT:
-        return _parse_production_release(document)
-    if fmt != RELEASE_FORMAT:
-        raise ReleaseError("RELEASE_FORMAT_UNKNOWN",
-                           f"format {fmt!r} is not {RELEASE_FORMAT!r}; refusing to guess")
-    classification = _require(document, "classification")
-    if classification == CLASSIFICATION_CANONICAL:
-        raise ReleaseError(
-            "CLASSIFICATION_REFUSED",
-            "this release claims MAINNET_CANONICAL. This package validates REHEARSAL deployments "
-            "and has never been through the process that would justify a canonical claim; a "
-            "canonical snapshot must not be mintable by pointing this tool at a file")
-    if classification != CLASSIFICATION_REHEARSAL:
-        raise ReleaseError("CLASSIFICATION_UNKNOWN",
-                           f"unsupported classification {classification!r}")
-
-    addresses_raw = _require(document, "addresses")
-    if not isinstance(addresses_raw, Mapping):
-        raise ReleaseError("RELEASE_MALFORMED", "addresses must be an object")
-    addresses: Dict[str, str] = {}
-    for role in CONTRACT_ROLES:
-        value = addresses_raw.get(role)
-        if not isinstance(value, str) or not value.startswith("0x") or len(value) != 42:
-            raise ReleaseError("RELEASE_INCOMPLETE",
-                               f"addresses.{role} must be a 0x-prefixed address, got {value!r}")
-        addresses[role] = value
-
-    hashes_raw = _require(document, "runtime_code_hashes")
-    if not isinstance(hashes_raw, Mapping):
-        raise ReleaseError("RELEASE_MALFORMED", "runtime_code_hashes must be an object")
-    code_hashes: Dict[str, str] = {}
-    for role in CONTRACT_ROLES:
-        value = hashes_raw.get(role)
-        try:
-            code_hashes[role] = fr.check_root(value, f"runtime_code_hashes.{role}")
-        except fr.FrontierError as exc:
-            raise ReleaseError("RELEASE_INCOMPLETE", str(exc)) from exc
-
-    source_raw = _require(document, "source")
-    if not isinstance(source_raw, Mapping):
-        raise ReleaseError("RELEASE_MALFORMED", "source must be an object")
-    commit = source_raw.get("commit")
-    if not isinstance(commit, str) or len(commit) != 40:
-        raise ReleaseError(
-            "SOURCE_PIN_MISSING",
-            "source.commit must be a full 40-hex git commit. A release that does not say which "
-            "tree its interfaces come from turns a known divergence into an unknown one")
-    source = SourcePin(repo=str(source_raw.get("repo", "")), commit=commit,
-                       paths=tuple(source_raw.get("paths", ())),
-                       public=bool(source_raw.get("publicly_fetchable", False)))
-
-    chain_id = _require(document, "chain_id")
-    if not isinstance(chain_id, int) or isinstance(chain_id, bool) or chain_id <= 0:
-        raise ReleaseError("RELEASE_MALFORMED", "chain_id must be a positive integer")
-    deploy_block = _require(document, "deploy_block")
-    if not isinstance(deploy_block, int) or isinstance(deploy_block, bool) or deploy_block < 0:
-        raise ReleaseError("RELEASE_MALFORMED", "deploy_block must be a non-negative integer")
-
-    return Release(
-        format=fmt, classification=classification, chain_id=chain_id,
-        network=str(document.get("network", "")), addresses=addresses,
-        runtime_code_hashes=code_hashes, deploy_block=deploy_block,
-        observation_block=document.get("observation_block"), source=source,
-        artifact_base_url=document.get("artifact_base_url"),
-        runtime_packet_sha256=document.get("runtime_packet_sha256"),
-        resolver_signer=document.get("resolver_signer"), raw=dict(document))
-
-
-def _require_address(value: Any, field: str) -> str:
-    if not isinstance(value, str) or not value.startswith("0x") or len(value) != 42:
-        raise ReleaseError("RELEASE_INCOMPLETE",
-                           f"{field} must be a 0x-prefixed address, got {value!r}")
+def _json(raw: bytes, where: str) -> dict:
     try:
-        int(value[2:], 16)
-    except ValueError as exc:
-        raise ReleaseError("RELEASE_MALFORMED", f"{field} is not hex") from exc
+        value = json.loads(
+            raw.decode("utf-8"), object_pairs_hook=_reject_duplicates,
+            parse_constant=lambda value: (_ for _ in ()).throw(
+                ReleaseError(f"non-finite JSON value {value!r}")))
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise ReleaseError(f"{where} is not duplicate-free UTF-8 JSON: {exc}") from exc
+    if not isinstance(value, dict):
+        raise ReleaseError(f"{where} must contain a JSON object")
     return value
 
 
-def _production_payload_bytes(document: Mapping[str, Any]) -> bytes:
-    """Exact mirror of sign-canonical-deployment.mjs payloadDocument + JSON.stringify.
+def _safe_relative(value: Any, where: str) -> str:
+    if not isinstance(value, str) or not value or value.startswith(("/", "\\")) \
+            or "\\" in value:
+        raise ReleaseError(f"{where} is not a repository-relative path")
+    if "\x00" in value or unicodedata.normalize("NFC", value) != value:
+        raise ReleaseError(f"{where} is not a canonical Unicode path")
+    parts = value.split("/")
+    if any(part in ("", ".", "..") for part in parts):
+        raise ReleaseError(f"{where} is not a canonical relative path")
+    return value
 
-    JSON object insertion order is retained by Python's parser.  ``ensure_ascii=False`` matches
-    JavaScript's UTF-8 JSON.stringify output; compact separators remove Python-only whitespace.
-    """
-    payload = {key: value for key, value in document.items()
-               if key not in ("signature", "operatorSignature")}
-    return json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+
+def _directory_chain(root: str, path: str) -> tuple[tuple[Any, ...], ...]:
+    relative = os.path.relpath(os.path.dirname(path), root)
+    if relative == os.pardir or relative.startswith(os.pardir + os.sep) \
+            or os.path.isabs(relative):
+        raise ReleaseError("release path escapes its root")
+    directories = [root]
+    current = root
+    for part in (() if relative == "." else relative.split(os.sep)):
+        current = os.path.join(current, part)
+        directories.append(current)
+    result = []
+    for directory in directories:
+        try:
+            observed = os.lstat(directory)
+        except OSError as exc:
+            raise ReleaseError(f"cannot resolve release directory {directory}: {exc}") from exc
+        if not stat.S_ISDIR(observed.st_mode) or stat.S_ISLNK(observed.st_mode):
+            raise ReleaseError(f"release directory {directory} must not be a symlink")
+        result.append((directory, observed.st_dev, observed.st_ino,
+                       observed.st_mtime_ns, observed.st_ctime_ns))
+    return tuple(result)
 
 
-def _verify_production_signature(document: Mapping[str, Any]) -> str:
-    block = _require(document, "operatorSignature")
-    if not isinstance(block, Mapping):
-        raise ReleaseError("PRODUCTION_SIGNATURE_INVALID", "operatorSignature must be an object")
-    if (block.get("status") != "SIGNED" or
-            block.get("algorithm") != "secp256k1-eip191-personal_sign"):
-        raise ReleaseError("PRODUCTION_SIGNATURE_INVALID",
-                           "the canonical release has no supported signed operator signature")
-    payload_hash = hashlib.sha256(_production_payload_bytes(document)).digest()
-    if str(block.get("payloadHash", "")).removeprefix("0x").lower() != payload_hash.hex():
-        raise ReleaseError("PRODUCTION_SIGNATURE_INVALID",
-                           "operatorSignature.payloadHash does not match the release contents")
-    signature_hex = str(block.get("signature", ""))
+def _read(root: str, relative: str, *, expected_size: Optional[int] = None) -> bytes:
+    relative = _safe_relative(relative, "release file path")
+    root = os.path.realpath(root)
+    if not os.path.isdir(root):
+        raise ReleaseError("release root is unavailable or is not a directory")
+    path = os.path.abspath(os.path.join(root, *relative.split("/")))
+    if os.path.commonpath((root, path)) != root or path == root:
+        raise ReleaseError(f"{relative} escapes the release root")
+    directories = _directory_chain(root, path)
     try:
-        signature = bytes.fromhex(signature_hex.removeprefix("0x"))
-    except ValueError as exc:
-        raise ReleaseError("PRODUCTION_SIGNATURE_INVALID", "operator signature is not hex") from exc
-    # ethers.signMessage(getBytes(payloadHash)): EIP-191 over an exact 32-byte message.
-    from .keccak256 import keccak256
-    from .secp256k1 import ecrecover, addresses_equal, SignatureError
-    digest = keccak256(b"\x19Ethereum Signed Message:\n32" + payload_hash)
+        first = os.lstat(path)
+        if not stat.S_ISREG(first.st_mode) or stat.S_ISLNK(first.st_mode) or first.st_nlink != 1:
+            raise ReleaseError(f"{relative} must be one regular non-linked file")
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    except OSError as exc:
+        raise ReleaseError(f"cannot safely open {relative}: {exc}") from exc
     try:
-        recovered = ecrecover(digest, signature)
-    except SignatureError as exc:
-        raise ReleaseError("PRODUCTION_SIGNATURE_INVALID", str(exc)) from exc
-    coordinator = _require_address(document.get("coordinatorSigner"), "coordinatorSigner")
-    signer = _require_address(block.get("signer"), "operatorSignature.signer")
-    if not addresses_equal(recovered, coordinator) or not addresses_equal(recovered, signer):
+        before = os.fstat(descriptor)
+        if (before.st_dev, before.st_ino) != (first.st_dev, first.st_ino) \
+                or not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
+            raise ReleaseError(f"{relative} changed while it was opened")
+        if before.st_size < 1 or before.st_size > MAX_FILE_BYTES:
+            raise ReleaseError(f"{relative} is outside the 1..{MAX_FILE_BYTES} byte bound")
+        if expected_size is not None and before.st_size != expected_size:
+            raise ReleaseError(
+                f"{relative} has {before.st_size} bytes, release declares {expected_size}")
+        chunks = []
+        remaining = before.st_size
+        while remaining:
+            chunk = os.read(descriptor, min(1 << 20, remaining))
+            if not chunk:
+                raise ReleaseError(f"{relative} ended during its bounded read")
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        after = os.fstat(descriptor)
+        fields = ("st_dev", "st_ino", "st_nlink", "st_size", "st_mtime_ns", "st_ctime_ns")
+        if any(getattr(before, field) != getattr(after, field) for field in fields):
+            raise ReleaseError(f"{relative} changed during read")
+        final = os.lstat(path)
+        if any(getattr(first, field) != getattr(final, field) for field in fields):
+            raise ReleaseError(f"{relative} changed while its path was resolved")
+        if _directory_chain(root, path) != directories:
+            raise ReleaseError(f"{relative} changed while its release directories were resolved")
+        if os.path.realpath(path) != path:
+            raise ReleaseError(f"{relative} resolves through a symlink")
+        return b"".join(chunks)
+    finally:
+        os.close(descriptor)
+
+
+def _sha(raw: bytes) -> str:
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _embedded(name: str) -> bytes:
+    """Read one immutable wheel input without accepting an external search path."""
+    return _read(_PACKAGE_DIR, name)
+
+
+def _canonical_benchmark(value: Any) -> bytes:
+    return json.dumps(
+        value, sort_keys=True, separators=(",", ":"), ensure_ascii=True,
+        allow_nan=False).encode()
+
+
+def _object_root(raw: bytes, rule: str, where: str) -> str:
+    if rule == "sha256-bytes":
+        return _sha(raw)
+    document = _json(raw, where)
+    if rule == "sha256-frontier-canonical-json":
+        return _sha(fr.canonical_bytes(document))
+    if rule == "sha256-benchmark-canonical-json":
+        return _sha(_canonical_benchmark(document))
+    raise ReleaseError(f"{where} uses unsupported hash rule {rule!r}")
+
+
+def _frontier_body_root(document: Mapping[str, Any], self_field: str) -> str:
+    return _sha(fr.canonical_bytes(
+        {key: value for key, value in document.items() if key != self_field}))
+
+
+def _lock_root(document: Mapping[str, Any]) -> str:
+    if set(document) != {"format", "lock_root", "locks"} \
+            or document.get("format") != "coretex.compatibility-lock/v1":
+        raise ReleaseError("COMPATIBILITY-LOCK.json has another or open schema")
+    locks = document.get("locks")
+    expected_names = set(_LOCK_ROOT_RULES) | set(_LOCK_LITERALS)
+    if not isinstance(locks, Mapping) or set(locks) != expected_names:
+        raise ReleaseError("COMPATIBILITY-LOCK.json does not carry the exact current lock set")
+    for name, rule in _LOCK_ROOT_RULES.items():
+        entry = locks[name]
+        if not isinstance(entry, Mapping) \
+                or set(entry) != {"hash_rule", "kind", "root"} \
+                or entry.get("hash_rule") != rule or entry.get("kind") != "root":
+            raise ReleaseError(f"COMPATIBILITY-LOCK.json locks.{name} has another shape or rule")
+        value = entry.get("root")
+        if not isinstance(value, str) or len(value) != 64 \
+                or any(character not in "0123456789abcdef" for character in value) \
+                or value == "0" * 64:
+            raise ReleaseError(f"COMPATIBILITY-LOCK.json locks.{name}.root is invalid")
+    for name, expected in _LOCK_LITERALS.items():
+        if locks[name] != expected:
+            raise ReleaseError(f"COMPATIBILITY-LOCK.json locks.{name} has another literal")
+    body = {key: value for key, value in document.items() if key != "lock_root"}
+    observed = keccak256(LOCK_DOMAIN + fr.canonical_bytes(body)).hex()
+    if document["lock_root"] != observed or observed == "0" * 64:
+        raise ReleaseError("COMPATIBILITY-LOCK.json does not reproduce lock_root")
+    return observed
+
+
+def _archive_name(value: str, where: str) -> str:
+    if not value or value.startswith(("/", "\\")) or "\\" in value or "\x00" in value \
+            or unicodedata.normalize("NFC", value) != value:
+        raise ReleaseError(f"{where} has unsafe member path {value!r}")
+    raw = value[:-1] if value.endswith("/") else value
+    if not raw or any(part in ("", ".", "..") for part in raw.split("/")):
+        raise ReleaseError(f"{where} has non-canonical member path {value!r}")
+    return raw
+
+
+def _wheel_payload(raw: bytes, *, package: str, distribution_stem: str,
+                   where: str, version: str = "1.0.0",
+                   tag: str = "py3-none-any") -> Dict[str, str]:
+    """Verify one pure wheel's safe closed archive and return package member hashes."""
+    try:
+        archive = zipfile.ZipFile(io.BytesIO(raw))
+        infos = archive.infolist()
+    except zipfile.BadZipFile as exc:
+        raise ReleaseError(f"{where} is not a wheel: {exc}") from exc
+    try:
+        if not infos or len(infos) > 20_000:
+            raise ReleaseError(f"{where} has an invalid member count")
+        files: Dict[str, bytes] = {}
+        seen: set[str] = set()
+        total = 0
+        for info in infos:
+            name = _archive_name(info.filename, where)
+            if name in seen:
+                raise ReleaseError(f"{where} repeats archive member {name!r}")
+            seen.add(name)
+            mode = (info.external_attr >> 16) & 0xffff
+            kind = stat.S_IFMT(mode)
+            if kind not in (0, stat.S_IFREG, stat.S_IFDIR) or info.flag_bits & 1:
+                raise ReleaseError(f"{where} contains unsafe archive member {name!r}")
+            if info.is_dir():
+                # A wheel has a RECORD-closed regular-file inventory.  Silently dropping an
+                # explicit directory entry would let two different zip inventories validate as
+                # the same wheel payload and would leave that member outside the deep read below.
+                raise ReleaseError(
+                    f"{where} contains directory member {info.filename!r}; "
+                    "the wheel inventory must contain regular files only")
+            if info.file_size > _MAX_ARCHIVE_MEMBER_BYTES:
+                raise ReleaseError(f"{where} member {name!r} exceeds the byte bound")
+            data = archive.read(info)
+            if len(data) != info.file_size:
+                raise ReleaseError(f"{where} member {name!r} changed size during read")
+            total += len(data)
+            if total > _MAX_ARCHIVE_TOTAL_BYTES:
+                raise ReleaseError(f"{where} expands beyond the total byte bound")
+            files[name] = data
+    finally:
+        archive.close()
+
+    dist_prefix = distribution_stem + ".dist-info/"
+    required_dist = {"METADATA", "WHEEL", "top_level.txt", "RECORD"}
+    if package != "wasmtime":
+        required_dist.add("entry_points.txt")
+    dist_members = {name[len(dist_prefix):]: data for name, data in files.items()
+                    if name.startswith(dist_prefix)}
+    missing = required_dist - set(dist_members)
+    unknown = {name for name in dist_members
+               if name not in required_dist and not name.startswith("licenses/")}
+    outside = {name for name in files
+               if not name.startswith((package + "/", dist_prefix))}
+    if missing or unknown or outside:
         raise ReleaseError(
-            "PRODUCTION_SIGNATURE_INVALID",
-            f"operator signature recovers {recovered}, not coordinator {coordinator}")
-    if not addresses_equal(recovered, PRODUCTION_COORDINATOR):
-        raise ReleaseError("PRODUCTION_AUTHORITY_INVALID",
-                           f"release signer {recovered} is not the canonical production signer")
-    return recovered
-
-
-def _recover_production_signature(payload_hash_hex: str, signature_hex: str) -> str:
-    from .keccak256 import keccak256
-    from .secp256k1 import ecrecover, addresses_equal, SignatureError
+            f"{where} is not a closed {package} wheel "
+            f"(missing={sorted(missing)}, unknown={sorted(unknown)}, outside={sorted(outside)})")
     try:
-        payload_hash = bytes.fromhex(payload_hash_hex.removeprefix("0x"))
-        signature = bytes.fromhex(signature_hex.removeprefix("0x"))
-    except ValueError as exc:
-        raise ReleaseError("PRODUCTION_SIGNATURE_INVALID", "production signature pin is not hex") from exc
-    if len(payload_hash) != 32:
-        raise ReleaseError("PRODUCTION_SIGNATURE_INVALID", "production payload hash is not bytes32")
-    digest = keccak256(b"\x19Ethereum Signed Message:\n32" + payload_hash)
+        metadata = Parser().parsestr(dist_members["METADATA"].decode("utf-8"))
+        wheel = Parser().parsestr(dist_members["WHEEL"].decode("utf-8"))
+        top_level = dist_members["top_level.txt"].decode("utf-8")
+        entry_points = None
+        if package != "wasmtime":
+            entry_points = configparser.ConfigParser(interpolation=None, strict=True)
+            entry_points.optionxform = str
+            entry_points.read_string(dist_members["entry_points.txt"].decode("utf-8"))
+    except (UnicodeDecodeError, configparser.Error) as exc:
+        raise ReleaseError(f"{where} has invalid distribution metadata: {exc}") from exc
+    distribution = {
+        "coretex_memory": ("coretex-memory", "coretex-memory", "coretex_memory.cli:main"),
+        "coretex_validator": (
+            "coretex-validator", "coretex-validator", "coretex_validator.cli:main"),
+        "coretex_memory_agent": (
+            "coretex-memory-agent", "coretex", "coretex_memory_agent.cli:main"),
+        "wasmtime": ("wasmtime", None, None),
+    }[package]
+    expected_name, command, target = distribution
+    normalize = lambda value: "-".join(  # noqa: E731 - local metadata normalization
+        part for part in re.split(r"[-_.]+", str(value).lower()) if part)
+    if metadata.get_all("Name", []) != [expected_name] \
+            or metadata.get_all("Version", []) != [version] \
+            or wheel.get_all("Wheel-Version", []) != ["1.0"] \
+            or wheel.get_all("Root-Is-Purelib", []) != ["true"] \
+            or wheel.get_all("Tag", []) != [tag] \
+            or normalize(metadata.get("Name", "")) != normalize(expected_name) \
+            or top_level != package + "\n" \
+            or (command is not None and (
+                entry_points is None or entry_points.sections() != ["console_scripts"]
+                or list(entry_points["console_scripts"].items()) != [(command, target)])):
+        raise ReleaseError(f"{where} does not carry the exact declared wheel identity")
+    record_name = dist_prefix + "RECORD"
     try:
-        recovered = ecrecover(digest, signature)
-    except SignatureError as exc:
-        raise ReleaseError("PRODUCTION_SIGNATURE_INVALID", str(exc)) from exc
-    if not addresses_equal(recovered, PRODUCTION_COORDINATOR):
-        raise ReleaseError("PRODUCTION_SIGNATURE_INVALID",
-                           f"pinned release signature recovers {recovered}")
-    return recovered
+        rows = list(csv.reader(io.StringIO(files[record_name].decode("utf-8"), newline="")))
+    except (UnicodeDecodeError, csv.Error) as exc:
+        raise ReleaseError(f"{where} RECORD is invalid: {exc}") from exc
+    recorded: Dict[str, tuple[str, str]] = {}
+    for row in rows:
+        if len(row) != 3:
+            raise ReleaseError(f"{where} RECORD has a non-three-column row")
+        name = _archive_name(row[0], f"{where} RECORD")
+        if name in recorded:
+            raise ReleaseError(f"{where} RECORD repeats {name!r}")
+        recorded[name] = (row[1], row[2])
+    if set(recorded) != set(files):
+        raise ReleaseError(f"{where} RECORD is not closed over the wheel")
+    for name, data in files.items():
+        digest, size = recorded[name]
+        if name == record_name:
+            if digest or size:
+                raise ReleaseError(f"{where} RECORD binds itself")
+            continue
+        expected = base64.urlsafe_b64encode(hashlib.sha256(data).digest()).rstrip(b"=").decode()
+        if digest != "sha256=" + expected or size != str(len(data)):
+            raise ReleaseError(f"{where} RECORD binding for {name!r} is invalid")
+    prefix = package + "/"
+    payload = {name[len(prefix):]: _sha(data) for name, data in files.items()
+               if name.startswith(prefix)}
+    if "__init__.py" not in payload:
+        raise ReleaseError(f"{where} has no {package} package")
+    return dict(sorted(payload.items()))
 
 
-def _builtin_production_document() -> Dict[str, Any]:
-    return {
-        "format": BUILTIN_PRODUCTION_RELEASE_FORMAT,
-        "classification": CLASSIFICATION_PRODUCTION,
-        "productionAllowed": True,
-        "chain_id": 8453,
-        "network": "base-mainnet",
-        "addresses": dict(PRODUCTION_CONTRACTS),
-        "runtime_code_hashes": dict(PRODUCTION_CODE_HASHES),
-        "deploy_block": PRODUCTION_DEPLOY_BLOCK,
-        "genesis_state_root": PRODUCTION_GENESIS_STATE_ROOT,
-        "cutover_epoch": PRODUCTION_CUTOVER_EPOCH,
-        "source": {"repo": "https://github.com/botcoinmoney/botcoin-mining-rigs",
-                   "commit": PRODUCTION_SOURCE_COMMIT, "publicly_fetchable": False},
-        "operatorSignature": {
-            "status": "SIGNED", "algorithm": "secp256k1-eip191-personal_sign",
-            "payloadHash": PRODUCTION_RELEASE_PAYLOAD_HASH,
-            "signer": PRODUCTION_COORDINATOR, "signature": PRODUCTION_RELEASE_SIGNATURE},
-        "authority_note": ("minimal public identity extracted from the signed canonical release; "
-                           "all identity fields are pinned in validator code and re-read on chain"),
+def _file_tree_root(entries: Mapping[str, str]) -> str:
+    body = "".join(f"{name}\0{digest}\n" for name, digest in sorted(entries.items()))
+    return _sha(body.encode("utf-8"))
+
+
+def _installed_validator_payload() -> Dict[str, str]:
+    actual = {name for name in os.listdir(_PACKAGE_DIR)
+              if os.path.isfile(os.path.join(_PACKAGE_DIR, name))}
+    if actual != _VALIDATOR_MEMBERS:
+        raise ReleaseError(
+            "installed validator package is not the exact current surface "
+            f"(missing={sorted(_VALIDATOR_MEMBERS-actual)}, "
+            f"unexpected={sorted(actual-_VALIDATOR_MEMBERS)})")
+    return {name: _sha(_embedded(name)) for name in sorted(_VALIDATOR_MEMBERS)}
+
+
+@dataclass(frozen=True)
+class ReleaseDirectory:
+    path: str
+    release: schema.RuntimeRelease
+    integration: Mapping[str, Any]
+    objects: Mapping[str, bytes]
+    artifacts: Mapping[str, bytes]
+    authority: Mapping[str, Any]
+
+    @property
+    def release_root(self) -> str:
+        return self.release.release_root
+
+    @property
+    def genesis_frontier_root(self) -> str:
+        return self.release.genesis_frontier_root
+
+    def activation(self, path: str) -> PublicActivation:
+        return PublicActivation.load(path)
+
+
+def load(path: str) -> ReleaseDirectory:
+    """Verify every file reachable from ``RELEASE.json`` and return its exact bytes."""
+    root = os.path.abspath(os.path.expanduser(path))
+    release_document = _json(_read(root, "RELEASE.json"), "RELEASE.json")
+    try:
+        parsed = schema.parse_release(release_document)
+    except schema.ReleaseSchemaError as exc:
+        raise ReleaseError(str(exc)) from exc
+    integration_document = _json(
+        _read(root, "RUNTIME-INTEGRATION.json"), "RUNTIME-INTEGRATION.json")
+    try:
+        integration = schema.parse_integration(integration_document, parsed)
+    except schema.ReleaseSchemaError as exc:
+        raise ReleaseError(str(exc)) from exc
+
+    object_bytes: Dict[str, bytes] = {}
+    for name, descriptor in parsed.raw["objects"].items():
+        raw = _read(root, descriptor["path"], expected_size=descriptor["size"])
+        if _sha(raw) != descriptor["raw_sha256"]:
+            raise ReleaseError(f"objects.{name} does not match raw_sha256")
+        observed = _object_root(raw, descriptor["hash_rule"], f"objects.{name}")
+        if observed != descriptor["root"]:
+            raise ReleaseError(
+                f"objects.{name} resolves to {observed}, not {descriptor['root']}")
+        object_bytes[name] = raw
+
+    # The release binds this wheel, while these four one-way inputs let the wheel independently
+    # refuse a release built from another law, suite, counter law, or deployed rig authority.  A
+    # canonical-JSON object is compared by its declared rule; byte-addressed inputs compare byte
+    # for byte.  RELEASE.json itself is intentionally not embedded (that would be self-reference).
+    for object_name, member_name in _EMBEDDED_RELEASE_INPUTS.items():
+        descriptor = parsed.raw["objects"][object_name]
+        packaged = _embedded(member_name)
+        packaged_root = _object_root(
+            packaged, descriptor["hash_rule"], f"embedded {member_name}")
+        if packaged_root != descriptor["root"]:
+            raise ReleaseError(
+                f"release {object_name} differs from the validator's embedded {member_name}")
+        if descriptor["hash_rule"] == "sha256-bytes" \
+                and packaged != object_bytes[object_name]:
+            raise ReleaseError(
+                f"release {object_name} bytes differ from embedded {member_name}")
+
+    artifact_bytes: Dict[str, bytes] = {}
+    for name, descriptor in parsed.raw["artifacts"].items():
+        raw = _read(root, descriptor["path"], expected_size=descriptor["size"])
+        if _sha(raw) != descriptor["sha256"]:
+            raise ReleaseError(f"artifacts.{name} does not match sha256")
+        artifact_bytes[name] = raw
+
+    runtime_payload = _wheel_payload(
+        artifact_bytes["runtime_wheel"], package="coretex_memory",
+        distribution_stem="coretex_memory-1.0.0", where="artifacts.runtime_wheel")
+    validator_payload = _wheel_payload(
+        artifact_bytes["validator_wheel"], package="coretex_validator",
+        distribution_stem="coretex_validator-1.0.0", where="artifacts.validator_wheel")
+    _wheel_payload(
+        artifact_bytes["adapter_wheel"], package="coretex_memory_agent",
+        distribution_stem="coretex_memory_agent-1.0.0", where="artifacts.adapter_wheel")
+    _wheel_payload(
+        artifact_bytes["wasmtime_amd64_wheel"], package="wasmtime",
+        distribution_stem="wasmtime-46.0.1", where="artifacts.wasmtime_amd64_wheel",
+        version="46.0.1", tag="py3-none-manylinux1_x86_64")
+    _wheel_payload(
+        artifact_bytes["wasmtime_aarch64_wheel"], package="wasmtime",
+        distribution_stem="wasmtime-46.0.1", where="artifacts.wasmtime_aarch64_wheel",
+        version="46.0.1", tag="py3-none-manylinux2014_aarch64")
+
+    payload_document = _json(
+        object_bytes["validator_wheel_payload_root"], "validator wheel payload manifest")
+    if set(payload_document) != {
+            "distribution", "format", "members", "package", "version", "wheel_sha256"} \
+            or payload_document.get("format") != "coretex.validator-wheel-payload/v1" \
+            or payload_document.get("distribution") != "coretex-validator" \
+            or payload_document.get("package") != "coretex_validator" \
+            or payload_document.get("version") != "1.0.0" \
+            or payload_document.get("wheel_sha256") \
+            != parsed.raw["artifacts"]["validator_wheel"]["sha256"] \
+            or payload_document.get("members") != validator_payload \
+            or set(validator_payload) != _VALIDATOR_MEMBERS:
+        raise ReleaseError("validator wheel payload manifest does not describe the exact wheel")
+    if validator_payload != _installed_validator_payload():
+        raise ReleaseError(
+            "the release validator wheel differs from this installed validator package")
+
+    portability = _json(
+        artifact_bytes["portability_evidence"], "artifacts.portability_evidence")
+    runtime_identity = portability.get("runtime_identity")
+    if not isinstance(runtime_identity, Mapping) \
+            or runtime_identity.get("runtime_artifact_root") != _file_tree_root(runtime_payload):
+        raise ReleaseError(
+            "portability evidence does not bind the exact runtime wheel package payload")
+
+    lock_document = _json(_read(root, "COMPATIBILITY-LOCK.json"), "COMPATIBILITY-LOCK.json")
+    if _lock_root(lock_document) != parsed.raw["compatibility_lock_root"]:
+        raise ReleaseError("release names another compatibility lock")
+    locks = lock_document.get("locks")
+    if not isinstance(locks, Mapping):
+        raise ReleaseError("compatibility lock has no locks object")
+    expected_lock_roots = {
+        name: parsed.raw["objects"][name]["root"]
+        for name in _LOCK_ROOT_RULES if name in parsed.raw["objects"]
+    }
+    expected_lock_roots.update({
+        "runtime_artifact_root": _file_tree_root(runtime_payload),
+        "runtime_wheel_root": parsed.raw["artifacts"]["runtime_wheel"]["sha256"],
+        "wasmtime_aarch64_wheel_root":
+            parsed.raw["artifacts"]["wasmtime_aarch64_wheel"]["sha256"],
+        "wasmtime_amd64_wheel_root":
+            parsed.raw["artifacts"]["wasmtime_amd64_wheel"]["sha256"],
+    })
+    for name, expected_root in expected_lock_roots.items():
+        entry = locks.get(name)
+        if not isinstance(entry, Mapping) or entry.get("kind") != "root" \
+                or entry.get("root") != expected_root \
+                or entry.get("hash_rule") != _LOCK_ROOT_RULES[name]:
+            raise ReleaseError(f"compatibility lock and release disagree on {name}")
+
+    runtime_config = integration.get("runtime_config")
+    if not isinstance(runtime_config, Mapping) or set(runtime_config) == {"config_root"}:
+        raise ReleaseError("runtime integration has no closed runtime config body")
+    runtime_config_body = {
+        key: value for key, value in runtime_config.items() if key != "config_root"}
+    if runtime_config.get("config_root") != parsed.raw["runtime_config_root"] \
+            or _canonical_benchmark(runtime_config_body) \
+            != _canonical_benchmark(_json(
+                object_bytes["runtime_config_root"], "objects.runtime_config_root")):
+        raise ReleaseError("runtime integration runtime config is not its release object")
+    evaluation_law = integration.get("evaluation_law")
+    if not isinstance(evaluation_law, Mapping) or set(evaluation_law) == {"law_root"}:
+        raise ReleaseError("runtime integration has no closed evaluation law body")
+    evaluation_law_body = {
+        key: value for key, value in evaluation_law.items() if key != "law_root"}
+    if evaluation_law.get("law_root") != parsed.raw["law"]["evaluation_law_root"] \
+            or _canonical_benchmark(evaluation_law_body) \
+            != _canonical_benchmark(_json(
+                object_bytes["evaluation_law_root"], "objects.evaluation_law_root")):
+        raise ReleaseError("runtime integration evaluation law is not its release object")
+    code_roots = integration.get("code_roots")
+    expected_code_names = {
+        "candidate_isolation_posture", "frontier", "generators", "miner_abi",
+        "runtime_coretex_memory", "scoring", "validator"}
+    if not isinstance(code_roots, Mapping) or set(code_roots) != expected_code_names \
+            or any(not isinstance(value, str) or len(value) != 64
+                   or any(character not in "0123456789abcdef" for character in value)
+                   or value == "0" * 64 for value in code_roots.values()):
+        raise ReleaseError("runtime integration has another or malformed code-root set")
+
+    composition = _json(_read(root, "GENESIS-COMPOSITION.json"), "GENESIS-COMPOSITION.json")
+    baseline = _json(_read(root, "GENESIS-BASELINE.json"), "GENESIS-BASELINE.json")
+    frontier_record = _json(_read(root, "GENESIS-FRONTIER.json"), "GENESIS-FRONTIER.json")
+    if _frontier_body_root(composition, "composition_root") \
+            != parsed.raw["genesis"]["composition_root"]:
+        raise ReleaseError("genesis composition does not reproduce the release root")
+    if _frontier_body_root(baseline, "baseline_root") != parsed.raw["genesis"]["baseline_root"]:
+        raise ReleaseError("genesis baseline does not reproduce the release root")
+    if set(frontier_record) != {"format", "frontier_root", "manifest"} \
+            or fr.frontier_root(frontier_record["manifest"]) != frontier_record["frontier_root"] \
+            or frontier_record["frontier_root"] != parsed.genesis_frontier_root:
+        raise ReleaseError("genesis frontier does not reproduce the release root")
+
+    if set(composition) != {"composition_root", "format", "profiles"} \
+            or composition.get("format") != "coretex.genesis-composition/v1" \
+            or set(baseline) != {"baseline_root", "format", "law_id", "profiles", "suite_root"} \
+            or baseline.get("format") != "coretex.genesis-baseline/v1" \
+            or baseline.get("law_id") != parsed.raw["law"]["id"] \
+            or baseline.get("suite_root") != parsed.raw["law"]["canonical_suite_root"]:
+        raise ReleaseError("genesis composition or baseline has another closed product shape")
+    frontier_manifest = frontier_record["manifest"]
+    if not isinstance(frontier_manifest, Mapping) or set(frontier_manifest) != {
+            "benchmark_law_root", "default_composition_root", "epoch", "format",
+            "parent_frontier_root", "profiles", "runtime_abi_root"} \
+            or frontier_manifest.get("format") != "coretex.memory-frontier.v1" \
+            or frontier_manifest.get("epoch") != 0 \
+            or frontier_manifest.get("parent_frontier_root") != "0" * 64 \
+            or frontier_manifest.get("benchmark_law_root") \
+            != parsed.raw["law"]["benchmark_law_root"] \
+            or frontier_manifest.get("default_composition_root") \
+            != parsed.raw["genesis"]["composition_root"] \
+            or frontier_manifest.get("runtime_abi_root") \
+            != parsed.raw["objects"]["miner_module_abi_root"]["root"]:
+        raise ReleaseError("genesis frontier has another product identity")
+
+    composition_profiles = composition.get("profiles")
+    baseline_profiles = baseline.get("profiles")
+    frontier_profiles = frontier_manifest.get("profiles")
+    profile_ids = set(parsed.raw["genesis"]["profile_releases"])
+    if not isinstance(composition_profiles, Mapping) \
+            or not isinstance(baseline_profiles, Mapping) \
+            or not isinstance(frontier_profiles, Mapping) \
+            or set(composition_profiles) != profile_ids \
+            or set(baseline_profiles) != profile_ids or set(frontier_profiles) != profile_ids:
+        raise ReleaseError("genesis documents carry different profile sets")
+
+    miner_abi = _json(object_bytes["miner_module_abi_root"], "objects.miner_module_abi_root")
+    expected_miner_abi_fields = {
+        "admission_report_schema", "admission_ruleset_root", "bundle_files", "capability_ids",
+        "format", "hook_names", "input_schema_versions", "manifest_schema",
+        "module_abi_version", "module_manifest_schema_version", "policy_abi_version",
+        "source_provenance_base_modules", "store_schema_version", "wrapper_format",
+    }
+    if set(miner_abi) != expected_miner_abi_fields \
+            or miner_abi.get("format") != "coretex.memory-frontier.v1/runtime-abi-pin" \
+            or not isinstance(miner_abi.get("hook_names"), list) \
+            or not isinstance(miner_abi.get("capability_ids"), list):
+        raise ReleaseError("miner-module ABI object has another or open shape")
+    expected_reference_abi = {
+        "capabilities": miner_abi["capability_ids"],
+        "hooks": miner_abi["hook_names"],
+        "id": "coretex-memory/miner-module/v1",
+        "module_version": miner_abi["module_abi_version"],
+        "policy_version": miner_abi["policy_abi_version"],
     }
 
+    for profile, binding in parsed.raw["genesis"]["profile_releases"].items():
+        document = _json(_read(root, binding["path"]), f"reference release {profile}")
+        if fr.sha256_hex(fr.canonical_bytes(document)) != binding["root"]:
+            raise ReleaseError(f"reference release {profile} does not reproduce its root")
+        if set(document) != {"abi", "exec", "format", "profile_id", "reference_runtime"} \
+                or document.get("format") != "coretex.genesis-reference-release/v1" \
+                or document.get("profile_id") != profile or document.get("exec") != "reference" \
+                or document.get("reference_runtime") != {
+                    "id": "reference-runtime", "protocol": "rrm1"} \
+                or document.get("abi") != expected_reference_abi:
+            raise ReleaseError(
+                f"reference release {profile} is not the release-bound builtin runtime")
+        if composition_profiles[profile] != {"exec": "reference", "release_root": binding["root"]} \
+                or frontier_profiles[profile] != binding["root"]:
+            raise ReleaseError(f"genesis composition/frontier disagrees on {profile}")
+        baseline_entry = baseline_profiles[profile]
+        if not isinstance(baseline_entry, Mapping) or set(baseline_entry) != {
+                "law_id", "partitions", "profile_id", "release_root", "stored_vector_root",
+                "suite_root"}:
+            raise ReleaseError(f"genesis baseline {profile} has another shape")
+        baseline_body = {
+            key: value for key, value in baseline_entry.items() if key != "stored_vector_root"}
+        if baseline_entry.get("law_id") != parsed.raw["law"]["id"] \
+                or baseline_entry.get("profile_id") != profile \
+                or baseline_entry.get("release_root") != binding["root"] \
+                or baseline_entry.get("suite_root") != parsed.raw["law"]["canonical_suite_root"] \
+                or baseline_entry.get("stored_vector_root") \
+                != _sha(fr.canonical_bytes(baseline_body)):
+            raise ReleaseError(f"genesis baseline {profile} does not reproduce its vector")
 
-def _parse_builtin_production_release(document: Mapping[str, Any]) -> Release:
-    expected = _builtin_production_document()
-    if dict(document) != expected:
-        raise ReleaseError("PRODUCTION_IDENTITY_MISMATCH",
-                           "builtin production identity was modified")
-    recovered = _recover_production_signature(PRODUCTION_RELEASE_PAYLOAD_HASH,
-                                              PRODUCTION_RELEASE_SIGNATURE)
-    source = SourcePin(repo=expected["source"]["repo"], commit=PRODUCTION_SOURCE_COMMIT,
-                       paths=("contracts/rig/mining",), public=False)
-    return Release(
-        format=BUILTIN_PRODUCTION_RELEASE_FORMAT, classification=CLASSIFICATION_PRODUCTION,
-        chain_id=8453, network="base-mainnet", addresses=dict(PRODUCTION_CONTRACTS),
-        runtime_code_hashes=dict(PRODUCTION_CODE_HASHES), deploy_block=PRODUCTION_DEPLOY_BLOCK,
-        observation_block=None, source=source, artifact_base_url=None,
-        runtime_packet_sha256=None, resolver_signer=None, raw=dict(expected),
-        production_authority=True)
-
-
-def _parse_production_release(document: Mapping[str, Any]) -> Release:
-    classification = _require(document, "classification")
-    if not isinstance(classification, Mapping):
-        raise ReleaseError("CLASSIFICATION_UNKNOWN", "production classification must be an object")
-    if (classification.get("productionAllowed") is not True or
-            classification.get("status") != CLASSIFICATION_PRODUCTION or
-            classification.get("lane") != "rig-coretex-descriptor-v3"):
-        raise ReleaseError("CLASSIFICATION_REFUSED",
-                           "the rig release is not canonical descriptor-v3 production")
-    _verify_production_signature(document)
-
-    chain_id = _require(document, "chainId")
-    if chain_id != 8453:
-        raise ReleaseError("RELEASE_MALFORMED",
-                           f"canonical production is Base chain 8453, not {chain_id!r}")
-    contracts = _require(document, "contracts")
-    hashes = _require(document, "codeHashes")
-    if not isinstance(contracts, Mapping) or not isinstance(hashes, Mapping):
-        raise ReleaseError("RELEASE_MALFORMED", "contracts/codeHashes must be objects")
-    aliases = {"registry": "coreTexRegistry", "mining": "mining",
-               "verifier": "coreTexVerifier"}
-    addresses = {role: _require_address(contracts.get(alias), f"contracts.{alias}")
-                 for role, alias in aliases.items()}
-    for role, expected in PRODUCTION_CONTRACTS.items():
-        if addresses[role].lower() != expected.lower():
-            raise ReleaseError("PRODUCTION_IDENTITY_MISMATCH",
-                               f"{role} {addresses[role]} is not canonical {expected}")
-    code_hashes: Dict[str, str] = {}
-    for role, alias in aliases.items():
-        try:
-            value = hashes.get(alias)
-            if isinstance(value, str):
-                value = value.removeprefix("0x")
-            code_hashes[role] = fr.check_root(value, f"codeHashes.{alias}")
-        except fr.FrontierError as exc:
-            raise ReleaseError("RELEASE_INCOMPLETE", str(exc)) from exc
-
-    git = _require(document, "git")
-    if not isinstance(git, Mapping) or git.get("workingTreeDirty") is not False:
-        raise ReleaseError("SOURCE_PIN_MISSING", "canonical release source tree is absent or dirty")
-    commit = str(git.get("commit", ""))
-    if len(commit) != 40:
-        raise ReleaseError("SOURCE_PIN_MISSING", "git.commit must be a full commit")
-    source = SourcePin(repo="https://github.com/botcoinmoney/botcoin-mining-rigs",
-                       commit=commit, paths=("contracts/rig/mining",), public=True)
-
-    deployment = _require(document, "deployment")
-    deploy_block = deployment.get("firstBlock") if isinstance(deployment, Mapping) else None
-    if not isinstance(deploy_block, int) or isinstance(deploy_block, bool) or deploy_block < 0:
-        raise ReleaseError("RELEASE_MALFORMED", "deployment.firstBlock is invalid")
-    genesis_value = _require(document, "genesisStateRoot")
-    if isinstance(genesis_value, str):
-        genesis_value = genesis_value.removeprefix("0x")
-    genesis = fr.check_root(genesis_value, "genesisStateRoot")
-    cutover = _require(document, "cutoverEpoch")
-    if not isinstance(cutover, int) or isinstance(cutover, bool) or cutover < 0:
-        raise ReleaseError("RELEASE_MALFORMED", "cutoverEpoch is invalid")
-    if genesis != PRODUCTION_GENESIS_STATE_ROOT or cutover != PRODUCTION_CUTOVER_EPOCH:
-        raise ReleaseError("PRODUCTION_IDENTITY_MISMATCH",
-                           "canonical production genesis/cutover identity does not match")
-
-    from .rig_receipt_binding import CORETEX_RECEIPT_TYPEHASH
-    if str(document.get("receiptTypehashes", {}).get("coreTex", "")).lower() != \
-            CORETEX_RECEIPT_TYPEHASH.lower():
-        raise ReleaseError("INTERFACE_PIN_MISMATCH",
-                           "canonical release CoreTex receipt typehash differs from this client")
-    domain = document.get("eip712Domain", {})
-    if (domain.get("chainId") != chain_id or
-            str(domain.get("verifyingContract", "")).lower() != addresses["mining"].lower()):
-        raise ReleaseError("INTERFACE_PIN_MISMATCH", "canonical EIP-712 domain is not the mining contract")
-
-    return Release(
-        format=PRODUCTION_RELEASE_FORMAT, classification=CLASSIFICATION_PRODUCTION,
-        chain_id=chain_id, network="base-mainnet", addresses=addresses,
-        runtime_code_hashes=code_hashes, deploy_block=deploy_block,
-        observation_block=None, source=source, artifact_base_url=None,
-        runtime_packet_sha256=None, resolver_signer=None, raw=dict(document),
-        production_authority=True)
+    authority = _json(object_bytes["rig_contract_authority_root"], "rig contract authority")
+    if _sha(object_bytes["rig_contract_authority_root"]) != RIG_BINDING_AUTHORITY_SHA256:
+        raise ReleaseError("release contract authority differs from this validator's wire binding")
+    if authority.get("format") != "coretex.rig-contract-authority/v1" \
+            or authority.get("chain_id") != 8453:
+        raise ReleaseError("rig contract authority is not the Base mainnet authority")
+    abi_objects = authority.get("abi_objects")
+    if not isinstance(abi_objects, Mapping) or set(abi_objects) != {"mining", "registry", "verifier"}:
+        raise ReleaseError("rig contract authority has another ABI object set")
+    for role in ("mining", "registry", "verifier"):
+        declaration = abi_objects[role]
+        release_object = parsed.raw["objects"][f"rig_{role}_abi_root"]
+        if not isinstance(declaration, Mapping) \
+                or declaration.get("sha256") != release_object["root"] \
+                or declaration.get("path") != release_object.get("authority_path"):
+            raise ReleaseError(f"rig authority and release object disagree on {role} ABI")
+    return ReleaseDirectory(root, parsed, integration, object_bytes, artifact_bytes, authority)
 
 
-def discover(location: str, *, timeout: float = 30.0) -> Release:
-    """Load a release from a path or an ``http(s)`` url.
-
-    Both are "discovery" in the sense that matters: the validator is TOLD where the release is and
-    then verifies everything the release says against the chain. There is no registry lookup that
-    would make the location itself trusted, and pretending otherwise would just move the trust.
-    """
-    if location == DEFAULT_PRODUCTION_RELEASE_URL:
-        return parse_release(_builtin_production_document())
-    if location.startswith("http://") or location.startswith("https://"):
-        with urllib.request.urlopen(location, timeout=timeout) as response:  # noqa: S310
-            raw = response.read().decode("utf-8")
-    else:
-        with open(os.path.expanduser(location), "r", encoding="utf-8") as fh:
-            raw = fh.read()
-    try:
-        document = json.loads(raw)
-    except ValueError as exc:
-        raise ReleaseError("RELEASE_MALFORMED", f"{location} is not JSON: {exc}") from exc
-    return parse_release(document)
-
-
-@dataclass
-class DeploymentVerification:
-    ok: bool
-    block: int
-    #: ``role -> {"expected", "observed", "bytes", "match"}``
-    contracts: Dict[str, Dict[str, Any]]
-    #: Registry <-> verifier <-> mining, read back from the chain rather than assumed.
-    wiring: Dict[str, Any]
-    failures: List[str]
-
-    def as_dict(self) -> Dict[str, Any]:
-        return {"ok": self.ok, "block": self.block, "contracts": self.contracts,
-                "wiring": self.wiring, "failures": list(self.failures)}
-
-
-def verify_deployment(release: Release, rpc, *, block: int) -> DeploymentVerification:
-    """Step 2. Every contract's runtime bytecode, and the wiring between them.
-
-    THE WIRING CHECK IS NOT DECORATION. Three correct bytecodes at three addresses prove nothing
-    if the registry's verifier is a fourth contract: the registry only accepts advances from the
-    verifier it names, so a validator reading pins from a verifier the registry does not bind is
-    reading a stranger's numbers. It is read back from the chain, in both directions, and a
-    disagreement is a failure rather than a note.
-    """
-    from .rpc import RigViews
-
-    deployment = release.deployment
-    contracts: Dict[str, Dict[str, Any]] = {}
-    failures: List[str] = []
-    # Name a known-dead set BEFORE reading bytecode. Pointed at a superseded deployment, the
-    # bytecode check reports "no code at address", which reads like an RPC or block-height
-    # problem; saying "this is the 2026-08-03 set, superseded on 2026-08-04" sends the operator
-    # to the right place.
-    dead = rd.superseded_match(release.addresses)
-    if dead is not None:
-        date, hits = dead
-        failures.append(
-            f"this release names the SUPERSEDED {date} rehearsal deployment ({hits}). That "
-            "deployment is dead; its EIP-712 domain separator moved with it, so every receipt "
-            "digest computed against it would be wrong")
-    for role in CONTRACT_ROLES:
-        address = release.addresses[role]
-        code = rpc.code(address, block=block)
-        observed = keccak256_hex(code)
-        expected = release.runtime_code_hashes[role]
-        match = observed == expected
-        contracts[role] = {"address": address, "expected": expected, "observed": observed,
-                           "bytes": len(code), "match": match}
-        if not code:
-            failures.append(f"{role} {address} carries NO code at block {block}")
-        elif not match:
-            failures.append(
-                f"{role} {address}: runtime code hash {observed} != the release's {expected}. "
-                "The release is the deployment authority, so this is either a stale release or a "
-                "different contract; it is never something to continue past")
-
-    views = RigViews(rpc, deployment, block=block)
-    wiring: Dict[str, Any] = {}
-    try:
-        wiring["registry.coreTexVerifier"] = views.core_tex_verifier()
-        wiring["verifier.coreTexRegistry"] = views.verifier_registry()
-        wiring["verifier.mining"] = views.verifier_mining()
-        wiring["mining.coordinatorSigner"] = views.coordinator_signer()
-        # THREE FIELDS IDENTIFY A REGISTRY, NOT TWO. Address and code hash are not sufficient: a
-        # SUCCESSOR registry deployed from the same source has an IDENTICAL code hash, and on
-        # arrival it inherits every epoch's context and answers the pin getters identically. So
-        # neither the code nor the state separates a live registry from a retired one — only the
-        # verifier BINDING does, and it is the third field for exactly that reason.
-        wiring["registry_identity"] = {
-            "address": deployment.registry.lower(),
-            "code_hash": contracts["registry"]["observed"],
-            "verifier_bound_registry": str(wiring["verifier.coreTexRegistry"]).lower(),
-            "note": ("a successor deployed from the same source shares this code_hash and, once "
-                     "it has inherited the epoch contexts, answers the pin getters identically. "
-                     "`verifier_bound_registry` is the only field that distinguishes the live "
-                     "registry from a retired one"),
-        }
-    except Exception as exc:                                  # noqa: BLE001 - reported, not raised
-        failures.append(f"wiring could not be read: {exc}")
-        wiring["error"] = str(exc)
-    else:
-        pairs = (("registry.coreTexVerifier", deployment.verifier),
-                 ("verifier.coreTexRegistry", deployment.registry),
-                 ("verifier.mining", deployment.mining))
-        for name, expected_address in pairs:
-            if str(wiring[name]).lower() != expected_address.lower():
-                extra = ""
-                if name == "verifier.coreTexRegistry":
-                    extra = (" This is the RETIREMENT case specifically: the named registry may "
-                             "carry the right code and answer every getter correctly and still "
-                             "not be the one the verifier writes through. Nothing else in this "
-                             "check can catch that")
-                failures.append(
-                    f"{name} = {wiring[name]}, the release names {expected_address}. The three "
-                    f"contracts do not form one lane.{extra}")
-        if release.production_authority:
-            expected_signer = str(release.raw.get("coordinatorSigner") or
-                                  release.raw.get("operatorSignature", {}).get("signer", ""))
-            if str(wiring["mining.coordinatorSigner"]).lower() != expected_signer.lower():
-                failures.append(
-                    f"mining.coordinatorSigner = {wiring['mining.coordinatorSigner']}, signed "
-                    f"canonical release names {expected_signer}")
-        wiring["consistent"] = not failures
-
-    return DeploymentVerification(ok=not failures, block=block, contracts=contracts,
-                                  wiring=wiring, failures=failures)
+__all__ = ["MAX_FILE_BYTES", "ReleaseDirectory", "ReleaseError", "load"]

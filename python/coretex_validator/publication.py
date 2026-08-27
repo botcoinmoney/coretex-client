@@ -24,35 +24,25 @@ always accompanied by a **hash rule**:
 ``sha256-frontier-canonical-json``      V5-A canonical JSON (``frontier.canonical_bytes``) —
                                         rejects floats/nulls/dup keys, and the published bytes
                                         MUST already be canonical
-``sha256-benchmark-canonical-json``     the Benchmark-v2 / canary rule
-                                        (``json.dumps(sort_keys, compact, ascii)``) — the SAME
-                                        serializer, but float-tolerant, because signed receipts
-                                        and sealed canary transcripts legitimately carry floats
-``sha256-signed-manifest-body``         ``coretex_memory.release.canonical_manifest_bytes``:
-                                        canonical JSON of the body with ``manifest_self_sha256``
-                                        and ``operator_signature`` removed. This is what a
-                                        release root / composition root already IS.
+``sha256-benchmark-canonical-json``     Benchmark-v2 canonical JSON
+                                        (``json.dumps(sort_keys, compact, ascii)``),
+                                        float-tolerant for rounded measurement values
+``sha256-manifest-body``                ``coretex_memory.release.canonical_manifest_bytes``:
+                                        canonical JSON of the body with only
+                                        ``manifest_self_sha256`` removed. This is what a release
+                                        root / composition root already IS.
 ======================================  ==================================================
 
-There is a FIFTH rule, and it is deliberately not in that table: ``compatibility-lock-root`` is a
-rule a request may CARRY and this module cannot compute. Descriptor-v3's ``coreVersionHash``
-addresses a ``coretex.compatibility-lock/v1`` document by the domain-separated KECCAK256 of its
-canonical body with ``lock_root`` removed — not by any sha256 of the bytes on the wire. The
-coordinator's public object route needs the rule named to serve the document at all, so
-:func:`check_hash_rule` accepts it; :func:`root_of`, :func:`read_back` and
-:func:`availability_item` refuse it through :func:`check_addressable_hash_rule` and name
-``resolver_snapshot.fetch_compatibility_lock``, which verifies it properly. Letting the generic
-path "verify" a lock by rehashing its bytes would report agreement it never checked.
-
 The store is an interface. :class:`FilesystemCAS` is the offline default; :class:`InMemoryCAS`
-is the test double; a real deployment swaps in IPFS/S3/whatever WITHOUT touching a caller —
+is the test double; :class:`HttpCAS` is the READ-ONLY mirror client an auditor points at somebody
+else's publication surface (it rehashes every byte before returning it, so the mirror is used and
+never trusted); a real deployment swaps in IPFS/S3/whatever WITHOUT touching a caller —
 :func:`publish_and_read_back` only ever calls ``put``/``get``/``has``.
 
 SEAM (ledger §17.238)
 ---------------------
-SEAM:            :class:`ContentStore` (:206) IS the port, and it is the SECOND port every other
-                 V5 surface names (``activation.chain_view``, ``activation.activator``,
-                 :mod:`eval_artifact`, ``validator.replay``). An operator's real publication
+SEAM:            :class:`ContentStore` IS the port used by :mod:`eval_artifact`,
+                 ``validator.replay``, and the coordinator. An operator's real publication
                  surface — S3, IPFS, an HTTP CAS — is a third implementation of exactly three
                  methods: ``put(root, data)``, ``get(root) -> bytes``, ``has(root) -> bool``.
                  Wiring is supplying that object; no caller and no internal is edited. The
@@ -67,80 +57,49 @@ THE RULE AN IMPLEMENTATION MUST NOT BREAK: ``get`` must return what the surface 
                  Publishing is never the assertion; :func:`publish_and_read_back` (:288) and
                  :func:`read_back` (:334) fetch and rehash, and both raise instead of returning
                  ``False``.
-MINIMAL DIFF:    construct the store implementation in the guarded block and pass it to the
-                 activator / artifact builder. One object, no subclassing of anything else.
-REVENDOR NEEDED: NO. stdlib + ``v5/frontier.py``; the signed-manifest hash rule mirrors
+MINIMAL DIFF:    construct the store implementation and pass it to the artifact builder. One
+                 object, no subclassing of anything else.
+REVENDOR NEEDED: NO. stdlib + ``v5/frontier.py``; the manifest-body hash rule mirrors
                  ``coretex_memory.release.canonical_manifest_bytes`` without importing
                  ``/root/coretex`` or ``vendor/``.
 ARM:             none of its own — it is constructed inside the lane's guarded block.
 REMOVE:          delete the guarded block. Additive data only: content-addressed objects under a
-                 prefix the lane owns. Nothing in the live stack reads them, and there is no
-                 schema to migrate (an object either exists at its root or does not).
+                 prefix the lane owns. An object either exists at its root or does not.
 """
 from __future__ import annotations
 
 import json
 import os
+import time
+import urllib.parse
 from typing import Any, Dict, Iterable, Mapping, Optional
 
 from . import frontier as fr
+
+# --------------------------------------------------------------------------- #
 # Hash rules
 # --------------------------------------------------------------------------- #
 HASH_RULE_BYTES = "sha256-bytes"
 HASH_RULE_FRONTIER_JSON = "sha256-frontier-canonical-json"
 HASH_RULE_BENCHMARK_JSON = "sha256-benchmark-canonical-json"
-HASH_RULE_SIGNED_MANIFEST_BODY = "sha256-signed-manifest-body"
-#: TRANSPORT ONLY. Descriptor-v3's ``coreVersionHash`` addresses a compatibility lock under a
-#: DOMAIN-SEPARATED KECCAK of its canonical body with ``lock_root`` removed — not a sha256 of the
-#: bytes on the wire. So a request may CARRY this rule (the coordinator's object route needs it to
-#: answer at all) and :func:`root_of` must never claim to compute it; see
-#: :data:`ADDRESSABLE_HASH_RULES`.
+HASH_RULE_MANIFEST_BODY = "sha256-manifest-body"
+
+#: The compatibility lock is addressed BY ITS OWN LOCK ROOT — the value an epoch's
+#: ``coreVersionHash`` carries. That is the whole point of the binding: the chain word IS the
+#: content address, so "fetch what this epoch declared it is compatible with" is a store read
+#: keyed by a value the chain already committed to, with nothing in between to disagree with.
+#:
+#: Published bytes are the canonical bytes of the WHOLE document (including its own
+#: ``lock_root``); the hashed body deliberately excludes that field, exactly as
+#: :data:`HASH_RULE_MANIFEST_BODY` excludes a manifest's self-hash. Canonicity of the
+#: published bytes is still enforced, so one root addresses exactly one byte string.
 HASH_RULE_COMPATIBILITY_LOCK = "compatibility-lock-root"
 
-#: The rules whose root this module can recompute FROM THE BYTES. Everything that verifies —
-#: :func:`root_of`, :func:`read_back`, :func:`fetch_json`, :func:`availability_item` — is closed
-#: over exactly these.
-ADDRESSABLE_HASH_RULES = (HASH_RULE_BYTES, HASH_RULE_FRONTIER_JSON, HASH_RULE_BENCHMARK_JSON,
-                          HASH_RULE_SIGNED_MANIFEST_BODY)
+HASH_RULES = (HASH_RULE_BYTES, HASH_RULE_FRONTIER_JSON, HASH_RULE_BENCHMARK_JSON,
+              HASH_RULE_MANIFEST_BODY, HASH_RULE_COMPATIBILITY_LOCK)
 
-#: The rules a REQUEST may name. A superset of :data:`ADDRESSABLE_HASH_RULES`, and the difference
-#: is deliberate: being able to ask a surface for an object is not being able to verify it.
-HASH_RULES = ADDRESSABLE_HASH_RULES + (HASH_RULE_COMPATIBILITY_LOCK,)
-
-#: What to say when a caller routes the lock rule into the generic addressing path. It names the
-#: verifier rather than only refusing, because there IS a correct way to do this.
-_LOCK_RULE_REFUSAL = (
-    f"{HASH_RULE_COMPATIBILITY_LOCK!r} is a TRANSPORT rule, not an addressing rule: a "
-    "compatibility lock is addressed by the domain-separated keccak256 of its canonical body "
-    "with `lock_root` removed, which no sha256 of the served bytes can reproduce. Fetch and "
-    "verify it with resolver_snapshot.fetch_compatibility_lock (or verify bytes you already hold "
-    "with resolver_snapshot.verify_compatibility_lock_bytes)")
-
-#: The two fields ``coretex_memory.release.canonical_manifest_bytes`` removes before serializing
-#: (a document cannot hash or sign itself).
-SIGNED_MANIFEST_ATTESTATION_FIELDS = ("manifest_self_sha256", "operator_signature")
-
-
-def check_hash_rule(hash_rule: str) -> str:
-    """The single gate every rule-taking TRANSPORT entry point passes through."""
-    if hash_rule not in HASH_RULES:
-        raise HashRuleError(f"unknown hash rule {hash_rule!r}; known rules are {list(HASH_RULES)}")
-    return hash_rule
-
-
-def check_addressable_hash_rule(hash_rule: str) -> str:
-    """The gate every VERIFYING entry point passes through. Refuses transport-only rules.
-
-    Kept separate from :func:`check_hash_rule` on purpose. Widening the transport vocabulary must
-    never widen what this module is willing to claim it verified, and the one rule where the two
-    differ is the one whose address is not a hash of the bytes at all.
-    """
-    if hash_rule == HASH_RULE_COMPATIBILITY_LOCK:
-        raise HashRuleError(_LOCK_RULE_REFUSAL)
-    if hash_rule not in ADDRESSABLE_HASH_RULES:
-        raise HashRuleError(
-            f"unknown hash rule {hash_rule!r}; known rules are {list(ADDRESSABLE_HASH_RULES)}")
-    return hash_rule
+#: The only field ``coretex_memory.release.canonical_manifest_bytes`` removes before serializing.
+MANIFEST_BODY_EXCLUDED_FIELDS = ("manifest_self_sha256",)
 
 
 class PublicationError(Exception):
@@ -152,21 +111,8 @@ class HashRuleError(PublicationError):
     unparseable JSON, a float under the frontier rule, ...)."""
 
 
-class PublicationUnavailableError(PublicationError):
-    """Base class for publication bytes that could not be reached.
-
-    This is operationally unresolved work, not evidence that the committed bytes disagree.  Its
-    two concrete cases deliberately distinguish a content-address with no object from a transport
-    that could not answer the question at all.
-    """
-
-
-class ObjectNotFoundError(PublicationUnavailableError):
+class ObjectNotFoundError(PublicationError):
     """The publication surface does not serve an object at this root — availability FAILED."""
-
-
-class TransportUnavailableError(PublicationUnavailableError):
-    """The publication transport failed before it could answer whether the object exists."""
 
 
 class ReadBackMismatchError(PublicationError):
@@ -182,39 +128,34 @@ class AvailabilityError(PublicationError):
 
 
 def benchmark_canonical_bytes(obj: Any) -> bytes:
-    """The Benchmark-v2 / canary canonical rule, verbatim.
+    """The Benchmark-v2 canonical rule.
 
-    ``frontier._canon.canonical_json`` and ``canary.policy.canonical_bytes`` are the same call
-    (``ensure_ascii`` defaults to True), so ONE function reproduces both. It is deliberately
-    float-tolerant: a signed receipt binds rounded measurement floats and a sealed canary
-    transcript binds the policy's float thresholds. Those objects are addressed under THIS rule
-    and referenced from the V5 artifact by root; they are never inlined into V5 canonical bytes,
-    where floats are illegal (V5-A §2.2).
+    It is deliberately float-tolerant because evaluation reports bind rounded measurement values.
+    Those documents are addressed under this rule and referenced by root; they are never inlined
+    into frontier-canonical documents, where floats are illegal.
     """
     return json.dumps(obj, sort_keys=True, separators=(",", ":"),
                       ensure_ascii=True).encode("utf-8")
 
 
-def signed_manifest_body(document: Mapping[str, Any]) -> Dict[str, Any]:
-    """The signable/hashable body of a signed release or composition manifest."""
+def manifest_body(document: Mapping[str, Any]) -> Dict[str, Any]:
+    """The hashable body of a current release or composition manifest."""
     if not isinstance(document, dict):
         raise HashRuleError(
-            f"a signed manifest must be a JSON object, got {type(document).__name__}")
-    return {k: v for k, v in document.items() if k not in SIGNED_MANIFEST_ATTESTATION_FIELDS}
+            f"a manifest must be a JSON object, got {type(document).__name__}")
+    return {k: v for k, v in document.items() if k not in MANIFEST_BODY_EXCLUDED_FIELDS}
 
 
 def encode(obj: Any, hash_rule: str) -> bytes:
     """The exact bytes to PUBLISH for ``obj`` under ``hash_rule``."""
-    if hash_rule == HASH_RULE_COMPATIBILITY_LOCK:
-        raise HashRuleError(_LOCK_RULE_REFUSAL)
     if hash_rule == HASH_RULE_BYTES:
         if not isinstance(obj, (bytes, bytearray, memoryview)):
             raise HashRuleError(
                 f"{HASH_RULE_BYTES} addresses raw bytes, got {type(obj).__name__}")
         return bytes(obj)
-    if hash_rule == HASH_RULE_FRONTIER_JSON:
+    if hash_rule in (HASH_RULE_FRONTIER_JSON, HASH_RULE_COMPATIBILITY_LOCK):
         return fr.canonical_bytes(obj)
-    if hash_rule in (HASH_RULE_BENCHMARK_JSON, HASH_RULE_SIGNED_MANIFEST_BODY):
+    if hash_rule in (HASH_RULE_BENCHMARK_JSON, HASH_RULE_MANIFEST_BODY):
         if not isinstance(obj, dict):
             raise HashRuleError(f"{hash_rule} addresses a JSON object, got "
                                 f"{type(obj).__name__}")
@@ -229,8 +170,6 @@ def root_of(data: bytes, hash_rule: str) -> str:
     but differently encoded payload is refused rather than silently re-canonicalized, so one root
     addresses exactly one byte string (the ``frontier.parse_transition_bytes`` discipline).
     """
-    if hash_rule == HASH_RULE_COMPATIBILITY_LOCK:
-        raise HashRuleError(_LOCK_RULE_REFUSAL)
     if not isinstance(data, (bytes, bytearray, memoryview)):
         raise HashRuleError(f"root_of takes bytes, got {type(data).__name__}")
     data = bytes(data)
@@ -262,10 +201,29 @@ def root_of(data: bytes, hash_rule: str) -> str:
                 f"{hash_rule}: published bytes are not in canonical form (they decode but "
                 "re-serialize differently) — a root must address exactly one byte string")
         return fr.sha256_hex(canonical)
-    if hash_rule == HASH_RULE_SIGNED_MANIFEST_BODY:
-        # NOT canonicity-checked: the published bytes carry the self-hash + signature, which the
-        # body deliberately excludes, so published bytes != hashed bytes by construction.
-        return fr.sha256_hex(benchmark_canonical_bytes(signed_manifest_body(document)))
+    if hash_rule == HASH_RULE_MANIFEST_BODY:
+        # NOT canonicity-checked: the published bytes carry the self-hash, which the body excludes,
+        # so published bytes differ from hashed bytes by construction.
+        return fr.sha256_hex(benchmark_canonical_bytes(manifest_body(document)))
+    if hash_rule == HASH_RULE_COMPATIBILITY_LOCK:
+        # Canonicity IS checked: the lock's published bytes are exactly the canonical bytes of the
+        # document.
+        try:
+            canonical = fr.canonical_bytes(document)
+        except fr.FrontierError as exc:
+            raise HashRuleError(f"{hash_rule}: {exc}") from exc
+        if canonical != data:
+            raise HashRuleError(
+                f"{hash_rule}: published bytes are not in canonical form (they decode but "
+                "re-serialize differently) — a root must address exactly one byte string")
+        # `verify_lock` VALIDATES and RECOMPUTES; a document whose own recorded root disagrees with
+        # its body has no address at all rather than an address nobody can reproduce. The rule is
+        # imported from the one shared library — this module owns no lock hash of its own.
+        from . import compat_lock as cl
+        try:
+            return cl.verify_lock(document)
+        except cl.CompatibilityLockError as exc:
+            raise HashRuleError(f"{hash_rule}: {exc}") from exc
     raise HashRuleError(f"unknown hash rule {hash_rule!r}; known rules are {list(HASH_RULES)}")
 
 
@@ -275,19 +233,10 @@ def root_of(data: bytes, hash_rule: str) -> str:
 class ContentStore:
     """A content-addressed publication surface.
 
-    Three required methods, no assumptions about locality. Implementations MUST be honest: ``get``
-    returns the bytes the surface would serve to a third party, and raises
-    :class:`ObjectNotFoundError` when it has nothing at that root. An implementation that
-    "helpfully" returns a locally cached copy defeats the entire point of the read-back.
-
-    :meth:`get_for_rule` is the FOURTH method and the only one with a default. It exists because
-    an address alone does not tell a surface how the object was committed, and some surfaces need
-    to be told: the coordinator's public object route refuses a request that names no rule, and
-    it decides between an envelope and raw octets from it. A store whose transport does not vary
-    by rule — every LOCAL store — inherits the default, which validates the rule and answers with
-    ``get``. Nothing about VERIFICATION moves here: the rule is transport metadata, the caller
-    still recomputes the root from the bytes that arrived (:func:`read_back`), and a surface that
-    reports its own successful verification is not thereby believed.
+    Three methods, no assumptions about locality. Implementations MUST be honest: ``get`` returns
+    the bytes the surface would serve to a third party, and raises :class:`ObjectNotFoundError`
+    when it has nothing at that root. An implementation that "helpfully" returns a locally cached
+    copy defeats the entire point of the read-back.
     """
 
     def put(self, root: str, data: bytes) -> None:
@@ -298,17 +247,6 @@ class ContentStore:
 
     def has(self, root: str) -> bool:
         raise NotImplementedError
-
-    def get_for_rule(self, root: str, hash_rule: str) -> bytes:
-        """The bytes at ``root``, told which rule the caller committed to. Default: :meth:`get`.
-
-        An unknown rule is refused BEFORE any transport happens — a request this client cannot
-        verify the answer to is one it must never make. The gate is the TRANSPORT vocabulary
-        (:data:`HASH_RULES`), not :data:`ADDRESSABLE_HASH_RULES`: ``compatibility-lock-root`` is
-        askable here and verified by ``resolver_snapshot.fetch_compatibility_lock``.
-        """
-        check_hash_rule(hash_rule)
-        return self.get(root)
 
 
 class InMemoryCAS(ContentStore):
@@ -371,6 +309,208 @@ class FilesystemCAS(ContentStore):
         return os.path.exists(self._path(root))
 
 
+#: A published object is a code tree, a bundle archive or a manifest; 64 MiB is an order of
+#: magnitude above the largest thing this lane has ever addressed (the 614 KiB runtime tree tar) and
+#: still small enough that a hostile or broken mirror cannot exhaust a validator's memory. The cap
+#: is enforced on the STREAM, not on a Content-Length header, because a header is the server's claim
+#: and the body is the fact.
+HTTP_MAX_OBJECT_BYTES = 64 * 1024 * 1024
+#: Read granularity. Small enough that the cap is hit promptly on an endless response.
+HTTP_CHUNK_BYTES = 64 * 1024
+
+
+class HttpTransportError(PublicationError):
+    """The mirror never produced a usable answer: status, timeout, DNS, reset, oversize body.
+
+    Deliberately NOT :class:`ObjectNotFoundError`. "the surface does not hold this object" (404)
+    and "I could not ask" (timeout, 502, truncated read) are different facts, and a validator that
+    reported the second as the first would tell an operator to go re-publish an object that is
+    published perfectly well.
+    """
+
+
+class HttpCAS(ContentStore):
+    """A READ-ONLY content-addressed surface over plain HTTP(S). Standard library only.
+
+    THE ONE PROPERTY THAT MATTERS: every byte this returns has been rehashed under
+    :data:`HASH_RULE_BYTES` and compared to the root it was requested under, before it is returned
+    to anybody. A mirror is therefore never trusted — it is only ever *used*. That is what lets an
+    auditor point this at an arbitrary third-party mirror, a CDN, an S3 bucket or a coordinator's
+    ``/coretex/v5/object/{root}`` route and still get the same guarantee the offline
+    :class:`FilesystemCAS` gives: the address IS the content.
+
+    Consequences of that property, each deliberate:
+
+    * ``put`` RAISES. A mirror is somebody else's publication surface; a validator that could write
+      to it could manufacture the availability it is supposed to be checking. This class is the
+      READ half of the port and says so rather than silently no-op'ing.
+    * ``has`` performs a real conditional fetch, not a ``HEAD``. Many static hosts answer ``HEAD``
+      from metadata that outlives the object, and some answer ``200`` for everything (a soft-404
+      HTML page). Only fetching and rehashing distinguishes "serves this object" from "serves
+      something".
+    * Bodies are read in bounded chunks with a hard ceiling. An unbounded ``response.read()``
+      against a hostile endpoint is a memory-exhaustion hole in the one process whose job is to
+      refuse hostile inputs.
+    * NO AUTHENTICATION IS SENT, EVER — no Authorization header, no cookies, no credentials in the
+      URL. Public verifiability is the point: a check an auditor cannot repeat without a secret is
+      not a public check. A URL carrying userinfo is refused at construction rather than quietly
+      stripped, so the operator learns their mirror URL is not usable as published.
+    * Redirects are followed by ``urllib`` (a mirror behind a CDN needs them) and cannot subvert
+      anything: whatever the final host serves must still rehash to the requested root.
+
+    ``root_hash_rule`` exists because a store's addressing must match how its objects were
+    published. It defaults to :data:`HASH_RULE_BYTES` — the rule under which a root names exactly
+    one byte string, which is the only rule an opaque transport can check without parsing.
+    """
+
+    def __init__(self, base_url: str, *, timeout: float = 30.0, retries: int = 3,
+                 backoff: float = 0.5, max_object_bytes: int = HTTP_MAX_OBJECT_BYTES,
+                 user_agent: str = "coretex-v5-validator/1 (+publication.HttpCAS)",
+                 root_hash_rule: str = HASH_RULE_BYTES,
+                 send_hash_rule: bool = False) -> None:
+        import urllib.parse
+
+        if not isinstance(base_url, str) or not base_url.strip():
+            raise HttpTransportError("HttpCAS needs a base url")
+        parsed = urllib.parse.urlsplit(base_url.strip())
+        if parsed.scheme not in ("http", "https"):
+            raise HttpTransportError(
+                f"HttpCAS speaks http(s); {base_url!r} uses {parsed.scheme!r}. A local directory "
+                "is FilesystemCAS's job, not a URL scheme this class should pretend to handle")
+        if not parsed.hostname:
+            raise HttpTransportError(f"{base_url!r} carries no hostname")
+        if parsed.username is not None or parsed.password is not None:
+            raise HttpTransportError(
+                "HttpCAS refuses a url carrying credentials: an availability proof that only "
+                "somebody holding a secret can repeat is not a public availability proof")
+        if root_hash_rule not in HASH_RULES:
+            raise HashRuleError(f"unknown hash rule {root_hash_rule!r}")
+        #: Kept WITH its trailing slash so ``urljoin``-free concatenation cannot eat a path segment.
+        self.base_url = base_url.strip().rstrip("/") + "/"
+        self.timeout = float(timeout)
+        self.retries = max(1, int(retries))
+        self.backoff = float(backoff)
+        self.max_object_bytes = int(max_object_bytes)
+        self.user_agent = user_agent
+        self.root_hash_rule = root_hash_rule
+        #: Whether the rule goes ON THE WIRE as a ``?hashRule=`` query parameter. OFF by default:
+        #: a generic mirror (S3, an IPFS gateway, a static file tree) addresses objects by path
+        #: alone and answers 404 for an unexpected query string, and that is the shape this class
+        #: was written for. It MUST be ON against the CoreTex coordinator's public object route,
+        #: which requires the parameter and answers ``400 hash_rule_unsupported`` without it. See
+        #: :meth:`url_for`.
+        self.send_hash_rule = bool(send_hash_rule)
+        #: Observability, not policy: a run that silently absorbed twenty retries took twenty times
+        #: longer than it should have and nobody was told why.
+        self.requests = 0
+        self.retried = 0
+
+    # -- transport ---------------------------------------------------------- #
+    def url_for(self, root: str) -> str:
+        """The object URL, carrying the hash rule iff ``send_hash_rule`` is on.
+
+        WHY THIS IS A SWITCH AND NOT A CONSTANT. Two incompatible server shapes are both legitimate
+        targets for this class:
+
+        * a GENERIC MIRROR (S3, an IPFS gateway, a static file tree) addresses an object by path
+          alone. An unexpected query string is a 404 there, so the rule must NOT be sent — this is
+          the default, and it is the shape the offline tests exercise;
+        * the CORETEX COORDINATOR's public object route REQUIRES the rule
+          (`GET /coretex/v5/object/{root}?hashRule=…`) and answers `400 hash_rule_unsupported`
+          without it. Against that route ``send_hash_rule=True`` is MANDATORY: a client that
+          carried ``root_hash_rule`` only as a constructor field and never put it on the wire got
+          400 on EVERY object class — not a partial failure but a total one, no third party
+          pointing this CAS at the public route could complete a replay at all.
+
+        The rule also has to be the COMMITTED one, not merely present: the route re-canonicalizes
+        the stored bytes under the rule it is asked for, and a signed composition manifest fetched
+        under a rule it was not committed under legitimately fails to re-render (it carries nulls
+        the frontier rule rejects) and comes back 502 `artifact_integrity_failure`. Sending the
+        committed rule is what turns that into the 200 the object always had.
+        """
+        fr.check_root(root, "root")            # also stops any path traversal in the URL we build
+        url = self.base_url + root
+        rule = getattr(self, "root_hash_rule", None) if getattr(self, "send_hash_rule", False) else None
+        if rule:
+            sep = "&" if "?" in url else "?"
+            url = f"{url}{sep}hashRule={urllib.parse.quote(str(rule), safe='')}"
+        return url
+
+    def _read_bounded(self, response) -> bytes:
+        limit = self.max_object_bytes
+        chunks = []
+        total = 0
+        while True:
+            chunk = response.read(HTTP_CHUNK_BYTES)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > limit:
+                raise HttpTransportError(
+                    f"the mirror is serving more than the {limit}-byte object ceiling; the "
+                    "response was abandoned rather than buffered")
+            chunks.append(chunk)
+        return b"".join(chunks)
+
+    def _fetch(self, root: str) -> bytes:
+        import urllib.error
+        import urllib.request
+
+        url = self.url_for(root)
+        request = urllib.request.Request(
+            url, headers={"accept": "application/octet-stream", "user-agent": self.user_agent})
+        last: Optional[BaseException] = None
+        for attempt in range(self.retries):
+            try:
+                with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                    self.requests += 1
+                    return self._read_bounded(response)
+            except urllib.error.HTTPError as exc:
+                if exc.code == 404 or exc.code == 410:
+                    # The surface answered, and its answer was "I do not hold that". Not retried:
+                    # a 404 is a fact about the store, and asking again is asking the same question.
+                    raise ObjectNotFoundError(
+                        f"no object published at {root}: the mirror answered HTTP {exc.code} for "
+                        f"{url}") from exc
+                last = HttpTransportError(f"{url}: HTTP {exc.code}")
+            except (urllib.error.URLError, OSError) as exc:
+                # NOTE an oversize body raises HttpTransportError from `_read_bounded`, which is
+                # NOT an OSError and so is not caught here: retrying will not make the response
+                # smaller, so it propagates on the first attempt.
+                last = HttpTransportError(f"{url}: {exc}")
+            if attempt + 1 < self.retries:
+                self.retried += 1
+                time.sleep(self.backoff * (2 ** attempt))
+        raise last if last is not None else HttpTransportError(f"{url}: unreachable")
+
+    # -- the ContentStore port ---------------------------------------------- #
+    def put(self, root: str, data: bytes) -> None:
+        raise PublicationError(
+            "HttpCAS is READ-ONLY. Publishing over somebody else's mirror would let a validator "
+            "manufacture the availability it exists to check; publish with FilesystemCAS (or the "
+            "operator's real surface) and point this at the result")
+
+    def get(self, root: str) -> bytes:
+        """Fetch ``root`` and REHASH IT before returning a single byte to the caller."""
+        fr.check_root(root, "root")
+        data = self._fetch(root)
+        served = root_of(data, self.root_hash_rule)
+        if served != root:
+            raise ReadBackMismatchError(
+                f"the mirror served {len(data)} bytes at {self.url_for(root)} that rehash to "
+                f"{served} under {self.root_hash_rule}, not to the requested {root} — the surface "
+                "is serving different content than the address names")
+        return data
+
+    def has(self, root: str) -> bool:
+        """A real fetch + rehash. See the class docstring on why ``HEAD`` would be a lie."""
+        try:
+            self.get(root)
+        except ObjectNotFoundError:
+            return False
+        return True
+
+
 # --------------------------------------------------------------------------- #
 # publish + read back
 # --------------------------------------------------------------------------- #
@@ -427,19 +567,9 @@ def read_back(root: str, *, hash_rule: str, store: ContentStore,
     This is the check a coordinator runs at PRE-SIGN time for objects published earlier (a
     candidate bundle uploaded during submission, the composition manifest minted at compose time)
     and the check a validator runs at replay time. It never trusts a local copy.
-
-    THE FETCH CARRIES THE RULE (:meth:`ContentStore.get_for_rule`), because a remote surface may
-    need it to answer at all — the coordinator's public object route refuses a request that names
-    no rule, and serves raw octets rather than an envelope when one is named. What the rule NEVER
-    does is move verification: the root is recomputed below, here, from the bytes that arrived,
-    under the rule the caller committed to. A surface may report that it verified the transport
-    itself; that report is not evidence and is not read. For the float-bearing benchmark rule this
-    matters most — a server can only check that ``sha256(bytes)`` equals the root, while THIS side
-    additionally requires the bytes to BE the canonical serialisation the root names.
     """
     fr.check_root(root, "root")
-    check_addressable_hash_rule(hash_rule)             # refused BEFORE any transport happens
-    data = store.get_for_rule(root, hash_rule)         # ObjectNotFoundError on absence
+    data = store.get(root)                             # ObjectNotFoundError on absence
     if not isinstance(data, (bytes, bytearray)):
         raise StoreIntegrityError(
             f"store returned {type(data).__name__}, not bytes, for {root}")
@@ -475,7 +605,8 @@ AVAILABILITY_ITEM_FIELDS = ("bytes", "hash_rule", "root")
 def availability_item(root: str, hash_rule: str, byte_len: int) -> Dict[str, Any]:
     """One closed availability record: ``{bytes, hash_rule, root}``."""
     fr.check_root(root, "availability root")
-    check_addressable_hash_rule(hash_rule)
+    if hash_rule not in HASH_RULES:
+        raise HashRuleError(f"unknown hash rule {hash_rule!r}")
     if not isinstance(byte_len, int) or isinstance(byte_len, bool) or byte_len < 0:
         raise AvailabilityError(f"availability bytes must be a non-negative int: {byte_len!r}")
     return {"bytes": byte_len, "hash_rule": hash_rule, "root": root}
@@ -512,6 +643,59 @@ def validate_availability(items: Any) -> Dict[str, Any]:
     return items
 
 
+#: The record shape the coordinator's ``MemoryArtifactAvailabilityPort`` consumes
+#: (``coretex-memory-frontier-lane.ts::MemoryArtifactAvailabilityRecord``). It is NOT the
+#: availability record the artifact carries — that one is ``{bytes, hash_rule, root}`` and is
+#: CLOSED — because the two answer different questions: the artifact's entry says "this is the
+#: address I committed to", this one says "I fetched that address again just now and here is what
+#: came back".
+AVAILABILITY_REPORT_FIELDS = ("available", "hash", "kind", "read_back_hash", "readBackHash")
+
+
+def read_back_record(kind: str, item: Mapping[str, Any], *, store: ContentStore) -> Dict[str, Any]:
+    """One availability record, with a ``readBackHash`` RECOMPUTED FROM A FRESH FETCH.
+
+    THE ECHO IS THE FAILURE MODE THIS EXISTS TO PREVENT. A port that returns
+    ``{hash: X, readBackHash: X}`` without fetching anything satisfies every equality a consumer
+    can check, so the value of the field is entirely in how it was produced. Here it is produced by
+    calling ``store.get`` again and hashing what came back under the item's own hash rule — never
+    by copying ``item["root"]`` across.
+
+    ``available`` is never ``False``-and-fine: an unfetchable object raises, exactly as everything
+    else in this module does. The flag exists because the consumer's wire format carries it, and it
+    is always ``True`` in a record this function returns.
+    """
+    root = item["root"]
+    hash_rule = item["hash_rule"]
+    data = store.get(root)                                     # FRESH read; ObjectNotFoundError
+    if not isinstance(data, (bytes, bytearray)):
+        raise StoreIntegrityError(
+            f"store returned {type(data).__name__}, not bytes, for {kind} at {root}")
+    data = bytes(data)
+    served_root = root_of(data, hash_rule)                     # recomputed FROM THE SERVED BYTES
+    if served_root != root:
+        raise ReadBackMismatchError(
+            f"{kind}: the store serves bytes at {root} that rehash to {served_root} under "
+            f"{hash_rule}")
+    if int(item["bytes"]) != len(data):
+        raise ReadBackMismatchError(
+            f"{kind}: object at {root} is {len(data)} bytes, the availability record says "
+            f"{item['bytes']}")
+    return {"kind": kind, "hash": root, "available": True,
+            "readBackHash": served_root, "read_back_hash": served_root, "bytes": len(data)}
+
+
+def availability_report(items: Mapping[str, Any], *, store: ContentStore,
+                        required: Iterable[str] = ()) -> list:
+    """:func:`verify_availability`'s answer, rendered as the coordinator port's record list.
+
+    Same reads, same refusals, one extra deliverable: the consumer gets the pair of hashes it
+    compares rather than a bare ``{name: root}`` map it has to take on trust.
+    """
+    verify_availability(items, store=store, required=required)
+    return [read_back_record(name, items[name], store=store) for name in sorted(items)]
+
+
 def verify_availability(items: Mapping[str, Any], *, store: ContentStore,
                         required: Iterable[str] = ()) -> Dict[str, str]:
     """Read back EVERY availability record from ``store``. Fail-closed, raises on the first miss.
@@ -532,11 +716,6 @@ def verify_availability(items: Mapping[str, Any], *, store: ContentStore,
         try:
             read_back(item["root"], hash_rule=item["hash_rule"], store=store,
                       expected_bytes_len=item["bytes"])
-        except PublicationUnavailableError:
-            # Preserve the unavailable subtype.  A caller must be able to distinguish "not
-            # published" from "the transport never answered", and both from a structural
-            # availability record that was fetched and disproved.
-            raise
         except PublicationError as exc:
             raise AvailabilityError(f"availability read-back failed for {name!r}: {exc}") from exc
         out[name] = item["root"]

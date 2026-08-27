@@ -49,7 +49,6 @@ SUBMIT_SELECTOR = binding.SUBMIT_CORETEX_RECEIPT_SELECTOR
 #: The raw registry mutator. An advance minted through it (the ``0xa2d87e1d`` fallback route) has
 #: NO ``submitCoreTexReceipt`` calldata, so steps 3-7 are impossible for it. That is reported,
 #: never silently treated as a join failure of the ordinary kind.
-LEGACY_ADVANCE_SELECTOR = binding.SUBMIT_STATE_ADVANCE_SELECTOR
 
 _TUPLE = binding.CORETEX_RECEIPT_TUPLE_COMPONENTS
 _TYPEHASH = bytes.fromhex(binding.CORETEX_RECEIPT_TYPEHASH[2:])
@@ -214,13 +213,6 @@ def decode_submit_calldata(calldata: str) -> CoreTexReceipt:
         raise JoinError("CALLDATA_DECODE_FAILURE", "calldata is shorter than a selector")
     found = "0x" + data[:4].hex()
     if found != SUBMIT_SELECTOR:
-        if found == LEGACY_ADVANCE_SELECTOR:
-            raise JoinError(
-                "CALLDATA_LEGACY_ROUTE",
-                f"this advance was minted through the raw registry mutator {found} "
-                "(submitStateAdvance), not through submitCoreTexReceipt. There is no signed "
-                "receipt in this transaction, so artifactHash / workPolicyHash / the signature "
-                "are unrecoverable — the advance is real, its receipt is not in calldata")
         raise JoinError("CALLDATA_DECODE_FAILURE",
                         f"selector {found} is not submitCoreTexReceipt ({SUBMIT_SELECTOR})")
     body = data[4:]
@@ -249,111 +241,6 @@ def decode_submit_calldata(calldata: str) -> CoreTexReceipt:
     return CoreTexReceipt(values)
 
 
-# Descriptor-v2 history. Kept private to the explicitly named legacy join below; the live decoder
-# above has no selector/typehash fallback.
-LEGACY_V2_SUBMIT_SELECTOR = "0xcc45427e"
-LEGACY_V2_TYPEHASH = bytes.fromhex(
-    "70419dc57753cec023e5ca1563c9eb5858d96ddb82144f3c9e6d40e8f334b2cf")
-LEGACY_V2_TUPLE: Tuple[Dict[str, str], ...] = tuple(
-    {"name": name, "type": kind} for name, kind in (
-        ("rigId", "uint256"), ("operator", "address"), ("epochId", "uint64"),
-        ("solveIndex", "uint64"), ("prevReceiptHash", "bytes32"), ("outcome", "uint8"),
-        ("challengeId", "bytes32"), ("parentStateRoot", "bytes32"),
-        ("newStateRoot", "bytes32"), ("corpusRoot", "bytes32"),
-        ("activeFrontierRoot", "bytes32"), ("coreVersionHash", "bytes32"),
-        ("evalReportHash", "bytes32"), ("patchHash", "bytes32"),
-        ("artifactHash", "bytes32"), ("worldSeed", "uint128"),
-        ("rulesVersion", "uint32"), ("workPolicyHash", "bytes32"),
-        ("workUnitsBps", "uint256"), ("difficultyCountSnapshot", "uint256"),
-        ("transitionFormatVersion", "uint16"), ("scoreBeforePpm", "uint32"),
-        ("scoreAfterPpm", "uint32"), ("issuedAt", "uint64"),
-        ("expiresAt", "uint64"), ("compactPatchBytes", "bytes"), ("signature", "bytes")))
-LEGACY_V2_SIGNED_MEMBERS = 25
-LEGACY_V1_TYPEHASH = bytes.fromhex(
-    "1cb41d15e03f32744933332c24f5fe35eb76fdc99cbdc02c432aad682c67973b")
-
-
-@dataclass(frozen=True)
-class LegacyV2CoreTexReceipt(CoreTexReceipt):
-    """The genuine 27-component descriptor-v2 receipt; never accepted by the live decoder."""
-
-    def struct_hash(self) -> bytes:
-        words = [LEGACY_V2_TYPEHASH]
-        for component in LEGACY_V2_TUPLE[:LEGACY_V2_SIGNED_MEMBERS]:
-            name, kind = component["name"], component["type"]
-            value = self.values[name]
-            if kind == "address":
-                words.append(abi.as_address(value, name))
-            elif kind == "bytes32":
-                words.append(abi.as_bytes32(value, name))
-            elif kind.startswith("uint"):
-                words.append(abi.as_uint(int(value), bits=int(kind[4:]), field=name))
-            else:                                             # pragma: no cover - closed set
-                raise JoinError("CALLDATA_DECODE_FAILURE", f"unsupported signed type {kind}")
-        return keccak256(b"".join(words))
-
-
-def decode_legacy_v2_submit_calldata(calldata: str) -> LegacyV2CoreTexReceipt:
-    """Decode only the genuine descriptor-v2 selector/layout."""
-    raw = calldata[2:] if calldata.startswith("0x") else calldata
-    data = bytes.fromhex(raw)
-    if len(data) < 4 or "0x" + data[:4].hex() != LEGACY_V2_SUBMIT_SELECTOR:
-        found = "0x" + data[:4].hex() if len(data) >= 4 else "<short>"
-        raise JoinError("CALLDATA_DECODE_FAILURE",
-                        f"selector {found} is not legacy-v2 submitCoreTexReceipt "
-                        f"({LEGACY_V2_SUBMIT_SELECTOR})")
-    body = data[4:]
-    outer = int.from_bytes(_word(body, 0, "tuple.offset"), "big")
-    if outer % 32 or outer >= len(body):
-        raise JoinError("CALLDATA_DECODE_FAILURE", "legacy-v2 receipt tuple offset is unusable")
-    tup = body[outer:]
-    values: Dict[str, Any] = {}
-    for index, component in enumerate(LEGACY_V2_TUPLE):
-        name, kind = component["name"], component["type"]
-        if kind == "bytes":
-            values[name] = _bytes_tail(tup, index, name)
-        elif kind == "address":
-            word = _word(tup, index, name)
-            if word[:12] != b"\x00" * 12:
-                raise JoinError("CALLDATA_DECODE_FAILURE", f"{name}: address has dirty high bits")
-            values[name] = "0x" + word[12:].hex()
-        elif kind == "bytes32":
-            values[name] = _word(tup, index, name).hex()
-        elif kind.startswith("uint"):
-            values[name] = _uint(tup, index, name, bits=int(kind[4:]))
-    return LegacyV2CoreTexReceipt(values)
-
-
-@dataclass(frozen=True)
-class LegacyV1CoreTexReceipt(LegacyV2CoreTexReceipt):
-    """The signed stateWordCount-era receipt used by immutable v1 snapshots."""
-
-    def struct_hash(self) -> bytes:
-        words = [LEGACY_V1_TYPEHASH]
-        for component in LEGACY_V2_TUPLE[:LEGACY_V2_SIGNED_MEMBERS]:
-            name, kind = component["name"], component["type"]
-            # Same ABI cell and type; EIP-712 called this member stateWordCount.
-            value_name = "stateWordCount" if name == "transitionFormatVersion" else name
-            value = self.values[value_name]
-            if kind == "address":
-                words.append(abi.as_address(value, value_name))
-            elif kind == "bytes32":
-                words.append(abi.as_bytes32(value, value_name))
-            elif kind.startswith("uint"):
-                words.append(abi.as_uint(int(value), bits=int(kind[4:]), field=value_name))
-        return keccak256(b"".join(words))
-
-
-def decode_legacy_v1_submit_calldata(calldata: str) -> LegacyV1CoreTexReceipt:
-    decoded = decode_legacy_v2_submit_calldata(calldata)
-    values = dict(decoded.values)
-    values["stateWordCount"] = values.pop("transitionFormatVersion")
-    return LegacyV1CoreTexReceipt(values)
-
-
-# --------------------------------------------------------------------------- #
-# Indexing (step 1) — the §7.4 key
-# --------------------------------------------------------------------------- #
 def index_advances(advances: Sequence[rig.StateAdvanced]
                    ) -> Dict[Tuple[int, str, str], rig.StateAdvanced]:
     """Index by ``(epoch, parentStateRoot, patchHash)``. A collision here is a chain-level fault.
@@ -551,7 +438,10 @@ def join_advance(advance: rig.StateAdvanced, credit: rig.CoreTexCreditAccepted,
     recovered = ""
     if verify_signature:
         from . import secp256k1 as ec                                      # noqa: WPS433
-        recovered = ec.ecrecover(digest, bytes(receipt["signature"]))
+        try:
+            recovered = ec.ecrecover(digest, bytes(receipt["signature"]))
+        except ec.SignatureError as exc:
+            raise JoinError("JOIN_SIGNATURE_INVALID", str(exc)) from exc
         if not abi.addresses_equal(recovered, coordinator_signer):
             raise JoinError(
                 "JOIN_SIGNATURE_INVALID",
@@ -593,106 +483,6 @@ def join_advance(advance: rig.StateAdvanced, credit: rig.CoreTexCreditAccepted,
         transaction_hash=str(advance.provenance.transaction_hash or ""), checks=checks)
 
 
-_LEGACY_V2_C_TO_A_FIELDS = (
-    ("epochId", "epoch"), ("parentStateRoot", "parent_state_root"),
-    ("newStateRoot", "new_state_root"), ("patchHash", "patch_hash"),
-    ("evalReportHash", "eval_report_hash"), ("coreVersionHash", "core_version_hash"),
-    ("corpusRoot", "corpus_root"), ("activeFrontierRoot", "active_frontier_root"),
-    ("transitionFormatVersion", "transition_format_version"),
-)
-
-
-def _check_legacy_v2_descriptor(advance: rig.LegacyV2StateAdvanced) -> None:
-    raw = bytes(advance.compact_patch_bytes)
-    if len(raw) != 105:
-        raise JoinError("JOIN_DESCRIPTOR_LENGTH_INVALID",
-                        f"legacy-v2 descriptor is {len(raw)} bytes, expected 105")
-    if raw[0] != 0x20 or advance.transition_format_version != 0x20:
-        raise JoinError("JOIN_DESCRIPTOR_VERSION_INVALID",
-                        "legacy-v2 descriptor and transitionFormatVersion must both equal 0x20")
-    if raw[1:33] == bytes(32):
-        raise JoinError("JOIN_DESCRIPTOR_ARTIFACT_ZERO", "legacy-v2 patchArtifactHash is zero")
-    if raw[33:65].hex() != advance.parent_state_root:
-        raise JoinError("JOIN_DESCRIPTOR_PARENT_MISMATCH",
-                        "legacy-v2 descriptor parent does not match its advance")
-    if raw[65:97].hex() != advance.new_state_root:
-        raise JoinError("JOIN_DESCRIPTOR_NEW_ROOT_MISMATCH",
-                        "legacy-v2 descriptor new root does not match its advance")
-    computed = keccak256_hex(rig.TRANSITION_DESCRIPTOR_SUPERSEDED_V2_LABEL + raw)
-    if computed != advance.patch_hash:
-        raise JoinError("JOIN_DESCRIPTOR_HASH_MISMATCH",
-                        f"legacy-v2 descriptor hashes to {computed}, advance says "
-                        f"{advance.patch_hash}")
-
-
-def join_advance_legacy_v2(advance: rig.LegacyV2StateAdvanced,
-                           credit: rig.CoreTexCreditAccepted, calldata: str, *,
-                           domain_separator: bytes, coordinator_signer: str,
-                           verify_signature: bool = True,
-                           legacy_v1: bool = False) -> JoinedTransition:
-    """Join one explicitly historical v1/v2 transition; never called by the live path."""
-    checks: List[str] = [STEP1_ADVANCE_DECODED]
-    if credit.epoch != advance.epoch or not abi.addresses_equal(credit.operator, advance.miner):
-        raise JoinError("JOIN_FIELD_MISMATCH", "legacy-v2 credit does not identify its advance")
-    if credit.credits_earned != advance.improvement_credits:
-        raise JoinError("JOIN_FIELD_MISMATCH", "legacy-v2 credit amount != registry advance")
-    checks.append(STEP2_CREDIT_EVENT_JOINED)
-    receipt = (decode_legacy_v1_submit_calldata(calldata) if legacy_v1
-               else decode_legacy_v2_submit_calldata(calldata))
-    checks.append(STEP3_CALLDATA_DECODED)
-    digest = receipt.digest(domain_separator)
-    recomputed = receipt.receipt_hash(digest)
-    if recomputed != credit.receipt_hash:
-        raise JoinError("JOIN_RECEIPT_HASH_MISMATCH",
-                        "legacy-v2 calldata receipt hash does not bind the mining credit")
-    checks.extend((STEP4_RECEIPT_HASH_BOUND, STEP5_ARTIFACT_HASH_BOUND))
-    fields = tuple(
-        (("stateWordCount" if legacy_v1 and calldata_name == "transitionFormatVersion"
-          else calldata_name), advance_name)
-        for calldata_name, advance_name in _LEGACY_V2_C_TO_A_FIELDS)
-    for calldata_name, advance_name in fields:
-        want, got = getattr(advance, advance_name), receipt[calldata_name]
-        if ((isinstance(want, int) or isinstance(got, int)) and int(want) != int(got)) \
-                or (not isinstance(want, int) and not isinstance(got, int)
-                    and str(want) != str(got)):
-            raise JoinError("JOIN_FIELD_MISMATCH",
-                            f"legacy-v2 calldata {calldata_name} != advance {advance_name}")
-    if not abi.addresses_equal(receipt["operator"], advance.miner):
-        raise JoinError("JOIN_FIELD_MISMATCH", "legacy-v2 calldata operator != advance miner")
-    if bytes(receipt["compactPatchBytes"]) != bytes(advance.compact_patch_bytes):
-        raise JoinError("JOIN_FIELD_MISMATCH",
-                        "legacy-v2 calldata descriptor differs from the registry log")
-    checks.append(STEP6_CALLDATA_BOUND_TO_LOGS)
-    recovered = ""
-    if verify_signature:
-        from . import secp256k1 as ec                                      # noqa: WPS433
-        recovered = ec.ecrecover(digest, bytes(receipt["signature"]))
-        if not abi.addresses_equal(recovered, coordinator_signer):
-            raise JoinError("JOIN_SIGNATURE_INVALID", "legacy-v2 coordinator signature invalid")
-        checks.append(STEP7_COORDINATOR_SIGNATURE)
-    else:
-        checks.append("step7_coordinator_signature_SKIPPED")
-    if legacy_v1:
-        try:
-            rig.decode_compact_patch(
-                advance.compact_patch_bytes, parent_state_root=advance.parent_state_root,
-                score_delta_ppm=int(receipt["scoreAfterPpm"]) - int(receipt["scoreBeforePpm"]),
-                expected_patch_hash=advance.patch_hash)
-        except rig.CompactPatchError as exc:
-            raise JoinError("JOIN_COMPACT_PATCH_INVALID", str(exc)) from exc
-        if int(receipt["stateWordCount"]) != advance.transition_format_version:
-            raise JoinError("JOIN_FIELD_MISMATCH", "legacy-v1 stateWordCount != registry wordCount")
-    else:
-        _check_legacy_v2_descriptor(advance)
-    checks.append(STEP8_PATCH_HASH_VERIFIED)
-    if int(receipt["outcome"]) != OUTCOME_STATE_ADVANCE:
-        raise JoinError("JOIN_FIELD_MISMATCH", "legacy-v2 advance receipt outcome is not 2")
-    return JoinedTransition(
-        advance=advance, credit=credit, receipt=receipt, digest=digest,
-        receipt_hash=recomputed, recovered_signer=recovered,
-        transaction_hash=str(advance.provenance.transaction_hash or ""), checks=checks)
-
-
 @dataclass
 class JoinResult:
     transitions: List[JoinedTransition]
@@ -716,7 +506,7 @@ class JoinResult:
 
 
 def join_all(decoded: rig.DecodedLogs, *, calldata_for, domain_separator: bytes,
-             coordinator_signer: str, verify_signature: bool = True) -> JoinResult:
+             coordinator_signer, verify_signature: bool = True) -> JoinResult:
     """Join a whole scan. ``calldata_for(tx_hash) -> str`` supplies source C.
 
     Grouped BY TRANSACTION: A and B are always in the same one (mining calls the verifier
@@ -734,6 +524,8 @@ def join_all(decoded: rig.DecodedLogs, *, calldata_for, domain_separator: bytes,
     transitions: List[JoinedTransition] = []
     screeners: List[ScreenerPass] = []
     unresolved: List[Dict[str, Any]] = []
+    signer_for = coordinator_signer if callable(coordinator_signer) \
+        else lambda _provenance: coordinator_signer
     for tx, group in sorted(by_tx.items()):
         advances = group["advances"]
         credits = group["credits"]
@@ -764,9 +556,12 @@ def join_all(decoded: rig.DecodedLogs, *, calldata_for, domain_separator: bytes,
                                     "screener receipt hash does not bind its credit")
                 if verify_signature:
                     from . import secp256k1 as ec                          # noqa: WPS433
-                    if not abi.addresses_equal(
-                            ec.ecrecover(digest, bytes(receipt["signature"])),
-                            coordinator_signer):
+                    try:
+                        recovered = ec.ecrecover(digest, bytes(receipt["signature"]))
+                    except ec.SignatureError as exc:
+                        raise JoinError("JOIN_SIGNATURE_INVALID", str(exc)) from exc
+                    expected_signer = signer_for(credit.provenance)
+                    if not abi.addresses_equal(recovered, expected_signer):
                         raise JoinError("JOIN_SIGNATURE_INVALID", "screener signature invalid")
                 if int(receipt["outcome"]) != OUTCOME_SCREENER_PASS:
                     raise JoinError("JOIN_FIELD_MISMATCH",
@@ -805,7 +600,8 @@ def join_all(decoded: rig.DecodedLogs, *, calldata_for, domain_separator: bytes,
         try:
             transitions.append(join_advance(
                 advances[0], credits[0], calldata_for(tx),
-                domain_separator=domain_separator, coordinator_signer=coordinator_signer,
+                domain_separator=domain_separator,
+                coordinator_signer=signer_for(credits[0].provenance),
                 verify_signature=verify_signature))
         except JoinError as exc:
             unresolved.append({"code": exc.code, "transaction_hash": tx,
@@ -815,83 +611,6 @@ def join_all(decoded: rig.DecodedLogs, *, calldata_for, domain_separator: bytes,
     transitions.sort(key=lambda t: (t.advance.epoch, t.advance.transition_index))
     return JoinResult(transitions=transitions, screener_passes=screeners, unresolved=unresolved,
                       key_report=assert_key_is_patch_keyed(decoded.advances))
-
-
-def join_all_legacy_v2(decoded: rig.DecodedLogs, *, calldata_for, domain_separator: bytes,
-                       coordinator_signer: str, verify_signature: bool = True,
-                       legacy_v1: bool = False) -> JoinResult:
-    """Historical descriptor-v2 transaction join, isolated from the live v3 decoder."""
-    by_tx: Dict[str, Dict[str, List[Any]]] = {}
-    for advance in decoded.advances:
-        tx = str(advance.provenance.transaction_hash or "")
-        by_tx.setdefault(tx, {"advances": [], "credits": []})["advances"].append(advance)
-    for credit in decoded.coretex_credits:
-        tx = str(credit.provenance.transaction_hash or "")
-        by_tx.setdefault(tx, {"advances": [], "credits": []})["credits"].append(credit)
-    transitions: List[JoinedTransition] = []
-    screeners: List[ScreenerPass] = []
-    unresolved: List[Dict[str, Any]] = []
-    for tx, group in sorted(by_tx.items()):
-        advances, credits = group["advances"], group["credits"]
-        if len(advances) > 1 or len(credits) > 1:
-            unresolved.append({"code": "JOIN_AMBIGUOUS_TRANSACTION", "transaction_hash": tx,
-                               "advances": len(advances), "credits": len(credits),
-                               "reason": "more than one legacy-v2 advance/credit in one tx"})
-            continue
-        if advances and not credits:
-            unresolved.append({"code": "JOIN_CREDIT_EVENT_MISSING", "transaction_hash": tx,
-                               "epoch": advances[0].epoch,
-                               "patch_hash": advances[0].patch_hash,
-                               "reason": "legacy-v2 advance has no same-transaction credit"})
-            continue
-        if credits and not advances:
-            credit = credits[0]
-            try:
-                receipt = (decode_legacy_v1_submit_calldata(calldata_for(tx)) if legacy_v1
-                           else decode_legacy_v2_submit_calldata(calldata_for(tx)))
-                digest = receipt.digest(domain_separator)
-                if receipt.receipt_hash(digest) != credit.receipt_hash:
-                    raise JoinError("JOIN_RECEIPT_HASH_MISMATCH",
-                                    "legacy-v2 screener receipt does not bind its credit")
-                if int(receipt["outcome"]) != OUTCOME_SCREENER_PASS:
-                    raise JoinError("JOIN_FIELD_MISMATCH",
-                                    "legacy-v2 credit without advance is not outcome 1")
-                if verify_signature:
-                    from . import secp256k1 as ec                          # noqa: WPS433
-                    if not abi.addresses_equal(
-                            ec.ecrecover(digest, bytes(receipt["signature"])),
-                            coordinator_signer):
-                        raise JoinError("JOIN_SIGNATURE_INVALID",
-                                        "legacy-v2 screener signature invalid")
-                screeners.append(ScreenerPass(
-                    credit=credit, receipt=receipt,
-                    checks=["screener_only_no_advance", STEP3_CALLDATA_DECODED,
-                            STEP4_RECEIPT_HASH_BOUND,
-                            STEP7_COORDINATOR_SIGNATURE if verify_signature
-                            else "step7_coordinator_signature_SKIPPED"]))
-            except JoinError as exc:
-                unresolved.append({"code": exc.code, "transaction_hash": tx,
-                                   "epoch": credit.epoch, "reason": exc.message})
-            continue
-        try:
-            transitions.append(join_advance_legacy_v2(
-                advances[0], credits[0], calldata_for(tx), domain_separator=domain_separator,
-                coordinator_signer=coordinator_signer, verify_signature=verify_signature,
-                legacy_v1=legacy_v1))
-        except JoinError as exc:
-            unresolved.append({"code": exc.code, "transaction_hash": tx,
-                               "epoch": advances[0].epoch,
-                               "patch_hash": advances[0].patch_hash, "reason": exc.message})
-    transitions.sort(key=lambda t: (t.advance.epoch, t.advance.transition_index))
-    return JoinResult(transitions=transitions, screener_passes=screeners, unresolved=unresolved,
-                      key_report=assert_key_is_patch_keyed(decoded.advances))
-
-
-def join_all_legacy_v1(decoded: rig.DecodedLogs, *, calldata_for, domain_separator: bytes,
-                       coordinator_signer: str, verify_signature: bool = True) -> JoinResult:
-    return join_all_legacy_v2(
-        decoded, calldata_for=calldata_for, domain_separator=domain_separator,
-        coordinator_signer=coordinator_signer, verify_signature=verify_signature, legacy_v1=True)
 
 
 # --------------------------------------------------------------------------- #

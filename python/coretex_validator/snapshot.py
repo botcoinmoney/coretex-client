@@ -1,458 +1,648 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Step 7: reproduce the resolver snapshot — the UNSIGNED payload first, the signature after.
+"""Materialize the confirmed current CoreTex frontier for an installable adapter.
 
-THE ORDER IS THE WHOLE POINT AND IT IS ENFORCED, NOT ADVISED.
-
-A resolver publishes a snapshot: a description of a confirmed CoreTex transition, signed so that
-consumers can tell it came from the resolver. The tempting implementation is "check the signature,
-then trust the payload". That makes the resolver an authority — and the protocol's entire claim is
-that it is not one. So:
-
-1. :func:`build_unsigned` reconstructs the payload from the chain, the logs, the calldata and the
-   fetched artifacts, **without ever reading the published payload**;
-2. :func:`reproduce` compares the reconstruction to the published payload **byte for byte**, over
-   canonical bytes, before any key is consulted;
-3. :func:`verify_signature` is a SEPARATE call, and its result is labelled TRANSPORT
-   AUTHENTICATION. It answers "did the resolver send this?", never "is this true?".
-
-A snapshot that reproduces byte-for-byte is true whether or not it was signed. A snapshot that is
-signed but does not reproduce is a correctly-transmitted false statement, and the signature makes
-it worse rather than better. :func:`reproduce` therefore refuses to accept a
-``signature_valid=True`` as compensation for a mismatch, and there is no parameter that lets a
-caller ask it to.
-
-CANONICAL BYTES. The payload is canonicalised by :func:`frontier.canonical_bytes` — the same
-authority the frontier manifests use — so "byte for byte" means something reproducible across
-implementations rather than "the same after my JSON library got through with it". Floats are
-refused by that canonicaliser, which is why every measurement in a snapshot is an integer.
-
-WHAT IS DELIBERATELY EXCLUDED FROM THE UNSIGNED PAYLOAD. Anything the resolver observed but a
-third party cannot re-derive: wall-clock time of publication, the resolver's own request counts,
-endpoint identity. Including them would make the payload unreproducible on purpose, which is the
-easiest way to quietly retire this check.
+The chain selects the frontier; the public object surface supplies content-addressed bytes.  This
+module joins those facts and writes one closed local resolver bundle.  It never accepts a manual
+module path and never invents a second release registry.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
+import hashlib
+import json
+import os
+from pathlib import Path
+import shutil
+import tempfile
+from typing import Any, Callable, Mapping, Optional
 
-from . import frontier as fr
-from . import join as jn
-from . import historical_law as hl
-from . import abi
-from . import rig_events as rig
-from .keccak256 import keccak256
+from . import benchmark_replay
+from . import eval_artifact as evaluation
+from . import frontier, join, parent_execution, publication, replay, rig_events
+from .activation import PublicActivation
+from .discovery import PublicScan, coordinator_signer_at, scan_public_feed
+from .release import ReleaseDirectory
+from .rpc import DEFAULT_CONFIRMATION_DEPTH, JsonRpc, RigViews
 
-SNAPSHOT_FORMAT = "coretex.rig-resolver-snapshot/v1"
-#: The classification every snapshot this package produces carries. See :mod:`.export`.
-CLASSIFICATION_REHEARSAL = "MAINNET_REHEARSAL"
-
-#: THE CANONICALISATION RULE, WHICH IS THE PART THAT MUST NOT DIVERGE.
-#:
-#: "Byte-for-byte" only means anything if both sides spell bytes the same way. Both this package
-#: and the resolver lane serialise with :func:`frontier.canonical_bytes` and address the result
-#: with ``sha256`` — key-sorted, separator-tight, floats refused, ``null`` refused. A schema can be
-#: extended; this rule cannot be changed without invalidating every prior comparison.
-CANONICALIZATION_RULE = "frontier-canonical-json/sha256"
-
-#: Schemas whose payloads this package can BUILD, and therefore reproduce.
-SUPPORTED_SCHEMAS = (SNAPSHOT_FORMAT,)
-
-#: The resolver lane's own schema. KNOWN, and deliberately NOT claimed as supported.
-#:
-#: The Phase 6 resolver publishes ``coretex.rig-state.resolver-snapshot/v1``, a richer document
-#: (profiles, composition, locks, migration, prior-snapshot linkage, a resolver key identity, and
-#: embedded join-recipe / receipt-layout records). This package derives most of those parts but
-#: does not yet assemble that shape, and guessing at a field set that is still in flight is the
-#: fastest way to produce a "reproduction" that fails for schema reasons and gets explained away.
-#:
-#: So a payload in this schema is REFUSED with a precise reason rather than diffed into noise.
-#: The canonicalisation rule above is already shared, so landing support is a builder, not a
-#: re-think. Tracked as F8 in docs/V5-RIG-VALIDATOR.md.
-RESOLVER_SCHEMA = "coretex.rig-state.resolver-snapshot/v1"
+SNAPSHOT_FORMAT = "coretex.resolver-snapshot/v1"
+SNAPSHOT_VERSION = 1
+PROFILE_IDS = frontier.PROFILE_IDS
 
 
-class SnapshotError(Exception):
-    def __init__(self, code: str, message: str) -> None:
-        super().__init__(f"{code}: {message}")
-        self.code = code
-        self.message = message
+class SnapshotBuildError(RuntimeError):
+    """Confirmed state or published bytes cannot produce one executable snapshot."""
 
 
-@dataclass(frozen=True)
-class ChainObservation:
-    """The pinned chain state a snapshot is ABOUT. Every field is read at one block."""
-
-    chain_id: int
-    block_number: int
-    block_hash: str
-    registry: str
-    mining: str
-    verifier: str
-    live_state_root: str
-    transition_count: int
-    epoch_finalized: bool
-    coordinator_signer: str
+def _sha(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
 
 
-def build_unsigned(*, transition: jn.JoinedTransition, law: hl.EpochLaw,
-                   observation: ChainObservation,
-                   artifact_roots: Mapping[str, str],
-                   lineage: Sequence[jn.LineageStep] = (),
-                   classification: str = CLASSIFICATION_REHEARSAL,
-                   production_authority: bool = False) -> Dict[str, Any]:
-    """The canonical UNSIGNED payload, from chain-derived facts only.
-
-    Every value here is either read from a confirmed log, read from the pinned block's state,
-    decoded from the transaction calldata, or the hash of a fetched artifact. Nothing is copied
-    from a published snapshot and nothing is supplied by an operator.
-    """
-    receipt = transition.receipt
-    advance = transition.advance
-    credit = transition.credit
-    payload: Dict[str, Any] = {
-        "format": SNAPSHOT_FORMAT,
-        "classification": classification,
-        "chain": {
-            "chain_id": observation.chain_id,
-            "block_number": observation.block_number,
-            "block_hash": observation.block_hash,
-        },
-        "deployment": {
-            "registry": observation.registry.lower(),
-            "mining": observation.mining.lower(),
-            "verifier": observation.verifier.lower(),
-            "coordinator_signer": observation.coordinator_signer.lower(),
-        },
-        "epoch": {
-            "epoch": advance.epoch,
-            "live_state_root": observation.live_state_root,
-            "transition_count": observation.transition_count,
-            "finalized": observation.epoch_finalized,
-            "law": law.as_dict(),
-        },
-        # The §7.4 key, spelled out rather than concatenated: a reader must be able to see that
-        # patchHash is in it.
-        "join_key": {
-            "epoch": advance.epoch,
-            "parent_state_root": advance.parent_state_root,
-            "patch_hash": advance.patch_hash,
-        },
-        "transition": {
-            "transition_index": advance.transition_index,
-            "parent_state_root": advance.parent_state_root,
-            "new_state_root": advance.new_state_root,
-            "patch_hash": advance.patch_hash,
-            "eval_report_hash": advance.eval_report_hash,
-            "core_version_hash": advance.core_version_hash,
-            "epoch_context_root": advance.epoch_context_root,
-            "improvement_credits": advance.improvement_credits,
-            "transition_format_version": advance.transition_format_version,
-            "compact_patch_bytes_hex": advance.compact_patch_bytes.hex(),
-            "miner": advance.miner.lower(),
-        },
-        "receipt": {
-            "rig_id": credit.rig_id,
-            "operator": credit.operator.lower(),
-            "solve_index": credit.solve_index,
-            "receipt_hash": transition.receipt_hash,
-            "challenge_id": credit.challenge_id,
-            "work_units_bps": credit.work_units_bps,
-            "credits_earned": credit.credits_earned,
-            "artifact_hash": receipt["artifactHash"],
-            "work_policy_hash": receipt["workPolicyHash"],
-            "rules_version": int(receipt["rulesVersion"]),
-            "world_seed": int(receipt["worldSeed"]),
-            "difficulty_count_snapshot": int(receipt["difficultyCountSnapshot"]),
-            "score_before_ppm": int(receipt["scoreBeforePpm"]),
-            "score_after_ppm": int(receipt["scoreAfterPpm"]),
-            "issued_at": int(receipt["issuedAt"]),
-            "expires_at": int(receipt["expiresAt"]),
-            "prev_receipt_hash": receipt["prevReceiptHash"],
-            "outcome": int(receipt["outcome"]),
-        },
-        "artifacts": {name: root for name, root in sorted(dict(artifact_roots).items())},
-        # Same omit-never-null rule as elsewhere: a feed that did not report a block number is
-        # not a snapshot of block `null`.
-        "provenance": {key: value for key, value in (
-            ("transaction_hash", str(advance.provenance.transaction_hash or "").lower() or None),
-            ("block_number", advance.provenance.block_number),
-            ("log_index", advance.provenance.log_index)) if value is not None},
-        "checks": sorted(set(transition.checks)),
-    }
-    if production_authority:
-        payload["production_authority"] = True
-    if lineage:
-        payload["lineage"] = [
-            {"epoch": step.epoch, "served": step.served, "sealed": step.sealed,
-             "final_state_root": step.final_root, "source": step.source, "flagged": step.flagged}
-            for step in lineage]
-    # Canonicalising here (rather than at comparison time) fails fast on a value the canonical
-    # form cannot represent — a float that crept in, a non-string key — at the point it was
-    # introduced instead of three modules later.
-    fr.canonical_bytes(payload)
-    return payload
+def _canonical(value: Any) -> bytes:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"),
+                      ensure_ascii=True).encode("utf-8")
 
 
-def canonical_bytes(payload: Mapping[str, Any]) -> bytes:
-    """The bytes that ARE the payload. There is no other spelling of it."""
-    return fr.canonical_bytes(payload)
+def _json_bytes(value: Any) -> bytes:
+    return (json.dumps(value, indent=2, sort_keys=True) + "\n").encode("utf-8")
 
 
-def payload_hash(payload: Mapping[str, Any]) -> str:
-    return fr.sha256_hex(canonical_bytes(payload))
-
-
-@dataclass
-class ReproductionResult:
-    """Whether the published payload is the one the chain implies. Signature-independent."""
-
-    reproduced: bool
-    reconstructed_hash: str
-    published_hash: Optional[str]
-    #: Field paths that differ, deepest-first. Empty when ``reproduced``.
-    differences: List[str]
-    byte_length: int
-
-    def as_dict(self) -> Dict[str, Any]:
-        return {"reproduced": self.reproduced,
-                "reconstructed_sha256": self.reconstructed_hash,
-                "byte_length": self.byte_length,
-                "differences": list(self.differences),
-                # Absent when nothing was published to compare against — see the note above.
-                **({"published_sha256": self.published_hash} if self.published_hash else {})}
-
-
-def _diff(a: Any, b: Any, path: str, out: List[str]) -> None:
-    if isinstance(a, Mapping) and isinstance(b, Mapping):
-        for key in sorted(set(a) | set(b)):
-            if key not in a:
-                out.append(f"{path}.{key}: absent in reconstruction, published {b[key]!r}")
-            elif key not in b:
-                out.append(f"{path}.{key}: reconstructed {a[key]!r}, absent in published")
-            else:
-                _diff(a[key], b[key], f"{path}.{key}", out)
-        return
-    if isinstance(a, list) and isinstance(b, list):
-        if len(a) != len(b):
-            out.append(f"{path}: {len(a)} entries reconstructed, {len(b)} published")
-        for index, (left, right) in enumerate(zip(a, b)):
-            _diff(left, right, f"{path}[{index}]", out)
-        return
-    if a != b:
-        out.append(f"{path}: reconstructed {a!r}, published {b!r}")
-
-
-def reproduce(reconstructed: Mapping[str, Any],
-              published: Optional[Mapping[str, Any]]) -> ReproductionResult:
-    """Compare BEFORE any signature check. A mismatch is never excused by a valid signature."""
-    reconstructed_bytes = canonical_bytes(reconstructed)
-    reconstructed_hash = fr.sha256_hex(reconstructed_bytes)
-    if published is not None:
-        # A schema this package cannot BUILD cannot be reproduced by it, and a field-by-field diff
-        # between two different document shapes is noise that reads like a finding. Say the true
-        # thing instead.
-        published_schema = published.get("schema") or published.get("format")
-        if published_schema is not None and published_schema not in SUPPORTED_SCHEMAS:
-            known = (" This is the resolver lane's own schema; this package derives the parts but "
-                     "does not yet assemble that shape (F8)."
-                     if published_schema == RESOLVER_SCHEMA else "")
-            return ReproductionResult(
-                reproduced=False, reconstructed_hash=reconstructed_hash,
-                published_hash=fr.sha256_hex(canonical_bytes(published)),
-                differences=[f"SCHEMA_UNSUPPORTED: the published payload is "
-                             f"{published_schema!r}; this package builds "
-                             f"{list(SUPPORTED_SCHEMAS)!r}.{known} Refusing to report a "
-                             f"field-level diff between two different document shapes"],
-                byte_length=len(reconstructed_bytes))
-    if published is None:
-        return ReproductionResult(
-            reproduced=False, reconstructed_hash=reconstructed_hash, published_hash=None,
-            differences=["no published snapshot was supplied, so there is nothing to reproduce; "
-                         "the reconstruction stands on its own but proves no agreement"],
-            byte_length=len(reconstructed_bytes))
-    published_bytes = canonical_bytes(published)
-    published_hash = fr.sha256_hex(published_bytes)
-    if reconstructed_bytes == published_bytes:
-        return ReproductionResult(True, reconstructed_hash, published_hash, [],
-                                  len(reconstructed_bytes))
-    differences: List[str] = []
-    _diff(dict(reconstructed), dict(published), "$", differences)
-    return ReproductionResult(False, reconstructed_hash, published_hash, differences,
-                              len(reconstructed_bytes))
-
-
-#: THE SIGNING DIGEST DOMAIN. ``keccak256(0x19 ‖ tag ‖ 0x0a ‖ canonical_bytes)``.
-#:
-#: The leading ``0x19`` is the byte EIP-191 reserves for "this is signed data, not a transaction",
-#: and the tag that follows is none of the envelopes a contract will accept — not
-#: ``\x19Ethereum Signed Message:\n``, not ``\x19\x01`` (EIP-712). So a resolver attestation is
-#: STRUCTURALLY incapable of being replayed into the rig lane's ``submitCoreTexReceipt`` signature
-#: slot or into a personal-sign flow. A bare ``sha256`` of the payload has no such property: it is
-#: just 32 bytes, and 32 bytes will happily serve as somebody else's digest.
-#:
-#: THE TAG NAMES THE PUBLISHED SCHEMA, WHICH IS NOT THIS PACKAGE'S. This construction was authored
-#: here and its tag originally spelled this package's own schema id
-#: (``coretex.rig-resolver-snapshot/v1``). When the two snapshot schemas were reconciled, the
-#: RESOLVER's per-epoch schema won — see :mod:`.resolver_snapshot` — which left the tag naming a
-#: schema nobody publishes. It was aligned before any real signature existed.
-#:
-#: The timing is the whole argument, because the general rule points the other way: a domain tag
-#: works whatever it says, and changing one unilaterally breaks the agreement it encodes. But the
-#: tag is baked into every signature ever made under it. With zero real snapshots in existence the
-#: correction cost one line on each side; one published rehearsal snapshot later it would have
-#: invalidated verification of that snapshot and every one before the change — a migration, not an
-#: edit. A wart that is free today and expensive tomorrow gets fixed today.
-#:
-#: BOTH LANES MUST SPELL THIS IDENTICALLY. Changing it on one side silently invalidates every
-#: signature the other side can verify.
-SNAPSHOT_SIGNING_DOMAIN = b"\x19coretex.rig-state.resolver-snapshot/v1\n"
-
-#: What the tag used to say. Recorded so a future reader does not have to wonder whether the
-#: mismatch was deliberate, and so a stale signature can be DIAGNOSED rather than merely rejected.
-SUPERSEDED_SIGNING_DOMAIN = b"\x19coretex.rig-resolver-snapshot/v1\n"
-
-
-def signing_digest(payload: Mapping[str, Any]) -> bytes:
-    """``keccak256(domain ‖ canonical payload bytes)``."""
-    return keccak256(SNAPSHOT_SIGNING_DOMAIN + canonical_bytes(payload))
-
-
-def superseded_signing_digest(payload: Mapping[str, Any]) -> bytes:
-    """The digest under the RETIRED tag. For diagnosis only — never for acceptance.
-
-    A signature made before the tag was aligned recovers a valid address under this digest and a
-    wrong one under the live digest. Being able to say "this was signed under the superseded
-    domain" is the difference between a useful refusal and a mysterious one.
-    """
-    return keccak256(SUPERSEDED_SIGNING_DOMAIN + canonical_bytes(payload))
-
-
-@dataclass
-class SignatureResult:
-    """TRANSPORT AUTHENTICATION ONLY. Read the class name before using the boolean."""
-
-    valid: bool
-    recovered_signer: Optional[str]
-    expected_signer: Optional[str]
-    reason: str
-
-    def as_dict(self) -> Dict[str, Any]:
-        return {"meaning": ("transport authentication: whether the resolver sent this payload. "
-                            "It says NOTHING about whether the payload is true — that is what "
-                            "byte-for-byte reproduction against the chain establishes"),
-                "valid": self.valid, "reason": self.reason,
-                # OMIT, NEVER null. These two are absent whenever no key was recovered or none
-                # was configured, and the canonical grammar refuses `null` — so emitting one
-                # blows up at SERIALISATION time, after the expensive work is already done. This
-                # exact class of bug (F7) has now cost two multi-minute runs; the rule is that a
-                # value which may legitimately be absent is built conditionally, not defaulted.
-                **({"recovered_signer": self.recovered_signer}
-                   if self.recovered_signer else {}),
-                **({"expected_signer": self.expected_signer} if self.expected_signer else {})}
-
-
-# --------------------------------------------------------------------------- #
-# HISTORICAL: off-chain signature verification. NOT part of the acceptance path.
-# --------------------------------------------------------------------------- #
-# Everything below this line was written when resolver snapshots carried a detached signature and
-# a validator was expected to check it. That ceremony is REMOVED: a downloaded snapshot is a
-# CACHE, and what makes it true is that this package independently reconstructs identical
-# canonical bytes from the pinned chain. Nothing in the verification path calls any of it.
-#
-# It is KEPT rather than deleted for one specific reason: the epoch-180 rehearsal artifacts were
-# published with a signature and the runs that verified it are historical records. Somebody
-# re-examining that evidence should be able to re-check what those runs checked. New artifacts are
-# unsigned and content-addressed, and a caller reaching for these functions to decide whether to
-# TRUST a payload has misread the model — reconstruction is the only thing that decides that.
-#
-# The one signature this package still verifies as a matter of course is the coordinator's EIP-712
-# mining receipt, checked against `mining.coordinatorSigner()` in the join. That one is enforced
-# by a deployed contract, so it is a fact about the chain rather than about a publisher, and it
-# lives in `join.py` where the rest of the §7.2 recipe is.
-
-#: The two published fields of a detached signature artifact, and why BOTH are checked.
-#:
-#: ``payload_sha256`` is IDENTITY: what a snapshot is addressed by, compared by and reproduced
-#: against. ``signing_digest`` is what the signature actually COVERS. They are different values
-#: over different preimages — the digest includes the domain tag — and treating one as a proxy for
-#: the other is a real hole: an artifact naming a CORRECT ``payload_sha256`` beside a WRONG
-#: ``signing_digest`` would satisfy the identity check and then be verified against a digest
-#: nobody computed. That is precisely the "the hash matched" substitution this design exists to
-#: prevent, so :func:`verify_signature_artifact` recomputes both from the payload and refuses on
-#: either mismatch, BEFORE it recovers a key.
-SIGNATURE_ARTIFACT_FIELDS = ("payload_sha256", "signing_digest")
-
-
-def verify_signature_artifact(payload: Mapping[str, Any], artifact: Mapping[str, Any],
-                              expected_signer: Optional[str]) -> SignatureResult:
-    """Verify a DETACHED signature artifact against a payload. Both published fields are checked.
-
-    The order is deliberate and is the same order the payload itself is verified in: everything
-    that can be recomputed from the bytes is recomputed FIRST, and only then is a key recovered.
-    A caller that skipped straight to :func:`verify_signature` would be authenticating a digest
-    the artifact asserted rather than one the payload produces.
-    """
-    if not isinstance(artifact, Mapping):
-        return SignatureResult(False, None, expected_signer,
-                               "the signature artifact is not an object")
-    computed_identity = payload_hash(payload)
-    claimed_identity = str(artifact.get("payload_sha256") or "")
-    if claimed_identity != computed_identity:
-        return SignatureResult(
-            False, None, expected_signer,
-            f"the artifact claims payload_sha256 {claimed_identity!r}, these bytes hash to "
-            f"{computed_identity}. The artifact is not about this payload")
-    computed_digest = "0x" + signing_digest(payload).hex()
-    claimed_digest = str(artifact.get("signing_digest") or "").lower()
-    if claimed_digest != computed_digest:
-        return SignatureResult(
-            False, None, expected_signer,
-            f"the artifact names signing_digest {claimed_digest!r}, but these bytes sign under "
-            f"{computed_digest}. The payload identity matched, which is exactly why this second "
-            "check exists: without it the signature would be verified against a digest nobody "
-            "computed from the payload")
-    return verify_signature(payload, artifact.get("signature"), expected_signer)
-
-
-def verify_signature(payload: Mapping[str, Any], signature: Optional[str],
-                     expected_signer: Optional[str]) -> SignatureResult:
-    """Verify the resolver's signature over the UNSIGNED payload, separately from everything else."""
-    if not signature:
-        return SignatureResult(False, None, expected_signer,
-                               "the snapshot carries no signature")
-    if not expected_signer:
-        return SignatureResult(False, None, None,
-                               "no expected resolver signer is configured, so a recovered address "
-                               "could not be checked against anything")
-    # THE ONLY PLACE THIS PACKAGE'S CURVE CODE IS REACHED FROM A SNAPSHOT, and it is imported
-    # HERE rather than at module scope so that importing :mod:`.snapshot` — or calling
-    # :func:`build_unsigned`, :func:`canonical_bytes` or :func:`reproduce` — never loads
-    # :mod:`.secp256k1` at all. Reproduction is an arithmetic-free, key-free operation: it
-    # rebuilds bytes from chain facts and compares them. Keeping the curve off that path is what
-    # makes "the payload is true whether or not it was signed" a property of the code and not
-    # only of the docstring; ``test_reproduction_never_loads_curve_code`` asserts it.
-    from . import secp256k1 as ec                                          # noqa: WPS433
-
-    raw = signature[2:] if str(signature).startswith("0x") else str(signature)
+def _load_json_bytes(raw: bytes, label: str) -> dict:
+    def reject(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise SnapshotBuildError(f"{label} repeats JSON key {key!r}")
+            result[key] = value
+        return result
     try:
-        recovered = ec.ecrecover(signing_digest(payload), bytes.fromhex(raw))
-    except (ValueError, ec.SignatureError) as exc:
-        return SignatureResult(False, None, expected_signer, str(exc))
-    if not abi.addresses_equal(recovered, expected_signer):
-        # Before saying "wrong signer", check whether it is the RIGHT signer under the retired
-        # domain tag. A stale-tag signature and a forged one are different problems and only one
-        # of them is somebody re-signing.
+        value = json.loads(raw.decode("utf-8"), object_pairs_hook=reject)
+    except SnapshotBuildError:
+        raise
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise SnapshotBuildError(f"{label} is not duplicate-free UTF-8 JSON: {exc}") from exc
+    if not isinstance(value, dict):
+        raise SnapshotBuildError(f"{label} must be a JSON object")
+    return value
+
+
+class PublicObjectReader:
+    """Fetch one object under its declared rule from the coordinator's public object route."""
+
+    def __init__(self, base_url: str) -> None:
+        self.base_url = base_url
+
+    def __call__(self, root: str, hash_rule: str) -> bytes:
+        store = publication.HttpCAS(
+            self.base_url, root_hash_rule=hash_rule, send_hash_rule=True)
+        return store.get(root)
+
+
+def _seed_genesis_objects(release: ReleaseDirectory, store: publication.InMemoryCAS) -> dict:
+    release_path = Path(release.path)
+    try:
+        frontier_wrapper = _load_json_bytes(
+            (release_path / "GENESIS-FRONTIER.json").read_bytes(), "GENESIS-FRONTIER.json")
+        composition_raw = (release_path / "GENESIS-COMPOSITION.json").read_bytes()
+    except OSError as exc:
+        raise SnapshotBuildError(f"release genesis objects are unavailable: {exc}") from exc
+    if set(frontier_wrapper) != {"format", "frontier_root", "manifest"} \
+            or frontier_wrapper.get("format") != "coretex.genesis-frontier/v1" \
+            or frontier.frontier_root(frontier_wrapper["manifest"]) \
+            != release.genesis_frontier_root \
+            or frontier_wrapper.get("frontier_root") != release.genesis_frontier_root:
+        raise SnapshotBuildError("release GENESIS-FRONTIER.json does not reproduce the release")
+    composition_root = release.release.raw["genesis"]["composition_root"]
+    composition = _load_json_bytes(composition_raw, "GENESIS-COMPOSITION.json")
+    body = {key: value for key, value in composition.items() if key != "composition_root"}
+    if composition.get("composition_root") != composition_root \
+            or _sha(_canonical(body)) != composition_root:
+        raise SnapshotBuildError("release genesis composition does not reproduce its root")
+    store.put(composition_root, composition_raw)
+    for profile in PROFILE_IDS:
+        declaration = release.release.raw["genesis"]["profile_releases"][profile]
+        path = release_path / declaration["path"]
         try:
-            stale = ec.ecrecover(superseded_signing_digest(payload), bytes.fromhex(raw))
-        except (ValueError, ec.SignatureError):             # pragma: no cover - defensive
-            stale = ""
-        if stale and abi.addresses_equal(stale, expected_signer):
-            return SignatureResult(
-                False, recovered, expected_signer,
-                "the expected signer DID sign these bytes, but under the superseded domain tag "
-                f"{SUPERSEDED_SIGNING_DOMAIN!r}. The payload is unaffected; the signature needs "
-                "re-issuing under the published schema's tag")
-        return SignatureResult(False, recovered, expected_signer,
-                               "the signature recovers a different address")
-    return SignatureResult(True, recovered, expected_signer, "signed by the expected resolver")
+            raw = path.read_bytes()
+        except OSError as exc:
+            raise SnapshotBuildError(f"genesis descriptor {profile} is unavailable: {exc}") \
+                from exc
+        descriptor = _load_json_bytes(raw, f"genesis descriptor {profile}")
+        if _sha(_canonical(descriptor)) != declaration["root"]:
+            raise SnapshotBuildError(f"genesis descriptor {profile} does not reproduce its root")
+        store.put(declaration["root"], raw)
+    return frontier_wrapper["manifest"]
+
+
+def _fetch_item(item: Mapping[str, Any], *, fetch: Callable[[str, str], bytes],
+                store: publication.InMemoryCAS, label: str) -> bytes:
+    try:
+        publication.availability_item(item["root"], item["hash_rule"], item["bytes"])
+        raw = fetch(item["root"], item["hash_rule"])
+        observed = publication.root_of(raw, item["hash_rule"])
+    except Exception as exc:
+        raise SnapshotBuildError(f"cannot fetch {label}: {exc}") from exc
+    if observed != item["root"] or len(raw) != item["bytes"]:
+        raise SnapshotBuildError(f"{label} bytes disagree with their availability record")
+    store.put(item["root"], raw)
+    return raw
+
+
+def _context_event_for_advance(decoded: rig_events.DecodedLogs, advance):
+    context_event = decoded.context_for(advance.epoch)
+    if context_event is None or context_event.epoch_context_root != advance.epoch_context_root:
+        raise SnapshotBuildError(
+            f"transition {advance.epoch}/{advance.transition_index} has no matching "
+            "confirmed epoch context event")
+    return context_event
+
+
+def _transition_rows(decoded: rig_events.DecodedLogs, *, rpc: JsonRpc,
+                     views: RigViews, scan: Optional[PublicScan] = None,
+                     release: Optional[ReleaseDirectory] = None) -> tuple[join.JoinResult, dict]:
+    def calldata_for(tx_hash: str) -> str:
+        transaction = rpc.transaction(tx_hash)
+        calldata = transaction.get("input")
+        if not isinstance(calldata, str):
+            raise SnapshotBuildError(f"transaction {tx_hash} carries no calldata")
+        return calldata
+
+    if scan is None or release is None:
+        signer = views.coordinator_signer()
+    else:
+        signer = lambda provenance: coordinator_signer_at(
+            initial_signer=str(release.authority["initial_coordinator_signer"]),
+            updates=scan.signer_updates, position=provenance.position)
+    result = join.join_all(
+        decoded, calldata_for=calldata_for, domain_separator=views.domain_separator(),
+        coordinator_signer=signer, verify_signature=True)
+    if result.unresolved:
+        raise SnapshotBuildError(
+            f"public CoreTex transitions did not fully join: {result.unresolved}")
+    by_key = {item.key: item for item in result.transitions}
+    if len(by_key) != len(result.transitions) or len(result.transitions) != len(decoded.advances):
+        raise SnapshotBuildError("public advances do not have one unique joined receipt each")
+    return result, by_key
+
+
+def _reconstruct_frontier(*, release: ReleaseDirectory, scan: PublicScan,
+                          rpc: JsonRpc, views: RigViews,
+                          fetch: Callable[[str, str], bytes],
+                          store: publication.InMemoryCAS,
+                          benchmark_runner: Any) -> tuple[dict, dict]:
+    current = _seed_genesis_objects(release, store)
+    joined, joined_by_key = _transition_rows(
+        scan.decoded, rpc=rpc, views=views, scan=scan, release=release)
+    artifacts = {}
+    epoch_contexts = {}
+    frontier_timeline: list[tuple[tuple[int, int], dict]] = []
+    initial_frontier = current
+    for advance in scan.decoded.advances:
+        joined_transition = joined_by_key[advance.join_key]
+        descriptor = rig_events.decode_transition_descriptor(
+            advance.compact_patch_bytes, expected_patch_hash=advance.patch_hash,
+            parent_state_root=advance.parent_state_root, new_state_root=advance.new_state_root,
+            transition_format_version=advance.transition_format_version)
+        artifact_raw = fetch(
+            descriptor.patch_artifact_hash, publication.HASH_RULE_FRONTIER_JSON)
+        score_delta = int(joined_transition.receipt["scoreAfterPpm"]) \
+            - int(joined_transition.receipt["scoreBeforePpm"])
+        artifact = rig_events.verify_transition_artifact_bytes(
+            artifact_raw, descriptor=descriptor, score_delta_ppm=score_delta,
+            epoch_context_root_=advance.epoch_context_root)
+        store.put(descriptor.patch_artifact_hash, artifact_raw)
+        try:
+            evaluation_raw = fetch(
+                advance.eval_report_hash, publication.HASH_RULE_FRONTIER_JSON)
+            evaluation_artifact = _load_json_bytes(
+                evaluation_raw,
+                f"epoch {advance.epoch} evaluation {advance.eval_report_hash}")
+            if evaluation.eval_report_hash(evaluation_artifact) \
+                    != advance.eval_report_hash:
+                raise SnapshotBuildError(
+                    f"epoch {advance.epoch} evaluation artifact does not reproduce its "
+                    "on-chain address")
+        except SnapshotBuildError:
+            raise
+        except Exception as exc:
+            raise SnapshotBuildError(
+                f"cannot fetch or validate epoch {advance.epoch} evaluation artifact: {exc}") \
+                from exc
+        store.put(advance.eval_report_hash, evaluation_raw)
+        availability = evaluation_artifact["availability"]
+        publication.validate_availability(availability)
+        for kind in sorted(availability):
+            item = availability[kind]
+            if not store.has(item["root"]):
+                _fetch_item(item, fetch=fetch, store=store,
+                            label=f"epoch {advance.epoch} transition {advance.transition_index} "
+                                  f"{kind}")
+        witness = evaluation_artifact["determinism_witness"]
+        witness_root = witness["source_root"]
+        if not store.has(witness_root):
+            try:
+                witness_raw = fetch(witness_root, publication.HASH_RULE_FRONTIER_JSON)
+                if publication.root_of(
+                        witness_raw, publication.HASH_RULE_FRONTIER_JSON) != witness_root:
+                    raise SnapshotBuildError("determinism witness source rehash mismatch")
+            except Exception as exc:
+                raise SnapshotBuildError(
+                    f"cannot fetch determinism witness source {witness_root}: {exc}") from exc
+            store.put(witness_root, witness_raw)
+        context_event = _context_event_for_advance(scan.decoded, advance)
+        cached = epoch_contexts.get(advance.epoch)
+        if cached is None:
+            context_raw = fetch(
+                advance.epoch_context_root, publication.HASH_RULE_FRONTIER_JSON)
+            context = _load_json_bytes(
+                context_raw, f"epoch {advance.epoch} context {advance.epoch_context_root}")
+            pins = replay.verify_epoch_context(
+                context, advance.epoch, advance.epoch_context_root, release=release,
+                active_frontier_root=context_event.parent_state_root)
+            epoch_contexts[advance.epoch] = (context, pins, context_event.parent_state_root)
+        else:
+            context, pins, epoch_parent_root = cached
+            if epoch_parent_root != context_event.parent_state_root:
+                raise SnapshotBuildError(
+                    f"epoch {advance.epoch} context parent changed within one scan")
+        if frontier.frontier_root(current) != advance.parent_state_root:
+            raise SnapshotBuildError(
+                f"transition {advance.epoch}/{advance.transition_index} does not build on the "
+                "reconstructed public frontier")
+        try:
+            evaluation_report = publication.fetch_json(
+                availability["eval_report"]["root"],
+                hash_rule=availability["eval_report"]["hash_rule"], store=store,
+                expected_bytes_len=availability["eval_report"]["bytes"])
+            counter_resource_law = publication.fetch_json(
+                availability["counter_resource_law"]["root"],
+                hash_rule=availability["counter_resource_law"]["hash_rule"], store=store,
+                expected_bytes_len=availability["counter_resource_law"]["bytes"])
+            replay.replay_descriptor_v3(
+                joined=joined_transition,
+                parent_manifest=current,
+                release=release,
+                epoch_parent_root=context_event.parent_state_root,
+                transition_artifact_bytes=artifact_raw,
+                evaluation_artifact=evaluation_artifact,
+                evaluation_report=evaluation_report,
+                epoch_context=context,
+                counter_resource_law=counter_resource_law,
+                store=store,
+                require_availability=True,
+                resolve_witness_source=True,
+                benchmark_runner=benchmark_runner,
+            )
+        except Exception as exc:
+            raise SnapshotBuildError(
+                f"full descriptor-v3 replay failed for epoch {advance.epoch} transition "
+                f"{advance.transition_index}: {exc}") from exc
+        current = rig_events.replay_transition_artifact(current, artifact, epoch_pins=pins)
+        frontier_timeline.append((joined_transition.credit.provenance.position, current))
+        artifacts[advance.join_key] = artifact
+
+    for screener in sorted(
+            joined.screener_passes, key=lambda item: item.credit.provenance.position):
+        parent = initial_frontier
+        for position, candidate_parent in frontier_timeline:
+            if position >= screener.credit.provenance.position:
+                break
+            parent = candidate_parent
+        receipt = screener.receipt
+        artifact_root = receipt["artifactHash"]
+        try:
+            evaluation_raw = fetch(artifact_root, publication.HASH_RULE_FRONTIER_JSON)
+            evaluation_artifact = _load_json_bytes(
+                evaluation_raw,
+                f"epoch {screener.credit.epoch} screener evaluation {artifact_root}")
+            if evaluation.eval_report_hash(evaluation_artifact) != artifact_root:
+                raise SnapshotBuildError(
+                    "screener evaluation artifact does not reproduce its signed address")
+        except SnapshotBuildError:
+            raise
+        except Exception as exc:
+            raise SnapshotBuildError(
+                f"cannot fetch or validate epoch {screener.credit.epoch} screener evaluation "
+                f"artifact: {exc}") from exc
+        store.put(artifact_root, evaluation_raw)
+        availability = evaluation_artifact.get("availability")
+        try:
+            publication.validate_availability(availability)
+            for kind in sorted(availability):
+                item = availability[kind]
+                if not store.has(item["root"]):
+                    _fetch_item(
+                        item, fetch=fetch, store=store,
+                        label=f"epoch {screener.credit.epoch} screener {kind}")
+            witness_root = evaluation_artifact["determinism_witness"]["source_root"]
+            if not store.has(witness_root):
+                witness_raw = fetch(witness_root, publication.HASH_RULE_FRONTIER_JSON)
+                if publication.root_of(
+                        witness_raw, publication.HASH_RULE_FRONTIER_JSON) != witness_root:
+                    raise SnapshotBuildError("screener determinism witness source rehash mismatch")
+                store.put(witness_root, witness_raw)
+            report_item = availability["eval_report"]
+            law_item = availability["counter_resource_law"]
+            evaluation_report = publication.fetch_json(
+                report_item["root"], hash_rule=report_item["hash_rule"], store=store,
+                expected_bytes_len=report_item["bytes"])
+            counter_resource_law = publication.fetch_json(
+                law_item["root"], hash_rule=law_item["hash_rule"], store=store,
+                expected_bytes_len=law_item["bytes"])
+        except Exception as exc:
+            raise SnapshotBuildError(
+                f"screener evaluation evidence is unavailable or malformed: {exc}") from exc
+        context_event = scan.decoded.context_for(screener.credit.epoch)
+        if context_event is None \
+                or context_event.epoch_context_root != receipt["epochContextRoot"]:
+            raise SnapshotBuildError(
+                f"screener epoch {screener.credit.epoch} has no matching confirmed context")
+        cached = epoch_contexts.get(screener.credit.epoch)
+        if cached is None:
+            context_raw = fetch(
+                receipt["epochContextRoot"], publication.HASH_RULE_FRONTIER_JSON)
+            context = _load_json_bytes(
+                context_raw, f"epoch {screener.credit.epoch} screener context")
+            pins = replay.verify_epoch_context(
+                context, screener.credit.epoch, receipt["epochContextRoot"], release=release,
+                active_frontier_root=context_event.parent_state_root)
+            epoch_contexts[screener.credit.epoch] = (
+                context, pins, context_event.parent_state_root)
+        else:
+            context, _pins, context_parent = cached
+            if context_parent != context_event.parent_state_root:
+                raise SnapshotBuildError("screener epoch context parent changed within one scan")
+        try:
+            replay.replay_screener(
+                screener=screener, parent_manifest=parent, release=release,
+                epoch_parent_root=context_event.parent_state_root,
+                evaluation_artifact=evaluation_artifact,
+                evaluation_report=evaluation_report,
+                epoch_context=context,
+                counter_resource_law=counter_resource_law,
+                store=store, benchmark_runner=benchmark_runner)
+        except Exception as exc:
+            raise SnapshotBuildError(
+                f"full screener replay failed for epoch {screener.credit.epoch} rig "
+                f"{screener.credit.rig_id} solve {screener.credit.solve_index}: {exc}") from exc
+    return current, artifacts
+
+
+def _rig_receipt_rows(*, scan: PublicScan, activation_views: RigViews,
+                      head_views: RigViews, joined: join.JoinResult) -> list[dict]:
+    coretex_receipts = {
+        (item.credit.rig_id, item.credit.solve_index): item.receipt
+        for item in [*joined.transitions, *joined.screener_passes]
+        if item.receipt is not None
+    }
+    credits = [("coretex", item) for item in scan.decoded.coretex_credits] \
+        + [("standard", item) for item in scan.decoded.standard_credits]
+    by_rig: dict[int, list[tuple[str, Any]]] = {}
+    for kind, item in credits:
+        by_rig.setdefault(item.rig_id, []).append((kind, item))
+    rows = []
+    for rig_id in sorted(by_rig):
+        ordered = sorted(by_rig[rig_id], key=lambda entry: entry[1].provenance.position)
+        start_index = activation_views.rig_next_index(rig_id)
+        start_hash = activation_views.rig_last_receipt_hash(rig_id)
+        expected_hash = start_hash
+        receipts = []
+        for offset, (kind, credit) in enumerate(ordered):
+            expected_index = start_index + offset
+            if credit.solve_index != expected_index:
+                raise SnapshotBuildError(
+                    f"rig {rig_id} public receipt index {credit.solve_index} is not dense from "
+                    f"pre-activation index {start_index}")
+            if kind == "coretex":
+                receipt = coretex_receipts.get((rig_id, credit.solve_index))
+                if receipt is None or receipt["prevReceiptHash"] != expected_hash:
+                    raise SnapshotBuildError(
+                        f"rig {rig_id} CoreTex receipt {credit.solve_index} does not bind the "
+                        "shared predecessor receipt hash")
+            receipts.append({
+                "block_number": credit.provenance.block_number,
+                "kind": kind,
+                "log_index": credit.provenance.log_index,
+                "receipt_hash": credit.receipt_hash,
+                "solve_index": credit.solve_index,
+                "transaction_hash": credit.provenance.transaction_hash,
+            })
+            expected_hash = credit.receipt_hash
+        end_index = head_views.rig_next_index(rig_id)
+        end_hash = head_views.rig_last_receipt_hash(rig_id)
+        if end_index != start_index + len(receipts) or end_hash != expected_hash:
+            raise SnapshotBuildError(
+                f"rig {rig_id} head index/hash do not close the public receipt window")
+        rows.append({
+            "end_index": end_index,
+            "end_receipt_hash": end_hash,
+            "receipts": receipts,
+            "rig_id": rig_id,
+            "start_index": start_index,
+            "start_receipt_hash": start_hash,
+        })
+    return rows
+
+
+def _advance_row(item: rig_events.StateAdvanced) -> dict:
+    return {
+        "block_number": item.provenance.block_number,
+        "core_version_hash": item.core_version_hash,
+        "epoch": item.epoch,
+        "epoch_context_root": item.epoch_context_root,
+        "eval_report_hash": item.eval_report_hash,
+        "improvement_credits": item.improvement_credits,
+        "log_index": item.provenance.log_index,
+        "miner": item.miner,
+        "new_state_root": item.new_state_root,
+        "parent_state_root": item.parent_state_root,
+        "patch_hash": item.patch_hash,
+        "transaction_hash": item.provenance.transaction_hash,
+        "transition_format_version": item.transition_format_version,
+        "transition_index": item.transition_index,
+    }
+
+
+def _verify_current_context_object(*, epoch: int, context: Mapping[str, str],
+                                   release: ReleaseDirectory,
+                                   object_fetch: Callable[[str, str], bytes]) -> dict:
+    try:
+        raw = object_fetch(
+            context["epoch_context_root"], publication.HASH_RULE_FRONTIER_JSON)
+        document = _load_json_bytes(raw, f"current epoch {epoch} context")
+        replay.verify_epoch_context(
+            document, epoch, context["epoch_context_root"], release=release,
+            active_frontier_root=context["parent_state_root"])
+    except Exception as exc:
+        raise SnapshotBuildError(
+            f"current epoch context object is unavailable or invalid: {exc}") from exc
+    return document
+
+
+def materialize(*, release: ReleaseDirectory, activation: PublicActivation,
+                scan: PublicScan, rpc: JsonRpc, object_fetch: Callable[[str, str], bytes],
+                output_dir: str, confirmation_depth: int) -> dict:
+    """Build a closed resolver directory from one already confirmed public scan."""
+    activation_hash = rpc.block_hash_at(activation.confirmed_block)
+    if rpc.block_hash_at(scan.head.number) != scan.head.hash:
+        raise SnapshotBuildError("confirmed head changed before snapshot materialization")
+    head_views = RigViews(rpc, scan.deployment, block=scan.head.number)
+    epoch = head_views.current_epoch()
+    activation.require_epoch(epoch, what="current epoch")
+    if not head_views.epoch_has_context(epoch):
+        raise SnapshotBuildError(f"current epoch {epoch} has no CoreTex context")
+    context_event = scan.decoded.context_for(epoch)
+    if context_event is None:
+        raise SnapshotBuildError(f"public scan has no context event for current epoch {epoch}")
+    context = {
+        "core_version_hash": head_views.epoch_core_version_hash(epoch),
+        "epoch_context_root": head_views.epoch_context_root(epoch),
+        "parent_state_root": head_views.epoch_parent_state_root(epoch),
+    }
+    if context != {
+            "core_version_hash": context_event.core_version_hash,
+            "epoch_context_root": context_event.epoch_context_root,
+            "parent_state_root": context_event.parent_state_root}:
+        raise SnapshotBuildError("current epoch views disagree with the confirmed context event")
+    if context["core_version_hash"] != release.release.raw["compatibility_lock_root"]:
+        raise SnapshotBuildError("current epoch does not bind this 1.0.0 compatibility lock")
+    _verify_current_context_object(
+        epoch=epoch, context=context, release=release, object_fetch=object_fetch)
+    continuity = rig_events.context_parent_continuity(scan.decoded)
+    if continuity["problems"]:
+        raise SnapshotBuildError(
+            f"public epoch context/advance ordering is invalid: {continuity['problems']}")
+
+    current_advances = [item for item in scan.decoded.advances if item.epoch == epoch]
+    current_advances.sort(key=lambda item: item.transition_index)
+    count = head_views.transition_count(epoch)
+    live_root = head_views.live_state_root(epoch)
+    if len(current_advances) != count:
+        raise SnapshotBuildError(
+            f"current epoch chain count is {count}, scan has {len(current_advances)} advances")
+
+    store = publication.InMemoryCAS()
+    with benchmark_replay.ReleaseBenchmarkRunner(release) as benchmark_runner:
+        current, _artifacts = _reconstruct_frontier(
+            release=release, scan=scan, rpc=rpc, views=head_views,
+            fetch=object_fetch, store=store, benchmark_runner=benchmark_runner)
+        if frontier.frontier_root(current) != live_root:
+            raise SnapshotBuildError("reconstructed frontier does not equal current chain live root")
+
+        reference_roots = {
+            profile: release.release.raw["genesis"]["profile_releases"][profile]["root"]
+            for profile in PROFILE_IDS
+        }
+        executions = {}
+        for profile in PROFILE_IDS:
+            try:
+                executions[profile] = parent_execution.fetch_parent_execution(
+                    store=store, parent_manifest=current, target_profile=profile,
+                    fr_module=frontier, pub_module=publication,
+                    reference_release_roots=reference_roots, validate_runtime=True,
+                    runtime_validator=benchmark_runner.validate_execution)
+            except Exception as exc:
+                raise SnapshotBuildError(
+                    f"cannot resolve and runtime-validate current execution for {profile}: "
+                    f"{exc}") from exc
+
+    activation_views = RigViews(
+        rpc, scan.deployment, block=activation.confirmed_block - 1)
+    joined, _joined_by_key = _transition_rows(
+        scan.decoded, rpc=rpc, views=head_views, scan=scan, release=release)
+    rig_receipts = _rig_receipt_rows(
+        scan=scan, activation_views=activation_views, head_views=head_views, joined=joined)
+    rules_version = head_views.active_rules_version(epoch)
+    rules = head_views.core_tex_policy(rules_version)
+    if rules is None:
+        raise SnapshotBuildError(f"current rules version {rules_version} does not exist")
+
+    target = Path(output_dir).expanduser().resolve()
+    if target.exists():
+        raise SnapshotBuildError(f"snapshot output already exists: {target}")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = Path(tempfile.mkdtemp(prefix=target.name + ".tmp-", dir=target.parent))
+    profiles = {}
+    try:
+        for profile in PROFILE_IDS:
+            execution = executions[profile]
+            if execution["exec"] == "reference":
+                profiles[profile] = {
+                    "exec": "reference", "release_root": execution["release_root"]}
+                continue
+            manifest_raw = store.get(execution["release_root"])
+            module_root = execution["module"]["sha256"]
+            module_raw = store.get(module_root)
+            composition_root = current["default_composition_root"]
+            composition_raw = store.get(composition_root)
+            bundle_rel = f"bundles/{profile}"
+            bundle_dir = temporary / bundle_rel
+            bundle_dir.mkdir(parents=True)
+            (bundle_dir / "manifest.json").write_bytes(manifest_raw)
+            (bundle_dir / "module.py").write_bytes(module_raw)
+            provenance_rel = f"provenance/{profile}.composition.json"
+            provenance_path = temporary / provenance_rel
+            provenance_path.parent.mkdir(parents=True, exist_ok=True)
+            provenance_path.write_bytes(composition_raw)
+            profiles[profile] = {
+                "bundle": {
+                    "directory": bundle_rel,
+                    "manifest": "manifest.json",
+                    "manifest_sha256": _sha(manifest_raw),
+                    "manifest_size": len(manifest_raw),
+                    "module": "module.py",
+                    "module_sha256": module_root,
+                    "module_size": len(module_raw),
+                },
+                "candidate_hash": execution["candidate_hash"],
+                "exec": "candidate_module",
+                "provenance": {
+                    "composition": provenance_rel,
+                    "composition_root": composition_root,
+                    "composition_sha256": _sha(composition_raw),
+                    "composition_size": len(composition_raw),
+                },
+                "release_root": execution["release_root"],
+            }
+        document = {
+            "advances": [_advance_row(item) for item in current_advances],
+            "chain": {
+                "chain_id": scan.deployment.chain_id,
+                "observation": {
+                    "block_hash": scan.head.hash,
+                    "block_number": scan.head.number,
+                    "confirmation_depth": int(confirmation_depth),
+                },
+            },
+            "deployment": {
+                "mining": scan.deployment.mining,
+                "registry": scan.deployment.registry,
+                "verifier": scan.deployment.verifier,
+            },
+            "epoch": {
+                "context": context,
+                "finalized": head_views.epoch_finalized(epoch),
+                "id": epoch,
+                "live_state_root": live_root,
+                "rules": rules,
+                "transition_count": count,
+            },
+            "format": SNAPSHOT_FORMAT,
+            "frontier": {"manifest": current, "root": live_root},
+            "profiles": profiles,
+            "public_activation": {
+                "confirmed_block": activation.confirmed_block,
+                "epoch": activation.epoch,
+                "genesis_frontier_root": release.genesis_frontier_root,
+            },
+            "release_root": release.release_root,
+            "rig_receipts": rig_receipts,
+            "version": SNAPSHOT_VERSION,
+        }
+        (temporary / "resolver-snapshot.json").write_bytes(_json_bytes(document))
+        if rpc.block_hash_at(activation.confirmed_block) != activation_hash \
+                or rpc.block_hash_at(scan.head.number) != scan.head.hash:
+            raise SnapshotBuildError(
+                "chain changed while context, receipts, and public artifacts were materialized")
+        os.replace(temporary, target)
+    except Exception:
+        shutil.rmtree(temporary, ignore_errors=True)
+        raise
+    return document
+
+
+def build_from_public(*, release: ReleaseDirectory, activation: PublicActivation,
+                      rpc: JsonRpc, object_base_url: str, output_dir: str,
+                      to_block: Optional[int] = None,
+                      confirmation_depth: int = DEFAULT_CONFIRMATION_DEPTH) -> dict:
+    scan = scan_public_feed(
+        rpc, activation=activation, release=release, to_block=to_block,
+        confirmation_depth=confirmation_depth)
+    return materialize(
+        release=release, activation=activation, scan=scan, rpc=rpc,
+        object_fetch=PublicObjectReader(object_base_url), output_dir=output_dir,
+        confirmation_depth=confirmation_depth)
+
+
+__all__ = [
+    "SNAPSHOT_FORMAT", "SNAPSHOT_VERSION", "SnapshotBuildError", "PublicObjectReader",
+    "materialize", "build_from_public",
+]

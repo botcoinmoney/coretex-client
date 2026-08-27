@@ -1,0 +1,183 @@
+{
+  "abi_objects": {
+    "mining": {
+      "contract": "BotcoinMiningRigsV1",
+      "path": "v5/contract-authority/base-mainnet/mining.abi.json",
+      "sha256": "3412014212ac2c3d7ad5a323b5008c457ad2eb294e649b7e7bfde6c4f6193285"
+    },
+    "registry": {
+      "contract": "RigCoreTexRegistry",
+      "path": "v5/contract-authority/base-mainnet/registry.abi.json",
+      "sha256": "ba67603051eb6407ef6b097f025b02cb18cdb64f27567f68305f3fc1b23ff0ab"
+    },
+    "verifier": {
+      "contract": "RigCoreTexVerifier",
+      "path": "v5/contract-authority/base-mainnet/verifier.abi.json",
+      "sha256": "bebb0db236f06da83105798f38fdcc254649f13a9702a86549afab0c26ed6aac"
+    }
+  },
+  "chain_id": 8453,
+  "code_hashes": {
+    "access_manager": "0xec1118318587742a54f40fe4d562078a7bafb197653ceebc358edb8c7e59970d",
+    "auction_house": "0x693149547151bb59cb8e0509cd57141f4228bd1391231f8d0410d85c4ae32473",
+    "bonus_epoch": "0x75175430c4cfce4723dd9a31deb8acda73a6ef658e8f8ceef6a782d202f1202a",
+    "burner": "0x9252cd77fa554fc1fe07a1684598775cf2b8887fd577754cdabe5e6828a9ec62",
+    "buyback_adapter": "0x4c86a215436c4ee36603b737298eca4620473c520e2c4faf25bf1f573f69c014",
+    "config": "0x20072598cc17d4ccff5f592443d0fae4b08fffbef576997295a43c53a47c41f8",
+    "coretex_registry": "0xc38537574e711e069118f9ade2e92a04df768ed0ad3d59f813ce144fbed04c25",
+    "coretex_verifier": "0xa27ea294e4acf6062f7cc1cf57fb02bb372c628b7ccd40255fad0a21cb213d7b",
+    "create2_factory": "0x19d55d282c80267abf700a7d6145d4326e59ba4a2899110dd6b7fb114e57a80d",
+    "eligibility": "0x8f0c77a264b84fb1c00202bef2935ed0134da7fb8a14a559b2e9a4907015e857",
+    "fee_escrow": "0xbc52f459914a7376ddc2047401c141c8220dc0ed17db168df3b74ec6fb23a1b3",
+    "fee_hook": "0xbc0551bf990f2cfd59a578ae03da5a834bb392c2c8ac5c7ca85a570a036ea743",
+    "foundry": "0x8acc9d54ebe357c975fd65b7c8df782e1249a8889f946d9bfd63ce1b09ddc8c2",
+    "instant_liquidation_router": "0xca8fe6c06faa2703643b24c0de9250c60ee1f4541e7e5a8a7094f8d092dbbb65",
+    "lease_manager": "0x9ee1e5072cc98416c6d768c7617f9cc41a65bfd088c24db3547711fbe3ef2e72",
+    "liquidity_provisioner": "0xe8767ba1ffd6ddb9ea16025421d63a29b1ca7f24df264c7b2fed51ed9363fb8d",
+    "manifest_anchor": "0x048aea429ff9a20b6b683ca469f274a7419eb2735935d01f0897a73f9796e32c",
+    "marketplace": "0x853aee6a9c74fbf15230044785ffa3fcd754c4fd77dce02b85e3d4d3f9c6152b",
+    "mining": "0x61b768d6678405bf286757dcfd931bde1586e089871d6cbc906454d263d3039d",
+    "nft": "0xae69816af933db856d4878a1b753ba48c24661cad7c5c2e6c32c975ff8c59f45",
+    "operator_registry": "0x449d64f6734c100f76f563d9ec5304100f3ed7f5967321d9b734f454ccd468fa",
+    "pool_factory": "0xde2904cdaddbeb60519f4488d7cfe804341ac47c2bfe61b839a4f300af356060",
+    "pool_implementation": "0xdf64ca433cec4aead379c85fa5473e10624c3d8c08e3c91457385c4661ae217b",
+    "protocol_liquidity": "0x36d3c9a89b907a92a4d784a44ea6fe63b1af22a337a556afcf3d711f5a711d92",
+    "redemption_queue": "0xd4a86d04ccb54f392999506e3d80d51a7711ccbacd21190423bf8b683f2dd130",
+    "revenue_vault": "0x31e98832ccb2790711c25d6fe74a488f15e32028237fe7a04494651189a6afb0",
+    "settlement": "0xb2e161e9aa0b77745a83ccb95697490e93ce44a58d8ca105869490fdf2cb35fb",
+    "status_registry": "0x398eafd37c94772ef730d7deeed405c5f2681bb695a57d0b6d5ccf66709f4684",
+    "swap_router": "0xa91c0ae32c0a94bb0113b7d369ec2de2dd0bec4235565d84e2ee6814f11bef88",
+    "token": "0xbdf204f785013e6b341d2148283c22946b5a33c1809e69be60a99701f14a798d",
+    "vault": "0x8f0ccc80242f6ff02297e267a41d2f717bb84fcc3a623997ed8f056ec04ad21c"
+  },
+  "contracts": {
+    "access_manager": "0xa58A7C5bb53E63ACF8e38B5821eBB45C932a5391",
+    "auction_house": "0x0f12be831dd65F35713B27d9DaD63DCEbF6C7478",
+    "bonus_epoch": "0x521af17DE4a4d551b87f5870E1423C9730e42331",
+    "burner": "0xd4B9a34e56E0b0df718dBE89F99afF10149a8208",
+    "buyback_adapter": "0xCB6C7ca0F803D0d006e5c23B2cbF14dDd61Bd20e",
+    "config": "0x88D0E94554bb452bDf69Bd2482A78B3D47894664",
+    "coretex_registry": "0xa4d8a7Bb3Ba2D023af29Bf77601A61673ED89ad3",
+    "coretex_verifier": "0x82384E4DA334a4e3E1d8d2623359dC8c4d931Ed4",
+    "create2_factory": "0x8abFE898153EAd8688FeC5B250E316F56f466315",
+    "eligibility": "0xB8ECd27353A3cA969531a88fF8FbC01452B97174",
+    "fee_escrow": "0xC93e9800Bf83065957D28644648e79F7A4D28081",
+    "fee_hook": "0x6b4d98ca88Fa0e3Bb2B70582D5aF1B59971f3aCC",
+    "foundry": "0x54b381aAC37b8E7323CB4b2D70109Cb7373E8011",
+    "instant_liquidation_router": "0x6E304AA110879b12231166C38C75a4dfd718dd48",
+    "lease_manager": "0xE82C062d7477a048bBC26592Dec12B9458Da7Fd1",
+    "liquidity_provisioner": "0x3f8e3f770964e6003aDB6a2b22554D5216e8E3B6",
+    "manifest_anchor": "0x835A638Bd44BcA389c884aD32F200b7e08DA1FaC",
+    "marketplace": "0x7Be47cD5422B165d333C650d66C9b45470f26178",
+    "mining": "0xB61BC7487424172CB9fa9dD381a9eC06C7067dCd",
+    "nft": "0x3D2DC5f3A7C46e59eA1cFD032962327f54506d37",
+    "operator_registry": "0xb01b022da3270B734eC26d7596e4371B6D485A3C",
+    "pool_factory": "0x5f391b37977A7025D40400d62a9eeCd39F33B517",
+    "pool_implementation": "0xF50820165245899780569af9D0296A81F8209B9A",
+    "protocol_liquidity": "0xA77f25B9e2e6C7e4eBB2E63Da1f1AC84c6C0a17c",
+    "redemption_queue": "0xC8aa8a91871a6c51915253B523946683A58882De",
+    "revenue_vault": "0x13b9212544C192DA7b917DFB31D7557ce5667312",
+    "settlement": "0x96c5b2fd8059f4E1447C9e6d12112a43b7020734",
+    "status_registry": "0xcf9a91Ee48Ee75083b2fd236A9DA7bbAAE9bA28f",
+    "swap_router": "0xb3900fFb928B9134aaDF3dD79600B41538cDc5eb",
+    "token": "0x25C448101C36d7306Ed8053B96b090bb56a87B07",
+    "vault": "0x173592a6cB5dE90E69513F2a531443845bC186DB"
+  },
+  "coretex_bindings": {
+    "registry_epoch_clock": "0xB61BC7487424172CB9fa9dD381a9eC06C7067dCd",
+    "registry_verifier": "0x82384E4DA334a4e3E1d8d2623359dC8c4d931Ed4",
+    "verifier_mining": "0xB61BC7487424172CB9fa9dD381a9eC06C7067dCd",
+    "verifier_registry": "0xa4d8a7Bb3Ba2D023af29Bf77601A61673ED89ad3"
+  },
+  "initial_coordinator_signer": "0x6463f89F102e9f53168ABe557173f53c0bBbF635",
+  "deployment_block": 49773104,
+  "eip712": {
+    "coretex_receipt_typehash": "0xd21a4141318ac86ffd63faa82975263001e87a21ce5db2db3230837a90d2dab3",
+    "domain_separator": "0xc0d462d24bf6a6e2187fbe566b982064af9a1e628920fcc6f0bc4c01286a0893",
+    "name": "BotcoinMiningRigs",
+    "version": "2",
+    "verifying_contract": "0xB61BC7487424172CB9fa9dD381a9eC06C7067dCd"
+  },
+  "format": "coretex.rig-contract-authority/v1",
+  "source_build": {
+    "compiler": {
+      "evm_version": "cancun",
+      "optimizer_enabled": true,
+      "optimizer_runs": 200,
+      "solidity": "0.8.26+commit.8a97fa7a",
+      "via_ir": true
+    },
+    "contracts": {
+      "mining": {
+        "contract": "BotcoinMiningRigsV1",
+        "creation_executable_sha256": "dbfcdd589efff34c065fe44a1131ea45a1d1504ac85983a38b331d04f8420c57",
+        "runtime_template_executable_sha256": "521a1d1e3306c159f81b6470cf87b2a9c63fe0fb50a205f684dd321f9ccde8cd"
+      },
+      "registry": {
+        "contract": "RigCoreTexRegistry",
+        "creation_executable_sha256": "445e79d7b2454381a06591ce6b3b22e1fdd1be0482b66852ca1920d9413c441a",
+        "runtime_template_executable_sha256": "ae7aeebb2eb0fac482ceedbb69b2c8e49f9d4d3a81b7c6314746c4f4cc43e230"
+      },
+      "verifier": {
+        "contract": "RigCoreTexVerifier",
+        "creation_executable_sha256": "6036ebe6a6f4300b2791315a3fdfed1e150e0a52c53ba0b412ea9890a8c6493f",
+        "runtime_template_executable_sha256": "6e1a0c993aa5c342be908297b381da5c2454000175c43e2377f14e0cde1660a5"
+      }
+    },
+    "openzeppelin_commit": "5fd1781b1454fd1ef8e722282f86f9293cacf256",
+    "source_commit": "1f8ba5c11b6fc4bc97e4e23000e9fefea5ba6252"
+  },
+  "standard_rig": {
+    "canonical_pool_id": "0xc630c61c3bdf20dbca80dd760119b4976dc984f1dfe66ffdb63c57cec7cc6ca2",
+    "protocol_role_ids": [
+      "0x0000000000000000000000000000000000000000000000000000000000000000",
+      "0x17141486c200d609891e54f9e73a4f90e248a8f25b21a503c8cbb59011df1c47",
+      "0x5b1772e0df96121ae184517401f5eab44745285be49634a3bcfe190af1d430ab",
+      "0x6716f333e2f665cb95dc2064b29062abf39da267876b275425b149fd1b25b2de",
+      "0x8af5290a3bc9fb001a334db3080e05f29cbed54f3cf6e308d2db8704d95c4147",
+      "0x97c7650ae01d395905a5b1baa7a28d9d92711daa1ca9f98d5eb61cc2dd452695",
+      "0xa8dcc4884dd8d454d2d819a0127d8411aa1f844a7cf678d93dd26730eaf6d46a",
+      "0xaeaa1900807496622919380e44cfa49d0f4572fa02867dcea7748d8c9a507866",
+      "0xc7e35718851d34585e3afab87ebe9cb3a3bee7e05eedbbff49282a779771045f",
+      "0xd1dc45b9435dd181eb2c5f215cca1998f9b150a50b490a75c3f250f135f1c128",
+      "0xd353fe8c4a44bdc2b6becc98ee2805e34f9064795ecc90ad69d34c60000b8b79",
+      "0xd8e64a3a98f7c4ceb7bd3db4d0c7db582e016dbd19e5fb0ba0f37bfbcb2c7ed7",
+      "0xdd53c8f6038b209cfdcf9f38e6eec0425e0624a1d7dfc507cecf53eb94d76963",
+      "0xe3541388b36fc750d52625cffa71b88a46e0bd8b04cd4a6688b19f911293521d",
+      "0xef0fcaf1cd9c7d12d3762190ad1d5060a5f2464e53020edc6b9ee9b31a794a04",
+      "0xf55c3c85690d0abf93de8c24ececede3ee62e529020683594957b8e0c109ace1",
+      "0xf9d87d1dce6b0e33acfceb468ca37b8620de1f8b3454e21ece8f705fd2a36aa1",
+      "0xfb1ac2a47cbec47e5e1e7c0a4fb0328225a054a1c2e5b03d6a4a84c3316238fc"
+    ]
+  },
+  "standard_mining_cutover_epoch": 171,
+  "wire": {
+    "descriptor": {
+      "bytes": 97,
+      "domain_label": "coretex-transition-descriptor-v3",
+      "offsets": {
+        "new_state_root": 65,
+        "parent_state_root": 33,
+        "patch_artifact_hash": 1,
+        "version": 0
+      },
+      "validation_order": [
+        "exact_length",
+        "exact_version",
+        "domain_hash",
+        "nonzero_patch_artifact_hash",
+        "parent_state_root",
+        "new_state_root"
+      ],
+      "version": 33
+    },
+    "max_receipt_ttl_seconds": 3600,
+    "max_score_ppm": 1000000,
+    "max_work_bps": 300000,
+    "outcomes": {
+      "screener_pass": 1,
+      "state_advance": 2
+    },
+    "work_bps_divisor": 10000
+  }
+}

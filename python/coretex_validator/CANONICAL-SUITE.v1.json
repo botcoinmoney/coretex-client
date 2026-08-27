@@ -11,9 +11,9 @@
   "quality_units": "objectives_micro (per declared objective, integer micro units)",
   "resource_tolerance": "zero \u2014 every protected raw axis must be <= the parent's",
   "resource_units": "rendered_cost = rendered_cost_micro; work_fuel = trusted work_fuel; logical_durable_storage_bytes = raw byte count",
-  "signed_scalar_source": "confirm partition composite_ppm (unchanged from prior eras)"
+  "signed_scalar_source": "confirm partition composite_ppm"
  },
- "committed_before_any_candidate_scoring": true,
+ "committed_before_first_public_candidate": true,
  "decision_engine": "dominance.componentwise.v1",
  "format": "benchmark-v2/canonical-suite/v1",
  "genesis_floor_authority": {
@@ -23,29 +23,34 @@
    "vectors present for every profile and both partitions"
   ],
   "source": {
-   "arm": "parent/incumbent arm on the sealed canonical suite, both fixed partitions",
-   "evidence_root": "ever-improving-run-20260825/p4p5",
+   "qualification": "genesis reference parent on the exact canonical suite, both fixed partitions",
    "exec": "reference",
-   "measurement": "coretex ever-improving-invariant-cut P5 bridge run 2026-08-25",
+   "measurement": "deterministic constructor-genesis baseline qualification",
    "policy": "final-render-trusted-hostwork.v4",
    "profiles": {
     "conv.pref.v1": {
-     "evidence": "ever-improving-run-20260825/p4p5/m-conv/vector-conv-86deac65.json",
      "exec": "reference",
-     "module_sha256": "c64131b508553d43631324da8c9d8cf9f6c3947da87f4707cd2c9f6c9a63d20d",
-     "release_root": "86deac65e365619c3601655b6768b6ef1738943ab620f67d62368089d727919b"
+     "reference_runtime": {
+      "id": "reference-runtime",
+      "protocol": "rrm1"
+     },
+     "release_root": "5fcbdade33a7e8bd18b9766c6a4ef05b225d7a247147c0cf0f56c15440bca1fb"
     },
     "doc.tool.v1": {
-     "evidence": "ever-improving-run-20260825/p4p5/m-doc/vector-doc-4e81744e.json",
      "exec": "reference",
-     "module_sha256": "c64131b508553d43631324da8c9d8cf9f6c3947da87f4707cd2c9f6c9a63d20d",
-     "release_root": "4e81744ee61fd58602c04b23210b8ac7dad66cc126986ac82db2af66200dbe9c"
+     "reference_runtime": {
+      "id": "reference-runtime",
+      "protocol": "rrm1"
+     },
+     "release_root": "5a3347303f206a58c7fecbb266c18d813c5af72a4eb9b0747b8ce25571fc6acd"
     },
     "event.schema.v1": {
-     "evidence": "ever-improving-run-20260825/p4p5/m-event/vector-event-c8585724.json",
      "exec": "reference",
-     "module_sha256": "c64131b508553d43631324da8c9d8cf9f6c3947da87f4707cd2c9f6c9a63d20d",
-     "release_root": "c85857242b434cec35ae2cb0b67bd33f96d1f0f425bc6265fec3758321e98ce5"
+     "reference_runtime": {
+      "id": "reference-runtime",
+      "protocol": "rrm1"
+     },
+     "release_root": "1f11821f7bf56783a47c31a919b199b6aa8771872f8e65198cd466d853358037"
     }
    }
   },
@@ -162,10 +167,10 @@
     }
    }
   },
-  "why_pending": "RESOLVED 2026-08-25 by the one-time P5 bridge run; the text below records why the P2 seal could not carry these numbers: the constructor-genesis floor vectors are measured on THIS suite by the one-time bridge run and filled in then; they cannot be minted before the suite exists"
+  "why_pending": "not pending: every genesis floor vector is resolved in this public suite"
  },
  "instance_hash_rule": "sha256 of the instance canonical JSON, computed by validator/eval_worker.py task 'hash_only' \u2014 the same value validator/evaluate.hash_case returns and validator/receipt.py _bind_cases binds",
- "law_id": "benchmark-v2-law/dominance-fixed-suite-2026-08-25.v5",
+ "law_id": "benchmark-v2-law/dominance-fixed-suite.v1",
  "profiles": {
   "conv.pref.v1": {
    "confirm": [
@@ -281,12 +286,6 @@
    "scales": [
     "small"
    ],
-   "screening": {
-    "highest_seed_screened": 1348888963,
-    "n_seeds_screened": 12,
-    "seeds_skipped_not_oracle_clean": []
-   },
-   "seed_start": 1348888952,
    "suite_version": "1"
   },
   "doc.tool.v1": {
@@ -403,19 +402,6 @@
    "scales": [
     "small"
    ],
-   "screening": {
-    "highest_seed_screened": 2085897844,
-    "n_seeds_screened": 18,
-    "seeds_skipped_not_oracle_clean": [
-     2085897829,
-     2085897832,
-     2085897835,
-     2085897836,
-     2085897837,
-     2085897841
-    ]
-   },
-   "seed_start": 2085897827,
    "suite_version": "1"
   },
   "event.schema.v1": {
@@ -533,12 +519,6 @@
    "scales": [
     "small"
    ],
-   "screening": {
-    "highest_seed_screened": 860332671,
-    "n_seeds_screened": 12,
-    "seeds_skipped_not_oracle_clean": []
-   },
-   "seed_start": 860332660,
    "suite_version": "1"
   }
  },
@@ -548,24 +528,19 @@
   "logical_durable_storage_bytes"
  ],
  "provenance": {
-  "built_by": "P2 of the ever-improving-invariant cut, 2026-08-25",
-  "built_in_image": "botcoin-v5-coretex-memory-evaluator:live-10ed76f2",
-  "built_in_image_digest": "sha256:e01f4d493c314ac90d46a81e941fafd65824a67d66a475804385ee17592ab910",
+  "built_by": "deterministic canonical-suite builder",
   "generators_code_root": "20a8402bc5de5ca791963efd33a31df09ab9cd451e926399a546d8e431d65d15",
-  "note": "provenance only \u2014 these values record HOW the case hashes were produced and are not re-verified at decision time; the instance hashes themselves are the binding record"
+  "note": "The explicit ordered case list, case hashes, partitions, and floor vectors are the binding record; build-environment labels are deliberately outside law identity."
  },
  "scales_claimed": [
   "small"
  ],
- "seed_derivation": {
-  "domain": "coretex.canonical-suite/v1|",
-  "enumeration_rule": "ascending seed_start, seed_start+1, ...; a seed is KEPT iff scoring.oracle_screen.is_oracle_clean(profile_id, seed, 'small') is true (it generates AND has zero oracle violations); gate = the first counts.gate kept seeds, confirm = the next counts.confirm kept seeds, so the partitions are disjoint by construction",
-  "reproducible": "re-running the screen from seed_start reproduces this exact seed list; the screen is deterministic and memoised per (profile, seed, scale)",
-  "screen": "scoring.oracle_screen.is_oracle_clean",
-  "screen_scale": "small",
-  "seed_start_rule": "seed_start(profile_id) = int.from_bytes(sha256((domain + profile_id).encode()).digest()[:8], 'big') % 2**31"
+ "case_authority": {
+  "method": "explicit-ordered-case-list",
+  "reproducible": "regenerate every listed (profile_id, seed, scale) with the public generator and require the committed instance_hash; there is no runtime selection or redraw",
+  "selection_inputs": "none; candidate id, author, epoch, entropy, parent frontier, round id, retry, and burn state never affect suite membership"
  },
  "slice_threshold_corpus_events": 800,
  "suite_version": "1",
- "why": "The immutable consensus exam of LAW.md 3A. One suite per profile, fixed forever under this law id: the cases never vary with candidate, candidate_id, author, epoch, epoch secret, parent frontier root, delegation hash, round id or burn state. This document lives inside code_roots.validator, so any edit to any case, partition, count or protected vocabulary moves the law root and is a NEW law identity (LAW.md 3A.6). Committed BEFORE any candidate was ever scored against it."
+ "why": "The immutable public exam of LAW.md 3A. One suite per profile: cases never vary with candidate, candidate id, author, epoch, epoch secret, parent frontier, round id, retry, or burn state. This document is included in the evaluation-law code roots, so changing a case, partition, count, floor, or protected vocabulary moves the law identity. It was fixed before the first public candidate."
 }
