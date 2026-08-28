@@ -16,6 +16,14 @@ from .join import JoinedTransition
 RESULT_FORMAT = "coretex.validator-replay/v1"
 
 
+def _as_artifact_incumbent(compact: Any) -> Any:
+    """Public artifacts store the projected incumbent (reference candidate_hash is ZERO_ROOT,
+    never JSON null). compact_identity keeps None internally; compare in the public form."""
+    if isinstance(compact, Mapping):
+        return evaluation.project_incumbent(compact)
+    return compact
+
+
 class ReplayError(ValueError):
     """A confirmed transition does not reproduce from its addressed public evidence."""
 
@@ -141,7 +149,7 @@ def replay_screener(*, screener: Any, parent_manifest: Mapping[str, Any],
             fr_module=frontier, pub_module=publication,
             reference_release_roots=reference_roots, validate_runtime=True,
             runtime_validator=benchmark_runner.validate_execution)
-        if parent_execution.compact_identity(incumbent) \
+        if _as_artifact_incumbent(parent_execution.compact_identity(incumbent)) \
                 != evaluation_artifact["replay_inputs"]["incumbent"]:
             raise ReplayError(
                 "INCUMBENT_EXECUTION_MISMATCH",
@@ -305,7 +313,7 @@ def pre_sign_reexecute(*, evaluation_artifact: Mapping[str, Any],
             reference_release_roots=reference_roots, validate_runtime=True,
             runtime_validator=benchmark_runner.validate_execution)
         compact_incumbent = parent_execution.compact_identity(incumbent)
-        if compact_incumbent != replay_inputs.get("incumbent"):
+        if _as_artifact_incumbent(compact_incumbent) != replay_inputs.get("incumbent"):
             raise ReplayError(
                 "INCUMBENT_EXECUTION_MISMATCH",
                 "the report was scored against another execution than the public parent")
