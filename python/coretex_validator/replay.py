@@ -103,13 +103,13 @@ def replay_screener(*, screener: Any, parent_manifest: Mapping[str, Any],
                 raise ReplayError(
                     "EVALUATION_RECEIPT_MISMATCH",
                     f"screener evaluation {artifact_field} differs from signed receipt")
-        accounting = evaluation_artifact.get("resource_accounting")
-        if not isinstance(accounting, Mapping) \
-                or accounting.get("utility_before_ppm") != receipt["scoreBeforePpm"] \
-                or accounting.get("utility_after_ppm") != receipt["scoreAfterPpm"]:
+        projection = evaluation_artifact.get("admission_projection")
+        if not isinstance(projection, Mapping) \
+                or projection.get("score_before_ppm") != receipt["scoreBeforePpm"] \
+                or projection.get("score_after_ppm") != receipt["scoreAfterPpm"]:
             raise ReplayError(
                 "EVALUATION_RECEIPT_MISMATCH",
-                "screener evaluation scores differ from signed receipt")
+                "screener evaluation admission_projection differs from signed receipt")
         report = evaluation.verify_artifact(
             evaluation_artifact,
             expected_parent_root=current_root,
@@ -341,10 +341,17 @@ def pre_sign_reexecute(*, evaluation_artifact: Mapping[str, Any],
                 expected_root, hash_rule=expected_rule, store=store,
                 expected_bytes_len=item.get("bytes"))
 
+        witness = evaluation_artifact.get("determinism_witness")
+        if not isinstance(witness, Mapping) or "partitions" not in witness:
+            raise ReplayError(
+                "PARENT_STORED_VECTOR_MISSING",
+                "pre-sign reexecution needs the artifact-bound determinism_witness as "
+                "parent_stored_vector; replay without it cannot reproduce issue-time E")
         benchmark_result = benchmark_runner.replay_report(
             evaluation_report,
             expected_root=evaluation_artifact["receipt"]["eval_report_root"],
-            incumbent_execution=incumbent)
+            incumbent_execution=incumbent,
+            parent_stored_vector=dict(witness))
 
         child_executions = {}
         parent_executions = {}
@@ -485,13 +492,13 @@ def replay_descriptor_v3(*, joined: JoinedTransition, parent_manifest: Mapping[s
                 raise ReplayError(
                     "EVALUATION_RECEIPT_MISMATCH",
                     f"evaluation {artifact_field} does not equal signed {receipt_field}")
-        accounting = evaluation_artifact.get("resource_accounting")
-        if not isinstance(accounting, Mapping) \
-                or accounting.get("utility_before_ppm") != receipt["scoreBeforePpm"] \
-                or accounting.get("utility_after_ppm") != receipt["scoreAfterPpm"]:
+        projection = evaluation_artifact.get("admission_projection")
+        if not isinstance(projection, Mapping) \
+                or projection.get("score_before_ppm") != receipt["scoreBeforePpm"] \
+                or projection.get("score_after_ppm") != receipt["scoreAfterPpm"]:
             raise ReplayError(
                 "EVALUATION_RECEIPT_MISMATCH",
-                "evaluation utility scores do not equal the signed before/after scores")
+                "evaluation admission_projection does not equal the signed before/after scores")
         report = evaluation.verify_artifact(
             evaluation_artifact,
             expected_parent_root=advance.parent_state_root,

@@ -100,6 +100,12 @@ def _fixture(monkeypatch, *, non_target_changes=False, installed_module=MODULE_R
         },
         "receipt": {"eval_report_root": REPORT_ROOT},
         "replay_inputs": {"incumbent": "inc-parent", "parent_manifest": parent},
+        "determinism_witness": {
+            "law_id": "benchmark-v2-law/dominance-fixed-suite.v1",
+            "partitions": {"gate": {"envelope_work_fuel": 1}, "confirm": {"envelope_work_fuel": 1}},
+            "profile_id": PROFILE,
+            "source_kind": "genesis",
+        },
     }
     release = SimpleNamespace(release=SimpleNamespace(raw={
         "genesis": {"profile_releases": {
@@ -114,8 +120,9 @@ def _fixture(monkeypatch, *, non_target_changes=False, installed_module=MODULE_R
         def validate_execution(self, _execution):
             return None
 
-        def replay_report(self, body, *, expected_root, incumbent_execution):
-            self.calls.append((body, expected_root, incumbent_execution))
+        def replay_report(self, body, *, expected_root, incumbent_execution,
+                          parent_stored_vector):
+            self.calls.append((body, expected_root, incumbent_execution, parent_stored_vector))
             return {"reproduced": True, "report_root": expected_root}
 
     return artifact, report, release, Runner(), child
@@ -130,6 +137,16 @@ def test_presign_reexecutes_exact_parent_and_proves_installed_child(monkeypatch)
     assert result["incumbent"] == "inc-parent"
     assert result["installed"] == "installed"
     assert runner.calls[0][1] == REPORT_ROOT
+    assert runner.calls[0][3]["source_kind"] == "genesis"
+
+
+def test_presign_refuses_missing_determinism_witness(monkeypatch):
+    artifact, report, release, runner, child = _fixture(monkeypatch)
+    del artifact["determinism_witness"]
+    with pytest.raises(replay.ReplayError, match="PARENT_STORED_VECTOR_MISSING"):
+        replay.pre_sign_reexecute(
+            evaluation_artifact=artifact, evaluation_report=report, release=release,
+            store=SimpleNamespace(), benchmark_runner=runner, child_manifest=child)
 
 
 def test_presign_refuses_score_replay_failure(monkeypatch):

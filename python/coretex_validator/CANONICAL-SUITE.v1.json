@@ -9,9 +9,15 @@
   ],
   "quality_tolerance": "zero \u2014 every declared objective must be >= the parent's",
   "quality_units": "objectives_micro (per declared objective, integer micro units)",
-  "resource_tolerance": "zero \u2014 every protected raw axis must be <= the parent's",
+  "resource_tolerance": "zero \u2014 every protected raw axis must be <= the inherited envelope E; efficiency class additionally requires R(B) <= R(A) with at least one strict drop",
   "resource_units": "rendered_cost = rendered_cost_micro; work_fuel = trusted work_fuel; logical_durable_storage_bytes = raw byte count",
-  "signed_scalar_source": "confirm partition composite_ppm"
+  "signed_scalar_source": "confirm partition admission_gain_ppm with scoreBeforePpm=0 (transition-local; not confirm composite_ppm)",
+  "progress_classes": [
+   "quality",
+   "efficiency"
+  ],
+  "envelope_rule": "E never loosens; tighten E_j to R_j(B) iff R_j(B) < R_j(A); genesis E_storage = R_storage + 65536; genesis E_cost/fuel = R",
+  "suite_block_id": 0
  },
  "committed_before_first_public_candidate": true,
  "decision_engine": "dominance.componentwise.v1",
@@ -72,7 +78,11 @@
       "selective_forgetting": 88647500
      },
      "rendered_cost_micro": 109885000,
-     "work_fuel": 2914116
+     "work_fuel": 2914116,
+     "envelope_rendered_cost_micro": 109885000,
+     "envelope_work_fuel": 2914116,
+     "envelope_logical_durable_storage_bytes": 624830,
+     "suite_block_id": 0
     },
     "gate": {
      "composite_micro": 66787500,
@@ -89,7 +99,11 @@
       "selective_forgetting": 83332500
      },
      "rendered_cost_micro": 109742500,
-     "work_fuel": 1443206
+     "work_fuel": 1443206,
+     "envelope_rendered_cost_micro": 109742500,
+     "envelope_work_fuel": 1443206,
+     "envelope_logical_durable_storage_bytes": 628300,
+     "suite_block_id": 0
     }
    },
    "doc.tool.v1": {
@@ -108,7 +122,11 @@
       "workflow_provenance": 72656250
      },
      "rendered_cost_micro": 218932500,
-     "work_fuel": 4010971
+     "work_fuel": 4010971,
+     "envelope_rendered_cost_micro": 218932500,
+     "envelope_work_fuel": 4010971,
+     "envelope_logical_durable_storage_bytes": 2611353,
+     "suite_block_id": 0
     },
     "gate": {
      "composite_micro": 73310000,
@@ -125,7 +143,11 @@
       "workflow_provenance": 85937500
      },
      "rendered_cost_micro": 223407500,
-     "work_fuel": 2051550
+     "work_fuel": 2051550,
+     "envelope_rendered_cost_micro": 223407500,
+     "envelope_work_fuel": 2051550,
+     "envelope_logical_durable_storage_bytes": 2577659,
+     "suite_block_id": 0
     }
    },
    "event.schema.v1": {
@@ -145,7 +167,11 @@
       "schema_evolution": 54686250
      },
      "rendered_cost_micro": 141957500,
-     "work_fuel": 3905666
+     "work_fuel": 3905666,
+     "envelope_rendered_cost_micro": 141957500,
+     "envelope_work_fuel": 3905666,
+     "envelope_logical_durable_storage_bytes": 1665450,
+     "suite_block_id": 0
     },
     "gate": {
      "composite_micro": 66892500,
@@ -163,7 +189,11 @@
       "schema_evolution": 57292500
      },
      "rendered_cost_micro": 141467500,
-     "work_fuel": 1939475
+     "work_fuel": 1939475,
+     "envelope_rendered_cost_micro": 141467500,
+     "envelope_work_fuel": 1939475,
+     "envelope_logical_durable_storage_bytes": 1624036,
+     "suite_block_id": 0
     }
    }
   },
@@ -542,5 +572,13 @@
  },
  "slice_threshold_corpus_events": 800,
  "suite_version": "1",
- "why": "The immutable public exam of LAW.md 3A. One suite per profile: cases never vary with candidate, candidate id, author, epoch, epoch secret, parent frontier, round id, retry, or burn state. This document is included in the evaluation-law code roots, so changing a case, partition, count, floor, or protected vocabulary moves the law identity. It was fixed before the first public candidate."
+ "why": "The immutable public exam of LAW.md 3A. One suite per profile: cases never vary with candidate, candidate id, author, epoch, epoch secret, parent frontier, round id, retry, or burn state. This document is included in the evaluation-law code roots, so changing a case, partition, count, floor, or protected vocabulary moves the law identity. It was fixed before the first public candidate.",
+ "suite_blocks": [
+  {
+   "block_id": 0,
+   "sealed": true,
+   "case_lists": "profiles",
+   "rule": "GA ships one block. profiles.{id}.{gate,confirm} arrays ARE block 0 and never edit. Later law revisions append block 1+; each block keeps its own Q/R/E; a gain on a new block cannot offset a regression on an old block."
+  }
+ ]
 }

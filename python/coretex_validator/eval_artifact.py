@@ -118,7 +118,8 @@ FRONTIER_FIELDS = ("benchmark_law_root", "composition_root", "new_frontier_root"
 # Current fixed-suite closed schemas
 # --------------------------------------------------------------------------- #
 ARTIFACT_FIELDS: Tuple[str, ...] = (
-    "availability", "candidate", "counter_resource_law_root", "determinism_witness", "dominance",
+    "admission_projection", "availability", "candidate", "counter_resource_law_root",
+    "determinism_witness", "dominance",
     "epoch", "format", "frontier", "genesis_floor", "measurements", "receipt", "replay_inputs",
     "resource_accounting", "suite", "verdict",
 )
@@ -136,8 +137,10 @@ SUITE_CASE_FIELDS = ("instance_hash", "instance_id", "profile_id", "scale", "see
 #: ``compute_micro`` / ``host_profile`` are host-dependent telemetry: they are measured, projected
 #: and bound in ``measurements`` exactly as before, and they are NEVER witness or floor inputs,
 #: because a stored vector that depended on them could not be reproduced on another host.
-VECTOR_FIELDS = ("composite_micro", "logical_durable_storage_bytes", "objectives_micro",
-                 "rendered_cost_micro", "work_fuel")
+VECTOR_FIELDS = ("composite_micro", "envelope_logical_durable_storage_bytes",
+                 "envelope_rendered_cost_micro", "envelope_work_fuel",
+                 "logical_durable_storage_bytes", "objectives_micro",
+                 "rendered_cost_micro", "suite_block_id", "work_fuel")
 
 #: The exact parent's STORED qualifying vector, carried into the job and bound here. Genesis
 #: references resolve to the sealed public baseline; later parents resolve to their accepting
@@ -157,10 +160,17 @@ GENESIS_FLOOR_FIELDS = ("partitions", "source", "status", "suite_root")
 #: restated. ``partitions.<label>.incumbent_vector`` is the parent arm's RECOMPUTED vector; the
 #: determinism witness holds the STORED one, and their equality is the witness check.
 DOMINANCE_FIELDS = ("admit", "engine", "partitions")
-DOMINANCE_PARTITION_FIELDS = ("admit", "candidate_vector", "composite_after_ppm",
+DOMINANCE_PARTITION_FIELDS = ("admit", "candidate_vector",
+                              "composite_after_ppm",
                               "composite_before_ppm", "composite_gain_ppm", "floor_regressions",
-                              "hard", "hard_ok", "incumbent_vector", "regressed_objectives",
+                              "hard", "hard_ok", "incumbent_vector",
+                              "regressed_objectives",
                               "regressed_resource_axes")
+DOMINANCE_PARTITION_ADMIT_FIELDS = DOMINANCE_PARTITION_FIELDS + (
+    "admission_gain_ppm", "progress_class")
+ADMISSION_PROJECTION_FIELDS = ("score_before_ppm",)
+ADMISSION_PROJECTION_ADMIT_FIELDS = ("class", "score_after_ppm", "score_before_ppm")
+PROGRESS_CLASSES = ("quality", "efficiency")
 MEASUREMENT_FIELDS = ("branches", "micro_scale", "policy")
 SIDE_FIELDS = ("composite_micro", "compute_micro", "corpus_supported", "events_scanned",
                "hook_compute_fuel", "hook_fuel", "host_profile", "latency_micro",
@@ -933,8 +943,10 @@ def _validate_vector(vector: Any, where: str, profile_id: str) -> Dict[str, Any]
     """
     vec = _check_closed(vector, VECTOR_FIELDS, where)
     for field in ("composite_micro", "logical_durable_storage_bytes", "rendered_cost_micro",
-                  "work_fuel"):
+                  "work_fuel", "envelope_logical_durable_storage_bytes",
+                  "envelope_rendered_cost_micro", "envelope_work_fuel"):
         _check_int(vec[field], f"{where}.{field}")
+    _check_int(vec["suite_block_id"], f"{where}.suite_block_id")
     objectives = vec["objectives_micro"]
     if not isinstance(objectives, dict) or not objectives:
         raise ArtifactTypeError(f"{where}.objectives_micro must be a non-empty object")
@@ -952,6 +964,28 @@ def _validate_vector(vector: Any, where: str, profile_id: str) -> Dict[str, Any]
 def _validate_fixed_suite_blocks(artifact: Mapping[str, Any]) -> None:
     """The four blocks required by the current v3 fixed-suite format."""
     profile_id = artifact["candidate"]["target_profile"]
+
+    if artifact["verdict"]["admit"]:
+        proj = _check_closed(artifact["admission_projection"], ADMISSION_PROJECTION_ADMIT_FIELDS,
+                             "admission_projection")
+        _check_int(proj["score_before_ppm"], "admission_projection.score_before_ppm",
+                   maximum=MAX_UINT32)
+        if proj["score_before_ppm"] != 0:
+            raise ArtifactValueError(
+                "admission_projection.score_before_ppm must be 0 (transition-local receipt pair)")
+        if proj["class"] not in PROGRESS_CLASSES:
+            raise ArtifactValueError(
+                f"admission_projection.class must be one of {PROGRESS_CLASSES} on an ADMIT")
+        _check_int(proj["score_after_ppm"], "admission_projection.score_after_ppm",
+                   minimum=1, maximum=1_000_000)
+    else:
+        proj = _check_closed(artifact["admission_projection"], ADMISSION_PROJECTION_FIELDS,
+                             "admission_projection")
+        _check_int(proj["score_before_ppm"], "admission_projection.score_before_ppm",
+                   maximum=MAX_UINT32)
+        if proj["score_before_ppm"] != 0:
+            raise ArtifactValueError(
+                "admission_projection.score_before_ppm must be 0 (transition-local receipt pair)")
 
     suite = _check_closed(artifact["suite"], SUITE_FIELDS, "suite")
     if suite["format"] != cs.SUITE_FORMAT:
@@ -1049,7 +1083,12 @@ def _validate_fixed_suite_blocks(artifact: Mapping[str, Any]) -> None:
     _check_closed(dom["partitions"], SELECTION_LABELS, "dominance.partitions")
     for label in SELECTION_LABELS:
         where = f"dominance.partitions[{label!r}]"
-        part = _check_closed(dom["partitions"][label], DOMINANCE_PARTITION_FIELDS, where)
+        peek = dom["partitions"][label]
+        if not isinstance(peek, dict):
+            raise ArtifactSchemaError(f"{where} must be a JSON object")
+        part_admit = bool(peek.get("admit"))
+        fields = DOMINANCE_PARTITION_ADMIT_FIELDS if part_admit else DOMINANCE_PARTITION_FIELDS
+        part = _check_closed(peek, fields, where)
         _check_bool(part["admit"], f"{where}.admit")
         _check_bool(part["hard_ok"], f"{where}.hard_ok")
         hard = part["hard"]
@@ -1077,6 +1116,13 @@ def _validate_fixed_suite_blocks(artifact: Mapping[str, Any]) -> None:
         if gain != part["composite_after_ppm"] - part["composite_before_ppm"]:
             raise ArtifactValueError(
                 f"{where}.composite_gain_ppm is not after - before")
+        if part["admit"]:
+            progress_class = part["progress_class"]
+            gain_ppm = part["admission_gain_ppm"]
+            if progress_class not in PROGRESS_CLASSES:
+                raise ArtifactValueError(
+                    f"{where}.progress_class must be one of {PROGRESS_CLASSES} on admit")
+            _check_int(gain_ppm, f"{where}.admission_gain_ppm", minimum=1, maximum=1_000_000)
         for field in ("floor_regressions", "regressed_objectives", "regressed_resource_axes"):
             names = part[field]
             if not isinstance(names, list) or names != sorted(names) or \
@@ -1524,6 +1570,9 @@ def dominance_block_for(verdicts: Mapping[str, Any], decision: Mapping[str, Any]
             "regressed_objectives": sorted(deltas.get("regressed_objectives") or ()),
             "regressed_resource_axes": sorted(deltas.get("regressed_resource_axes") or ()),
         }
+        if verdict["admit"]:
+            partitions[label]["admission_gain_ppm"] = int(verdict["admission_gain_ppm"])
+            partitions[label]["progress_class"] = verdict["progress_class"]
     return {"admit": bool(decision["admit"]), "engine": DOMINANCE_ENGINE_ID,
             "partitions": partitions}
 
@@ -1590,7 +1639,22 @@ def build_artifact_v3(*, epoch: int, parent_manifest: Mapping[str, Any], epoch_p
     ppm = evaluate_counter_resource_law(counter_resource_law,
                                         measurements["branches"][branch]["candidate"],
                                         measurements["branches"][branch]["incumbent"])
+    confirm = body["verdicts"]["confirm"]
+    confirm_proj = confirm.get("admission_projection") or {}
+    if body["decision"]["admit"]:
+        admission_projection = {
+            "class": confirm.get("progress_class") or confirm_proj.get("class"),
+            "score_after_ppm": confirm.get("admission_gain_ppm")
+            if confirm.get("admission_gain_ppm") is not None
+            else confirm_proj.get("score_after_ppm"),
+            "score_before_ppm": 0,
+        }
+    else:
+        admission_projection = {
+            "score_before_ppm": 0,
+        }
     artifact = {
+        "admission_projection": admission_projection,
         "availability": {name: dict(item) for name, item in availability.items()},
         "candidate": {
             "candidate_hash": candidate_hash,
@@ -1838,11 +1902,13 @@ def verify_dominance_block(artifact: Mapping[str, Any]) -> Dict[str, Any]:
                  f"{where}.regressed_objectives does not recompute from the bound vectors "
                  f"(bound {part['regressed_objectives']}, recomputed {regressed_objectives})")
         regressed_axes = sorted(
-            axis for axis, key in (("logical_durable_storage_bytes",
-                                    "logical_durable_storage_bytes"),
-                                   ("rendered_cost", "rendered_cost_micro"),
-                                   ("work_fuel", "work_fuel"))
-            if cand_vec[key] > inc_vec[key])
+            axis for axis, r_key, e_key in (("logical_durable_storage_bytes",
+                                             "logical_durable_storage_bytes",
+                                             "envelope_logical_durable_storage_bytes"),
+                                            ("rendered_cost", "rendered_cost_micro",
+                                             "envelope_rendered_cost_micro"),
+                                            ("work_fuel", "work_fuel", "envelope_work_fuel"))
+            if cand_vec[r_key] > inc_vec[e_key])
         _require(regressed_axes == list(part["regressed_resource_axes"]), VerdictMismatchError,
                  f"{where}.regressed_resource_axes does not recompute from the bound vectors "
                  f"(bound {part['regressed_resource_axes']}, recomputed {regressed_axes})")
@@ -1859,21 +1925,77 @@ def verify_dominance_block(artifact: Mapping[str, Any]) -> Dict[str, Any]:
             ["composite_ppm"] * (cand_vec["composite_micro"] // 100
                                  < floor_vec["composite_micro"] // 100)
             + [oid for oid, value in cand_vec["objectives_micro"].items()
-               if value < floor_vec["objectives_micro"][oid]]
-            + [axis for axis, key in (("logical_durable_storage_bytes",
-                                       "logical_durable_storage_bytes"),
-                                      ("rendered_cost", "rendered_cost_micro"),
-                                      ("work_fuel", "work_fuel"))
-               if cand_vec[key] > floor_vec[key]])
+               if value < floor_vec["objectives_micro"][oid]])
         _require(floor_regressions == list(part["floor_regressions"]), VerdictMismatchError,
-                 f"{where}.floor_regressions does not recompute against the law-bound floor "
+                 f"{where}.floor_regressions does not recompute against the genesis quality floor "
                  f"(bound {part['floor_regressions']}, recomputed {floor_regressions})")
-        admit = bool(part["hard_ok"] and not regressed_objectives and not regressed_axes
-                     and not floor_regressions
-                     and part["composite_gain_ppm"] >= 1)
+        envelope_axes = (
+            ("rendered_cost", "rendered_cost_micro", "envelope_rendered_cost_micro"),
+            ("work_fuel", "work_fuel", "envelope_work_fuel"),
+            ("logical_durable_storage_bytes", "logical_durable_storage_bytes",
+             "envelope_logical_durable_storage_bytes"),
+        )
+        quality_advance = part["composite_gain_ppm"] >= 1
+        composite_held = part["composite_gain_ppm"] >= 0
+        raised_vs_parent = [
+            axis for axis, r_key, _e in envelope_axes if cand_vec[r_key] > inc_vec[r_key]]
+        dropped_vs_parent = [
+            axis for axis, r_key, _e in envelope_axes if cand_vec[r_key] < inc_vec[r_key]]
+        efficiency_advance = (composite_held and not regressed_objectives
+                              and not raised_vs_parent and bool(dropped_vs_parent))
+        _require(cand_vec["suite_block_id"] == inc_vec["suite_block_id"], VerdictMismatchError,
+                 f"{where}.candidate_vector.suite_block_id is {cand_vec['suite_block_id']}, "
+                 f"parent {inc_vec['suite_block_id']}; suite-block id is carried, never jumped")
+        envelope_ok = not regressed_axes
+        floor_ok = not floor_regressions
+        progress_class = None
+        if quality_advance and not regressed_objectives and envelope_ok and floor_ok:
+            progress_class = "quality"
+        elif efficiency_advance and envelope_ok and floor_ok:
+            progress_class = "efficiency"
+        admit = bool(part["hard_ok"] and progress_class is not None)
         _require(admit == bool(part["admit"]), VerdictMismatchError,
-                 f"{where}.admit does not follow from the componentwise rule over the bound "
+                 f"{where}.admit does not follow from the Q/R/E rule over the bound "
                  "vectors")
+        _require(progress_class == part.get("progress_class"), VerdictMismatchError,
+                 f"{where}.progress_class is {part.get('progress_class')!r}, recomputed "
+                 f"{progress_class!r}")
+        if admit:
+            if progress_class == "quality":
+                want_gain = min(1_000_000, int(part["composite_gain_ppm"]))
+            else:
+                best = 0
+                for axis, r_key, _e in envelope_axes:
+                    parent_val = inc_vec[r_key]
+                    cand_val = cand_vec[r_key]
+                    if cand_val >= parent_val:
+                        continue
+                    delta = parent_val - cand_val
+                    if parent_val == 0:
+                        best = max(best, 1_000_000)
+                    else:
+                        best = max(best, (delta * MICRO) // parent_val)
+                want_gain = max(1, min(1_000_000, best))
+            _require(part["admission_gain_ppm"] == want_gain, VerdictMismatchError,
+                     f"{where}.admission_gain_ppm is {part['admission_gain_ppm']}, "
+                     f"recomputed {want_gain}")
+        for axis, r_key, e_key in envelope_axes:
+            parent_e = inc_vec[e_key]
+            cand_e = cand_vec[e_key]
+            parent_r = inc_vec[r_key]
+            cand_r = cand_vec[r_key]
+            expected_e = cand_r if cand_r < parent_r else parent_e
+            _require(cand_e == expected_e, VerdictMismatchError,
+                     f"{where}.candidate_vector.{e_key} is {cand_e}, expected {expected_e} "
+                     "(E never loosens; tighten only on a measured drop vs parent R)")
+    confirm = dom["partitions"]["confirm"]
+    proj = artifact["admission_projection"]
+    _require(proj.get("class") == confirm.get("progress_class"), VerdictMismatchError,
+             "admission_projection.class is not the confirm partition's progress_class")
+    _require(proj.get("score_after_ppm") == confirm.get("admission_gain_ppm"), VerdictMismatchError,
+             "admission_projection.score_after_ppm is not the confirm admission_gain_ppm")
+    _require(proj["score_before_ppm"] == 0, VerdictMismatchError,
+             "admission_projection.score_before_ppm must be 0")
     return {"engine": dom["engine"], "admit": bool(dom["admit"])}
 
 
@@ -2285,6 +2407,7 @@ def _verify_bindings(artifact: Mapping[str, Any], *, eval_report,
         "verdict": deterministic_verdict(artifact),
         "rig_receipt_present": rig_present,
         "resource_accounting": dict(acct),
+        "admission_projection": dict(artifact["admission_projection"]),
     })
     return report
 
@@ -2355,10 +2478,11 @@ def prepare_broadcastable_receipt(artifact: Mapping[str, Any], *, store: pub.Con
         "runtime_abi_root": front["runtime_abi_root"],
         "counter_resource_law_root": artifact["counter_resource_law_root"],
         "target_profile": artifact["candidate"]["target_profile"],
-        "utility_before_ppm": artifact["resource_accounting"]["utility_before_ppm"],
-        "utility_after_ppm": artifact["resource_accounting"]["utility_after_ppm"],
+        "utility_before_ppm": artifact["admission_projection"]["score_before_ppm"],
+        "utility_after_ppm": artifact["admission_projection"].get("score_after_ppm") or 0,
         "resource_before_ppm": artifact["resource_accounting"]["resource_before_ppm"],
         "resource_after_ppm": artifact["resource_accounting"]["resource_after_ppm"],
+        "progress_class": artifact["admission_projection"].get("class"),
         "verdict": report["verdict"],
         "rig_receipt_present": "rig_receipt" in artifact,
     }

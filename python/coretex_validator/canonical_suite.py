@@ -43,7 +43,7 @@ SUITE_FIELDS = frozenset({
     "aggregation", "committed_before_first_public_candidate", "decision_engine", "format",
     "genesis_floor_authority", "instance_hash_rule", "law_id", "profiles",
     "protected_resource_axes", "provenance", "scales_claimed", "case_authority",
-    "slice_threshold_corpus_events", "suite_version", "why",
+    "slice_threshold_corpus_events", "suite_blocks", "suite_version", "why",
 })
 
 #: The closed field set of one per-profile suite block.
@@ -59,8 +59,10 @@ CASE_FIELDS = frozenset({"instance_hash", "instance_id", "profile_id", "scale", 
 #: The closed field set of one ABSOLUTE VECTOR (LAW §3A.2) — the DETERMINISTIC subset only.
 #: Identical to ``benchmark-v2/validator/canonical_suite.VECTOR_FIELDS``; latency, compute and the
 #: host profile are telemetry and are deliberately absent.
-VECTOR_FIELDS = ("composite_micro", "logical_durable_storage_bytes", "objectives_micro",
-                 "rendered_cost_micro", "work_fuel")
+VECTOR_FIELDS = ("composite_micro", "envelope_logical_durable_storage_bytes",
+                 "envelope_rendered_cost_micro", "envelope_work_fuel",
+                 "logical_durable_storage_bytes", "objectives_micro",
+                 "rendered_cost_micro", "suite_block_id", "work_fuel")
 
 GENESIS_SOURCE_FIELDS = frozenset(
     {"qualification", "exec", "measurement", "policy", "profiles"})
@@ -68,6 +70,8 @@ GENESIS_REFERENCE_FIELDS = frozenset({"exec", "reference_runtime", "release_root
 
 #: The three protected RAW resource axes of LAW §3A.2, lower-is-better, in the document's order.
 PROTECTED_RESOURCE_AXES = ("rendered_cost", "work_fuel", "logical_durable_storage_bytes")
+SUITE_BLOCK_FIELDS = frozenset({"block_id", "case_lists", "rule", "sealed"})
+GA_SUITE_BLOCK_ID = 0
 
 #: MIRROR of ``frontier.profiles.get_profile(pid).objectives`` — the registry is the authority and
 #: this table is a checked copy (see the module docstring; the drift test is
@@ -181,10 +185,14 @@ def validate_vector(vector: Any, profile_id: str, where: str, declared=None) -> 
     _require(isinstance(vector, dict) and frozenset(vector) == frozenset(VECTOR_FIELDS),
              f"{where} must be exactly {sorted(VECTOR_FIELDS)}")
     for field in ("composite_micro", "logical_durable_storage_bytes", "rendered_cost_micro",
-                  "work_fuel"):
+                  "work_fuel", "envelope_logical_durable_storage_bytes",
+                  "envelope_rendered_cost_micro", "envelope_work_fuel"):
         value = vector[field]
         _require(isinstance(value, int) and not isinstance(value, bool) and value >= 0,
                  f"{where}.{field} must be a non-negative integer")
+    block_id = vector["suite_block_id"]
+    _require(isinstance(block_id, int) and not isinstance(block_id, bool) and block_id >= 0,
+             f"{where}.suite_block_id must be a non-negative integer")
     objectives = vector["objectives_micro"]
     _require(isinstance(objectives, dict) and objectives,
              f"{where}.objectives_micro must be a non-empty object")
@@ -212,6 +220,18 @@ def _validate(document: Any) -> Dict[str, Any]:
              "canonical suite carries no decision_engine id")
     _require(document["committed_before_first_public_candidate"] is True,
              "canonical suite must record that it was fixed before the first public candidate")
+
+    blocks = document["suite_blocks"]
+    _require(isinstance(blocks, list) and len(blocks) == 1,
+             "canonical suite suite_blocks must be a one-element array in GA")
+    block0 = blocks[0]
+    _require(isinstance(block0, dict) and frozenset(block0) == SUITE_BLOCK_FIELDS,
+             f"canonical suite suite_blocks[0] must be exactly {sorted(SUITE_BLOCK_FIELDS)}")
+    _require(block0["block_id"] == GA_SUITE_BLOCK_ID and block0["sealed"] is True
+             and block0["case_lists"] == "profiles",
+             "GA suite_blocks[0] must be sealed block_id=0 whose case lists are profiles")
+    _require(isinstance(block0["rule"], str) and block0["rule"],
+             "canonical suite suite_blocks[0].rule must be a non-empty string")
 
     axes = document["protected_resource_axes"]
     _require(isinstance(axes, list) and tuple(axes) == PROTECTED_RESOURCE_AXES,

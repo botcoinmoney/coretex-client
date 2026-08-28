@@ -13,10 +13,13 @@ mined state improvement changes the canonical frontier, not the law id or `coreV
 ## 1. Purpose and publicity
 
 CoreTex is a continuously improving, profile-scoped memory-IR adapter. A submission is admitted
-only when it proves a strict composite improvement over the exact current parent while regressing
-no protected quality objective and no protected resource axis. The same rule holds on both fixed
-partitions of the public canonical suite. This creates the invariant that every admitted public
-state is componentwise no worse than every ancestor and strictly better in composite score.
+only when it proves strict progress over the exact current parent inside a carried resource
+envelope: either a quality-composite gain with no quality-axis drop and resources inside the
+inherited envelope, or an efficiency gain that holds every quality axis and strictly reduces at
+least one measured resource without raising another. The same rule holds on both fixed partitions
+of the public canonical suite. This creates the invariant that every admitted public state is
+quality-componentwise no worse than every ancestor, never spends outside the inherited envelope,
+and strictly advanced on exactly one progress class.
 
 The law, canonical cases, generators, scorer, validator, reference implementation, runtime ABI,
 resource counter, incumbent implementations, and all admission artifacts are public. Candidate id,
@@ -102,47 +105,149 @@ burned or redrawn. A receipt that omits, adds, reorders, substitutes, or re-hash
 The fixed round id and the two fixed public entropy placeholders are inert wire-format constants;
 they select nothing.
 
-### 3A.2 Absolute vector
+### 3A.2 Absolute vector (Q / R / E)
 
-For law `L`, profile `p`, partition `q`, and release `x`, define:
+For law `L`, profile `p`, partition `q`, and release `x`, the stored vector is:
 
 ```text
-V[L,p,q](x) = (
-  composite_ppm,
-  quality_i for every objective i declared by p,
-  rendered_cost_micro,
-  work_fuel,
-  logical_durable_storage_bytes
+V[L,p,q](x) = (Q, R, E, suite_block_id)
+
+Q = (
+  composite_ppm,                          # higher-is-better; IR score
+  quality_i for every objective i declared by p
+)
+
+R = (
+  rendered_cost_micro,                    # lower-is-better
+  work_fuel,                              # lower-is-better
+  logical_durable_storage_bytes           # lower-is-better
+)
+
+E = (
+  envelope_rendered_cost_micro,
+  envelope_work_fuel,
+  envelope_logical_durable_storage_bytes
 )
 ```
 
-`composite_ppm = composite_micro // 100`. Composite and every quality objective are higher-is-
-better. The three raw resource axes are lower-is-better. All components are exact integers. Wall
-clock, host labels, and module-source length are telemetry only and never enter the vector.
+`composite_ppm = composite_micro // 100`. Composite is the mean of quality objectives only; it is
+never mixed with resource axes. All components are exact integers. Wall clock, host labels,
+module-source length, candidate `hook_fuel`, and `hook_compute_fuel` are telemetry only and never
+enter the vector or the admission rule.
+
+`R` is measured. `E` is carried law state: the inherited resource envelope, not a re-measurement
+and not the kit file `RESOURCE_ENVELOPE.json` (those are huge declared submission ceilings for
+hard gate 6). A candidate cannot advance by editing `E` without a measured resource win.
+
+`suite_block_id` identifies which append-only suite block the vector was measured on. Genesis
+public law ships block `0` only. See §3A.7.
 
 The objective vocabulary is closed by the profile registry and mirrored in the suite. An omitted
 objective is not an unchanged objective; it is an invalid vector.
 
+#### Genesis envelope (law constants)
+
+Genesis `Q` and `R` are the sealed floor measurements already in this suite. Genesis `E` is
+**law-owned** and is not equal to genesis `R` on storage.
+
+Measured justification (freeze seam, `m3_consolidation_miner.py` vs reference on
+`conv.pref.v1` seed 101 `small`, 224 envelopes):
+
+- logical durable storage rose **29 609** bytes (504 480 → 534 089) because the candidate persists
+  derived consolidation artifacts; the reference arm emits none;
+- trusted `work_fuel` fell 597 (387 734 → 387 137); rendered-cost headroom was not required.
+
+Storage is a per-partition **peak**. Additive storage headroom is **65 536** bytes (2.21× the
+measured 29 609-byte delta) on every profile/partition genesis `R`. Cost and fuel envelopes equal
+genesis `R`. This is enough for that M3 fixture plus stated margin, and far below kit
+`max_storage_bytes = 10^13`. A shotgun index that needed megabytes of extra durable state still
+misses the envelope.
+
+For each profile `p` and partition `q`:
+
+```text
+E_cost(p,q)    = R_cost(p,q)                 # genesis rendered_cost_micro
+E_fuel(p,q)    = R_fuel(p,q)                 # genesis work_fuel
+E_storage(p,q) = R_storage(p,q) + 65536      # genesis logical_durable_storage_bytes + headroom
+suite_block_id = 0
+```
+
+Concrete genesis `E_storage` values (R from this suite's floor vectors):
+
+| profile | partition | genesis R storage | E storage |
+|---|---|---|---|
+| conv.pref.v1 | gate | 562764 | 628300 |
+| conv.pref.v1 | confirm | 559294 | 624830 |
+| doc.tool.v1 | gate | 2512123 | 2577659 |
+| doc.tool.v1 | confirm | 2545817 | 2611353 |
+| event.schema.v1 | gate | 1558500 | 1624036 |
+| event.schema.v1 | confirm | 1599914 | 1665450 |
+
 ### 3A.3 Admission rule
 
-A candidate release `B` may replace exact parent `A` for profile `p` only if, independently on both
-`gate` and `confirm`:
+A candidate release `B` may replace exact parent `A` for profile `p` only if **both** `gate` and
+`confirm` independently satisfy `gate_admit` / `confirm_admit` below. Final decision:
+`admit = gate.admit AND confirm.admit`. Each partition must satisfy progress class (4a) or (4b);
+the two partitions need not share a class. The signed receipt projection uses the **confirm**
+partition's class and `admission_gain_ppm`.
 
-1. every hard gate and the profile floor pass;
-2. `composite_ppm(B) >= composite_ppm(A) + 1`;
-3. `quality_i(B) >= quality_i(A)` for every declared objective `i`;
-4. each protected resource of `B` is less than or equal to the corresponding resource of `A`; and
-5. `B` also dominates the law-bound genesis floor vector componentwise under the same directions.
+On each partition:
 
-There is no tolerance, slack, weighted trade, clause menu, or aggregate offset. Improvement in one
-component cannot buy regression in another. The final decision is
-`gate.admit AND confirm.admit`. The confirm partition's composite pair supplies the signed
-`scoreBeforePpm` and `scoreAfterPpm`; the chain's strict `after > before` check is therefore a
-projection of this rule, not a second rule.
+1. every hard gate and the profile composite floor pass;
+2. `quality_i(B) >= quality_i(A)` for every declared objective `i`, and `Q(B)` dominates the
+   genesis **quality** floor (composite and every objective; resources are not compared to
+   genesis `R`);
+3. `R_j(B) <= E_j(A)` for every protected resource axis `j`;
+4. strict progress, exactly one winning class (if both (4a) and (4b) hold, the class is
+   **quality**; envelope tightening in §3A.3.5 still applies to any axis that strictly improved):
+   - **(4a) Quality advance:** `composite_ppm(B) >= composite_ppm(A) + 1`. Resources may rise
+     versus `R(A)` as long as they stay `<= E(A)`.
+   - **(4b) Efficiency advance:** `composite_ppm(B) >= composite_ppm(A)` (quality composite
+     must not fall; it need not rise). Every `R_j(B) <= R_j(A)` and at least one
+     `R_j(B) < R_j(A)`. Quality still (2). Independent rounding of composite vs the
+     per-objective scores cannot buy an efficiency admit.
+5. New envelope `E(B)` **never loosens**:
+   - start from `E(A)`;
+   - if `R_j(B) < R_j(A)`, set `E_j(B) = R_j(B)` (tighten to measured);
+   - otherwise `E_j(B) = E_j(A)`;
+   - a candidate cannot “advance” by editing `E` without a measured win.
 
-The counter-resource aggregate is recomputed and bound for the receipt, but it cannot override the
-raw-axis rule. Because every counter weight is non-negative and normalized, per-axis
-non-regression implies aggregate non-regression.
+There is no tolerance, slack, weighted quality/resource mix, 0.1% efficiency noise floor, or
+aggregate offset that can buy a quality drop. One-unit resource wins are valid; salami slicing is
+a reward/pricing issue, not an admission floor. Improvement in one quality objective cannot buy
+regression in another. Equal quality with equal resources is not progress.
+
+Hook fuel remains diagnostic (`seam.py` `_candidate_resource_axes`). Wall-clock remains
+telemetry.
+
+#### Transition-local receipt projection (no Solidity change)
+
+The deployed verifier requires `scoreAfterPpm > scoreBeforePpm` with both `<= 1_000_000`. Mapping
+cumulative quality or a quality/efficiency mix onto that pair would hit the cap and would lie
+about IR quality. Real `Q`/`R`/`E` live on the artifact. The signed pair is **transition-local**:
+
+```text
+scoreBeforePpm = 0
+scoreAfterPpm  = admission_gain_ppm     # in [1, 1_000_000]
+```
+
+`admission_gain_ppm` is recomputed from the sealed confirm verdict, never caller-supplied:
+
+- quality class: confirm `composite_gain_ppm` (already ≥ 1), capped at `1_000_000`;
+- efficiency class: let `Δ_j = R_j(A) - R_j(B)` for each protected axis. For every `j` with
+  `Δ_j > 0` and `R_j(A) > 0`, `axis_ppm_j = floor(Δ_j * 1_000_000 / R_j(A))`. Then
+  `efficiency_gain_ppm = max(1, min(1_000_000, max_j axis_ppm_j))`. If `R_j(A) = 0` and `Δ_j > 0`
+  the axis contributes `1_000_000`. There is no 0.1% floor: a one-unit win that floors to 0 ppm
+  still admits at `1`.
+
+Exact-parent sequencing remains `parentStateRoot` / `newStateRoot`. Visualizer and `/status`
+display artifact `Q`/`R`/`E` and progress class; receipt scores are **admission gain
+(compatibility)**, never utility.
+
+The counter-resource aggregate is still recomputed and bound. On an efficiency admit it remains a
+theorem that `resource_after_ppm <= resource_before_ppm = 1_000_000`. On a quality admit,
+measured `R` may rise versus the parent inside `E`, so the aggregate may exceed `1_000_000`; that
+does not override clause 3.
 
 ### 3A.4 Exact-parent and determinism witness
 
@@ -153,31 +258,50 @@ stored qualifying vector from a content-addressed public source:
 - for the public genesis release, the content-addressed genesis baseline record; or
 - after an accepted improvement, that release's accepting evaluation artifact.
 
-The freshly re-executed parent vector must equal the stored vector byte-for-byte. A mismatch is an
-environment or artifact drift refusal; it never adjusts a score and can never make a candidate
-pass. The source object must be published and hash-verified before evaluation is enqueued.
+The freshly re-executed parent **measured** `Q` and `R` must equal the stored measured fields
+byte-for-byte. Carried `E` and `suite_block_id` are copied from the stored parent; they are not
+re-measured. A measured mismatch is an environment or artifact drift refusal; it never adjusts a
+score and can never make a candidate pass. The source object must be published and hash-verified
+before evaluation is enqueued. Tampering with stored `E` changes `witness_root` and fails
+availability, not the re-execution equality.
 
 ### 3A.5 Genesis floor
 
-The suite contains one resolved reference floor vector for each profile and partition. These are
-the initial public baseline measurements and are part of the law. A missing or pending floor makes
-admission impossible; it is never treated as zero or skipped.
+The suite contains one resolved reference floor vector for each profile and partition, including
+genesis `Q`, measured genesis `R`, law-owned genesis `E`, and `suite_block_id = 0`. These are part
+of the law. A missing or pending floor makes admission impossible; it is never treated as zero or
+skipped. Quality floor checks compare `Q` only. Resource checks compare `R(B)` to inherited `E(A)`,
+not to genesis `R`.
 
 The public genesis frontier maps each profile to the exact reference release measured by its floor.
 The genesis baseline record binds that mapping, the suite root, and all floor vectors. Thus the
-first candidate compares against exactly the release and numbers declared by this law.
+first candidate compares against exactly the release and numbers declared by this law. The first
+parent stored vector is that floor, so `E(A)` at genesis is the law-owned envelope.
 
 ### 3A.6 Transitive no-regression invariant
 
-Let `G` be a profile's genesis vector and let `R0, R1, ... Rn` be its admitted releases. By rule,
-`R0` dominates `G`; each `Rk+1` strictly improves composite and is componentwise no worse than
-`Rk`; and every parent is reproduced by its determinism witness. Componentwise order is transitive,
-so every `Rn` dominates `G` and every predecessor on both partitions.
+Let `G` be a profile's genesis quality floor and `E0` its genesis envelope. Let `R0, R1, ... Rn`
+be admitted releases. By rule, every `Rk` dominates `G` on quality; `E` never loosens, so every
+`Rk`'s measured resources stay `<= E0` and `<= E(R_{k-1})`; each step is a quality advance or an
+efficiency advance; and every parent is reproduced by its determinism witness. Quality
+componentwise order is transitive. Resource order versus an ancestor is not: a quality admit may
+spend envelope headroom. The envelope chain is monotone (never loosens), which is the resource
+invariant.
 
 Retrying identical bytes cannot change the suite, parent, vector, or verdict. Candidate ids and
 epochs are metadata and therefore cannot create an evaluation lottery.
 
-### 3A.7 Scope and limitations
+### 3A.7 Suite blocks
+
+The v1 case list is suite **block 0** and never edits. This document's `profiles.{id}.{gate,confirm}`
+arrays ARE block 0. The top-level `suite_blocks` field records that fact so a later law revision
+can append block `1+` without rewriting v1.
+
+GA ships one block. Each block keeps its own `Q`/`R`/`E`. Gains on a new block cannot offset a
+regression on an old block. A stored vector carries `suite_block_id = 0` until a later revision
+exists.
+
+### 3A.8 Scope and limitations
 
 This law proves monotonic componentwise improvement on the committed public suite and only on that
 suite. It does not by itself prove performance on unscored scales or a different workload.

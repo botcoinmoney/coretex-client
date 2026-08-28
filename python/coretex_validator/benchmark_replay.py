@@ -360,7 +360,8 @@ else:
     from validator.replay import replay_report
     result = replay_report(
         payload["report"], expected_root=payload["expected_root"],
-        repo_root=payload["repo"], incumbent_execution=payload["incumbent"])
+        repo_root=payload["repo"], incumbent_execution=payload["incumbent"],
+        parent_stored_vector=payload["parent_stored_vector"])
     result["networkless_proof"] = proof
 print("<<<JSON>>>" + json.dumps(result, sort_keys=True, default=str))
 '''
@@ -595,10 +596,16 @@ class ReleaseBenchmarkRunner:
         return result
 
     def replay_report(self, report: Mapping[str, Any], *, expected_root: str,
-                      incumbent_execution: Mapping[str, Any]) -> Mapping[str, Any]:
+                      incumbent_execution: Mapping[str, Any],
+                      parent_stored_vector: Mapping[str, Any]) -> Mapping[str, Any]:
+        if not isinstance(parent_stored_vector, Mapping) \
+                or "partitions" not in parent_stored_vector:
+            raise BenchmarkReplayError(
+                "replay requires the artifact-bound determinism_witness as parent_stored_vector")
         result = self._run({
             "mode": "replay", "report": dict(report), "expected_root": expected_root,
             "incumbent": dict(incumbent_execution),
+            "parent_stored_vector": dict(parent_stored_vector),
         })
         if result.get("reproduced") is not True or result.get("report_root", expected_root) \
                 != expected_root:
