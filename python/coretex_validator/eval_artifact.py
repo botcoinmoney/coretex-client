@@ -2415,19 +2415,24 @@ def _verify_bindings(artifact: Mapping[str, Any], *, eval_report,
 def receipt_binding_for_signing(artifact: Mapping[str, Any]) -> Dict[str, str]:
     """The two values the coordinator's EIP-712 mining receipt must bind for THIS artifact.
 
-    THE ONLY SIGNATURE IN THE SYSTEM. ``evalReportHash`` addresses the artifact's canonical bytes
-    and ``artifactHash`` is that same address restated in the receipt's own vocabulary, so a
-    receipt that carries these two values authorizes exactly one evaluation result and cannot be
-    replayed onto another. The signature over them is secp256k1/EIP-712, produced by the
-    coordinator and verified BY A DEPLOYED CONTRACT against ``mining.coordinatorSigner()`` — which
-    is why it survived the removal of every other signature in this design and why nothing here
-    verifies it: an off-chain re-check would be a second opinion about a fact the chain settles.
-    Off-chain recovery for AUDIT (never for authorization) is ``resolver/join.py`` step 7.
+    THE ONLY SIGNATURE IN THE SYSTEM. Coordinator signing
+    (``coretex-memory-frontier-lane.ts``) binds two *different* documents:
+
+      ``evalReportHash`` = SHA-256 of these canonical evaluation-artifact bytes
+      ``artifactHash``   = ``candidate.release_root`` (the scored candidate)
+
+    ``chain_first.py`` requires signed ``artifactHash == candidate.release_root``.
+    A helper that restated the eval-artifact digest as both hashes could never
+    replay a production-shaped advance. The signature is secp256k1/EIP-712,
+    produced by the coordinator and verified BY A DEPLOYED CONTRACT against
+    ``mining.coordinatorSigner()``. Off-chain recovery for AUDIT (never for
+    authorization) is ``resolver/join.py`` step 7.
     """
     validate_artifact(artifact)
     artifact_law(artifact)
     digest = eval_report_hash(artifact)
-    return {"evalReportHash": digest, "artifactHash": digest,
+    release_root = artifact["candidate"]["release_root"]
+    return {"evalReportHash": digest, "artifactHash": release_root,
             "eval_report_root": artifact["receipt"]["eval_report_root"]}
 
 

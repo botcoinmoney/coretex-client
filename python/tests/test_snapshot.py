@@ -345,13 +345,13 @@ def test_snapshot_reconstruction_refuses_tampered_evaluation_report(monkeypatch)
 def _screener_replay_fixture(monkeypatch, *, missing_artifact=False, replay_error=False):
     roots = {name: char * 64 for name, char in {
         "parent": "1", "evaluation": "2", "context": "3", "report": "4",
-        "counter": "5", "witness": "6",
+        "counter": "5", "witness": "6", "artifact": "9",
     }.items()}
     credit = SimpleNamespace(
         epoch=9, rig_id=73, solve_index=4,
         provenance=SimpleNamespace(position=(12, 3)))
     receipt = {
-        "artifactHash": roots["evaluation"], "evalReportHash": roots["evaluation"],
+        "artifactHash": roots["artifact"], "evalReportHash": roots["evaluation"],
         "epochContextRoot": roots["context"],
     }
     screener = SimpleNamespace(credit=credit, receipt=receipt)
@@ -377,6 +377,7 @@ def _screener_replay_fixture(monkeypatch, *, missing_artifact=False, replay_erro
         snapshot.publication, "fetch_json", lambda root, **kwargs: {"root": root})
     monkeypatch.setattr(snapshot.replay, "verify_epoch_context", lambda *args, **kwargs: {})
     evaluation = {
+        "candidate": {"release_root": roots["artifact"]},
         "availability": {
             "counter_resource_law": {
                 "bytes": 2, "hash_rule": snapshot.publication.HASH_RULE_FRONTIER_JSON,

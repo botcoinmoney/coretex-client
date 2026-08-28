@@ -287,22 +287,27 @@ def _reconstruct_frontier(*, release: ReleaseDirectory, scan: PublicScan,
                 break
             parent = candidate_parent
         receipt = screener.receipt
-        artifact_root = receipt["artifactHash"]
+        eval_root = str(receipt["evalReportHash"]).lower().removeprefix("0x")
         try:
-            evaluation_raw = fetch(artifact_root, publication.HASH_RULE_FRONTIER_JSON)
+            evaluation_raw = fetch(eval_root, publication.HASH_RULE_FRONTIER_JSON)
             evaluation_artifact = _load_json_bytes(
                 evaluation_raw,
-                f"epoch {screener.credit.epoch} screener evaluation {artifact_root}")
-            if evaluation.eval_report_hash(evaluation_artifact) != artifact_root:
+                f"epoch {screener.credit.epoch} screener evaluation {eval_root}")
+            if evaluation.eval_report_hash(evaluation_artifact) != eval_root:
                 raise SnapshotBuildError(
-                    "screener evaluation artifact does not reproduce its signed address")
+                    "screener evaluation artifact does not reproduce its signed evalReportHash")
+            scored_release = evaluation_artifact.get("candidate", {}).get("release_root")
+            signed_artifact = str(receipt["artifactHash"]).lower().removeprefix("0x")
+            if signed_artifact != scored_release:
+                raise SnapshotBuildError(
+                    "screener artifactHash is not the scored candidate release_root")
         except SnapshotBuildError:
             raise
         except Exception as exc:
             raise SnapshotBuildError(
                 f"cannot fetch or validate epoch {screener.credit.epoch} screener evaluation "
                 f"artifact: {exc}") from exc
-        store.put(artifact_root, evaluation_raw)
+        store.put(eval_root, evaluation_raw)
         availability = evaluation_artifact.get("availability")
         try:
             publication.validate_availability(availability)

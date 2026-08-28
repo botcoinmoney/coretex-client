@@ -33,6 +33,50 @@ class ReplayError(ValueError):
         self.message = message
 
 
+def _signed_root(value: Any, where: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ReplayError("EVALUATION_ADDRESS_MISMATCH", f"{where} is not a hex root")
+    text = value.strip().lower()
+    if text.startswith("0x"):
+        text = text[2:]
+    if len(text) != 64:
+        raise ReplayError("EVALUATION_ADDRESS_MISMATCH", f"{where} is not a 32-byte root")
+    return text
+
+
+def check_signed_evaluation_addresses(
+        receipt: Mapping[str, Any], evaluation_artifact: Mapping[str, Any], *,
+        chain_eval_report_hash: Optional[str] = None) -> None:
+    """Coordinator semantics: evalReportHash addresses the eval artifact; artifactHash is the candidate.
+
+    A production-shaped receipt has two distinct roots. Requiring both hashes to equal the
+    evaluation artifact hid that mismatch behind fabricated identical-hash tests.
+    """
+    eval_hash = _signed_root(
+        evaluation.eval_report_hash(evaluation_artifact), "evaluation artifact digest")
+    candidate = evaluation_artifact.get("candidate")
+    if not isinstance(candidate, Mapping):
+        raise ReplayError("EVALUATION_INVALID", "evaluation artifact lacks candidate")
+    release_root = _signed_root(candidate.get("release_root"), "candidate.release_root")
+    signed_eval = _signed_root(receipt.get("evalReportHash"), "evalReportHash")
+    signed_artifact = _signed_root(receipt.get("artifactHash"), "artifactHash")
+    if signed_eval != eval_hash:
+        raise ReplayError(
+            "EVALUATION_ADDRESS_MISMATCH",
+            f"evalReportHash {signed_eval} does not address the evaluation artifact {eval_hash}")
+    if signed_artifact != release_root:
+        raise ReplayError(
+            "EVALUATION_ADDRESS_MISMATCH",
+            f"artifactHash {signed_artifact} is not candidate release_root {release_root}")
+    if chain_eval_report_hash is not None:
+        chain = _signed_root(chain_eval_report_hash, "advance.eval_report_hash")
+        if chain != eval_hash:
+            raise ReplayError(
+                "EVALUATION_ADDRESS_MISMATCH",
+                f"chain eval_report_hash {chain} does not address the evaluation artifact "
+                f"{eval_hash}")
+
+
 @dataclass(frozen=True)
 class ReplayResult:
     epoch: int
@@ -84,12 +128,7 @@ def replay_screener(*, screener: Any, parent_manifest: Mapping[str, Any],
         if receipt["coreVersionHash"] != release.release.raw["compatibility_lock_root"]:
             raise ReplayError(
                 "CORE_VERSION_MISMATCH", "screener does not name the release compatibility lock")
-        artifact_hash = evaluation.eval_report_hash(evaluation_artifact)
-        if artifact_hash != receipt["artifactHash"] \
-                or artifact_hash != receipt["evalReportHash"]:
-            raise ReplayError(
-                "EVALUATION_ADDRESS_MISMATCH",
-                "screener signed receipt and evaluation artifact do not share one address")
+        check_signed_evaluation_addresses(receipt, evaluation_artifact)
         candidate = evaluation_artifact.get("candidate")
         front = evaluation_artifact.get("frontier")
         if not isinstance(candidate, Mapping) or not isinstance(front, Mapping):
@@ -173,10 +212,17 @@ def replay_screener(*, screener: Any, parent_manifest: Mapping[str, Any],
                 raise ReplayError(
                     "EVALUATION_INSTALLATION_MISMATCH",
                     f"screener availability.{kind} is not the scored object")
+        witness = evaluation_artifact.get("determinism_witness")
+        if not isinstance(witness, Mapping) or "partitions" not in witness:
+            raise ReplayError(
+                "PARENT_STORED_VECTOR_MISSING",
+                "screener replay needs the artifact-bound determinism_witness as "
+                "parent_stored_vector; replay without it cannot reproduce issue-time E")
         benchmark_runner.replay_report(
             evaluation_report,
             expected_root=evaluation_artifact["receipt"]["eval_report_root"],
-            incumbent_execution=incumbent)
+            incumbent_execution=incumbent,
+            parent_stored_vector=dict(witness))
         checks.append("fixed_suite_reexecution")
         return {"checks": checks, "evaluation": report, "parent_state_root": current_root}
     except ReplayError:
@@ -461,13 +507,9 @@ def replay_descriptor_v3(*, joined: JoinedTransition, parent_manifest: Mapping[s
                 "TRANSITION_REPLAY_MISMATCH", "transition did not reproduce the confirmed root")
         checks.append("transition_replay")
 
-        artifact_hash = evaluation.eval_report_hash(evaluation_artifact)
-        if artifact_hash != advance.eval_report_hash \
-                or receipt["artifactHash"] != artifact_hash \
-                or receipt["evalReportHash"] != artifact_hash:
-            raise ReplayError(
-                "EVALUATION_ADDRESS_MISMATCH",
-                "chain event, signed receipt, and evaluation artifact do not share one address")
+        check_signed_evaluation_addresses(
+            receipt, evaluation_artifact,
+            chain_eval_report_hash=advance.eval_report_hash)
         candidate = evaluation_artifact.get("candidate")
         front = evaluation_artifact.get("frontier")
         if not isinstance(candidate, Mapping) or not isinstance(front, Mapping):
@@ -563,6 +605,7 @@ def replay_descriptor_v3(*, joined: JoinedTransition, parent_manifest: Mapping[s
 
 __all__ = [
     "RESULT_FORMAT", "ReplayError", "ReplayResult", "pre_sign_reexecute",
+    "check_signed_evaluation_addresses",
     "replay_descriptor_v3",
     "replay_screener",
     "verify_epoch_context",
