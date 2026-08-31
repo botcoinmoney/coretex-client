@@ -3,7 +3,15 @@
 
 The contract deployment predates the public CoreTex product, so a deployment block is not a
 valid replay floor.  Every scan starts at the confirmed block recorded beside the activation
-epoch and refuses logs, contexts, or advances below either coordinate.
+epoch.  Logs below that block are refused.  CoreTex-protocol epochs (contexts, advances,
+CoreTex credits, finalizations) below the activation epoch are refused.
+
+Mining-clock events on the reused mining contract — standard V4 credits, epoch commit, and
+epoch reveal — are still consumed for shared receipt-chain continuity.  Their epoch field is
+the mining clock, which is allowed to lag the CoreTex activation context.  At the public
+activation block the mining clock was still on the prior epoch, so those events may appear
+after the activation block with an epoch below the CoreTex activation epoch.  The block floor
+still applies to them.
 """
 from __future__ import annotations
 
@@ -100,15 +108,18 @@ def verify_deployment_authority(*, rpc: JsonRpc, authority: Mapping[str, Any],
         raise DiscoveryError("deployed EIP-712 domain does not match the release authority")
 
 
-def _epochs(decoded: DecodedLogs) -> Sequence[tuple[str, int]]:
+def _coretex_protocol_epochs(decoded: DecodedLogs) -> Sequence[tuple[str, int]]:
+    """Epochs that are CoreTex protocol coordinates, not the reused mining clock.
+
+    Standard credits, commits, and reveals share the mining contract with V4.  They must be
+    present for receipt-chain continuity, but their epoch is ``currentEpoch`` on that
+    contract — which lagged the public CoreTex activation context.
+    """
     groups = (
         ("advance", decoded.advances),
         ("CoreTex credit", decoded.coretex_credits),
-        ("standard credit", decoded.standard_credits),
         ("finalization", decoded.finalizations),
         ("context", decoded.contexts),
-        ("commit", decoded.commits),
-        ("reveal", decoded.reveals),
     )
     return tuple((kind, int(item.epoch)) for kind, items in groups for item in items)
 
@@ -157,7 +168,7 @@ def validate_public_feed(*, logs: Sequence[Mapping[str, Any]], head: PinnedBlock
     activation.require_logs(logs)
     deployment = deployment_from_authority(release.authority)
     decoded = scan(logs, deployment)
-    for kind, epoch in _epochs(decoded):
+    for kind, epoch in _coretex_protocol_epochs(decoded):
         try:
             activation.require_epoch(epoch, what=f"{kind} epoch")
         except ActivationError as exc:

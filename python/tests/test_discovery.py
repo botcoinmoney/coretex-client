@@ -7,7 +7,9 @@ import pytest
 from coretex_validator import discovery
 from coretex_validator.activation import PublicActivation
 from coretex_validator.dispatch import LogProvenance
-from coretex_validator.rig_events import DecodedLogs, EpochContextSet
+from coretex_validator.rig_events import (
+    CoreTexCreditAccepted, DecodedLogs, EpochCommitSet, EpochContextSet, EpochSecretRevealed,
+)
 from coretex_validator.rpc import PinnedBlock
 from coretex_validator.keccak256 import keccak256_hex
 
@@ -50,6 +52,59 @@ def test_feed_starts_at_exact_activation_context(monkeypatch):
     )
     assert result.deployment.addresses == (
         CONTRACTS["coretex_registry"], CONTRACTS["mining"], CONTRACTS["coretex_verifier"])
+
+
+def _mining_clock_decoded():
+    """Activation-epoch context plus mining-clock events from the prior mining epoch."""
+    base = decoded()
+    provenance = LogProvenance(block_number=100, log_index=1)
+    return DecodedLogs(
+        base.advances,
+        base.coretex_credits,
+        [CoreTexCreditAccepted(
+            epoch=8, rig_id=1, operator="0x" + "11" * 20, solve_index=0,
+            receipt_hash="a" * 64, challenge_id="b" * 64, work_units_bps=0,
+            credits_earned=1, provenance=provenance, coretex=False)],
+        base.finalizations,
+        base.contexts,
+        [EpochCommitSet(epoch=8, entropy_commitment="c" * 64, provenance=provenance)],
+        [EpochSecretRevealed(epoch=8, revealed_secret="d" * 64, provenance=provenance)],
+        base.policies,
+    )
+
+
+def test_feed_accepts_mining_clock_events_below_the_coretex_activation_epoch(monkeypatch):
+    monkeypatch.setattr(discovery, "scan", lambda logs, deployment: _mining_clock_decoded())
+    result = discovery.validate_public_feed(
+        logs=[{"blockNumber": "0x64"}],
+        head=PinnedBlock(120, "0x" + "44" * 32, 1),
+        activation=PublicActivation(9, 100),
+        release=release(),
+    )
+    assert len(result.decoded.standard_credits) == 1
+    assert result.decoded.standard_credits[0].epoch == 8
+    assert result.decoded.commits[0].epoch == 8
+    assert result.decoded.reveals[0].epoch == 8
+
+
+def test_feed_still_refuses_a_coretex_credit_below_the_activation_epoch(monkeypatch):
+    base = decoded()
+    credit = CoreTexCreditAccepted(
+        epoch=8, rig_id=1, operator="0x" + "11" * 20, solve_index=0,
+        receipt_hash="a" * 64, challenge_id="b" * 64, work_units_bps=10_000,
+        credits_earned=1, provenance=LogProvenance(block_number=100, log_index=1),
+        coretex=True)
+    below = DecodedLogs(
+        base.advances, [credit], base.standard_credits, base.finalizations,
+        base.contexts, base.commits, base.reveals, base.policies)
+    monkeypatch.setattr(discovery, "scan", lambda logs, deployment: below)
+    with pytest.raises(discovery.DiscoveryError, match="BELOW_PUBLIC_ACTIVATION_EPOCH"):
+        discovery.validate_public_feed(
+            logs=[{"blockNumber": "0x64"}],
+            head=PinnedBlock(120, "0x" + "44" * 32, 1),
+            activation=PublicActivation(9, 100),
+            release=release(),
+        )
 
 
 @pytest.mark.parametrize("item", [
