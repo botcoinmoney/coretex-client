@@ -961,6 +961,69 @@ def _validate_vector(vector: Any, where: str, profile_id: str) -> Dict[str, Any]
     return vec
 
 
+def validate_parent_stored_vector(
+        parent_stored_vector: Any, *, expected_profile_id: str,
+        expected_release_root: str, expected_law_id: str = FIXED_SUITE_LAW_ID,
+        expected_suite_root: Optional[str] = None) -> Dict[str, Any]:
+    """Validate the complete, self-addressed exact-parent witness used by an evaluation.
+
+    This is deliberately usable *before* candidate scoring.  Artifact validation performs the
+    same checks later, but an evaluator must not spend a fixed-suite run before discovering that
+    its parent witness is missing a partition, belongs to another profile/release, names another
+    law/suite, or is not self-addressed.  The returned document is detached from caller mutation.
+    """
+    expected_suite_root = expected_suite_root or cs.suite_root()
+    witness = _check_closed(dict(parent_stored_vector)
+                            if isinstance(parent_stored_vector, Mapping)
+                            else parent_stored_vector,
+                            DETERMINISM_WITNESS_FIELDS, "parent_stored_vector")
+    if witness["law_id"] != expected_law_id:
+        raise ArtifactSchemaError(
+            f"parent_stored_vector.law_id {witness['law_id']!r} is not the evaluation law "
+            f"{expected_law_id!r}")
+    if witness["suite_root"] != expected_suite_root:
+        raise ArtifactSchemaError(
+            "parent_stored_vector.suite_root is not the canonical suite root for this evaluation")
+    if witness["profile_id"] != expected_profile_id:
+        raise ArtifactSchemaError(
+            f"parent_stored_vector.profile_id {witness['profile_id']!r} is not the target profile "
+            f"{expected_profile_id!r}")
+    if witness["release_root"] != expected_release_root:
+        raise DeterminismWitnessMismatchError(
+            f"parent_stored_vector.release_root {witness['release_root']!r} is not the exact "
+            f"parent release {expected_release_root!r}")
+    if witness["source_kind"] not in WITNESS_SOURCE_KINDS:
+        raise ArtifactValueError(
+            f"parent_stored_vector.source_kind must be one of {list(WITNESS_SOURCE_KINDS)}")
+    for field in ("release_root", "source_root", "witness_root"):
+        fr.check_root(witness[field], f"parent_stored_vector.{field}")
+    _check_closed(witness["partitions"], SELECTION_LABELS,
+                  "parent_stored_vector.partitions")
+    for label in SELECTION_LABELS:
+        vector = _validate_vector(witness["partitions"][label],
+                                  f"parent_stored_vector.partitions[{label!r}]",
+                                  expected_profile_id)
+        canonical = cs.genesis_floor_vector(expected_profile_id, label)
+        if vector["suite_block_id"] != canonical["suite_block_id"]:
+            raise ArtifactSchemaError(
+                f"parent_stored_vector.partitions[{label!r}].suite_block_id is "
+                f"{vector['suite_block_id']}, but the active canonical suite block is "
+                f"{canonical['suite_block_id']}")
+        for _axis, _measured_key, cap_key in cs.PRODUCT_CAP_VECTOR_FIELDS:
+            if vector[cap_key] != canonical[cap_key]:
+                raise ArtifactSchemaError(
+                    f"parent_stored_vector.partitions[{label!r}].{cap_key} is "
+                    f"{vector[cap_key]}, but the canonical fixed product cap C is "
+                    f"{canonical[cap_key]}; parent E must equal C")
+    recomputed = witness_root(witness)
+    if witness["witness_root"] != recomputed:
+        raise ArtifactSchemaError(
+            f"parent_stored_vector.witness_root {witness['witness_root']} is not the sha256 of "
+            f"its canonical body {recomputed}")
+    # Canonical JSON is also the simplest deep copy of this JSON-only law object.
+    return json.loads(fr.canonical_bytes(witness).decode("utf-8"))
+
+
 def _validate_fixed_suite_blocks(artifact: Mapping[str, Any]) -> None:
     """The four blocks required by the current v3 fixed-suite format."""
     profile_id = artifact["candidate"]["target_profile"]
@@ -1034,32 +1097,10 @@ def _validate_fixed_suite_blocks(artifact: Mapping[str, Any]) -> None:
                     "disjoint by construction")
             seen.add(case["instance_id"])
 
-    witness = _check_closed(artifact["determinism_witness"], DETERMINISM_WITNESS_FIELDS,
-                            "determinism_witness")
-    if witness["law_id"] != FIXED_SUITE_LAW_ID:
-        raise ArtifactSchemaError(
-            "determinism_witness.law_id is not the fixed-suite law; a vector measured under "
-            "another law is not comparable and is never carried across (LAW §3A.6)")
-    if witness["suite_root"] != suite["suite_root"]:
-        raise ArtifactSchemaError(
-            "determinism_witness.suite_root != suite.suite_root; a stored vector measured on a "
-            "different exam is not this parent's vector")
-    if witness["profile_id"] != profile_id:
-        raise ArtifactSchemaError("determinism_witness.profile_id != the target profile")
-    if witness["source_kind"] not in WITNESS_SOURCE_KINDS:
-        raise ArtifactValueError(
-            f"determinism_witness.source_kind must be one of {list(WITNESS_SOURCE_KINDS)}")
-    for field in ("release_root", "source_root", "witness_root"):
-        fr.check_root(witness[field], f"determinism_witness.{field}")
-    _check_closed(witness["partitions"], SELECTION_LABELS, "determinism_witness.partitions")
-    for label in SELECTION_LABELS:
-        _validate_vector(witness["partitions"][label],
-                         f"determinism_witness.partitions[{label!r}]", profile_id)
-    recomputed = witness_root(witness)
-    if recomputed != witness["witness_root"]:
-        raise ArtifactSchemaError(
-            f"determinism_witness.witness_root {witness['witness_root']} is not the sha256 of "
-            f"its own canonical body {recomputed}")
+    witness = validate_parent_stored_vector(
+        artifact["determinism_witness"], expected_profile_id=profile_id,
+        expected_release_root=artifact["candidate"]["prior_release_root"],
+        expected_law_id=FIXED_SUITE_LAW_ID, expected_suite_root=suite["suite_root"])
 
     floor = _check_closed(artifact["genesis_floor"], GENESIS_FLOOR_FIELDS, "genesis_floor")
     if floor["status"] != "resolved":
@@ -1619,12 +1660,10 @@ def build_artifact_v3(*, epoch: int, parent_manifest: Mapping[str, Any], epoch_p
 
     suite = suite_block_for(target, body["selection"])
     floor = genesis_floor_block_for(target)
-    witness = _check_closed(dict(parent_stored_vector), DETERMINISM_WITNESS_FIELDS,
-                            "parent_stored_vector")
-    if witness["release_root"] != transition["expected_prior_release_root"]:
-        raise DeterminismWitnessMismatchError(
-            f"the supplied stored vector is for release {witness['release_root']}, but this "
-            f"evaluation's exact parent is {transition['expected_prior_release_root']}")
+    witness = validate_parent_stored_vector(
+        parent_stored_vector, expected_profile_id=target,
+        expected_release_root=transition["expected_prior_release_root"],
+        expected_law_id=FIXED_SUITE_LAW_ID, expected_suite_root=cs.suite_root())
     assert_determinism_witness(parent_vector_from_verdicts(body["verdicts"]), witness)
 
     measurements = project_measurements(body)
@@ -1868,6 +1907,18 @@ def verify_dominance_block(artifact: Mapping[str, Any]) -> Dict[str, Any]:
         cand_vec = part["candidate_vector"]
         inc_vec = part["incumbent_vector"]
         where = f"dominance.partitions[{label!r}]"
+        canonical_floor = cs.genesis_floor_vector(
+            artifact["candidate"]["target_profile"], label)
+        for axis, _measured_key, e_key in cs.PRODUCT_CAP_VECTOR_FIELDS:
+            canonical_c = canonical_floor[e_key]
+            _require(inc_vec[e_key] == canonical_c, VerdictMismatchError,
+                     f"{where}.incumbent_vector.{e_key} is {inc_vec[e_key]}, but the canonical "
+                     f"fixed product cap C is {canonical_c} (axis {axis}); forged tighter or "
+                     "looser parent envelopes fail")
+            _require(cand_vec[e_key] == canonical_c, VerdictMismatchError,
+                     f"{where}.candidate_vector.{e_key} is {cand_vec[e_key]}, but the canonical "
+                     f"fixed product cap C is {canonical_c} (axis {axis}); every transition "
+                     "requires E(A) = E(B) = C")
         _require(cand_vec["composite_micro"] // 100 == part["composite_after_ppm"],
                  VerdictMismatchError,
                  f"{where}.composite_after_ppm is not composite_micro // 100 of the bound "
@@ -1979,23 +2030,24 @@ def verify_dominance_block(artifact: Mapping[str, Any]) -> Dict[str, Any]:
             _require(part["admission_gain_ppm"] == want_gain, VerdictMismatchError,
                      f"{where}.admission_gain_ppm is {part['admission_gain_ppm']}, "
                      f"recomputed {want_gain}")
-        for axis, r_key, e_key in envelope_axes:
-            parent_e = inc_vec[e_key]
-            cand_e = cand_vec[e_key]
-            parent_r = inc_vec[r_key]
-            cand_r = cand_vec[r_key]
-            expected_e = cand_r if cand_r < parent_r else parent_e
-            _require(cand_e == expected_e, VerdictMismatchError,
-                     f"{where}.candidate_vector.{e_key} is {cand_e}, expected {expected_e} "
-                     "(E never loosens; tighten only on a measured drop vs parent R)")
-    confirm = dom["partitions"]["confirm"]
     proj = artifact["admission_projection"]
-    _require(proj.get("class") == confirm.get("progress_class"), VerdictMismatchError,
-             "admission_projection.class is not the confirm partition's progress_class")
-    _require(proj.get("score_after_ppm") == confirm.get("admission_gain_ppm"), VerdictMismatchError,
-             "admission_projection.score_after_ppm is not the confirm admission_gain_ppm")
-    _require(proj["score_before_ppm"] == 0, VerdictMismatchError,
-             "admission_projection.score_before_ppm must be 0")
+    if dom["admit"]:
+        confirm = dom["partitions"]["confirm"]
+        _require(proj.get("class") == confirm.get("progress_class"), VerdictMismatchError,
+                 "admission_projection.class is not the admitting confirm partition's "
+                 "progress_class")
+        _require(proj.get("score_after_ppm") == confirm.get("admission_gain_ppm"),
+                 VerdictMismatchError,
+                 "admission_projection.score_after_ppm is not the admitting confirm "
+                 "partition's admission_gain_ppm")
+        _require(proj.get("score_before_ppm") == 0, VerdictMismatchError,
+                 "admission_projection.score_before_ppm must be 0")
+    else:
+        # A receipt projection describes the FINAL gate∧confirm result.  If either partition
+        # rejects, importing the other partition's class/gain would turn a final reject into an
+        # admitting-looking receipt.  There is exactly one reject projection.
+        _require(dict(proj) == {"score_before_ppm": 0}, VerdictMismatchError,
+                 "a final REJECT must carry exactly the canonical reject admission_projection")
     return {"engine": dom["engine"], "admit": bool(dom["admit"])}
 
 
@@ -2413,7 +2465,7 @@ def _verify_bindings(artifact: Mapping[str, Any], *, eval_report,
 
 
 def receipt_binding_for_signing(artifact: Mapping[str, Any]) -> Dict[str, str]:
-    """The two values the coordinator's EIP-712 mining receipt must bind for THIS artifact.
+    """The two values an ADMITTED artifact's EIP-712 mining receipt must bind.
 
     THE ONLY SIGNATURE IN THE SYSTEM. Coordinator signing
     (``coretex-memory-frontier-lane.ts``) binds two *different* documents:
@@ -2430,6 +2482,9 @@ def receipt_binding_for_signing(artifact: Mapping[str, Any]) -> Dict[str, str]:
     """
     validate_artifact(artifact)
     artifact_law(artifact)
+    if artifact["verdict"]["admit"] is not True:
+        raise PreSignError(
+            "receipt signing refused: the final gate AND confirm decision is REJECT")
     digest = eval_report_hash(artifact)
     release_root = artifact["candidate"]["release_root"]
     return {"evalReportHash": digest, "artifactHash": release_root,
@@ -2447,13 +2502,20 @@ def publish_artifact(artifact: Mapping[str, Any], *, store: pub.ContentStore) ->
 def prepare_broadcastable_receipt(artifact: Mapping[str, Any], *, store: pub.ContentStore,
                                   expected_parent_root: str, expected_new_root: str,
                                   **verify_kwargs) -> Dict[str, Any]:
-    """Fail-closed verification, availability read-back, and publication before receipt minting."""
+    """Verify an ADMIT, read availability back, and publish it before receipt minting.
+
+    A valid REJECT remains useful public evaluation evidence, but it is never broadcastable and is
+    refused before publication/signing output is produced.
+    """
     verify_kwargs.setdefault("store", store)
     verify_kwargs.pop("check_availability", None)
     availability_scope = str(verify_kwargs.pop("availability_scope", "") or "").strip()
     report = verify_artifact(
         artifact, expected_parent_root=expected_parent_root,
         expected_new_root=expected_new_root, **verify_kwargs)
+    if report["verdict"].get("admit") is not True:
+        raise PreSignError(
+            "receipt preparation refused: the final gate AND confirm decision is REJECT")
     rig_bound = bool(verify_kwargs.get("require_rig_receipt")) or "rig_receipt" in artifact
     required = RIG_REQUIRED_AVAILABILITY if rig_bound else REQUIRED_AVAILABILITY
     try:

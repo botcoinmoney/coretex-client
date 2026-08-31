@@ -9,14 +9,14 @@
   ],
   "quality_tolerance": "zero \u2014 every declared objective must be >= the parent's",
   "quality_units": "objectives_micro (per declared objective, integer micro units)",
-  "resource_tolerance": "zero \u2014 every protected raw axis must be <= the inherited envelope E; efficiency class additionally requires R(B) <= R(A) with at least one strict drop",
+  "resource_tolerance": "zero \u2014 every protected raw axis must be <= the fixed product cap C serialized as E; efficiency class additionally requires R(B) <= R(A) with at least one strict drop",
   "resource_units": "rendered_cost = rendered_cost_micro; work_fuel = trusted work_fuel; logical_durable_storage_bytes = raw byte count",
   "signed_scalar_source": "confirm partition admission_gain_ppm with scoreBeforePpm=0 (transition-local; not confirm composite_ppm)",
   "progress_classes": [
    "quality",
    "efficiency"
   ],
-  "envelope_rule": "E never loosens; tighten E_j to R_j(B) iff R_j(B) < R_j(A); genesis E_storage = R_storage + 65536; genesis E_cost/fuel = R",
+  "envelope_rule": "E is the fixed law-owned product cap C; parent E, candidate E, and this suite's C must be exactly equal and no transition derives or changes C",
   "suite_block_id": 0
  },
  "committed_before_first_public_candidate": true,
@@ -79,9 +79,9 @@
      },
      "rendered_cost_micro": 109885000,
      "work_fuel": 2914116,
-     "envelope_rendered_cost_micro": 109885000,
-     "envelope_work_fuel": 2914116,
-     "envelope_logical_durable_storage_bytes": 624830,
+     "envelope_rendered_cost_micro": 140000000,
+     "envelope_work_fuel": 3600000,
+     "envelope_logical_durable_storage_bytes": 700000,
      "suite_block_id": 0
     },
     "gate": {
@@ -100,9 +100,9 @@
      },
      "rendered_cost_micro": 109742500,
      "work_fuel": 1443206,
-     "envelope_rendered_cost_micro": 109742500,
-     "envelope_work_fuel": 1443206,
-     "envelope_logical_durable_storage_bytes": 628300,
+     "envelope_rendered_cost_micro": 140000000,
+     "envelope_work_fuel": 1800000,
+     "envelope_logical_durable_storage_bytes": 700000,
      "suite_block_id": 0
     }
    },
@@ -123,9 +123,9 @@
      },
      "rendered_cost_micro": 218932500,
      "work_fuel": 4010971,
-     "envelope_rendered_cost_micro": 218932500,
-     "envelope_work_fuel": 4010971,
-     "envelope_logical_durable_storage_bytes": 2611353,
+     "envelope_rendered_cost_micro": 275000000,
+     "envelope_work_fuel": 5000000,
+     "envelope_logical_durable_storage_bytes": 3200000,
      "suite_block_id": 0
     },
     "gate": {
@@ -144,9 +144,9 @@
      },
      "rendered_cost_micro": 223407500,
      "work_fuel": 2051550,
-     "envelope_rendered_cost_micro": 223407500,
-     "envelope_work_fuel": 2051550,
-     "envelope_logical_durable_storage_bytes": 2577659,
+     "envelope_rendered_cost_micro": 280000000,
+     "envelope_work_fuel": 2600000,
+     "envelope_logical_durable_storage_bytes": 3200000,
      "suite_block_id": 0
     }
    },
@@ -168,9 +168,9 @@
      },
      "rendered_cost_micro": 141957500,
      "work_fuel": 3905666,
-     "envelope_rendered_cost_micro": 141957500,
-     "envelope_work_fuel": 3905666,
-     "envelope_logical_durable_storage_bytes": 1665450,
+     "envelope_rendered_cost_micro": 180000000,
+     "envelope_work_fuel": 5000000,
+     "envelope_logical_durable_storage_bytes": 2000000,
      "suite_block_id": 0
     },
     "gate": {
@@ -190,9 +190,9 @@
      },
      "rendered_cost_micro": 141467500,
      "work_fuel": 1939475,
-     "envelope_rendered_cost_micro": 141467500,
-     "envelope_work_fuel": 1939475,
-     "envelope_logical_durable_storage_bytes": 1624036,
+     "envelope_rendered_cost_micro": 180000000,
+     "envelope_work_fuel": 2500000,
+     "envelope_logical_durable_storage_bytes": 2000000,
      "suite_block_id": 0
     }
    }

@@ -437,3 +437,73 @@ def test_screener_credit_refuses_report_that_full_scorer_does_not_reproduce(monk
             release=SimpleNamespace(), scan=scan, rpc=SimpleNamespace(), views=SimpleNamespace(),
             fetch=fetch, store=snapshot.publication.InMemoryCAS(),
             benchmark_runner=SimpleNamespace())
+
+
+def _genesis_release_fixture(tmp_path, monkeypatch):
+    frontier_root = "a" * 64
+    manifest = {"state": "genesis"}
+    monkeypatch.setattr(snapshot.frontier, "frontier_root", lambda value: frontier_root)
+    (tmp_path / "GENESIS-FRONTIER.json").write_bytes(snapshot._json_bytes({  # noqa: SLF001
+        "format": "coretex.genesis-frontier/v1",
+        "frontier_root": frontier_root,
+        "manifest": manifest,
+    }))
+
+    composition_body = {"format": "coretex.genesis-composition/v1", "profiles": {}}
+    composition_root = snapshot._sha(snapshot._canonical(composition_body))  # noqa: SLF001
+    composition = dict(composition_body, composition_root=composition_root)
+    (tmp_path / "GENESIS-COMPOSITION.json").write_bytes(
+        snapshot._json_bytes(composition))  # noqa: SLF001
+
+    baseline_body = {
+        "format": "coretex.genesis-baseline/v1",
+        "law_id": "benchmark-v2-law/dominance-fixed-suite.v1",
+        "profiles": {},
+        "suite_root": "b" * 64,
+    }
+    baseline_root = snapshot._sha(snapshot._canonical(baseline_body))  # noqa: SLF001
+    baseline = dict(baseline_body, baseline_root=baseline_root)
+    baseline_raw = snapshot._json_bytes(baseline)  # noqa: SLF001
+    (tmp_path / "GENESIS-BASELINE.json").write_bytes(baseline_raw)
+
+    profile_releases = {}
+    for index, profile_id in enumerate(snapshot.PROFILE_IDS):
+        descriptor = {"format": "test-reference", "profile_id": profile_id}
+        descriptor_root = snapshot._sha(snapshot._canonical(descriptor))  # noqa: SLF001
+        filename = f"profile-{index}.json"
+        (tmp_path / filename).write_bytes(snapshot._json_bytes(descriptor))  # noqa: SLF001
+        profile_releases[profile_id] = {"path": filename, "root": descriptor_root}
+
+    release = SimpleNamespace(
+        path=str(tmp_path),
+        genesis_frontier_root=frontier_root,
+        release=SimpleNamespace(raw={
+            "genesis": {
+                "baseline_root": baseline_root,
+                "composition_root": composition_root,
+                "profile_releases": profile_releases,
+            },
+        }),
+    )
+    return release, manifest, baseline_root, baseline_raw
+
+
+def test_snapshot_seeds_exact_final_genesis_baseline_bytes(tmp_path, monkeypatch):
+    release, manifest, baseline_root, baseline_raw = _genesis_release_fixture(
+        tmp_path, monkeypatch)
+    store = snapshot.publication.InMemoryCAS()
+    assert snapshot._seed_genesis_objects(release, store) == manifest  # noqa: SLF001
+    assert store.get(baseline_root) == baseline_raw
+
+
+def test_snapshot_refuses_genesis_baseline_whose_body_does_not_rehash(tmp_path, monkeypatch):
+    release, _manifest, _baseline_root, _baseline_raw = _genesis_release_fixture(
+        tmp_path, monkeypatch)
+    baseline_path = tmp_path / "GENESIS-BASELINE.json"
+    baseline = snapshot._load_json_bytes(  # noqa: SLF001
+        baseline_path.read_bytes(), "GENESIS-BASELINE.json")
+    baseline["suite_root"] = "c" * 64
+    baseline_path.write_bytes(snapshot._json_bytes(baseline))  # noqa: SLF001
+    with __import__("pytest").raises(snapshot.SnapshotBuildError, match="does not reproduce"):
+        snapshot._seed_genesis_objects(  # noqa: SLF001
+            release, snapshot.publication.InMemoryCAS())

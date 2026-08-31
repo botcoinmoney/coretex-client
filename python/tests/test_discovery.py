@@ -57,7 +57,7 @@ def test_feed_starts_at_exact_activation_context(monkeypatch):
 def _mining_clock_decoded():
     """Activation-epoch context plus mining-clock events from the prior mining epoch."""
     base = decoded()
-    provenance = LogProvenance(block_number=100, log_index=1)
+    provenance = LogProvenance(block_number=101, log_index=1)
     return DecodedLogs(
         base.advances,
         base.coretex_credits,
@@ -73,10 +73,10 @@ def _mining_clock_decoded():
     )
 
 
-def test_feed_accepts_mining_clock_events_below_the_coretex_activation_epoch(monkeypatch):
+def test_feed_accepts_post_activation_block_mining_events_below_coretex_epoch(monkeypatch):
     monkeypatch.setattr(discovery, "scan", lambda logs, deployment: _mining_clock_decoded())
     result = discovery.validate_public_feed(
-        logs=[{"blockNumber": "0x64"}],
+        logs=[{"blockNumber": "0x65"}],
         head=PinnedBlock(120, "0x" + "44" * 32, 1),
         activation=PublicActivation(9, 100),
         release=release(),
@@ -92,7 +92,7 @@ def test_feed_still_refuses_a_coretex_credit_below_the_activation_epoch(monkeypa
     credit = CoreTexCreditAccepted(
         epoch=8, rig_id=1, operator="0x" + "11" * 20, solve_index=0,
         receipt_hash="a" * 64, challenge_id="b" * 64, work_units_bps=10_000,
-        credits_earned=1, provenance=LogProvenance(block_number=100, log_index=1),
+        credits_earned=1, provenance=LogProvenance(block_number=101, log_index=1),
         coretex=True)
     below = DecodedLogs(
         base.advances, [credit], base.standard_credits, base.finalizations,
@@ -100,7 +100,7 @@ def test_feed_still_refuses_a_coretex_credit_below_the_activation_epoch(monkeypa
     monkeypatch.setattr(discovery, "scan", lambda logs, deployment: below)
     with pytest.raises(discovery.DiscoveryError, match="BELOW_PUBLIC_ACTIVATION_EPOCH"):
         discovery.validate_public_feed(
-            logs=[{"blockNumber": "0x64"}],
+            logs=[{"blockNumber": "0x65"}],
             head=PinnedBlock(120, "0x" + "44" * 32, 1),
             activation=PublicActivation(9, 100),
             release=release(),

@@ -33,6 +33,29 @@ class ReplayError(ValueError):
         self.message = message
 
 
+def _validated_parent_witness(evaluation_artifact: Mapping[str, Any],
+                              parent_manifest: Mapping[str, Any],
+                              profile_id: str) -> Mapping[str, Any]:
+    """Return the complete exact-parent vector or refuse before benchmark scoring."""
+    witness = evaluation_artifact.get("determinism_witness")
+    if not isinstance(witness, Mapping):
+        raise ReplayError(
+            "PARENT_STORED_VECTOR_MISSING",
+            "replay needs the complete artifact-bound determinism_witness as "
+            "parent_stored_vector")
+    profiles = parent_manifest.get("profiles")
+    parent_release_root = profiles.get(profile_id) if isinstance(profiles, Mapping) else None
+    candidate = evaluation_artifact.get("candidate")
+    if not isinstance(parent_release_root, str) or not isinstance(candidate, Mapping) \
+            or candidate.get("prior_release_root") != parent_release_root:
+        raise ReplayError(
+            "PARENT_STORED_VECTOR_MISMATCH",
+            "the artifact and public parent manifest do not name one exact profile release")
+    return evaluation.validate_parent_stored_vector(
+        witness, expected_profile_id=profile_id,
+        expected_release_root=parent_release_root)
+
+
 def _signed_root(value: Any, where: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ReplayError("EVALUATION_ADDRESS_MISMATCH", f"{where} is not a hex root")
@@ -212,12 +235,7 @@ def replay_screener(*, screener: Any, parent_manifest: Mapping[str, Any],
                 raise ReplayError(
                     "EVALUATION_INSTALLATION_MISMATCH",
                     f"screener availability.{kind} is not the scored object")
-        witness = evaluation_artifact.get("determinism_witness")
-        if not isinstance(witness, Mapping) or "partitions" not in witness:
-            raise ReplayError(
-                "PARENT_STORED_VECTOR_MISSING",
-                "screener replay needs the artifact-bound determinism_witness as "
-                "parent_stored_vector; replay without it cannot reproduce issue-time E")
+        witness = _validated_parent_witness(evaluation_artifact, parent_manifest, profile)
         benchmark_runner.replay_report(
             evaluation_report,
             expected_root=evaluation_artifact["receipt"]["eval_report_root"],
@@ -395,12 +413,7 @@ def pre_sign_reexecute(*, evaluation_artifact: Mapping[str, Any],
                 expected_root, hash_rule=expected_rule, store=store,
                 expected_bytes_len=item.get("bytes"))
 
-        witness = evaluation_artifact.get("determinism_witness")
-        if not isinstance(witness, Mapping) or "partitions" not in witness:
-            raise ReplayError(
-                "PARENT_STORED_VECTOR_MISSING",
-                "pre-sign reexecution needs the artifact-bound determinism_witness as "
-                "parent_stored_vector; replay without it cannot reproduce issue-time E")
+        witness = _validated_parent_witness(evaluation_artifact, parent, profile)
         benchmark_result = benchmark_runner.replay_report(
             evaluation_report,
             expected_root=evaluation_artifact["receipt"]["eval_report_root"],

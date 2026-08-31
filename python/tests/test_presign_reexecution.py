@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from coretex_validator import replay
+from coretex_validator import canonical_suite, eval_artifact, replay
 
 
 PROFILE = "doc.tool.v1"
@@ -83,6 +83,7 @@ def _fixture(monkeypatch, *, non_target_changes=False, installed_module=MODULE_R
         "availability": availability,
         "candidate": {
             "candidate_hash": "7" * 64,
+            "prior_release_root": "a" * 64,
             "release_root": RELEASE_ROOT,
             "target_profile": PROFILE,
         },
@@ -100,12 +101,16 @@ def _fixture(monkeypatch, *, non_target_changes=False, installed_module=MODULE_R
         },
         "receipt": {"eval_report_root": REPORT_ROOT},
         "replay_inputs": {"incumbent": "inc-parent", "parent_manifest": parent},
-        "determinism_witness": {
-            "law_id": "benchmark-v2-law/dominance-fixed-suite.v1",
-            "partitions": {"gate": {"envelope_work_fuel": 1}, "confirm": {"envelope_work_fuel": 1}},
-            "profile_id": PROFILE,
-            "source_kind": "genesis",
-        },
+        "determinism_witness": eval_artifact.build_determinism_witness(
+            profile_id=PROFILE,
+            release_root="a" * 64,
+            source_kind="genesis",
+            source_root=REPORT_ROOT,
+            partitions={
+                label: canonical_suite.genesis_floor_vector(PROFILE, label)
+                for label in eval_artifact.SELECTION_LABELS
+            },
+        ),
     }
     release = SimpleNamespace(release=SimpleNamespace(raw={
         "genesis": {"profile_releases": {

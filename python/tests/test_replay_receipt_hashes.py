@@ -48,6 +48,7 @@ def test_receipt_binding_for_signing_uses_candidate_release(monkeypatch):
     artifact = {
         "candidate": {"release_root": RELEASE},
         "receipt": {"eval_report_root": "b" * 64},
+        "verdict": {"admit": True},
     }
     monkeypatch.setattr(ea, "validate_artifact", lambda _artifact: None)
     monkeypatch.setattr(ea, "artifact_law", lambda _artifact: None)

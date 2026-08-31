@@ -70,6 +70,12 @@ GENESIS_REFERENCE_FIELDS = frozenset({"exec", "reference_runtime", "release_root
 
 #: The three protected RAW resource axes of LAW §3A.2, lower-is-better, in the document's order.
 PROTECTED_RESOURCE_AXES = ("rendered_cost", "work_fuel", "logical_durable_storage_bytes")
+PRODUCT_CAP_VECTOR_FIELDS = (
+    ("rendered_cost", "rendered_cost_micro", "envelope_rendered_cost_micro"),
+    ("work_fuel", "work_fuel", "envelope_work_fuel"),
+    ("logical_durable_storage_bytes", "logical_durable_storage_bytes",
+     "envelope_logical_durable_storage_bytes"),
+)
 SUITE_BLOCK_FIELDS = frozenset({"block_id", "case_lists", "rule", "sealed"})
 GA_SUITE_BLOCK_ID = 0
 
@@ -307,9 +313,14 @@ def _validate(document: Any) -> Dict[str, Any]:
             _require(isinstance(partitions, dict) and set(partitions) == set(PARTITIONS),
                      f"genesis floor vectors[{profile_id!r}] must carry both partitions")
             for partition in PARTITIONS:
-                validate_vector(partitions[partition], profile_id,
-                                f"genesis floor vectors[{profile_id!r}][{partition!r}]",
-                                declared=profiles[profile_id]["protected_quality_objectives"])
+                where = f"genesis floor vectors[{profile_id!r}][{partition!r}]"
+                vector = validate_vector(
+                    partitions[partition], profile_id, where,
+                    declared=profiles[profile_id]["protected_quality_objectives"])
+                for axis, measured_key, cap_key in PRODUCT_CAP_VECTOR_FIELDS:
+                    _require(vector[cap_key] > vector[measured_key],
+                             f"{where}.{cap_key} must be an explicit product SLO above genesis "
+                             f"{axis}, not a cap derived equal to measured R")
         source = floor.get("source")
         _require(isinstance(source, dict) and frozenset(source) == GENESIS_SOURCE_FIELDS,
                  f"a resolved genesis floor source must be exactly "
@@ -452,6 +463,12 @@ def genesis_floor_vector(profile_id: str, partition: str) -> Dict[str, Any]:
         raise CanonicalSuiteError(
             f"the resolved genesis floor carries no vector for profile {profile_id!r}")
     return copy.deepcopy(vectors[profile_id][partition])
+
+
+def fixed_product_cap(profile_id: str, partition: str) -> Dict[str, int]:
+    """The exact law-owned cap ``C`` for one profile/partition, from its sealed floor vector."""
+    vector = genesis_floor_vector(profile_id, partition)
+    return {axis: vector[cap_key] for axis, _measured_key, cap_key in PRODUCT_CAP_VECTOR_FIELDS}
 
 
 def reset_cache() -> None:

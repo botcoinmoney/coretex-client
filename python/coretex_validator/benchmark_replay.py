@@ -24,6 +24,7 @@ import zipfile
 from pathlib import Path
 from typing import Any, Mapping, Optional
 
+from . import eval_artifact as evaluation
 from . import release as release_module
 
 _MANIFEST = "MINER-KIT.json"
@@ -598,10 +599,16 @@ class ReleaseBenchmarkRunner:
     def replay_report(self, report: Mapping[str, Any], *, expected_root: str,
                       incumbent_execution: Mapping[str, Any],
                       parent_stored_vector: Mapping[str, Any]) -> Mapping[str, Any]:
-        if not isinstance(parent_stored_vector, Mapping) \
-                or "partitions" not in parent_stored_vector:
+        profile_id = report.get("profile_id") if isinstance(report, Mapping) else None
+        release_root = incumbent_execution.get("release_root") \
+            if isinstance(incumbent_execution, Mapping) else None
+        try:
+            parent_stored_vector = evaluation.validate_parent_stored_vector(
+                parent_stored_vector, expected_profile_id=profile_id,
+                expected_release_root=release_root)
+        except evaluation.EvalArtifactError as exc:
             raise BenchmarkReplayError(
-                "replay requires the artifact-bound determinism_witness as parent_stored_vector")
+                f"replay requires a complete exact-parent stored vector: {exc}") from exc
         result = self._run({
             "mode": "replay", "report": dict(report), "expected_root": expected_root,
             "incumbent": dict(incumbent_execution),
