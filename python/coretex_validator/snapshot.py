@@ -82,6 +82,7 @@ def _seed_genesis_objects(release: ReleaseDirectory, store: publication.InMemory
         frontier_wrapper = _load_json_bytes(
             (release_path / "GENESIS-FRONTIER.json").read_bytes(), "GENESIS-FRONTIER.json")
         composition_raw = (release_path / "GENESIS-COMPOSITION.json").read_bytes()
+        baseline_raw = (release_path / "GENESIS-BASELINE.json").read_bytes()
     except OSError as exc:
         raise SnapshotBuildError(f"release genesis objects are unavailable: {exc}") from exc
     if set(frontier_wrapper) != {"format", "frontier_root", "manifest"} \
@@ -97,6 +98,13 @@ def _seed_genesis_objects(release: ReleaseDirectory, store: publication.InMemory
             or _sha(_canonical(body)) != composition_root:
         raise SnapshotBuildError("release genesis composition does not reproduce its root")
     store.put(composition_root, composition_raw)
+    baseline_root = release.release.raw["genesis"]["baseline_root"]
+    baseline = _load_json_bytes(baseline_raw, "GENESIS-BASELINE.json")
+    baseline_body = {key: value for key, value in baseline.items() if key != "baseline_root"}
+    if baseline.get("baseline_root") != baseline_root \
+            or _sha(_canonical(baseline_body)) != baseline_root:
+        raise SnapshotBuildError("release genesis baseline does not reproduce its root")
+    store.put(baseline_root, baseline_raw)
     for profile in PROFILE_IDS:
         declaration = release.release.raw["genesis"]["profile_releases"][profile]
         path = release_path / declaration["path"]
