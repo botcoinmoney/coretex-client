@@ -14,6 +14,12 @@ case "$OUTPUT_DIR" in
     ;;
 esac
 
+# `build_release.py` resolves relative --out-dir values from SCRIPT_DIR, while this wrapper is
+# intentionally callable from any working directory. Canonicalize once here so copying and the
+# final --check always address the same directory.
+mkdir -p "$OUTPUT_DIR"
+OUTPUT_DIR="$(cd "$OUTPUT_DIR" && pwd -P)"
+
 WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/coretex-validator-1.0.0.XXXXXX")"
 trap 'rm -rf "$WORK_DIR"' EXIT
 
@@ -25,7 +31,6 @@ cmp "$WORK_DIR/a/coretex_validator-1.0.0-py3-none-any.whl" \
 cmp "$WORK_DIR/a/coretex_validator-1.0.0.tar.gz" \
     "$WORK_DIR/b/coretex_validator-1.0.0.tar.gz"
 
-mkdir -p "$OUTPUT_DIR"
 cp "$WORK_DIR/a/coretex_validator-1.0.0-py3-none-any.whl" "$OUTPUT_DIR/"
 cp "$WORK_DIR/a/coretex_validator-1.0.0.tar.gz" "$OUTPUT_DIR/"
 python3 "$SCRIPT_DIR/build_release.py" --out-dir "$OUTPUT_DIR" --check > "$WORK_DIR/check.json"
