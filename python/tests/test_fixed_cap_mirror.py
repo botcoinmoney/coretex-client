@@ -38,6 +38,46 @@ def test_suite_declares_eighteen_explicit_product_caps_above_genesis_usage():
     assert len(observed) == 18
 
 
+def _accounting_side(vector: dict) -> dict:
+    return {
+        "composite_micro": vector["composite_micro"],
+        "rendered_cost_micro": vector["rendered_cost_micro"],
+        "work_fuel": vector["work_fuel"],
+        "logical_durable_storage_bytes": vector["logical_durable_storage_bytes"],
+    }
+
+
+def test_counter_accounting_is_fixed_cap_normalized_and_zero_safe():
+    law = ea.load_counter_resource_law()
+    assert law["resource_normalizer"] == ea.FIXED_CAP_RESOURCE_NORMALIZER
+    parent = copy.deepcopy(cs.genesis_floor_vector(PROFILE, "confirm"))
+    candidate = copy.deepcopy(parent)
+    for _axis, measured_key, cap_key in cs.PRODUCT_CAP_VECTOR_FIELDS:
+        parent[measured_key] = 0
+        candidate[measured_key] = candidate[cap_key]
+    accounting = ea.evaluate_counter_resource_law(
+        law, _accounting_side(candidate), _accounting_side(parent), profile_id=PROFILE,
+        candidate_vector=candidate, incumbent_vector=parent)
+    assert accounting["resource_before_ppm"] == 0
+    assert accounting["resource_after_ppm"] == ea.MICRO
+
+
+def test_counter_accounting_rejects_legacy_law_and_forged_cap():
+    law = ea.load_counter_resource_law()
+    legacy = copy.deepcopy(law)
+    legacy.pop("resource_normalizer")
+    with pytest.raises(ea.ArtifactSchemaError, match="resource_normalizer"):
+        ea.validate_counter_resource_law(legacy)
+
+    parent = copy.deepcopy(cs.genesis_floor_vector(PROFILE, "confirm"))
+    candidate = copy.deepcopy(parent)
+    candidate["envelope_work_fuel"] += 1
+    with pytest.raises(ea.ResourceAccountingError, match="canonical fixed product cap"):
+        ea.evaluate_counter_resource_law(
+            law, _accounting_side(candidate), _accounting_side(parent), profile_id=PROFILE,
+            candidate_vector=candidate, incumbent_vector=parent)
+
+
 @pytest.mark.parametrize("mutation, error, match", [
     (lambda value: value.pop("source_root"), ea.ArtifactSchemaError, "missing"),
     (lambda value: value.update(profile_id="conv.pref.v1"),

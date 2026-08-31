@@ -264,7 +264,7 @@ def verify_epoch_context(value: Any, epoch: int, epoch_context_root: str, *,
     if not isinstance(value, Mapping):
         raise ReplayError("EPOCH_CONTEXT_INVALID", "epoch context must be an object")
     fields = {
-        "active_frontier_root", "admission_thresholds_ppm", "baseline_manifest_hash",
+        "active_frontier_root", "baseline_manifest_hash",
         "benchmark_law_root", "corpus_root", "counter_resource_law_root", "epoch", "format",
         "runtime_abi_root", "seed_commitment", "selection_law_root"}
     if set(value) != fields or value.get("format") != rig_events.EPOCH_CONTEXT_FORMAT:
@@ -292,12 +292,6 @@ def verify_epoch_context(value: Any, epoch: int, epoch_context_root: str, *,
             raise ReplayError(
                 "EPOCH_CONTEXT_INVALID",
                 f"epoch context {field}={value[field]} but release requires {expected}")
-    thresholds = value["admission_thresholds_ppm"]
-    if thresholds != {
-            "maximum_resource_regression_ppm": 0,
-            "minimum_utility_improvement_ppm": 1}:
-        raise ReplayError(
-            "EPOCH_CONTEXT_INVALID", "epoch context has another admission threshold set")
     seed = value["seed_commitment"]
     if seed != {
             "binding_rule":

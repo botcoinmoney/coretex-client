@@ -1074,6 +1074,12 @@ def check_screener_descriptor(raw: bytes, *, transition_format_version: Optional
 # so the manifest declares the commitment SCHEME and its BINDING RULE, and the word is minted later
 # in its own cell. A manifest that carried the word would invert the ordering, so the closed schema
 # below has no field for it.
+#
+# Nor does it repeat selected admission rules as threshold aliases. ``selection_law_root`` binds
+# the complete fixed-cap law. Quality may spend more resources than its exact parent inside C,
+# while efficiency need not improve utility, so aliases named ``maximum_resource_regression_ppm``
+# and ``minimum_utility_improvement_ppm`` would be false public descriptions and a second law
+# surface capable of contradicting the addressed law.
 #: The epochContext manifest's family. Content-addressed under the repo's ONE canonical-JSON law
 #: (``frontier.canonical_bytes``, IMPORTED and never restated), so floats and ``null`` are refused,
 #: keys sort by code point, arrays keep their order, and roots are bare lowercase 64-hex.
@@ -1096,12 +1102,14 @@ EPOCH_CONTEXT_ROOT_FIELDS: Tuple[str, ...] = (
 #: forbid, so nothing below is optional.
 #:
 #: The complete v1 schema. The producer and validator use these exact names or the root cannot
-#: reproduce. ``admission_thresholds_ppm`` is integer-only exact arithmetic; ``seed_commitment``
-#: carries the SCHEME and its source, never the epoch's commitment word — see §2A.3 above.
+#: reproduce. ``selection_law_root`` binds the complete admission law; duplicating selected
+#: thresholds here would create a second, potentially contradictory public description of that
+#: law. ``seed_commitment`` carries the SCHEME and its source, never the epoch's commitment word —
+#: see §2A.3 above.
 EPOCH_CONTEXT_FIELDS: Tuple[str, ...] = (
     "format", "epoch", "corpus_root", "active_frontier_root", "baseline_manifest_hash",
     "benchmark_law_root", "runtime_abi_root", "counter_resource_law_root",
-    "selection_law_root", "admission_thresholds_ppm", "seed_commitment")
+    "selection_law_root", "seed_commitment")
 #: ``seed_commitment``'s exact closed shape: WHAT the scheme is, HOW it binds, and WHERE the later
 #: commitment word lives. All three are strings; the word itself has no field in hashed state.
 EPOCH_CONTEXT_SEED_COMMITMENT_FIELDS: Tuple[str, ...] = (
@@ -1191,24 +1199,6 @@ def validate_epoch_context(manifest: Any) -> Dict[str, Any]:
                 "a concrete corpus, manifest, or law")
     except fr.FrontierError as exc:
         raise EpochContextError(EPOCH_CONTEXT_MALFORMED, str(exc)) from exc
-
-    thresholds = manifest["admission_thresholds_ppm"]
-    _epoch_context_require(isinstance(thresholds, Mapping), EPOCH_CONTEXT_MALFORMED,
-                           "epoch_context.admission_thresholds_ppm must be an object, got "
-                           f"{type(thresholds).__name__}")
-    _epoch_context_require(bool(thresholds), EPOCH_CONTEXT_MALFORMED,
-                           "epoch_context.admission_thresholds_ppm must be nonempty")
-    for key, value in thresholds.items():
-        _epoch_context_require(isinstance(key, str) and len(key) > 0,
-                               EPOCH_CONTEXT_MALFORMED,
-                               "epoch_context.admission_thresholds_ppm keys must be nonempty "
-                               "strings")
-        _epoch_context_require(isinstance(value, int) and not isinstance(value, bool),
-                               EPOCH_CONTEXT_MALFORMED,
-                               f"epoch_context.admission_thresholds_ppm.{key} must be an integer")
-        _epoch_context_require(0 <= value <= 0xffff_ffff, EPOCH_CONTEXT_MALFORMED,
-                               f"epoch_context.admission_thresholds_ppm.{key}={value} is outside "
-                               "the uint32 range")
 
     seed = manifest["seed_commitment"]
     _epoch_context_require(isinstance(seed, Mapping), EPOCH_CONTEXT_MALFORMED,

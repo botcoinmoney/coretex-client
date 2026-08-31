@@ -41,6 +41,7 @@ FIXED_MEASUREMENT_POLICY = "final-render-trusted-hostwork.v4"
 DOMINANCE_ENGINE_ID = "dominance.componentwise.v1"
 
 COUNTER_RESOURCE_LAW_FORMAT = "coretex.counter-resource-law.v1"
+FIXED_CAP_RESOURCE_NORMALIZER = "fixed_product_cap_c"
 
 #: THE EVALUATION REPORT — the deterministic Benchmark-v2 result this artifact addresses. V5 does
 #: not mint a new family; ``benchmark-v2/validator/receipt.py`` owns this shape, and it is
@@ -194,8 +195,8 @@ CANDIDATE_INCUMBENT_FIELDS = ("candidate_hash", "exec", "id", "module_sha256", "
 RESOURCE_ACCOUNTING_FIELDS = ("branch", "resource_after_ppm", "resource_before_ppm",
                               "utility_after_ppm", "utility_before_ppm")
 VERDICT_FIELDS = ("admit", "consensus_critical", "decision_hash", "verdict")
-COUNTER_LAW_FIELDS = ("branch", "format", "resource_axes", "resource_ppm_max", "utility_axis",
-                      "utility_ppm_max")
+COUNTER_LAW_FIELDS = ("branch", "format", "resource_axes", "resource_normalizer",
+                      "resource_ppm_max", "utility_axis", "utility_ppm_max")
 RESOURCE_AXIS_FIELDS = ("id", "integer_axis", "source", "unit", "weight_ppm")
 
 # --------------------------------------------------------------------------- #
@@ -604,6 +605,10 @@ def validate_counter_resource_law(law: Any) -> Dict[str, Any]:
     if law["branch"] not in SELECTION_LABELS:
         raise CounterResourceLawError(
             f"branch {law['branch']!r} must be one of {SELECTION_LABELS}")
+    if law["resource_normalizer"] != FIXED_CAP_RESOURCE_NORMALIZER:
+        raise CounterResourceLawError(
+            f"resource_normalizer {law['resource_normalizer']!r} is not the fixed-cap "
+            f"normalizer {FIXED_CAP_RESOURCE_NORMALIZER!r}")
     _check_int(law["resource_ppm_max"], "resource_ppm_max", minimum=1, maximum=MAX_UINT32)
     _check_int(law["utility_ppm_max"], "utility_ppm_max", minimum=1, maximum=MAX_UINT32)
     util = _check_closed(law["utility_axis"], ("scale_max", "source"), "utility_axis")
@@ -627,8 +632,8 @@ def validate_counter_resource_law(law: Any) -> Dict[str, Any]:
         seen.add(axis["id"])
     if total != MICRO:
         raise CounterResourceLawError(
-            f"resource axis weights sum to {total} ppm, not {MICRO}; the incumbent side must "
-            "evaluate to EXACTLY 1_000_000 ppm by construction (it is the unit of comparison)")
+            f"resource axis weights sum to {total} ppm, not {MICRO}; a side exactly at fixed "
+            "product cap C must evaluate to exactly 1_000_000 ppm")
     return law
 
 
@@ -652,17 +657,73 @@ def _axis_micro(side: Mapping[str, Any], axis: Mapping[str, Any], where: str) ->
     raise CounterResourceLawError(f"unknown resource axis source {source!r}")
 
 
+def _axis_cap_micro(fixed_cap: Mapping[str, Any], axis: Mapping[str, Any]) -> int:
+    """The positive fixed-product cap ``C`` for one resource axis, in micro units.
+
+    ``fixed_cap`` is one law-validated absolute vector.  The artifact layer separately proves
+    that the parent and candidate both carry this canonical ``C``; using it here keeps aggregate
+    accounting descriptive.  In particular, a zero measured parent axis is a valid reading, not
+    a missing denominator that can strand the lineage.
+    """
+    source = axis["source"]
+    if source == "rendered_cost":
+        key = "envelope_rendered_cost_micro"
+        scale = 1
+    elif source.startswith("resource."):
+        key = f"envelope_{source.split('.', 1)[1]}"
+        scale = MICRO
+    else:
+        raise CounterResourceLawError(f"unknown resource axis source {source!r}")
+    if key not in fixed_cap:
+        raise CounterResourceLawError(
+            f"fixed product cap carries no {key!r} required by resource axis {axis['id']!r}")
+    value = _check_int(fixed_cap[key], f"fixed_cap.{key}") * scale
+    if value <= 0:
+        raise CounterResourceLawError(
+            f"fixed product cap {key!r} is {value}; every metered cap axis must be positive")
+    return value
+
+
+def _canonical_fixed_cap_for_accounting(*, profile_id: str, branch: str,
+                                        candidate_vector: Mapping[str, Any],
+                                        incumbent_vector: Mapping[str, Any]) -> Dict[str, Any]:
+    """Validate both serialized envelopes and return law-owned ``C`` for this partition."""
+    if branch not in SELECTION_LABELS:
+        raise CounterResourceLawError(
+            f"counter-resource branch {branch!r} must be one of {SELECTION_LABELS}")
+    candidate_vector = _validate_vector(
+        candidate_vector, f"counter_resource.{branch}.candidate_vector", profile_id)
+    incumbent_vector = _validate_vector(
+        incumbent_vector, f"counter_resource.{branch}.incumbent_vector", profile_id)
+    canonical = cs.genesis_floor_vector(profile_id, branch)
+    for side, vector in (("candidate", candidate_vector), ("incumbent", incumbent_vector)):
+        if vector["suite_block_id"] != canonical["suite_block_id"]:
+            raise ResourceAccountingError(
+                f"{side} suite_block_id {vector['suite_block_id']} is not canonical block "
+                f"{canonical['suite_block_id']} for {profile_id!r}/{branch}")
+        for axis, _resource_key, cap_key in cs.PRODUCT_CAP_VECTOR_FIELDS:
+            if vector[cap_key] != canonical[cap_key]:
+                raise ResourceAccountingError(
+                    f"{side} {cap_key}={vector[cap_key]} does not equal canonical fixed product "
+                    f"cap C={canonical[cap_key]} for {profile_id!r}/{branch} ({axis})")
+    return canonical
+
+
 def evaluate_counter_resource_law(law: Mapping[str, Any], candidate: Mapping[str, Any],
-                                  incumbent: Mapping[str, Any]) -> Dict[str, int]:
+                                  incumbent: Mapping[str, Any],
+                                  *, profile_id: str,
+                                  candidate_vector: Mapping[str, Any],
+                                  incumbent_vector: Mapping[str, Any]) -> Dict[str, int]:
     """Recompute ``{utility_before_ppm, utility_after_ppm, resource_before_ppm,
     resource_after_ppm}`` from two measured sides. EXACT integer arithmetic throughout.
 
     utility:  ``utility_ppm = composite_micro // scale_max`` — a composite of ``scale_max``
               is exactly 1_000_000 ppm and 0 is exactly 0.
-    resource: ``resource_ppm = SUM_axes ( weight_ppm * side_micro[axis] ) // incumbent_micro[axis]``
-              — a per-axis floor, weights summing to 1_000_000, so the incumbent side evaluates
-              to EXACTLY 1_000_000 by construction and the candidate's value reads directly as
-              "parts per million of the incumbent's metered cost".
+    resource: ``resource_ppm = SUM_axes ( weight_ppm * side_micro[axis] ) // C_micro[axis]``
+              — a per-axis floor against the positive fixed product cap ``C``.  Both sides use
+              the same denominator, so zero measurements are representable and every cap-valid
+              side is in ``[0, 1_000_000]``.  The aggregate is bound telemetry; raw ``R`` versus
+              exact-parent ``R`` remains the efficiency predicate.
 
     §17.236 records these ppm values on-chain but does NOT rank them there; the Pareto/resource
     trade-off stays off-chain under this pinned law, bound through ``evalReportHash`` +
@@ -670,6 +731,9 @@ def evaluate_counter_resource_law(law: Mapping[str, Any], candidate: Mapping[str
     the artifact — no coordinator-private state.
     """
     validate_counter_resource_law(law)
+    fixed_cap = _canonical_fixed_cap_for_accounting(
+        profile_id=profile_id, branch=law["branch"], candidate_vector=candidate_vector,
+        incumbent_vector=incumbent_vector)
     scale_max = law["utility_axis"]["scale_max"]
     out = {
         "utility_before_ppm": _check_int(incumbent["composite_micro"],
@@ -680,11 +744,7 @@ def evaluate_counter_resource_law(law: Mapping[str, Any], candidate: Mapping[str
     for name, side in (("resource_before_ppm", incumbent), ("resource_after_ppm", candidate)):
         total = 0
         for axis in law["resource_axes"]:
-            base = _axis_micro(incumbent, axis, "incumbent")
-            if base <= 0:
-                raise CounterResourceLawError(
-                    f"incumbent resource axis {axis['id']!r} is {base}; a zero baseline has no "
-                    "ratio and is refused rather than treated as free")
+            base = _axis_cap_micro(fixed_cap, axis)
             total += (axis["weight_ppm"] * _axis_micro(side, axis, name)) // base
         out[name] = total
     for key, value in out.items():
@@ -1672,12 +1732,17 @@ def build_artifact_v3(*, epoch: int, parent_manifest: Mapping[str, Any], epoch_p
     # ``scores``; every binding this builder makes afterwards would then be honest by
     # construction, so the projection is the only thing that can see it. Refusing here means an
     # evaluator handed such a report cannot mint an artifact from it at all.
-    assert_decided_vectors_are_measured(dominance_block_for(body["verdicts"], body["decision"]),
-                                        measurements)
+    dominance = dominance_block_for(body["verdicts"], body["decision"])
+    assert_decided_vectors_are_measured(dominance, measurements)
     branch = counter_resource_law["branch"]
     ppm = evaluate_counter_resource_law(counter_resource_law,
                                         measurements["branches"][branch]["candidate"],
-                                        measurements["branches"][branch]["incumbent"])
+                                        measurements["branches"][branch]["incumbent"],
+                                        profile_id=target,
+                                        candidate_vector=dominance["partitions"][branch]
+                                        ["candidate_vector"],
+                                        incumbent_vector=dominance["partitions"][branch]
+                                        ["incumbent_vector"])
     confirm = body["verdicts"]["confirm"]
     confirm_proj = confirm.get("admission_projection") or {}
     if body["decision"]["admit"]:
@@ -1704,7 +1769,7 @@ def build_artifact_v3(*, epoch: int, parent_manifest: Mapping[str, Any], epoch_p
         "counter_resource_law_root": (counter_resource_law_root_hex
                                       or counter_resource_law_root(counter_resource_law)),
         "determinism_witness": dict(witness),
-        "dominance": dominance_block_for(body["verdicts"], body["decision"]),
+        "dominance": dominance,
         "epoch": epoch,
         "format": ARTIFACT_FORMAT,
         "frontier": {
@@ -2350,14 +2415,14 @@ def _verify_bindings(artifact: Mapping[str, Any], *, eval_report,
     branch = law["branch"]
     recomputed = evaluate_counter_resource_law(
         law, artifact["measurements"]["branches"][branch]["candidate"],
-        artifact["measurements"]["branches"][branch]["incumbent"])
+        artifact["measurements"]["branches"][branch]["incumbent"],
+        profile_id=artifact["candidate"]["target_profile"],
+        candidate_vector=artifact["dominance"]["partitions"][branch]["candidate_vector"],
+        incumbent_vector=artifact["dominance"]["partitions"][branch]["incumbent_vector"])
     for key, value in recomputed.items():
         _require(acct[key] == value, ResourceAccountingError,
                  f"resource_accounting.{key} is {acct[key]}, the pinned counter law recomputes "
                  f"{value} from the bound measurements")
-    _require(acct["resource_before_ppm"] == MICRO, ResourceAccountingError,
-             f"resource_before_ppm is {acct['resource_before_ppm']}; the incumbent is the unit "
-             f"of comparison and must evaluate to exactly {MICRO} ppm")
     done("counter_resource_law")
 
     # ---- 9. the verdict is the receipt's deterministic decision -----------------------------

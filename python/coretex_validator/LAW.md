@@ -166,9 +166,13 @@ The exact 18 integers serialized in the suite's floor-vector `envelope_*` fields
 | `event.schema.v1` | gate | 180000000 | 2500000 | 2000000 |
 | `event.schema.v1` | confirm | 180000000 | 5000000 | 2000000 |
 
-These are permanence constants for suite block 0. Repeated efficiency wins do not change them; a
-later quality win may use saved capacity up to them. Calibration inputs, measured margins, and
-quality-spend evidence are recorded with the release evidence rather than inferred from these
+These are immutable constants for suite block 0 under this exact law descriptor. Repeated
+efficiency wins do not change them; a later quality win may use saved capacity up to them. They are
+not assertions that one guessed budget must govern every future CoreTex law forever. Before public
+activation this unreleased genesis may be recut. After activation, changing a cap requires a new
+prospective law descriptor, release closure, calibration/approval record, and activation; it never
+edits block 0 in place or reinterprets an existing receipt. Calibration inputs, measured margins,
+and quality-spend evidence are recorded with the release evidence rather than inferred from these
 rounded numbers.
 
 ### 3A.3 Admission rule
@@ -226,14 +230,18 @@ scoreAfterPpm  = admission_gain_ppm     # in [1, 1_000_000]
   the axis contributes `1_000_000`. There is no 0.1% floor: a one-unit win that floors to 0 ppm
   still admits at `1`.
 
-Exact-parent sequencing remains `parentStateRoot` / `newStateRoot`. Visualizer and `/status`
-display artifact `Q`/`R`/`E` and progress class; receipt scores are **admission gain
+Exact-parent sequencing remains `parentStateRoot` / `newStateRoot`. The visualizer displays
+transition-history artifact `Q`/`R`/`E` and progress class. The unauthenticated
+`/parent-vector/{profile_id}` route supplies the current exact parent `Q`/`R`/`C`; `/status`
+supplies the broader confirmed chain and deployment view. Receipt scores are **admission gain
 (compatibility)**, never utility.
 
-The counter-resource aggregate is still recomputed and bound. On an efficiency admit it remains a
-theorem that `resource_after_ppm <= resource_before_ppm = 1_000_000`. On a quality admit,
-measured `R` may rise versus the parent inside `C`, so the aggregate may exceed `1_000_000`; that
-does not override clause 3.
+The counter-resource aggregate is still recomputed and bound as non-admission telemetry. Each
+side is normalized against the same positive fixed product cap `C`, not against `R(A)`, so a zero
+resource reading is valid and every cap-valid side lies in `[0, 1_000_000]`. On an efficiency
+admit, raw componentwise `R(B) <= R(A)` implies
+`resource_after_ppm <= resource_before_ppm`; on a quality admit the aggregate may rise inside that
+range. The raw `Q`/`R`/`C` rule above is the sole admission authority.
 
 ### 3A.4 Exact-parent and determinism witness
 
