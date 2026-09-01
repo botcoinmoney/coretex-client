@@ -1,0 +1,1005 @@
+{
+ "format": "coretex.fixed-cap-dominance-parity/v3",
+ "scope": "Cross-language dominance and canonical-byte vectors for LAW \u00a73A.3 under dominance.componentwise.v2 (bounded trade: \u03c4 = 2.5 pt per objective per step and below genesis, gains >= 2 \u00d7 dips, composite floor exact). Every transition evaluates gate and confirm independently; each vector states per partition the verdict, class, admission_gain_ppm and the failing-rule tags (frontier.dominance.FAILED_RULE_TAGS). Schema-edge vectors are intentionally invalid artifacts; direct parser boundary coverage lives beside this corpus. `mirror_valid` (default = artifact_valid) states whether the TypeScript mirror accepts the artifact; it differs only where an integer is exact in Python but not a JavaScript safe integer.",
+ "vectors": [
+  {
+   "confirm": {
+    "axis": "logical_durable_storage_bytes",
+    "kind": "quality_spend"
+   },
+   "expected": {
+    "admit": true,
+    "artifact_valid": true,
+    "confirm_admission_gain_ppm": 1,
+    "confirm_admit": true,
+    "confirm_class": "quality",
+    "confirm_failed_rules": [],
+    "gate_admission_gain_ppm": 1,
+    "gate_admit": true,
+    "gate_class": "quality",
+    "gate_failed_rules": []
+   },
+   "gate": {
+    "axis": "work_fuel",
+    "kind": "quality_spend"
+   },
+   "id": "doc_quality_spends_inside_c",
+   "profile_id": "doc.tool.v1"
+  },
+  {
+   "confirm": {
+    "axis": "work_fuel",
+    "kind": "quality_at_cap"
+   },
+   "expected": {
+    "admit": true,
+    "artifact_valid": true,
+    "confirm_admission_gain_ppm": 1,
+    "confirm_admit": true,
+    "confirm_class": "quality",
+    "confirm_failed_rules": [],
+    "gate_admission_gain_ppm": 1,
+    "gate_admit": true,
+    "gate_class": "quality",
+    "gate_failed_rules": []
+   },
+   "gate": {
+    "axis": "rendered_cost",
+    "kind": "quality_at_cap"
+   },
+   "id": "doc_quality_at_exact_c",
+   "profile_id": "doc.tool.v1"
+  },
+  {
+   "confirm": {
+    "axis": "work_fuel",
+    "kind": "quality_cap_plus_one"
+   },
+   "expected": {
+    "admit": false,
+    "artifact_valid": true,
+    "confirm_admission_gain_ppm": null,
+    "confirm_admit": false,
+    "confirm_class": null,
+    "confirm_failed_rules": [
+     "3"
+    ],
+    "gate_admission_gain_ppm": null,
+    "gate_admit": false,
+    "gate_class": null,
+    "gate_failed_rules": [
+     "3"
+    ]
+   },
+   "gate": {
+    "axis": "rendered_cost",
+    "kind": "quality_cap_plus_one"
+   },
+   "id": "doc_quality_above_c_by_one",
+   "profile_id": "doc.tool.v1"
+  },
+  {
+   "confirm": {
+    "axis": "work_fuel",
+    "kind": "efficiency"
+   },
+   "expected": {
+    "admit": true,
+    "artifact_valid": true,
+    "confirm_admission_gain_ppm": 1,
+    "confirm_admit": true,
+    "confirm_class": "efficiency",
+    "confirm_failed_rules": [],
+    "gate_admission_gain_ppm": 1,
+    "gate_admit": true,
+    "gate_class": "efficiency",
+    "gate_failed_rules": []
+   },
+   "gate": {
+    "axis": "rendered_cost",
+    "kind": "efficiency"
+   },
+   "id": "doc_held_quality_one_resource_strictly_lower",
+   "profile_id": "doc.tool.v1"
+  },
+  {
+   "confirm": {
+    "axis": "rendered_cost",
+    "kind": "held_resource_rise"
+   },
+   "expected": {
+    "admit": false,
+    "artifact_valid": true,
+    "confirm_admission_gain_ppm": null,
+    "confirm_admit": false,
+    "confirm_class": null,
+    "confirm_failed_rules": [
+     "4"
+    ],
+    "gate_admission_gain_ppm": null,
+    "gate_admit": false,
+    "gate_class": null,
+    "gate_failed_rules": [
+     "4"
+    ]
+   },
+   "gate": {
+    "axis": "logical_durable_storage_bytes",
+    "kind": "held_resource_rise"
+   },
+   "id": "doc_held_quality_resource_rise",
+   "profile_id": "doc.tool.v1"
+  },
+  {
+   "confirm": {
+    "axis": "logical_durable_storage_bytes",
+    "kind": "quality_cheaper"
+   },
+   "expected": {
+    "admit": true,
+    "artifact_valid": true,
+    "confirm_admission_gain_ppm": 1,
+    "confirm_admit": true,
+    "confirm_class": "quality",
+    "confirm_failed_rules": [],
+    "gate_admission_gain_ppm": 1,
+    "gate_admit": true,
+    "gate_class": "quality",
+    "gate_failed_rules": []
+   },
+   "gate": {
+    "axis": "work_fuel",
+    "kind": "quality_cheaper"
+   },
+   "id": "doc_quality_wins_quality_efficiency_tie",
+   "profile_id": "doc.tool.v1"
+  },
+  {
+   "confirm": {
+    "kind": "objective_regression"
+   },
+   "expected": {
+    "admit": false,
+    "artifact_valid": true,
+    "confirm_admission_gain_ppm": null,
+    "confirm_admit": false,
+    "confirm_class": null,
+    "confirm_failed_rules": [
+     "2.3"
+    ],
+    "gate_admission_gain_ppm": null,
+    "gate_admit": false,
+    "gate_class": null,
+    "gate_failed_rules": [
+     "2.3"
+    ]
+   },
+   "gate": {
+    "kind": "objective_regression"
+   },
+   "id": "doc_quality_cannot_hide_objective_regression",
+   "profile_id": "doc.tool.v1"
+  },
+  {
+   "confirm": {
+    "kind": "identity"
+   },
+   "expected": {
+    "admit": false,
+    "artifact_valid": true,
+    "confirm_admission_gain_ppm": null,
+    "confirm_admit": false,
+    "confirm_class": null,
+    "confirm_failed_rules": [
+     "4"
+    ],
+    "gate_admission_gain_ppm": null,
+    "gate_admit": false,
+    "gate_class": null,
+    "gate_failed_rules": [
+     "4"
+    ]
+   },
+   "gate": {
+    "kind": "identity"
+   },
+   "id": "doc_equal_q_equal_r_is_no_progress",
+   "profile_id": "doc.tool.v1"
+  },
+  {
+   "confirm": {
+    "axis": "work_fuel",
+    "kind": "rounding_drop"
+   },
+   "expected": {
+    "admit": false,
+    "artifact_valid": true,
+    "confirm_admission_gain_ppm": null,
+    "confirm_admit": false,
+    "confirm_class": null,
+    "confirm_failed_rules": [
+     "2.2"
+    ],
+    "gate_admission_gain_ppm": null,
+    "gate_admit": false,
+    "gate_class": null,
+    "gate_failed_rules": [
+     "2.2"
+    ]
+   },
+   "gate": {
+    "axis": "rendered_cost",
+    "kind": "rounding_drop"
+   },
+   "id": "doc_efficiency_refuses_composite_rounding_drop",
+   "profile_id": "doc.tool.v1"
+  },
+  {
+   "confirm": {
+    "axis": "logical_durable_storage_bytes",
+    "kind": "forged_parent_envelope"
+   },
+   "expected": {
+    "admit": false,
+    "artifact_valid": false,
+    "confirm_admission_gain_ppm": null,
+    "confirm_admit": false,
+    "confirm_class": null,
+    "confirm_failed_rules": [
+     "5"
+    ],
+    "gate_admission_gain_ppm": null,
+    "gate_admit": false,
+    "gate_class": null,
+    "gate_failed_rules": [
+     "5"
+    ],
+    "mirror_code": "MIRROR_DOMINANCE_MISMATCH"
+   },
+   "gate": {
+    "axis": "work_fuel",
+    "kind": "forged_parent_envelope"
+   },
+   "id": "doc_forged_parent_e_is_fail_closed",
+   "profile_id": "doc.tool.v1"
+  },
+  {
+   "confirm": {
+    "axis": "logical_durable_storage_bytes",
+    "kind": "forged_candidate_envelope"
+   },
+   "expected": {
+    "admit": false,
+    "artifact_valid": false,
+    "confirm_admission_gain_ppm": 1,
+    "confirm_admit": true,
+    "confirm_class": "quality",
+    "confirm_failed_rules": [],
+    "gate_admission_gain_ppm": 1,
+    "gate_admit": true,
+    "gate_class": "quality",
+    "gate_failed_rules": [],
+    "mirror_code": "MIRROR_DOMINANCE_MISMATCH"
+   },
+   "gate": {
+    "axis": "work_fuel",
+    "kind": "forged_candidate_envelope"
+   },
+   "id": "doc_forged_candidate_e_is_fail_closed",
+   "profile_id": "doc.tool.v1"
+  },
+  {
+   "confirm": {
+    "axis": "work_fuel",
+    "kind": "quality_cap_plus_one"
+   },
+   "expected": {
+    "admit": false,
+    "artifact_valid": true,
+    "confirm_admission_gain_ppm": null,
+    "confirm_admit": false,
+    "confirm_class": null,
+    "confirm_failed_rules": [
+     "3"
+    ],
+    "gate_admission_gain_ppm": 1,
+    "gate_admit": true,
+    "gate_class": "quality",
+    "gate_failed_rules": []
+   },
+   "gate": {
+    "axis": "work_fuel",
+    "kind": "quality_spend"
+   },
+   "id": "doc_gate_admit_confirm_reject",
+   "profile_id": "doc.tool.v1"
+  },
+  {
+   "confirm": {
+    "axis": "work_fuel",
+    "kind": "quality_spend"
+   },
+   "expected": {
+    "admit": false,
+    "artifact_valid": true,
+    "confirm_admission_gain_ppm": 1,
+    "confirm_admit": true,
+    "confirm_class": "quality",
+    "confirm_failed_rules": [],
+    "gate_admission_gain_ppm": null,
+    "gate_admit": false,
+    "gate_class": null,
+    "gate_failed_rules": [
+     "3"
+    ]
+   },
+   "gate": {
+    "axis": "work_fuel",
+    "kind": "quality_cap_plus_one"
+   },
+   "id": "doc_gate_reject_confirm_admit",
+   "profile_id": "doc.tool.v1"
+  },
+  {
+   "confirm": {
+    "kind": "objective_regression"
+   },
+   "expected": {
+    "admit": false,
+    "artifact_valid": true,
+    "confirm_admission_gain_ppm": null,
+    "confirm_admit": false,
+    "confirm_class": null,
+    "confirm_failed_rules": [
+     "2.3"
+    ],
+    "gate_admission_gain_ppm": null,
+    "gate_admit": false,
+    "gate_class": null,
+    "gate_failed_rules": [
+     "4"
+    ]
+   },
+   "gate": {
+    "kind": "identity"
+   },
+   "id": "doc_both_partitions_reject",
+   "profile_id": "doc.tool.v1"
+  },
+  {
+   "confirm": {
+    "axis": "rendered_cost",
+    "kind": "quality_spend"
+   },
+   "expected": {
+    "admit": true,
+    "artifact_valid": true,
+    "confirm_admission_gain_ppm": 1,
+    "confirm_admit": true,
+    "confirm_class": "quality",
+    "confirm_failed_rules": [],
+    "gate_admission_gain_ppm": 1,
+    "gate_admit": true,
+    "gate_class": "quality",
+    "gate_failed_rules": []
+   },
+   "gate": {
+    "axis": "work_fuel",
+    "kind": "quality_spend"
+   },
+   "id": "conv_quality_spends_inside_c",
+   "profile_id": "conv.pref.v1"
+  },
+  {
+   "confirm": {
+    "axis": "work_fuel",
+    "kind": "efficiency"
+   },
+   "expected": {
+    "admit": true,
+    "artifact_valid": true,
+    "confirm_admission_gain_ppm": 1,
+    "confirm_admit": true,
+    "confirm_class": "efficiency",
+    "confirm_failed_rules": [],
+    "gate_admission_gain_ppm": 1,
+    "gate_admit": true,
+    "gate_class": "efficiency",
+    "gate_failed_rules": []
+   },
+   "gate": {
+    "axis": "logical_durable_storage_bytes",
+    "kind": "efficiency"
+   },
+   "id": "conv_efficiency_uses_exact_parent",
+   "profile_id": "conv.pref.v1"
+  },
+  {
+   "confirm": {
+    "axis": "logical_durable_storage_bytes",
+    "kind": "efficiency"
+   },
+   "expected": {
+    "admit": true,
+    "artifact_valid": true,
+    "confirm_admission_gain_ppm": 1,
+    "confirm_admit": true,
+    "confirm_class": "efficiency",
+    "confirm_failed_rules": [],
+    "gate_admission_gain_ppm": 1,
+    "gate_admit": true,
+    "gate_class": "quality",
+    "gate_failed_rules": []
+   },
+   "gate": {
+    "axis": "rendered_cost",
+    "kind": "quality_at_cap"
+   },
+   "id": "event_independent_partition_classes",
+   "profile_id": "event.schema.v1"
+  },
+  {
+   "confirm": {
+    "axis": "logical_durable_storage_bytes",
+    "kind": "reuse_saved_capacity"
+   },
+   "expected": {
+    "admit": true,
+    "artifact_valid": true,
+    "confirm_admission_gain_ppm": 1,
+    "confirm_admit": true,
+    "confirm_class": "quality",
+    "confirm_failed_rules": [],
+    "gate_admission_gain_ppm": 1,
+    "gate_admit": true,
+    "gate_class": "quality",
+    "gate_failed_rules": []
+   },
+   "gate": {
+    "axis": "work_fuel",
+    "kind": "reuse_saved_capacity"
+   },
+   "id": "conv_efficiency_then_quality_reuses_capacity",
+   "profile_id": "conv.pref.v1"
+  },
+  {
+   "confirm": {
+    "axis": "work_fuel",
+    "kind": "reuse_saved_capacity"
+   },
+   "expected": {
+    "admit": true,
+    "artifact_valid": true,
+    "confirm_admission_gain_ppm": 1,
+    "confirm_admit": true,
+    "confirm_class": "quality",
+    "confirm_failed_rules": [],
+    "gate_admission_gain_ppm": 1,
+    "gate_admit": true,
+    "gate_class": "quality",
+    "gate_failed_rules": []
+   },
+   "gate": {
+    "axis": "rendered_cost",
+    "kind": "reuse_saved_capacity"
+   },
+   "id": "event_efficiency_then_quality_reuses_capacity",
+   "profile_id": "event.schema.v1"
+  },
+  {
+   "confirm": {
+    "axis": "work_fuel",
+    "kind": "quality_spend"
+   },
+   "expected": {
+    "admit": false,
+    "artifact_valid": false,
+    "confirm_admission_gain_ppm": 1,
+    "confirm_admit": true,
+    "confirm_class": "quality",
+    "confirm_failed_rules": [],
+    "gate_admission_gain_ppm": 1,
+    "gate_admit": true,
+    "gate_class": "quality",
+    "gate_failed_rules": [],
+    "mirror_code": "MIRROR_ARTIFACT_INVALID"
+   },
+   "gate": {
+    "axis": "work_fuel",
+    "kind": "quality_spend",
+    "tamper": {
+     "field": "work_fuel",
+     "value": -1
+    }
+   },
+   "id": "malformed_negative_resource",
+   "profile_id": "conv.pref.v1"
+  },
+  {
+   "confirm": {
+    "axis": "work_fuel",
+    "kind": "quality_spend",
+    "tamper": {
+     "field": "objective",
+     "value": -1
+    }
+   },
+   "expected": {
+    "admit": false,
+    "artifact_valid": false,
+    "confirm_admission_gain_ppm": 1,
+    "confirm_admit": true,
+    "confirm_class": "quality",
+    "confirm_failed_rules": [],
+    "gate_admission_gain_ppm": 1,
+    "gate_admit": true,
+    "gate_class": "quality",
+    "gate_failed_rules": [],
+    "mirror_code": "MIRROR_ARTIFACT_INVALID"
+   },
+   "gate": {
+    "axis": "work_fuel",
+    "kind": "quality_spend"
+   },
+   "id": "malformed_negative_objective",
+   "profile_id": "event.schema.v1"
+  },
+  {
+   "confirm": {
+    "axis": "work_fuel",
+    "kind": "quality_spend"
+   },
+   "expected": {
+    "admit": false,
+    "artifact_valid": false,
+    "confirm_admission_gain_ppm": 1,
+    "confirm_admit": true,
+    "confirm_class": "quality",
+    "confirm_failed_rules": [],
+    "gate_admission_gain_ppm": 1,
+    "gate_admit": true,
+    "gate_class": "quality",
+    "gate_failed_rules": [],
+    "mirror_code": "MIRROR_ARTIFACT_INVALID"
+   },
+   "gate": {
+    "axis": "work_fuel",
+    "kind": "quality_spend",
+    "tamper": {
+     "field": "suite_block_id",
+     "value": 1
+    }
+   },
+   "id": "malformed_nonzero_suite_block",
+   "profile_id": "doc.tool.v1"
+  },
+  {
+   "confirm": {
+    "axis": "work_fuel",
+    "kind": "quality_spend",
+    "tamper": {
+     "field": "work_fuel",
+     "value": 18446744073709551615
+    }
+   },
+   "expected": {
+    "admit": false,
+    "artifact_valid": false,
+    "confirm_admission_gain_ppm": 1,
+    "confirm_admit": true,
+    "confirm_class": "quality",
+    "confirm_failed_rules": [],
+    "gate_admission_gain_ppm": 1,
+    "gate_admit": true,
+    "gate_class": "quality",
+    "gate_failed_rules": [],
+    "mirror_code": "MIRROR_ARTIFACT_INVALID"
+   },
+   "gate": {
+    "axis": "work_fuel",
+    "kind": "quality_spend"
+   },
+   "id": "malformed_uint64_max_not_exactly_portable_to_javascript",
+   "profile_id": "doc.tool.v1"
+  },
+  {
+   "confirm": {
+    "kind": "dip_at_tolerance_paid"
+   },
+   "expected": {
+    "admit": true,
+    "artifact_valid": true,
+    "confirm_admission_gain_ppm": 1,
+    "confirm_admit": true,
+    "confirm_class": "quality",
+    "confirm_failed_rules": [],
+    "gate_admission_gain_ppm": 1,
+    "gate_admit": true,
+    "gate_class": "quality",
+    "gate_failed_rules": []
+   },
+   "gate": {
+    "kind": "dip_at_tolerance_paid"
+   },
+   "id": "conv_dip_at_tolerance_paid_admits",
+   "profile_id": "conv.pref.v1"
+  },
+  {
+   "confirm": {
+    "kind": "dip_over_tolerance_paid"
+   },
+   "expected": {
+    "admit": false,
+    "artifact_valid": true,
+    "confirm_admission_gain_ppm": null,
+    "confirm_admit": false,
+    "confirm_class": null,
+    "confirm_failed_rules": [
+     "2.1"
+    ],
+    "gate_admission_gain_ppm": null,
+    "gate_admit": false,
+    "gate_class": null,
+    "gate_failed_rules": [
+     "2.1"
+    ]
+   },
+   "gate": {
+    "kind": "dip_over_tolerance_paid"
+   },
+   "id": "doc_dip_over_tolerance_paid_refuses",
+   "profile_id": "doc.tool.v1"
+  },
+  {
+   "confirm": {
+    "kind": "floor_minus_tolerance_paid"
+   },
+   "expected": {
+    "admit": true,
+    "artifact_valid": true,
+    "confirm_admission_gain_ppm": 1,
+    "confirm_admit": true,
+    "confirm_class": "quality",
+    "confirm_failed_rules": [],
+    "gate_admission_gain_ppm": 1,
+    "gate_admit": true,
+    "gate_class": "quality",
+    "gate_failed_rules": []
+   },
+   "gate": {
+    "kind": "floor_minus_tolerance_paid"
+   },
+   "id": "event_floor_minus_tolerance_paid_admits",
+   "profile_id": "event.schema.v1"
+  },
+  {
+   "confirm": {
+    "kind": "floor_below_tolerance_paid"
+   },
+   "expected": {
+    "admit": false,
+    "artifact_valid": true,
+    "confirm_admission_gain_ppm": null,
+    "confirm_admit": false,
+    "confirm_class": null,
+    "confirm_failed_rules": [
+     "2.2"
+    ],
+    "gate_admission_gain_ppm": null,
+    "gate_admit": false,
+    "gate_class": null,
+    "gate_failed_rules": [
+     "2.2"
+    ]
+   },
+   "gate": {
+    "kind": "floor_below_tolerance_paid"
+   },
+   "id": "conv_floor_below_tolerance_paid_refuses",
+   "profile_id": "conv.pref.v1"
+  },
+  {
+   "confirm": {
+    "kind": "trade_paid_exactly"
+   },
+   "expected": {
+    "admit": true,
+    "artifact_valid": true,
+    "confirm_admission_gain_ppm": 1,
+    "confirm_admit": true,
+    "confirm_class": "quality",
+    "confirm_failed_rules": [],
+    "gate_admission_gain_ppm": 1,
+    "gate_admit": true,
+    "gate_class": "quality",
+    "gate_failed_rules": []
+   },
+   "gate": {
+    "kind": "trade_paid_exactly"
+   },
+   "id": "doc_trade_paid_exactly_admits",
+   "profile_id": "doc.tool.v1"
+  },
+  {
+   "confirm": {
+    "kind": "trade_underpaid_by_one"
+   },
+   "expected": {
+    "admit": false,
+    "artifact_valid": true,
+    "confirm_admission_gain_ppm": null,
+    "confirm_admit": false,
+    "confirm_class": null,
+    "confirm_failed_rules": [
+     "2.3"
+    ],
+    "gate_admission_gain_ppm": null,
+    "gate_admit": false,
+    "gate_class": null,
+    "gate_failed_rules": [
+     "2.3"
+    ]
+   },
+   "gate": {
+    "kind": "trade_underpaid_by_one"
+   },
+   "id": "event_trade_underpaid_by_one_refuses",
+   "profile_id": "event.schema.v1"
+  },
+  {
+   "confirm": {
+    "kind": "two_dips_at_tolerance_paid"
+   },
+   "expected": {
+    "admit": true,
+    "artifact_valid": true,
+    "confirm_admission_gain_ppm": 1,
+    "confirm_admit": true,
+    "confirm_class": "quality",
+    "confirm_failed_rules": [],
+    "gate_admission_gain_ppm": 1,
+    "gate_admit": true,
+    "gate_class": "quality",
+    "gate_failed_rules": []
+   },
+   "gate": {
+    "kind": "two_dips_at_tolerance_paid"
+   },
+   "id": "conv_two_dips_at_tolerance_paid_admits",
+   "profile_id": "conv.pref.v1"
+  },
+  {
+   "confirm": {
+    "axis": "work_fuel",
+    "kind": "efficiency_with_paid_dips"
+   },
+   "expected": {
+    "admit": true,
+    "artifact_valid": true,
+    "confirm_admission_gain_ppm": 1,
+    "confirm_admit": true,
+    "confirm_class": "efficiency",
+    "confirm_failed_rules": [],
+    "gate_admission_gain_ppm": 1,
+    "gate_admit": true,
+    "gate_class": "efficiency",
+    "gate_failed_rules": []
+   },
+   "gate": {
+    "axis": "rendered_cost",
+    "kind": "efficiency_with_paid_dips"
+   },
+   "id": "doc_efficiency_with_paid_dips",
+   "profile_id": "doc.tool.v1"
+  },
+  {
+   "confirm": {
+    "axis": "rendered_cost",
+    "kind": "quality_with_paid_dips_tie"
+   },
+   "expected": {
+    "admit": true,
+    "artifact_valid": true,
+    "confirm_admission_gain_ppm": 1,
+    "confirm_admit": true,
+    "confirm_class": "quality",
+    "confirm_failed_rules": [],
+    "gate_admission_gain_ppm": 1,
+    "gate_admit": true,
+    "gate_class": "quality",
+    "gate_failed_rules": []
+   },
+   "gate": {
+    "axis": "logical_durable_storage_bytes",
+    "kind": "quality_with_paid_dips_tie"
+   },
+   "id": "event_quality_with_paid_dips_wins_tie",
+   "profile_id": "event.schema.v1"
+  },
+  {
+   "confirm": {
+    "axis": "logical_durable_storage_bytes",
+    "kind": "rounding_drop_with_paid_dips"
+   },
+   "expected": {
+    "admit": false,
+    "artifact_valid": true,
+    "confirm_admission_gain_ppm": null,
+    "confirm_admit": false,
+    "confirm_class": null,
+    "confirm_failed_rules": [
+     "4"
+    ],
+    "gate_admission_gain_ppm": null,
+    "gate_admit": false,
+    "gate_class": null,
+    "gate_failed_rules": [
+     "4"
+    ]
+   },
+   "gate": {
+    "axis": "work_fuel",
+    "kind": "rounding_drop_with_paid_dips"
+   },
+   "id": "conv_rounding_drop_with_paid_dips_refuses",
+   "profile_id": "conv.pref.v1"
+  },
+  {
+   "confirm": {
+    "axis": "work_fuel",
+    "kind": "unpaid_dip_on_efficiency"
+   },
+   "expected": {
+    "admit": false,
+    "artifact_valid": true,
+    "confirm_admission_gain_ppm": null,
+    "confirm_admit": false,
+    "confirm_class": null,
+    "confirm_failed_rules": [
+     "2.3"
+    ],
+    "gate_admission_gain_ppm": null,
+    "gate_admit": false,
+    "gate_class": null,
+    "gate_failed_rules": [
+     "2.3"
+    ]
+   },
+   "gate": {
+    "axis": "rendered_cost",
+    "kind": "unpaid_dip_on_efficiency"
+   },
+   "id": "doc_unpaid_dip_cannot_ride_efficiency",
+   "profile_id": "doc.tool.v1"
+  },
+  {
+   "confirm": {
+    "axis": "work_fuel",
+    "kind": "resource_uint64_max"
+   },
+   "expected": {
+    "admit": false,
+    "artifact_valid": true,
+    "confirm_admission_gain_ppm": null,
+    "confirm_admit": false,
+    "confirm_class": null,
+    "confirm_failed_rules": [
+     "3"
+    ],
+    "gate_admission_gain_ppm": null,
+    "gate_admit": false,
+    "gate_class": null,
+    "gate_failed_rules": [
+     "3"
+    ],
+    "mirror_code": "MIRROR_ARTIFACT_INVALID",
+    "mirror_valid": false
+   },
+   "gate": {
+    "axis": "logical_durable_storage_bytes",
+    "kind": "resource_uint64_max"
+   },
+   "id": "event_resource_uint64_max_exceeds_c",
+   "profile_id": "event.schema.v1"
+  },
+  {
+   "confirm": {
+    "axis": "logical_durable_storage_bytes",
+    "kind": "efficiency_to_zero"
+   },
+   "expected": {
+    "admit": true,
+    "artifact_valid": true,
+    "confirm_admission_gain_ppm": 1000000,
+    "confirm_admit": true,
+    "confirm_class": "efficiency",
+    "confirm_failed_rules": [],
+    "gate_admission_gain_ppm": 1000000,
+    "gate_admit": true,
+    "gate_class": "efficiency",
+    "gate_failed_rules": []
+   },
+   "gate": {
+    "axis": "work_fuel",
+    "kind": "efficiency_to_zero"
+   },
+   "id": "conv_efficiency_to_zero_saturates_gain",
+   "profile_id": "conv.pref.v1"
+  },
+  {
+   "confirm": {
+    "axis": "work_fuel",
+    "kind": "quality_spend"
+   },
+   "expected": {
+    "admit": false,
+    "artifact_valid": false,
+    "confirm_admission_gain_ppm": 1,
+    "confirm_admit": true,
+    "confirm_class": "quality",
+    "confirm_failed_rules": [],
+    "gate_admission_gain_ppm": null,
+    "gate_admit": false,
+    "gate_class": null,
+    "gate_failed_rules": [
+     "2.1",
+     "2.2",
+     "missing"
+    ],
+    "mirror_code": "MIRROR_ARTIFACT_INVALID"
+   },
+   "gate": {
+    "kind": "missing_objective"
+   },
+   "id": "doc_missing_objective_fails_closed",
+   "profile_id": "doc.tool.v1"
+  },
+  {
+   "confirm": {
+    "axis": "rendered_cost",
+    "kind": "quality_spend"
+   },
+   "expected": {
+    "admit": true,
+    "artifact_valid": true,
+    "confirm_admission_gain_ppm": 1,
+    "confirm_admit": true,
+    "confirm_class": "quality",
+    "confirm_failed_rules": [],
+    "gate_admission_gain_ppm": 1,
+    "gate_admit": true,
+    "gate_class": "quality",
+    "gate_failed_rules": []
+   },
+   "gate": {
+    "kind": "dip_at_tolerance_paid"
+   },
+   "id": "event_trade_on_gate_zero_dips_on_confirm",
+   "profile_id": "event.schema.v1"
+  },
+  {
+   "confirm": {
+    "kind": "trade_underpaid_by_one"
+   },
+   "expected": {
+    "admit": false,
+    "artifact_valid": true,
+    "confirm_admission_gain_ppm": null,
+    "confirm_admit": false,
+    "confirm_class": null,
+    "confirm_failed_rules": [
+     "2.3"
+    ],
+    "gate_admission_gain_ppm": 1,
+    "gate_admit": true,
+    "gate_class": "quality",
+    "gate_failed_rules": []
+   },
+   "gate": {
+    "kind": "trade_paid_exactly"
+   },
+   "id": "conv_gate_paid_confirm_underpaid",
+   "profile_id": "conv.pref.v1"
+  }
+ ]
+}

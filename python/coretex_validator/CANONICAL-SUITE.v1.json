@@ -7,7 +7,9 @@
    "gate",
    "confirm"
   ],
-  "quality_tolerance": "zero \u2014 every declared objective must be >= the parent's",
+  "quality_tolerance": "bounded-trade \u2014 per declared objective q_i(B) >= q_i(A) - quality_dip_tolerance_micro (exact parent) and q_i(B) >= G_i - quality_dip_tolerance_micro (genesis floor); sum(gains) >= quality_dip_payment_ratio * sum(dips); composite_ppm(B) >= composite_ppm(G) exact (LAW \u00a73A.3 rule 2)",
+  "quality_dip_tolerance_micro": 2500000,
+  "quality_dip_payment_ratio": 2,
   "quality_units": "objectives_micro (per declared objective, integer micro units)",
   "resource_tolerance": "zero \u2014 every protected raw axis must be <= the fixed product cap C serialized as E; efficiency class additionally requires R(B) <= R(A) with at least one strict drop",
   "resource_units": "rendered_cost = rendered_cost_micro; work_fuel = trusted work_fuel; logical_durable_storage_bytes = raw byte count",
@@ -20,7 +22,7 @@
   "suite_block_id": 0
  },
  "committed_before_first_public_candidate": true,
- "decision_engine": "dominance.componentwise.v1",
+ "decision_engine": "dominance.componentwise.v2",
  "format": "benchmark-v2/canonical-suite/v1",
  "genesis_floor_authority": {
   "decision_time_rule": "a pending floor is a REFUSAL, never a skipped check: no admission under this suite's law is computable without a resolved floor",
@@ -200,7 +202,7 @@
   "why_pending": "not pending: every genesis floor vector is resolved in this public suite"
  },
  "instance_hash_rule": "sha256 of the instance canonical JSON, computed by validator/eval_worker.py task 'hash_only' \u2014 the same value validator/evaluate.hash_case returns and validator/receipt.py _bind_cases binds",
- "law_id": "benchmark-v2-law/dominance-fixed-suite.v1",
+ "law_id": "benchmark-v2-law/dominance-fixed-suite.v2",
  "profiles": {
   "conv.pref.v1": {
    "confirm": [

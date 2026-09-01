@@ -269,6 +269,8 @@ def test_same_quality_componentwise_resource_drop_is_efficiency():
 
 
 def test_quality_gain_cannot_hide_a_declared_objective_regression():
+    # LAW v2 rule 2.3: a 1µ dip inside τ is still a reject when NO other objective pays
+    # for it (gains 0 < ρ·dips); the paid/bounded cases live in the parity corpus test.
     artifact = _artifact(True, True)
     objective = sorted(
         artifact["dominance"]["partitions"]["gate"]["candidate_vector"]

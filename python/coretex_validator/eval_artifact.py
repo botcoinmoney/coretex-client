@@ -24,7 +24,7 @@ from . import publication as pub
 # --------------------------------------------------------------------------- #
 # Identity constants
 # --------------------------------------------------------------------------- #
-#: THE GENESIS FIXED-SUITE LAW (Benchmark-v2 law ``dominance-fixed-suite.v1``). The artifact
+#: THE GENESIS FIXED-SUITE LAW (Benchmark-v2 law ``dominance-fixed-suite.v2``). The artifact
 #: records an evaluation whose CASES ARE LAW, not a draw: it carries the complete ``suite`` block
 #: and additionally binds the three things the
 #: componentwise rule decides against — the exact parent's STORED qualifying vector (the
@@ -35,10 +35,15 @@ ARTIFACT_FORMAT = "coretex.memory-eval-artifact.v3"
 
 #: The Benchmark-v2 law id a v3 artifact's evaluation report must be bound to. Stated here so the
 #: artifact layer refuses a mismatched pairing instead of inferring one.
-FIXED_SUITE_LAW_ID = "benchmark-v2-law/dominance-fixed-suite.v1"
+FIXED_SUITE_LAW_ID = "benchmark-v2-law/dominance-fixed-suite.v2"
 FIXED_MEASUREMENT_POLICY = "final-render-trusted-hostwork.v4"
 #: The decision engine that law names. Mirrors ``benchmark-v2/frontier/dominance.ENGINE_ID``.
-DOMINANCE_ENGINE_ID = "dominance.componentwise.v1"
+DOMINANCE_ENGINE_ID = "dominance.componentwise.v2"
+#: LAW §3A.3 rule 2 trade constants. Mirrors ``benchmark-v2/frontier/dominance``; the artifact
+#: recomputation (:func:`verify_dominance_block`) re-derives the bounded trade with these exact
+#: integers, so a drift between the two modules is a verdict mismatch, never a silent widening.
+QUALITY_DIP_TOLERANCE_MICRO = 2_500_000
+QUALITY_DIP_PAYMENT_RATIO = 2
 
 COUNTER_RESOURCE_LAW_FORMAT = "coretex.counter-resource-law.v1"
 FIXED_CAP_RESOURCE_NORMALIZER = "fixed_product_cap_c"
@@ -1248,10 +1253,15 @@ def _validate_fixed_suite_blocks(artifact: Mapping[str, Any]) -> None:
                 f"{where}.hard_ok is {part['hard_ok']}, the bound hard-gate map evaluates to "
                 f"{all(hard.values())} (failing: "
                 f"{sorted(name for name, ok in hard.items() if not ok)})")
-        if part["admit"] and (part["regressed_objectives"] or part["regressed_resource_axes"]
+        # ``regressed_objectives`` lists EVERY dip vs the parent (informational under the
+        # bounded-trade law): an admit may carry dips inside τ that rule 2.3 paid for, and
+        # :func:`verify_dominance_block` recomputes that bound from the vectors. A resource
+        # axis over ``C``, a floor miss, or a failed gate can never be an admit.
+        if part["admit"] and (part["regressed_resource_axes"]
                               or part["floor_regressions"] or not part["hard_ok"]):
             raise VerdictMismatchError(
-                f"{where} claims admit with a recorded regression or a failed hard gate")
+                f"{where} claims admit with a recorded resource/floor regression or a failed "
+                "hard gate")
         # THE DETERMINISM WITNESS, as an ARTIFACT-LEVEL binding (LAW §3A.3). The incumbent vector
         # in the dominance block is the parent arm RE-EXECUTED in this job; the witness carries the
         # vector STORED for that exact release by its genesis baseline or prior accept. Their
@@ -1967,8 +1977,10 @@ def verify_dominance_block(artifact: Mapping[str, Any]) -> Dict[str, Any]:
     """Re-derive the componentwise outcome from the artifact's OWN bound vectors.
 
     The vectors are the evidence; the flags are a projection of them. This recomputes the
-    projection — the composite gain, which objectives regressed, which resource axes regressed and
-    which floor components were missed — and refuses any disagreement. It is a self-consistency
+    projection — the composite gain, which objectives dipped, whether the dips stay inside the
+    bounded trade (LAW §3A.3 rules 2.1–2.3: each dip <= τ, gains >= ρ·dips), which resource axes
+    regressed and which floor components were missed (objectives against ``G_i - τ``, composite
+    exact) — and refuses any disagreement. It is a self-consistency
     check, deliberately: whether those vectors are the RIGHT ones is settled by
     :func:`verify_suite_membership`, :func:`verify_genesis_floor`, the measurement projection in
     step 7 and the receipt's own decision recomputation in the benchmark-v2 validator.
@@ -2025,6 +2037,17 @@ def verify_dominance_block(artifact: Mapping[str, Any]) -> Dict[str, Any]:
                  VerdictMismatchError,
                  f"{where}.regressed_objectives does not recompute from the bound vectors "
                  f"(bound {part['regressed_objectives']}, recomputed {regressed_objectives})")
+        # LAW §3A.3 rule 2 — the bounded trade, recomputed from the same two vectors.
+        tolerance_regressed = [
+            oid for oid in regressed_objectives
+            if cand_vec["objectives_micro"][oid]
+            < inc_vec["objectives_micro"][oid] - QUALITY_DIP_TOLERANCE_MICRO]
+        dip_total = sum(inc_vec["objectives_micro"][oid] - cand_vec["objectives_micro"][oid]
+                        for oid in regressed_objectives)
+        gain_total = sum(max(0, value - inc_vec["objectives_micro"][oid])
+                         for oid, value in cand_vec["objectives_micro"].items())
+        quality_rule_ok = (not tolerance_regressed
+                           and gain_total >= QUALITY_DIP_PAYMENT_RATIO * dip_total)
         regressed_axes = sorted(
             axis for axis, r_key, e_key in (("logical_durable_storage_bytes",
                                              "logical_durable_storage_bytes",
@@ -2049,7 +2072,7 @@ def verify_dominance_block(artifact: Mapping[str, Any]) -> Dict[str, Any]:
             ["composite_ppm"] * (cand_vec["composite_micro"] // 100
                                  < floor_vec["composite_micro"] // 100)
             + [oid for oid, value in cand_vec["objectives_micro"].items()
-               if value < floor_vec["objectives_micro"][oid]])
+               if value < floor_vec["objectives_micro"][oid] - QUALITY_DIP_TOLERANCE_MICRO])
         _require(floor_regressions == list(part["floor_regressions"]), VerdictMismatchError,
                  f"{where}.floor_regressions does not recompute against the genesis quality floor "
                  f"(bound {part['floor_regressions']}, recomputed {floor_regressions})")
@@ -2065,7 +2088,7 @@ def verify_dominance_block(artifact: Mapping[str, Any]) -> Dict[str, Any]:
             axis for axis, r_key, _e in envelope_axes if cand_vec[r_key] > inc_vec[r_key]]
         dropped_vs_parent = [
             axis for axis, r_key, _e in envelope_axes if cand_vec[r_key] < inc_vec[r_key]]
-        efficiency_advance = (composite_held and not regressed_objectives
+        efficiency_advance = (composite_held and quality_rule_ok
                               and not raised_vs_parent and bool(dropped_vs_parent))
         _require(cand_vec["suite_block_id"] == inc_vec["suite_block_id"], VerdictMismatchError,
                  f"{where}.candidate_vector.suite_block_id is {cand_vec['suite_block_id']}, "
@@ -2073,7 +2096,7 @@ def verify_dominance_block(artifact: Mapping[str, Any]) -> Dict[str, Any]:
         envelope_ok = not regressed_axes
         floor_ok = not floor_regressions
         progress_class = None
-        if quality_advance and not regressed_objectives and envelope_ok and floor_ok:
+        if quality_advance and quality_rule_ok and envelope_ok and floor_ok:
             progress_class = "quality"
         elif efficiency_advance and envelope_ok and floor_ok:
             progress_class = "efficiency"

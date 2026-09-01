@@ -6,20 +6,25 @@ CoreTex release and every state improvement admitted under it.
 Law-Family-Id: `benchmark-v2-law/dominance-fixed-suite`
 
 The active enforcement descriptor is
-`benchmark-v2-law/dominance-fixed-suite.v1`. The family above names these stable normative
+`benchmark-v2-law/dominance-fixed-suite.v2`. The family above names these stable normative
 semantics; the descriptor and its content-addressed closure name the exact implementation. A normal
 mined state improvement changes the canonical frontier, not the law id or `coreVersionHash`.
+Revision `.v2` is a prospective pre-activation recut (§3A.2, §8) of the `.v1` zero-tolerance
+per-objective veto into the bounded, paid, floored trade of §3A.3 rule 2; nothing else moved.
 
 ## 1. Purpose and publicity
 
 CoreTex is a continuously improving, profile-scoped memory-IR adapter. A submission is admitted
 only when it proves strict progress over the exact current parent inside a fixed law-owned product
-cap: either a quality-composite gain with no quality-axis drop and resources inside the cap, or an
-efficiency gain that holds every quality axis and strictly reduces at least one measured resource
-without raising another. The same rule holds on both fixed partitions of the public canonical
-suite. This creates the invariant that every admitted public state is quality-componentwise no
-worse than every ancestor, never spends outside the product budget, and strictly advances on one
-progress class.
+cap: either a quality-composite gain with resources inside the cap, or an efficiency gain that
+holds the quality composite and strictly reduces at least one measured resource without raising
+another — in both cases inside a bounded, paid quality trade: no quality objective may fall more
+than 2.5 points in one step or sit more than 2.5 points below the genesis floor, and every point
+lost on one objective is bought with two points gained on others. The same rule holds on both
+fixed partitions of the public canonical suite. This creates the invariant that every admitted
+public state holds every quality objective within 2.5 points of the genesis floor, never lowers
+the quality composite along its lineage, never spends outside the product budget, and strictly
+advances on one progress class.
 
 The law, canonical cases, generators, scorer, validator, reference implementation, runtime ABI,
 resource counter, incumbent implementations, and all admission artifacts are public. Candidate id,
@@ -183,12 +188,22 @@ A candidate release `B` may replace exact parent `A` for profile `p` only if **b
 the two partitions need not share a class. The signed receipt projection uses the **confirm**
 partition's class and `admission_gain_ppm`.
 
-On each partition:
+On each partition, with `G` the genesis quality floor for `(profile, partition)`, all values
+exact integers in micro units, and for every declared objective `i`:
+
+```text
+dip_i  = max(0, quality_i(A) - quality_i(B))      gain_i = max(0, quality_i(B) - quality_i(A))
+dips   = Σ_i dip_i                                gains  = Σ_i gain_i
+```
 
 1. every hard gate and the profile composite floor pass;
-2. `quality_i(B) >= quality_i(A)` for every declared objective `i`, and `Q(B)` dominates the
-   genesis **quality** floor (composite and every objective; resources are not compared to
-   genesis `R`);
+2. quality non-regression as a **bounded trade** (τ and ρ are the trade constants below):
+   - **(2.1) per-step bound:** `quality_i(B) >= quality_i(A) - τ` for every declared
+     objective `i`;
+   - **(2.2) absolute floor:** `quality_i(B) >= G_i - τ` for every declared objective `i`, and
+     `composite_ppm(B) >= composite_ppm(G)` — the composite floor stays exact. Resources are not
+     compared to genesis `R`;
+   - **(2.3) paid trade:** `gains >= ρ * dips` (trivially true when `dips = 0`);
 3. `R_j(B) <= C_j` for every protected resource axis `j`;
 4. strict progress, exactly one winning class (if both (4a) and (4b) hold, the class is
    **quality**):
@@ -197,15 +212,37 @@ On each partition:
    - **(4b) Efficiency advance:** `composite_ppm(B) >= composite_ppm(A)` (quality composite
      must not fall; it need not rise). Every `R_j(B) <= R_j(A)` and at least one
      `R_j(B) < R_j(A)`. Quality still (2). Independent rounding of composite vs the
-     per-objective scores cannot buy an efficiency admit.
+     per-objective scores cannot buy an efficiency admit. Because (2.3) makes any dip cost
+     `gains >= ρ * dips`, an efficiency admit that carries dips is only possible when the
+     composite does not rise by a full ppm (rounding); otherwise the step is a quality advance.
 5. The serialized cap is exact and constant: parent `E(A)`, candidate `E(B)`, and the canonical
    suite's `C` must be byte-equal on all three axes. A forged tighter or looser envelope fails
    closed; no measurement or transition derives a new cap.
 
-There is no tolerance, slack, weighted quality/resource mix, 0.1% efficiency noise floor, or
-aggregate offset that can buy a quality drop. One-unit resource wins are valid; salami slicing is
-a reward/pricing issue, not an admission floor. Improvement in one quality objective cannot buy
-regression in another. Equal quality with equal resources is not progress.
+#### Trade constants (law constants)
+
+| constant | value | meaning |
+|---|---:|---|
+| `QUALITY_DIP_TOLERANCE_MICRO` (τ) | 2500000 | 2.5 points: the most one objective may fall in one step (2.1) and the most any objective may sit below `G_i` (2.2) |
+| `QUALITY_DIP_PAYMENT_RATIO` (ρ) | 2 | every point lost must be bought with two points gained on other objectives (2.3) |
+
+The quality trade is bounded (τ per objective per step), floored (`G_i - τ`, composite exact),
+and paid (ρ:1). There is no slack on resources, no weighted quality/resource mix, no 0.1%
+efficiency noise floor, and no aggregate offset that can buy a resource excursion above `C` or a
+composite below the floor. One-unit resource wins are valid; salami slicing is a reward/pricing
+issue, not an admission floor. Walking one objective down is bounded by the floor and costs ρ× in
+other objectives at every step. Equal quality with equal resources is not progress.
+
+#### Why bounded trade (evidence)
+
+Of 18 recorded candidate executions on the identical 12-case suite (calibration, e2e fixtures and
+11 real production-arm releases), the zero-tolerance `.v1` rule rejected 10 — every one for a
+per-objective dip of 0.2–7.4 points against the exact parent, none for the gate/confirm split or a
+cap. One lost query moves a 4-case gate objective by up to 2.5 points, so zero tolerance rejected
+any single query flip among ~9–10 objectives × 2 partitions regardless of composite gain; doc.tool
+release 55cbb533 (+7.8 composite, cheaper on cost and fuel) was refused for −1.82 / −1.34 dips.
+Every admit under `.v1` held 6–8 objectives byte-identical and raised 2–3 — the surgical shape, the
+opposite of generalized improvement. τ = 2.5 and ρ = 2 admit real improvement and price the dip.
 
 Hook fuel remains diagnostic (`seam.py` `_candidate_resource_axes`). Wall-clock remains
 telemetry.
@@ -276,15 +313,21 @@ first candidate compares against exactly the release and numbers declared by thi
 parent stored vector is that floor, so `E(A) = C` at genesis; every later accepting artifact keeps
 the same cap.
 
-### 3A.6 Transitive no-regression invariant
+### 3A.6 Bounded-trade lineage invariant
 
-Let `G` be a profile's genesis quality floor and `C` its fixed product cap. Let `R0, R1, ... Rn`
-be admitted releases. By rule, every `Rk` dominates `G` on quality and every measured resource is
-`<= C`; each step is a quality advance or an efficiency advance; and every parent is reproduced by
-its determinism witness. Quality componentwise order is transitive. Resource order versus an
-ancestor is not: a quality admit may use more capacity than its parent, up to `C`. A same-quality
-successor cannot give back an efficiency win because it must compare componentwise against the
-exact parent `R`; a later genuine quality win may reuse that saved capacity.
+Let `G` be a profile's genesis quality floor, `C` its fixed product cap, and τ, ρ the trade
+constants. Let `R0, R1, ... Rn` be admitted releases. By rule, every admitted `Rk` satisfies
+`quality_i(Rk) >= G_i - τ` on every objective (never more than 2.5 points below the product
+genesis on any category) and `composite_ppm(Rk) >= composite_ppm(G)`; the composite never falls
+along the lineage (a quality step raises it by at least 1 ppm, an efficiency step holds it); a
+single step lowers any objective by at most τ and every lowered point is paid by ρ gained points;
+every measured resource is `<= C`; and every parent is reproduced by its determinism witness.
+Per-objective order is therefore bounded rather than transitive: a walk-down of one objective is
+capped by the floor and costs ρ× in other objectives at every step. Resource order versus an
+ancestor is not transitive either: a quality admit may use more capacity than its parent, up to
+`C`. A same-quality successor cannot give back an efficiency win because it must compare
+componentwise against the exact parent `R`; a later genuine quality win may reuse that saved
+capacity.
 
 Retrying identical bytes cannot change the suite, parent, vector, or verdict. Candidate ids and
 epochs are metadata and therefore cannot create an evaluation lottery.
@@ -302,8 +345,8 @@ block.
 
 ### 3A.8 Scope and limitations
 
-This law proves monotonic componentwise improvement on the committed public suite and only on that
-suite. It does not by itself prove performance on unscored scales or a different workload.
+This law proves bounded-trade, composite-monotone improvement on the committed public suite and
+only on that suite. It does not by itself prove performance on unscored scales or a different workload.
 
 The candidate cannot read evaluator-only labels or metadata, and every behavior available to it in
 evaluation must also be available through the production ABI. These constraints make improvements
@@ -380,15 +423,15 @@ Public resolvers and clients use that activation epoch and confirmed block as ha
 The activation record therefore defines the complete public event namespace.
 
 The on-chain CoreTex work-policy `rulesVersion` is an independent, dynamically read contract
-identity. Product version `1.0.0` and law revision `.v1` never replace or renumber it.
+identity. Product version `1.0.0` and law revision `.v2` never replace or renumber it.
 
 The initial contract pays a flat outcome/difficulty reward; it does not price the artifact's gain
 magnitude or `scoreAfterPpm`. Under a fixed cap, a quality release may spend capacity and a later
 efficiency release may earn another flat payment by removing that cost, so repeated quality/spend
 and efficiency/save transitions can create an efficiency-reward annuity. CoreTex 1.0.0 explicitly
 accepts that economic limitation for the initial cut with the operational ability to suspend
-intake. It is not repaired by shrinking `C`: admission remains safe because `Q` is componentwise
-monotone and all `R` stays inside `C`. Magnitude pricing requires separate verifier/contract work
+intake. It is not repaired by shrinking `C`: admission remains safe because `Q` is floored within
+τ of genesis with a non-falling composite and all `R` stays inside `C`. Magnitude pricing requires separate verifier/contract work
 and gameability analysis.
 
 ## 8. Identity and change discipline

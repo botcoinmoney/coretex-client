@@ -11,10 +11,10 @@
   "format": "coretex.validator-release-contract/v1",
   "integration_format": "coretex.runtime-integration/v1",
   "law": {
-    "decision_engine_id": "dominance.componentwise.v1",
+    "decision_engine_id": "dominance.componentwise.v2",
     "family": "benchmark-v2-law/dominance-fixed-suite",
-    "id": "benchmark-v2-law/dominance-fixed-suite.v1",
-    "revision": "v1"
+    "id": "benchmark-v2-law/dominance-fixed-suite.v2",
+    "revision": "v2"
   },
   "object_names": [
     "benchmark_law_root",

@@ -59,6 +59,10 @@ class BuildError(RuntimeError):
     """The source tree or an emitted archive is not the one public package."""
 
 
+#: The one test subdirectory the sdist admits (JSON parity fixtures only).
+TEST_FIXTURES_DIR = "fixtures"
+
+
 def sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
@@ -166,13 +170,29 @@ def _source_files(root: Path) -> dict[str, bytes]:
     tests = sorted(path for path in tests_dir.iterdir()
                    if path.is_file() and path.suffix == ".py")
     unexpected_tests = sorted(path.name for path in tests_dir.iterdir()
-                              if path.name != "__pycache__"
+                              if path.name not in {"__pycache__", TEST_FIXTURES_DIR}
                               and not (path.is_file() and path.suffix == ".py"))
     if not tests or unexpected_tests:
         raise BuildError(
-            f"tests must be one flat non-empty Python inventory; unexpected={unexpected_tests}")
+            f"tests must be one flat non-empty Python inventory plus an optional "
+            f"{TEST_FIXTURES_DIR}/ of JSON; unexpected={unexpected_tests}")
     for path in tests:
         files[f"tests/{path.name}"] = _read_regular(path, f"test member {path.name}")
+    fixtures_dir = tests_dir / TEST_FIXTURES_DIR
+    if fixtures_dir.exists():
+        # The law parity corpus and its materialized artifacts: flat, JSON-only, regular files, so
+        # the sdist's source tests replay the same vectors the coordinator and evaluator do.
+        fixtures = sorted(fixtures_dir.iterdir())
+        unexpected_fixtures = sorted(
+            path.name for path in fixtures
+            if not (path.is_file() and path.suffix == ".json"))
+        if not fixtures or unexpected_fixtures:
+            raise BuildError(
+                f"tests/{TEST_FIXTURES_DIR} must be a flat non-empty JSON inventory; "
+                f"unexpected={unexpected_fixtures}")
+        for path in fixtures:
+            files[f"tests/{TEST_FIXTURES_DIR}/{path.name}"] = _read_regular(
+                path, f"test fixture {path.name}")
     return dict(sorted(files.items()))
 
 

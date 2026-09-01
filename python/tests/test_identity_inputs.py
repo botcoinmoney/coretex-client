@@ -21,7 +21,7 @@ PACKAGE = Path(__file__).parents[1] / "coretex_validator"
 
 
 def test_fixed_suite_and_contract_are_current_closed_inputs():
-    assert canonical_suite.suite_law_id() == "benchmark-v2-law/dominance-fixed-suite.v1"
+    assert canonical_suite.suite_law_id() == "benchmark-v2-law/dominance-fixed-suite.v2"
     assert len(canonical_suite.suite_root()) == 64
     contract = json.loads((PACKAGE / "RELEASE-CONTRACT.v1.json").read_text())
     assert contract["product"] == {

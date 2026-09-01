@@ -108,7 +108,7 @@ def test_release_schema_accepts_only_first_public_product():
     lambda value: value.update(sequence=True),
     lambda value: value.update(predecessor="1" * 64),
     lambda value: value.update(history=[]),
-    lambda value: value["law"].update(revision="v2"),
+    lambda value: value["law"].update(revision="v1"),  # the withdrawn zero-tolerance recut
     lambda value: value["artifacts"]["validator_wheel"].update(distribution="other"),
     lambda value: value["objects"]["counter_resource_law_root"].update(
         hash_rule="sha256-bytes"),

@@ -457,7 +457,7 @@ def _genesis_release_fixture(tmp_path, monkeypatch):
 
     baseline_body = {
         "format": "coretex.genesis-baseline/v1",
-        "law_id": "benchmark-v2-law/dominance-fixed-suite.v1",
+        "law_id": "benchmark-v2-law/dominance-fixed-suite.v2",
         "profiles": {},
         "suite_root": "b" * 64,
     }

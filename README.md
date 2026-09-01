@@ -5,10 +5,13 @@ under `python/`. The root TypeScript workspace is a private contract-codec test 
 package exports or publication script and is not a CoreTex release artifact.
 
 Admission uses one deterministic canonical suite,
-`benchmark-v2-law/dominance-fixed-suite.v1`. A candidate must be componentwise no worse than the
-accepted parent on every protected quality and resource axis and must satisfy the declared
-improvement threshold. Candidate IDs, retries, epoch entropy, authors, rigs, and submission order
-do not select another exam.
+`benchmark-v2-law/dominance-fixed-suite.v2`. A candidate must stay inside the fixed product cap
+on every resource axis, hold every declared quality objective within the bounded trade of the
+exact accepted parent (no objective may fall more than 2.5 points in one step or sit more than
+2.5 points below the genesis floor, and every point lost must be paid by two points gained on
+other objectives), keep the quality composite at or above the genesis composite, and must satisfy
+the declared improvement threshold. Candidate IDs, retries, epoch entropy, authors, rigs, and
+submission order do not select another exam.
 
 ## Authority and activation
 
