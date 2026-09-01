@@ -1,11 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 """Thin-client reconstruction of genesis -> efficiency -> prior_accept on the law-v2 fixtures.
 
-``fixtures/law-v2-two-transition.json`` holds byte copies (base64) of the sealed final-cut
-evidence, each with its source path and sha256: every CAS object the two evaluation artifacts
-address, the genesis baseline the first determinism witness names, and the epoch context both
-transitions were pinned to.  Nothing else is consulted — no release directory, no chain, no worker
-result.  The
+``fixtures/law-v2-two-transition.json`` holds byte copies (base64) of the current CoreTex 1.0.0
+release ``4782fe5d…`` local E2E evidence, each with its source path and sha256: every CAS object
+the two evaluation artifacts address, the genesis baseline the first determinism witness names,
+and the epoch context both transitions were pinned to.  Nothing else is consulted — no release
+directory, no chain, no worker result.  The
 client fetches each object by its content address, verifies the efficiency artifact and then the
 second-generation ``prior_accept`` artifact under the v2 fixed-suite law (``verify_dominance_block``
 recomputes the componentwise verdict from the bound vectors; ``verify_artifact`` binds every field
@@ -34,14 +34,14 @@ FIXTURE_FORMAT = "coretex.law-v2-two-transition-fixture/v1"
 LAW_V2 = "benchmark-v2-law/dominance-fixed-suite.v2"
 ENGINE_V2 = "dominance.componentwise.v2"
 PROFILE = "doc.tool.v1"
-GENESIS_ROOT = "dd95d466ccc8dbfae3bf587c42a0584e04fe84511f142b7dacaa88335e82daf7"
+GENESIS_ROOT = "2e3d00b727d70cf96e9595d730057b3548a9f8d2db68755252bf498a42431dff"
 GENESIS_BASELINE_ROOT = "aa1299b9ee629fdbe35501c12f5fba3a37a41fb4267db95890923a2c887820af"
-EFFICIENCY_EVAL_ROOT = "3d20fcb0827b43996a70e2d03ffb7d6ffeef05bdd85ab783ce487944a0086368"
-EFFICIENCY_FRONTIER_ROOT = "380adf083060b3deb6a0134e2ae1e8493c4d04e77b15c26a4bc1621770c00f8c"
-PRIOR_ACCEPT_EVAL_ROOT = "2434c29502bf48e1f39c432f25f794028f36649c69007df914535f01d5b2c4a4"
-PRIOR_ACCEPT_FRONTIER_ROOT = "e08c6386bfecc193f9eb5d645691f6affc75500a993740def2e29adb3495385f"
-EPOCH_CONTEXT_ROOT = "9ec4339f938004304069c4f676e05a1f986298f6c534ef58609e7aad5b8691a4"
-COMPATIBILITY_LOCK_ROOT = "6aa30482ab15128e643f82d7b283d0e0432a3b6840f48c6a78156321f3a85694"
+EFFICIENCY_EVAL_ROOT = "9af2a5c6c2fd04545232f65d57b0910c823881ad4bb7c1b8c6276cd5fedc88b3"
+EFFICIENCY_FRONTIER_ROOT = "433979931d68518a2ef635c88b845aa4796b1f0e09033fb646401606911d9046"
+PRIOR_ACCEPT_EVAL_ROOT = "b0e5d3fb78b8ffb7d0196e55b5f7984248ba8cdb3824f5adc93d762bd6b3c20c"
+PRIOR_ACCEPT_FRONTIER_ROOT = "cd52bf3e5f3a948e68a66c07f6d09da5e327ef1d62fb7620b1b8eca3b76c46b8"
+EPOCH_CONTEXT_ROOT = "7630b4dec0def892289160bbc6811ff6ae9e502251aaa08f8396259b6ea2e116"
+COMPATIBILITY_LOCK_ROOT = "c68c9ccd2b07c7f77e7e9f5a10b23c763fad92c0ee0028cbc802aa1904d3ca14"
 EXPECTED_CHECKS = [
     "chain_roots", "transition_identity", "frontier_replay", "suite_membership", "genesis_floor",
     "dominance", "dominance_report_binding", "determinism_witness", "fixed_round_identity",
