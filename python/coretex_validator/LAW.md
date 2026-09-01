@@ -305,7 +305,11 @@ genesis `Q`, measured genesis `R`, law-owned fixed `C` serialized as `E`, and
 `suite_block_id = 0`. These are part of the law. A missing or pending floor makes admission
 impossible; it is never treated as zero or skipped. Quality floor checks compare `Q` only.
 Resource checks compare `R(B)` to fixed `C`, not to genesis or parent `R` (except that the
-efficiency class separately compares candidate `R` to exact-parent `R`).
+efficiency class separately compares candidate `R` to exact-parent `R`). From genesis,
+`logical_durable_storage_bytes` cannot strictly decrease because the meter charges host-built
+store state plus the candidate's own `cm_artifacts`, a hook can only add artifacts (never remove
+host-built bytes), and the genesis reference emits none; storage is reclaimable only after a
+lineage has spent it, so the genesis-mineable efficiency axes are `rendered_cost` and `work_fuel`.
 
 The public genesis frontier maps each profile to the exact reference release measured by its floor.
 The genesis baseline record binds that mapping, the suite root, and all floor vectors. Thus the
