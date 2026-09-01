@@ -42,6 +42,7 @@ DOMINANCE_ENGINE_ID = "dominance.componentwise.v1"
 
 COUNTER_RESOURCE_LAW_FORMAT = "coretex.counter-resource-law.v1"
 FIXED_CAP_RESOURCE_NORMALIZER = "fixed_product_cap_c"
+SATURATING_RESOURCE_OVERFLOW_POLICY = "saturate_at_resource_ppm_max"
 
 #: THE EVALUATION REPORT — the deterministic Benchmark-v2 result this artifact addresses. V5 does
 #: not mint a new family; ``benchmark-v2/validator/receipt.py`` owns this shape, and it is
@@ -196,7 +197,8 @@ RESOURCE_ACCOUNTING_FIELDS = ("branch", "resource_after_ppm", "resource_before_p
                               "utility_after_ppm", "utility_before_ppm")
 VERDICT_FIELDS = ("admit", "consensus_critical", "decision_hash", "verdict")
 COUNTER_LAW_FIELDS = ("branch", "format", "resource_axes", "resource_normalizer",
-                      "resource_ppm_max", "utility_axis", "utility_ppm_max")
+                      "resource_overflow_policy", "resource_ppm_max", "utility_axis",
+                      "utility_ppm_max")
 RESOURCE_AXIS_FIELDS = ("id", "integer_axis", "source", "unit", "weight_ppm")
 
 # --------------------------------------------------------------------------- #
@@ -609,6 +611,10 @@ def validate_counter_resource_law(law: Any) -> Dict[str, Any]:
         raise CounterResourceLawError(
             f"resource_normalizer {law['resource_normalizer']!r} is not the fixed-cap "
             f"normalizer {FIXED_CAP_RESOURCE_NORMALIZER!r}")
+    if law["resource_overflow_policy"] != SATURATING_RESOURCE_OVERFLOW_POLICY:
+        raise CounterResourceLawError(
+            f"resource_overflow_policy {law['resource_overflow_policy']!r} is not the "
+            f"non-admission telemetry policy {SATURATING_RESOURCE_OVERFLOW_POLICY!r}")
     _check_int(law["resource_ppm_max"], "resource_ppm_max", minimum=1, maximum=MAX_UINT32)
     _check_int(law["utility_ppm_max"], "utility_ppm_max", minimum=1, maximum=MAX_UINT32)
     util = _check_closed(law["utility_axis"], ("scale_max", "source"), "utility_axis")
@@ -722,8 +728,11 @@ def evaluate_counter_resource_law(law: Mapping[str, Any], candidate: Mapping[str
     resource: ``resource_ppm = SUM_axes ( weight_ppm * side_micro[axis] ) // C_micro[axis]``
               — a per-axis floor against the positive fixed product cap ``C``.  Both sides use
               the same denominator, so zero measurements are representable and every cap-valid
-              side is in ``[0, 1_000_000]``.  The aggregate is bound telemetry; raw ``R`` versus
-              exact-parent ``R`` remains the efficiency predicate.
+              side is in ``[0, 1_000_000]``. Values above the uint32 receipt representation are
+              deterministically saturated at ``resource_ppm_max``; the exact raw measurements
+              remain in the artifact, and dominance rejects every side above ``C``. The aggregate
+              is bound non-admission telemetry; raw ``R`` versus exact-parent ``R`` remains the
+              efficiency predicate.
 
     §17.236 records these ppm values on-chain but does NOT rank them there; the Pareto/resource
     trade-off stays off-chain under this pinned law, bound through ``evalReportHash`` +
@@ -746,13 +755,12 @@ def evaluate_counter_resource_law(law: Mapping[str, Any], candidate: Mapping[str
         for axis in law["resource_axes"]:
             base = _axis_cap_micro(fixed_cap, axis)
             total += (axis["weight_ppm"] * _axis_micro(side, axis, name)) // base
-        out[name] = total
+        out[name] = min(total, law["resource_ppm_max"])
     for key, value in out.items():
         limit = law["utility_ppm_max"] if key.startswith("utility") else law["resource_ppm_max"]
         if value > limit:
             raise ResourceAccountingError(
-                f"{key}={value} exceeds the pinned ceiling {limit}; refused rather than clamped "
-                "(a silently clamped ppm would misreport the trade-off on-chain)")
+                f"{key}={value} exceeds the pinned ceiling {limit}")
     return out
 
 

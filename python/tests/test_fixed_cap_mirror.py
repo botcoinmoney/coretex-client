@@ -62,12 +62,38 @@ def test_counter_accounting_is_fixed_cap_normalized_and_zero_safe():
     assert accounting["resource_after_ppm"] == ea.MICRO
 
 
+def test_counter_accounting_saturates_out_of_cap_non_admission_telemetry():
+    law = ea.load_counter_resource_law()
+    assert (
+        law["resource_overflow_policy"]
+        == ea.SATURATING_RESOURCE_OVERFLOW_POLICY
+    )
+    parent = copy.deepcopy(cs.genesis_floor_vector(PROFILE, "confirm"))
+    candidate = copy.deepcopy(parent)
+    side = _accounting_side(candidate)
+    side["logical_durable_storage_bytes"] = 10_000_000_000_000
+    accounting = ea.evaluate_counter_resource_law(
+        law,
+        side,
+        _accounting_side(parent),
+        profile_id=PROFILE,
+        candidate_vector=candidate,
+        incumbent_vector=parent,
+    )
+    assert accounting["resource_after_ppm"] == ea.MAX_UINT32
+
+
 def test_counter_accounting_rejects_legacy_law_and_forged_cap():
     law = ea.load_counter_resource_law()
     legacy = copy.deepcopy(law)
     legacy.pop("resource_normalizer")
     with pytest.raises(ea.ArtifactSchemaError, match="resource_normalizer"):
         ea.validate_counter_resource_law(legacy)
+
+    missing_overflow_policy = copy.deepcopy(law)
+    missing_overflow_policy.pop("resource_overflow_policy")
+    with pytest.raises(ea.ArtifactSchemaError, match="resource_overflow_policy"):
+        ea.validate_counter_resource_law(missing_overflow_policy)
 
     parent = copy.deepcopy(cs.genesis_floor_vector(PROFILE, "confirm"))
     candidate = copy.deepcopy(parent)

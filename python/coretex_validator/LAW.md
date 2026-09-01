@@ -241,7 +241,9 @@ side is normalized against the same positive fixed product cap `C`, not against 
 resource reading is valid and every cap-valid side lies in `[0, 1_000_000]`. On an efficiency
 admit, raw componentwise `R(B) <= R(A)` implies
 `resource_after_ppm <= resource_before_ppm`; on a quality admit the aggregate may rise inside that
-range. The raw `Q`/`R`/`C` rule above is the sole admission authority.
+range. A cap-invalid aggregate too large for its uint32 slot deterministically saturates at the
+law's `resource_ppm_max`; its exact raw resource readings remain bound and rejected by `R(B) <= C`.
+The raw `Q`/`R`/`C` rule above is the sole admission authority.
 
 ### 3A.4 Exact-parent and determinism witness
 
