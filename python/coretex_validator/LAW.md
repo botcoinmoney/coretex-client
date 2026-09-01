@@ -60,7 +60,7 @@ Each profile has its own current release root and exact-parent vector. A submiss
 profile. Acceptance advances only that profile's release root; every other profile remains exactly
 unchanged.
 
-The generators can produce several corpus scales, but revision v1 claims only the `small` stratum
+The generators can produce several corpus scales, but suite block 0 claims only the `small` stratum
 present in `benchmark-v2/validator/CANONICAL-SUITE.v1.json`. No result under this law is evidence
 for an unscored scale. Adding or changing a scored case, partition, profile, objective, or scale is
 a normative law change and moves the suite and evaluation-law roots.
@@ -338,9 +338,9 @@ epochs are metadata and therefore cannot create an evaluation lottery.
 
 ### 3A.7 Suite blocks
 
-The v1 case list is suite **block 0** and never edits. This document's `profiles.{id}.{gate,confirm}`
+The case list is suite **block 0** and never edits. This document's `profiles.{id}.{gate,confirm}`
 arrays ARE block 0. The top-level `suite_blocks` field records that fact so a later law revision
-can append block `1+` without rewriting v1.
+can append block `1+` without rewriting suite block 0.
 
 GA ships one block. Each block keeps its own `Q`/`R`/`C` (serialized in `E`). Gains on a new block cannot offset a
 regression on an old block. A stored vector carries `suite_block_id = 0` until a later revision
