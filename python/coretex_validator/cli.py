@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
+from pathlib import Path
 from typing import Any, Optional, Sequence
 
 from . import __version__
@@ -118,14 +120,48 @@ def _cmd_selftest(_args: argparse.Namespace) -> int:
     return 0
 
 
+def _read_rpc_url(args: argparse.Namespace) -> str:
+    sources = [
+        bool(getattr(args, "rpc", None)),
+        bool(getattr(args, "rpc_file", None)),
+        bool(getattr(args, "rpc_env", None)),
+    ]
+    if sum(sources) != 1:
+        raise ValueError("choose exactly one RPC source: --rpc, --rpc-file, or --rpc-env")
+    if args.rpc:
+        return args.rpc
+    if args.rpc_file:
+        path = Path(args.rpc_file)
+        try:
+            value = path.read_text(encoding="utf-8").strip()
+        except OSError as exc:
+            raise ValueError(f"cannot read RPC URL file {path}: {exc}") from exc
+        if "\n" in value or "\r" in value:
+            raise ValueError("RPC URL file must contain exactly one line")
+        if not value:
+            raise ValueError("RPC URL file is empty")
+        return value
+    name = args.rpc_env
+    if not name or not name.replace("_", "A").isalnum() or not (
+            name[0].isalpha() or name[0] == "_"):
+        raise ValueError("--rpc-env must name one environment variable")
+    value = os.environ.get(name, "").strip()
+    if "\n" in value or "\r" in value:
+        raise ValueError("RPC URL environment value must contain exactly one line")
+    if not value:
+        raise ValueError(f"RPC URL environment variable {name} is empty or unset")
+    return value
+
+
 def _cmd_snapshot(args: argparse.Namespace) -> int:
     from . import release, snapshot
     from .rpc import JsonRpc
 
     installed = release.load(args.release)
     activation = installed.activation(args.activation)
+    rpc_url = _read_rpc_url(args)
     document = snapshot.build_from_public(
-        release=installed, activation=activation, rpc=JsonRpc(args.rpc),
+        release=installed, activation=activation, rpc=JsonRpc(rpc_url),
         object_base_url=args.objects, output_dir=args.out,
         to_block=args.to_block, confirmation_depth=args.confirmations)
     _emit({
@@ -180,7 +216,16 @@ def build_parser() -> argparse.ArgumentParser:
     snapshot.add_argument(
         "--activation", required=True,
         help="local canonical record or coordinator /coretex/v5/activation URL")
-    snapshot.add_argument("--rpc", required=True)
+    rpc_source = snapshot.add_mutually_exclusive_group(required=True)
+    rpc_source.add_argument(
+        "--rpc",
+        help="JSON-RPC URL. Convenient, but visible in process listings while a long scan runs.")
+    rpc_source.add_argument(
+        "--rpc-file",
+        help="path to a single-line JSON-RPC URL file; preferred for secret-bearing URLs")
+    rpc_source.add_argument(
+        "--rpc-env",
+        help="environment variable containing the JSON-RPC URL")
     snapshot.add_argument(
         "--objects", required=True,
         help="public /coretex/v5/object/ base URL (the validator sends hashRule)")
