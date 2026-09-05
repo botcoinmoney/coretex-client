@@ -23,6 +23,8 @@ from dataclasses import dataclass
 from typing import Any, Dict, Mapping, Optional
 
 from . import frontier as fr
+from . import publication as pub
+from . import parent_execution
 from . import release_schema as schema
 from .activation import PublicActivation
 from .keccak256 import keccak256
@@ -137,7 +139,7 @@ def _directory_chain(root: str, path: str) -> tuple[tuple[Any, ...], ...]:
     return tuple(result)
 
 
-def _read(root: str, relative: str, *, expected_size: Optional[int] = None) -> bytes:
+def _read(root: str, relative: str, *, expected_size: Optional[int] = None, max_bytes: int = MAX_FILE_BYTES) -> bytes:
     relative = _safe_relative(relative, "release file path")
     root = os.path.realpath(root)
     if not os.path.isdir(root):
@@ -158,7 +160,7 @@ def _read(root: str, relative: str, *, expected_size: Optional[int] = None) -> b
         if (before.st_dev, before.st_ino) != (first.st_dev, first.st_ino) \
                 or not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
             raise ReleaseError(f"{relative} changed while it was opened")
-        if before.st_size < 1 or before.st_size > MAX_FILE_BYTES:
+        if before.st_size < 1 or before.st_size > max_bytes:
             raise ReleaseError(f"{relative} is outside the 1..{MAX_FILE_BYTES} byte bound")
         if expected_size is not None and before.st_size != expected_size:
             raise ReleaseError(
@@ -258,7 +260,7 @@ def _archive_name(value: str, where: str) -> str:
 
 
 def _wheel_payload(raw: bytes, *, package: str, distribution_stem: str,
-                   where: str, version: str = "1.0.0",
+                   where: str, version: str = "1.1.0",
                    tag: str = "py3-none-any") -> Dict[str, str]:
     """Verify one pure wheel's safe closed archive and return package member hashes."""
     try:
@@ -460,6 +462,38 @@ def load(path: str) -> ReleaseDirectory:
             raise ReleaseError(
                 f"release {object_name} bytes differ from embedded {member_name}")
 
+    retrieval = _json(object_bytes["retrieval_config_root"], "retrieval config")
+    if set(retrieval) != {"format", "profiles", "suite_embedding_table"} or retrieval["format"] != "benchmark-v2/retrieval-config/v1" or retrieval["suite_embedding_table"] is not None:
+        raise ReleaseError("retrieval config is not a closed live-encoder authority")
+    runtime_config = _json(object_bytes["runtime_config_root"], "runtime config")
+    expected_providers = runtime_config["retrieval_profiles"]
+    if set(retrieval["profiles"]) != set(expected_providers):
+        raise ReleaseError("retrieval config differs from runtime profile set")
+    for profile, entry in retrieval["profiles"].items():
+        if set(entry) != {"descriptor", "descriptor_root", "model_bundle"}:
+            raise ReleaseError("retrieval profile fields differ")
+        descriptor = entry["descriptor"]
+        observed = _sha(json.dumps(descriptor, sort_keys=True, separators=(",", ":"), ensure_ascii=True, allow_nan=False).encode())
+        if observed != entry["descriptor_root"] or observed != expected_providers[profile]:
+            raise ReleaseError("retrieval descriptor differs from runtime identity")
+        bundle = entry["model_bundle"]
+        if descriptor["kind"] == "lexical":
+            if bundle is not None or descriptor != {"id": "lexical-bm25.v1", "version": "1", "kind": "lexical"}:
+                raise ReleaseError("lexical descriptor is malformed")
+            continue
+        if profile != "conv.pref.v1" or descriptor["kind"] != "hybrid" or not isinstance(bundle, dict) or set(bundle) != {"path", "files"} or bundle["files"] != descriptor["model_files"]:
+            raise ReleaseError("hybrid bundle does not bind its model files")
+        base = _safe_relative(bundle["path"], "model bundle")
+        if not base.startswith("artifacts/models/"):
+            raise ReleaseError("model bundle is outside artifacts/models")
+        for name, spec in bundle["files"].items():
+            name = _safe_relative(name, "model file")
+            if set(spec) != {"bytes", "sha256"} or type(spec["bytes"]) is not int or not 0 < spec["bytes"] <= 128 * 1024 * 1024:
+                raise ReleaseError("model file declaration is malformed or oversized")
+            raw = _read(root, base + "/" + name, expected_size=spec["bytes"], max_bytes=128 * 1024 * 1024)
+            if _sha(raw) != spec["sha256"]:
+                raise ReleaseError("model file differs from descriptor hash")
+
     artifact_bytes: Dict[str, bytes] = {}
     for name, descriptor in parsed.raw["artifacts"].items():
         raw = _read(root, descriptor["path"], expected_size=descriptor["size"])
@@ -469,13 +503,13 @@ def load(path: str) -> ReleaseDirectory:
 
     runtime_payload = _wheel_payload(
         artifact_bytes["runtime_wheel"], package="coretex_memory",
-        distribution_stem="coretex_memory-1.0.0", where="artifacts.runtime_wheel")
+        distribution_stem="coretex_memory-1.1.0", where="artifacts.runtime_wheel")
     validator_payload = _wheel_payload(
         artifact_bytes["validator_wheel"], package="coretex_validator",
-        distribution_stem="coretex_validator-1.0.0", where="artifacts.validator_wheel")
+        distribution_stem="coretex_validator-1.1.0", where="artifacts.validator_wheel")
     _wheel_payload(
         artifact_bytes["adapter_wheel"], package="coretex_memory_agent",
-        distribution_stem="coretex_memory_agent-1.0.0", where="artifacts.adapter_wheel")
+        distribution_stem="coretex_memory_agent-1.1.0", where="artifacts.adapter_wheel")
     _wheel_payload(
         artifact_bytes["wasmtime_amd64_wheel"], package="wasmtime",
         distribution_stem="wasmtime-46.0.1", where="artifacts.wasmtime_amd64_wheel",
@@ -492,7 +526,7 @@ def load(path: str) -> ReleaseDirectory:
             or payload_document.get("format") != "coretex.validator-wheel-payload/v1" \
             or payload_document.get("distribution") != "coretex-validator" \
             or payload_document.get("package") != "coretex_validator" \
-            or payload_document.get("version") != "1.0.0" \
+            or payload_document.get("version") != "1.1.0" \
             or payload_document.get("wheel_sha256") \
             != parsed.raw["artifacts"]["validator_wheel"]["sha256"] \
             or payload_document.get("members") != validator_payload \
@@ -568,7 +602,7 @@ def load(path: str) -> ReleaseDirectory:
     composition = _json(_read(root, "GENESIS-COMPOSITION.json"), "GENESIS-COMPOSITION.json")
     baseline = _json(_read(root, "GENESIS-BASELINE.json"), "GENESIS-BASELINE.json")
     frontier_record = _json(_read(root, "GENESIS-FRONTIER.json"), "GENESIS-FRONTIER.json")
-    if _frontier_body_root(composition, "composition_root") \
+    if pub.root_of(pub.encode(composition, pub.HASH_RULE_MANIFEST_BODY), pub.HASH_RULE_MANIFEST_BODY) \
             != parsed.raw["genesis"]["composition_root"]:
         raise ReleaseError("genesis composition does not reproduce the release root")
     if _frontier_body_root(baseline, "baseline_root") != parsed.raw["genesis"]["baseline_root"]:
@@ -578,20 +612,31 @@ def load(path: str) -> ReleaseDirectory:
             or frontier_record["frontier_root"] != parsed.genesis_frontier_root:
         raise ReleaseError("genesis frontier does not reproduce the release root")
 
-    if set(composition) != {"composition_root", "format", "profiles"} \
-            or composition.get("format") != "coretex.genesis-composition/v1" \
+    if composition.get("format") != "coretex-memory/deployment-content-addressed/v2" \
             or set(baseline) != {"baseline_root", "format", "law_id", "profiles", "suite_root"} \
             or baseline.get("format") != "coretex.genesis-baseline/v1" \
             or baseline.get("law_id") != parsed.raw["law"]["id"] \
             or baseline.get("suite_root") != parsed.raw["law"]["canonical_suite_root"]:
         raise ReleaseError("genesis composition or baseline has another closed product shape")
+    bridge = _json(object_bytes["baseline_bridge_root"], "baseline bridge")
+    if bridge.get("format") != "coretex.release-baseline-bridge/v1" \
+            or bridge.get("predecessor_release_root") != parsed.raw["predecessor"] \
+            or bridge.get("credits") != 0 \
+            or bridge.get("composition") != composition \
+            or fr.frontier_root(bridge["parent_frontier"]) != bridge.get("parent_frontier_root"):
+        raise ReleaseError("release baseline bridge is inconsistent")
+    from . import canonical_suite
+    baseline_authority = canonical_suite.release_baseline_authority()
+    if baseline_authority["parent_frontier_root"] != bridge["parent_frontier_root"] \
+            or baseline_authority["predecessor_release_root"] != parsed.raw["predecessor"]:
+        raise ReleaseError("baseline predecessor differs from this validator's sealed authority")
     frontier_manifest = frontier_record["manifest"]
     if not isinstance(frontier_manifest, Mapping) or set(frontier_manifest) != {
             "benchmark_law_root", "default_composition_root", "epoch", "format",
             "parent_frontier_root", "profiles", "runtime_abi_root"} \
             or frontier_manifest.get("format") != "coretex.memory-frontier.v1" \
             or frontier_manifest.get("epoch") != 0 \
-            or frontier_manifest.get("parent_frontier_root") != "0" * 64 \
+            or frontier_manifest.get("parent_frontier_root") != bridge["parent_frontier_root"] \
             or frontier_manifest.get("benchmark_law_root") \
             != parsed.raw["law"]["benchmark_law_root"] \
             or frontier_manifest.get("default_composition_root") \
@@ -600,7 +645,7 @@ def load(path: str) -> ReleaseDirectory:
             != parsed.raw["objects"]["miner_module_abi_root"]["root"]:
         raise ReleaseError("genesis frontier has another product identity")
 
-    composition_profiles = composition.get("profiles")
+    composition_profiles = composition.get("profile_bindings")
     baseline_profiles = baseline.get("profiles")
     frontier_profiles = frontier_manifest.get("profiles")
     profile_ids = set(parsed.raw["genesis"]["profile_releases"])
@@ -633,24 +678,38 @@ def load(path: str) -> ReleaseDirectory:
 
     for profile, binding in parsed.raw["genesis"]["profile_releases"].items():
         document = _json(_read(root, binding["path"]), f"reference release {profile}")
-        if fr.sha256_hex(fr.canonical_bytes(document)) != binding["root"]:
-            raise ReleaseError(f"reference release {profile} does not reproduce its root")
-        if set(document) != {"abi", "exec", "format", "profile_id", "reference_runtime"} \
-                or document.get("format") != "coretex.genesis-reference-release/v1" \
-                or document.get("profile_id") != profile or document.get("exec") != "reference" \
-                or document.get("reference_runtime") != {
-                    "id": "reference-runtime", "protocol": "rrm1"} \
-                or document.get("abi") != expected_reference_abi:
-            raise ReleaseError(
-                f"reference release {profile} is not the release-bound builtin runtime")
-        if composition_profiles[profile] != {"exec": "reference", "release_root": binding["root"]} \
-                or frontier_profiles[profile] != binding["root"]:
-            raise ReleaseError(f"genesis composition/frontier disagrees on {profile}")
+        is_reference = document.get("exec") == "reference"
+        module_bytes = None if is_reference else _read(root, f"releases/{profile}/module.py")
+        try:
+            execution = parent_execution.resolve_parent_execution(
+                parent_manifest=frontier_manifest, target_profile=profile,
+                parent_composition=composition, parent_release_manifest=document,
+                parent_module_bytes=module_bytes, fr_module=fr, pub_module=pub,
+                validate_runtime=False)
+        except Exception as exc:
+            raise ReleaseError(f"baseline execution for {profile} is invalid: {exc}") from exc
+        if execution["release_root"] != binding["root"]:
+            raise ReleaseError("baseline descriptor differs from the release profile binding")
+        if is_reference and document.get("abi") != expected_reference_abi:
+            raise ReleaseError("baseline reference ABI differs from this release")
+        if not is_reference:
+            origin = bridge["origins"][profile]
+            original = origin["manifest"]
+            if pub.root_of(pub.encode(original, pub.HASH_RULE_MANIFEST_BODY), pub.HASH_RULE_MANIFEST_BODY) != origin["release_root"] \
+                    or _sha(module_bytes) != origin["module_sha256"] \
+                    or original["module_sha256"] != origin["module_sha256"]:
+                raise ReleaseError("baseline module source differs from its recorded origin")
+            if profile == "doc.tool.v1" and origin["release_root"] != bridge["parent_frontier"]["profiles"][profile]:
+                raise ReleaseError("baseline does not retain the accepted doc module")
+            if document["candidate_provider"] != baseline_authority["profiles"][profile]["candidate_provider"]:
+                raise ReleaseError("baseline module provider differs from sealed profile authority")
         baseline_entry = baseline_profiles[profile]
         if not isinstance(baseline_entry, Mapping) or set(baseline_entry) != {
                 "law_id", "partitions", "profile_id", "release_root", "stored_vector_root",
                 "suite_root"}:
             raise ReleaseError(f"genesis baseline {profile} has another shape")
+        if baseline_entry.get("partitions") != baseline_authority["profiles"][profile]["partitions"]:
+            raise ReleaseError("release baseline vectors differ from this validator's sealed authority")
         baseline_body = {
             key: value for key, value in baseline_entry.items() if key != "stored_vector_root"}
         if baseline_entry.get("law_id") != parsed.raw["law"]["id"] \

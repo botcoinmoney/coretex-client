@@ -216,7 +216,7 @@ def validate_vector(vector: Any, profile_id: str, where: str, declared=None) -> 
 
 def _validate(document: Any) -> Dict[str, Any]:
     """The CLOSED schema of LAW §3A.1 — the same rules the benchmark loader enforces."""
-    _require(isinstance(document, dict) and frozenset(document) == SUITE_FIELDS,
+    _require(isinstance(document, dict) and frozenset(document) in (SUITE_FIELDS, SUITE_FIELDS | {"release_baseline_authority"}),
              "canonical suite has an unknown or open schema")
     _require(document["format"] == SUITE_FORMAT,
              f"canonical suite format {document.get('format')!r} is not {SUITE_FORMAT!r}")
@@ -342,6 +342,42 @@ def _validate(document: Any) -> Dict[str, Any]:
                 f"{where}.reference_runtime must identify builtin reference-runtime/rrm1")
             _require(_is_sha256(reference.get("release_root")),
                      f"{where}.release_root must be sha256 hex")
+    baseline = document.get("release_baseline_authority")
+    if baseline is not None:
+        _require(isinstance(baseline, dict) and set(baseline) == {
+            "predecessor_release_root", "parent_frontier_root", "profiles"},
+            "release baseline authority has an unknown or open schema")
+        for field in ("predecessor_release_root", "parent_frontier_root"):
+            value = baseline[field]
+            _require(isinstance(value, str) and len(value) == 64
+                     and set(value) <= set("0123456789abcdef") and value != "0" * 64,
+                     f"release baseline {field} must be a nonzero sha256 root")
+        _require(isinstance(baseline["profiles"], dict)
+                 and set(baseline["profiles"]) == set(profiles),
+                 "release baseline must cover every profile")
+        for profile_id, entry in baseline["profiles"].items():
+            _require(isinstance(entry, dict) and set(entry) == {"release_root", "partitions", "candidate_provider"},
+                     "release baseline profile must bind release_root, provider and partitions")
+            provider = entry["candidate_provider"]
+            _require(isinstance(provider, dict) and set(provider) == {"id", "version"}
+                     and all(isinstance(v, str) and v for v in provider.values()),
+                     "release baseline candidate provider is malformed")
+            value = entry["release_root"]
+            _require(isinstance(value, str) and len(value) == 64
+                     and set(value) <= set("0123456789abcdef") and value != "0" * 64,
+                     "release baseline profile root must be a nonzero sha256 root")
+            _require(isinstance(entry["partitions"], dict)
+                     and set(entry["partitions"]) == set(PARTITIONS),
+                     "release baseline must bind gate and confirm")
+            for label in PARTITIONS:
+                vector = validate_vector(entry["partitions"][label], profile_id,
+                    f"release baseline {profile_id}/{label}",
+                    declared=profiles[profile_id]["protected_quality_objectives"])
+                for _axis, measured, cap in PRODUCT_CAP_VECTOR_FIELDS:
+                    _require(vector[cap] == floor["vectors"][profile_id][label][cap],
+                             "release baseline must use the same fixed product caps as the floor")
+                    _require(vector[measured] <= vector[cap],
+                             "release baseline resource exceeds the fixed cap")
     return document
 
 
@@ -476,3 +512,23 @@ def reset_cache() -> None:
     global _SUITE, _SUITE_ROOT
     _SUITE = None
     _SUITE_ROOT = None
+
+
+def release_baseline_authority() -> dict:
+    """The sealed initial composition of this release, distinct from reference quality floors.
+
+    The legacy genesis baseline/witness wire names denote the initial vectors of a release.
+    Sequence 1 used its reference floors; a prospective sequence binds a measured module
+    composition and explicit predecessor here. Neither path manufactures an accepting receipt.
+    """
+    document = _load()
+    if "release_baseline_authority" in document:
+        return copy.deepcopy(document["release_baseline_authority"])
+    floor = document["genesis_floor_authority"]
+    if floor.get("status") != "resolved":
+        raise GenesisFloorPendingError("release baseline is not resolved")
+    return {"predecessor_release_root": None, "parent_frontier_root": "0" * 64,
+            "profiles": {profile: {"release_root": source["release_root"],
+                         "partitions": copy.deepcopy(floor["vectors"][profile]),
+                         "candidate_provider": {"id": "lexical-bm25.v1", "version": "1"}}
+                         for profile, source in floor["source"]["profiles"].items()}}

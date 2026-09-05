@@ -132,7 +132,7 @@ def _kit_files(release: release_module.ReleaseDirectory) -> dict[str, bytes]:
         "closure", "format", "law", "members", "packages", "product", "support_trees",
     }, _MANIFEST)
     if document["format"] != _KIT_FORMAT \
-            or document["product"] != {"name": "coretex", "version": "1.0.0"}:
+            or document["product"] != {"name": "coretex", "version": "1.1.0"}:
         raise BenchmarkReplayError("miner kit has another public product identity")
     if document["closure"] != {
             "manifest_member": _MANIFEST,
@@ -228,7 +228,7 @@ def _kit_files(release: release_module.ReleaseDirectory) -> dict[str, bytes]:
     return files
 
 
-def _wheel_files(raw: bytes, where: str) -> dict[str, bytes]:
+def _wheel_files(raw: bytes, where: str, *, allow_directories: bool = False) -> dict[str, bytes]:
     files: dict[str, bytes] = {}
     total = 0
     try:
@@ -237,6 +237,9 @@ def _wheel_files(raw: bytes, where: str) -> dict[str, bytes]:
             if not infos or len(infos) > _MAX_MEMBERS:
                 raise BenchmarkReplayError(f"{where} member count is outside its bound")
             for info in infos:
+                if info.is_dir() and allow_directories:
+                    release_module._archive_name(info.filename.rstrip("/"), where)
+                    continue
                 name = release_module._archive_name(info.filename, where)  # noqa: SLF001
                 # Empty regular members (notably Wasmtime's ``py.typed`` marker) are valid wheel
                 # payload.  Directory entries remain forbidden and the aggregate/member ceilings
@@ -254,6 +257,56 @@ def _wheel_files(raw: bytes, where: str) -> dict[str, bytes]:
     except (OSError, zipfile.BadZipFile) as exc:
         raise BenchmarkReplayError(f"cannot inspect {where}: {exc}") from exc
     return files
+
+
+def _numeric_files(release: release_module.ReleaseDirectory) -> dict[str, bytes]:
+    import sys
+    if platform.system() != "Linux" or platform.machine().lower() not in ("x86_64", "amd64") or sys.version_info[:2] != (3, 10):
+        raise BenchmarkReplayError("canonical hybrid replay requires the pinned Linux amd64 CPython 3.10 lane; ARM serving is separately qualified")
+    files = {}
+    raw = release.artifacts["numeric_runtime_amd64"]
+    with tarfile.open(fileobj=io.BytesIO(raw), mode="r:") as archive:
+        members = archive.getmembers()
+        if not 1 < len(members) <= 64:
+            raise BenchmarkReplayError("CPU dependency member count differs")
+        for member in members:
+            name = release_module._archive_name(member.name, "CPU dependency bundle")
+            if "/" in name or name in files or not member.isfile() or not 0 < member.size <= release_module.MAX_FILE_BYTES:
+                raise BenchmarkReplayError("CPU dependency archive has an unsafe member")
+            stream = archive.extractfile(member)
+            data = stream.read(member.size + 1)
+            if len(data) != member.size:
+                raise BenchmarkReplayError("CPU dependency member size differs")
+            files[name] = data
+    manifest = _json(files.pop("CPU-RUNTIME.json"), "CPU runtime")
+    _closed(manifest, {"format", "machine", "python_abi", "versions", "wheels"}, "CPU runtime")
+    if manifest["format"] != "coretex.cpu-dependency-bundle/v1" or manifest["machine"] != "x86_64" or manifest["python_abi"] != "cp310" or set(files) != set(manifest["wheels"]):
+        raise BenchmarkReplayError("CPU dependency identity differs")
+    for name, version in {"onnxruntime": "1.19.2", "numpy": "1.26.4", "tokenizers": "0.20.3"}.items():
+        if manifest["versions"].get(name) != version:
+            raise BenchmarkReplayError("CPU dependency versions differ")
+    output = {}
+    for name, data in files.items():
+        spec = _closed(manifest["wheels"][name], {"bytes", "sha256"}, name)
+        if not name.endswith(".whl") or len(data) != spec["bytes"] or _sha(data) != spec["sha256"]:
+            raise BenchmarkReplayError("CPU wheel differs from inventory")
+        members = _wheel_files(data, name, allow_directories=True)
+        for member, content in members.items():
+            if member in output:
+                raise BenchmarkReplayError("CPU wheels overlap")
+            if ".data/" in member:
+                # Only purelib/platlib payload belongs on PYTHONPATH; CLI scripts are unused.
+                head, rest = member.split(".data/", 1)
+                if rest.startswith(("purelib/", "platlib/")):
+                    member = rest.split("/", 1)[1]
+                else:
+                    continue
+            if member.endswith(".pth"):
+                raise BenchmarkReplayError("CPU wheel attempts ambient path injection")
+            if member in output:
+                raise BenchmarkReplayError("CPU wheels overlap after installation mapping")
+            output[member] = content
+    return output
 
 
 def _write_files(root: Path, files: Mapping[str, bytes], *, prefixes: tuple[str, ...] = ()) -> None:
@@ -353,8 +406,12 @@ if payload["mode"] == "runtime":
     manifest = payload["execution"]["release_manifest"]
     module = payload["execution"]["module"]["source"].encode("utf-8")
     root = payload["execution"]["release_root"]
+    from validator.retrieval_config import resolve_profile_retrieval
+    descriptor, _, _ = resolve_profile_retrieval(
+        payload["repo"] + "/v5/release-1.1.0", manifest["deployment_profile"])
     runtime_release.load_content_addressed_release(
-        manifest, expected_manifest_root=root, runtime_checks=True)
+        manifest, expected_manifest_root=root, runtime_checks=True,
+        expected_provider={"id": descriptor.id, "version": descriptor.version})
     runtime_release.recompute_admission(module, manifest)
     result = {"ok": True, "networkless_proof": proof}
 else:
@@ -436,6 +493,27 @@ class ReleaseBenchmarkRunner:
                 self.release.artifacts[wasmtime_role], wasmtime_role)
             _write_files(site, runtime_files)
             _write_files(site, wasmtime_files)
+            _write_files(site, _numeric_files(self.release))
+            # The same release config and model payload are used by the ordinary eval_worker.
+            target_release = repo / "v5" / "release-1.1.0"
+            target_release.mkdir(parents=True)
+            for relative in ("RELEASE.json", "objects/retrieval-config.json"):
+                target = target_release / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(release_module._read(self.release.path, relative))
+            retrieval = _json(self.release.objects["retrieval_config_root"], "retrieval config")
+            for entry in retrieval["profiles"].values():
+                bundle = entry["model_bundle"]
+                if bundle is None:
+                    continue
+                for name, spec in bundle["files"].items():
+                    relative = bundle["path"] + "/" + name
+                    data = release_module._read(self.release.path, relative, expected_size=spec["bytes"], max_bytes=128 * 1024 * 1024)
+                    if _sha(data) != spec["sha256"]:
+                        raise BenchmarkReplayError("model changed since release verification")
+                    target = target_release / relative
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_bytes(data)
             (site / "sitecustomize.py").write_bytes(kit[_ISOLATION_BOOTSTRAP])
             if not any(name.startswith("coretex_memory/") for name in runtime_files):
                 raise BenchmarkReplayError("release runtime wheel has no coretex_memory package")

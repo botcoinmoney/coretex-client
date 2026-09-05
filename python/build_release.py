@@ -27,7 +27,7 @@ import zipfile
 from pathlib import Path
 from typing import Iterable, Mapping
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 DIST = "coretex_validator"
 PACKAGE = "coretex_validator"
 WHEEL_NAME = f"{DIST}-{VERSION}-py3-none-any.whl"
@@ -212,7 +212,7 @@ def _metadata() -> bytes:
         "Classifier: Topic :: Security :: Cryptography\n"
         "\n"
         "# CoreTex validator\n\n"
-        "Independent validation for the first-public CoreTex 1.0.0 release.\n"
+        "Independent validation for the first-public CoreTex 1.1.0 release.\n"
     ).encode("utf-8")
 
 

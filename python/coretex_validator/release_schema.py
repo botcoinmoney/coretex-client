@@ -98,6 +98,8 @@ _OBJECT_RULES = {
     "rig_registry_abi_root": "sha256-bytes",
     "rig_verifier_abi_root": "sha256-bytes",
     "runtime_config_root": "sha256-benchmark-canonical-json",
+    "retrieval_config_root": "sha256-bytes",
+    "baseline_bridge_root": "sha256-bytes",
     "runtime_protocol_abi_root": "sha256-frontier-canonical-json",
     "validator_wheel_payload_root": "sha256-frontier-canonical-json",
     "public_candidate_isolation": "sha256-bytes",
@@ -195,6 +197,8 @@ def _validate_objects(value: Any) -> Dict[str, Mapping[str, Any]]:
                     entry["authority_path"], f"objects.{name}.authority_path", "v5/") != expected:
                 raise ReleaseSchemaError(
                     f"objects.{name}.authority_path must be {expected!r}")
+        if name.startswith("numeric_runtime_") and entry["filename"] != name.replace("_", "-") + ".tar":
+            raise ReleaseSchemaError("CPU dependency artifact has another filename")
         result[name] = entry
     return result
 
@@ -231,9 +235,9 @@ def _validate_artifacts(value: Any) -> Dict[str, Mapping[str, Any]]:
                 raise ReleaseSchemaError(
                     f"artifacts.{name}.distribution must be {_WHEEL_DISTRIBUTIONS[name]!r}")
             expected_filename = {
-                "adapter_wheel": "coretex_memory_agent-1.0.0-py3-none-any.whl",
-                "runtime_wheel": "coretex_memory-1.0.0-py3-none-any.whl",
-                "validator_wheel": "coretex_validator-1.0.0-py3-none-any.whl",
+                "adapter_wheel": "coretex_memory_agent-1.1.0-py3-none-any.whl",
+                "runtime_wheel": "coretex_memory-1.1.0-py3-none-any.whl",
+                "validator_wheel": "coretex_validator-1.1.0-py3-none-any.whl",
                 "wasmtime_aarch64_wheel":
                     "wasmtime-46.0.1-py3-none-manylinux2014_aarch64.whl",
                 "wasmtime_amd64_wheel":
@@ -254,7 +258,7 @@ def _validate_artifacts(value: Any) -> Dict[str, Mapping[str, Any]]:
                     or entry["filename"] != "portability-evidence.json":
                 raise ReleaseSchemaError("portability evidence has another format or filename")
         elif name == "miner_validator_kit" \
-                and entry["filename"] != "coretex-miner-validator-kit-1.0.0.tar":
+                and entry["filename"] != "coretex-miner-validator-kit-1.1.0.tar":
             raise ReleaseSchemaError("miner validator kit has another filename")
         result[name] = entry
     return result
@@ -286,11 +290,11 @@ def parse_release(value: Any) -> RuntimeRelease:
         raise ReleaseSchemaError(f"runtime release format must be {RELEASE_FORMAT!r}")
     product = _CONTRACT["product"]
     if document["name"] != product["name"] or document["version"] != PRODUCT_VERSION:
-        raise ReleaseSchemaError("the first public runtime release must be coretex 1.0.0")
+        raise ReleaseSchemaError("the first public runtime release must be coretex 1.1.0")
     if type(document["sequence"]) is not int \
             or document["sequence"] != product["sequence"] \
             or document["predecessor"] != product["predecessor"]:
-        raise ReleaseSchemaError("public genesis requires sequence=1 and predecessor=null")
+        raise ReleaseSchemaError("release requires its exact sequence and predecessor")
     law = _closed(document["law"], _LAW_FIELDS, "runtime release law")
     if any(law[field] != _CONTRACT["law"][field] for field in (
             "id", "family", "revision", "decision_engine_id")):
@@ -312,9 +316,7 @@ def parse_release(value: Any) -> RuntimeRelease:
                           f"genesis.profile_releases[{profile!r}]")
         root(binding["root"], f"genesis.profile_releases[{profile!r}].root")
         expected_path = f"reference-releases/{binding['root']}.json"
-        if _relative_path(
-                binding["path"], f"genesis.profile_releases[{profile!r}].path",
-                "reference-releases/") != expected_path:
+        if binding["path"] not in (expected_path, f"releases/{profile}/manifest.json"):
             raise ReleaseSchemaError(
                 f"genesis.profile_releases[{profile!r}].path must be {expected_path!r}")
     objects = _validate_objects(document["objects"])
@@ -338,8 +340,8 @@ def parse_release(value: Any) -> RuntimeRelease:
 
 def validate_public_genesis(value: Any, release: RuntimeRelease) -> Dict[str, Any]:
     block = dict(_closed(value, _PUBLIC_GENESIS_FIELDS, "public_genesis"))
-    if type(block["sequence"]) is not int or block["sequence"] != 1 \
-            or block["predecessor"] is not None:
+    if type(block["sequence"]) is not int or block["sequence"] != release.raw["sequence"] \
+            or block["predecessor"] != release.raw["predecessor"]:
         raise ReleaseSchemaError("public_genesis requires sequence=1 and predecessor=null")
     if root(block["release_root"], "public_genesis.release_root") != release.release_root:
         raise ReleaseSchemaError("public_genesis.release_root does not name RELEASE.json")
@@ -359,7 +361,7 @@ def parse_integration(value: Any, release: RuntimeRelease) -> Mapping[str, Any]:
         "rig_contract_authority_root", "runtime_config"))
     document = dict(_closed(value, required, "runtime integration"))
     if document["format"] != INTEGRATION_FORMAT or document["product_version"] != PRODUCT_VERSION:
-        raise ReleaseSchemaError("runtime integration is not the 1.0.0 public format")
+        raise ReleaseSchemaError("runtime integration is not the 1.1.0 public format")
     if document["release_root"] != release.release_root:
         raise ReleaseSchemaError("runtime integration and RELEASE.json name different releases")
     validate_public_genesis(document["public_genesis"], release)

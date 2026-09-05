@@ -36,7 +36,7 @@ ARTIFACT_FORMAT = "coretex.memory-eval-artifact.v3"
 #: The Benchmark-v2 law id a v3 artifact's evaluation report must be bound to. Stated here so the
 #: artifact layer refuses a mismatched pairing instead of inferring one.
 FIXED_SUITE_LAW_ID = "benchmark-v2-law/dominance-fixed-suite.v2"
-FIXED_MEASUREMENT_POLICY = "final-render-trusted-hostwork.v4"
+FIXED_MEASUREMENT_POLICY = "final-render-trusted-hostwork.v5"
 #: The decision engine that law names. Mirrors ``benchmark-v2/frontier/dominance.ENGINE_ID``.
 DOMINANCE_ENGINE_ID = "dominance.componentwise.v2"
 #: LAW §3A.3 rule 2 trade constants. Mirrors ``benchmark-v2/frontier/dominance``; the artifact
@@ -1499,12 +1499,7 @@ def _validate_genesis_baseline(document: Any, expected_root: str) -> Dict[str, A
     if not isinstance(profiles, dict) or set(profiles) != set(fr.PROFILE_IDS):
         raise ArtifactSchemaError(
             "genesis baseline profiles must be exactly the public profile set")
-    floor_authority = cs.genesis_floor_authority()
-    source = floor_authority.get("source")
-    source_profiles = source.get("profiles") if isinstance(source, Mapping) else None
-    if not isinstance(source_profiles, Mapping) or set(source_profiles) != set(fr.PROFILE_IDS):
-        raise ArtifactSchemaError(
-            "the canonical-suite genesis authority does not bind every public profile release")
+    source_profiles = cs.release_baseline_authority()["profiles"]
     for profile_id in fr.PROFILE_IDS:
         row = _check_closed(profiles[profile_id], GENESIS_BASELINE_PROFILE_FIELDS,
                             f"genesis_baseline.profiles[{profile_id!r}]")
@@ -1521,17 +1516,17 @@ def _validate_genesis_baseline(document: Any, expected_root: str) -> Dict[str, A
         if row["release_root"] != expected_release:
             raise ArtifactSchemaError(
                 f"genesis baseline profile {profile_id!r} release_root is not the sealed "
-                "genesis reference release")
+                "initial release composition")
         _check_closed(row["partitions"], SELECTION_LABELS,
                       f"genesis_baseline.profiles[{profile_id!r}].partitions")
         for label in SELECTION_LABELS:
             _validate_vector(row["partitions"][label],
                              f"genesis_baseline.profiles[{profile_id!r}].partitions[{label!r}]",
                              profile_id)
-            if row["partitions"][label] != cs.genesis_floor_vector(profile_id, label):
+            if row["partitions"][label] != source_profiles[profile_id]["partitions"][label]:
                 raise ArtifactSchemaError(
                     f"genesis baseline profile {profile_id!r} partition {label!r} is not the "
-                    "sealed constructor-genesis vector")
+                    "sealed release baseline vector")
         vector_body = {key: value for key, value in row.items()
                        if key != "stored_vector_root"}
         if row["stored_vector_root"] != fr.sha256_hex(fr.canonical_bytes(vector_body)):

@@ -90,8 +90,12 @@ def _validate_runtime_release(release_manifest: Mapping[str, Any], module_bytes:
     try:
         from coretex_memory import release as runtime_release  # noqa: WPS433
 
+        from . import canonical_suite
+        profile = release_manifest["deployment_profile"]
+        expected_provider = canonical_suite.release_baseline_authority()["profiles"][profile]["candidate_provider"]
         runtime_release.load_content_addressed_release(
-            dict(release_manifest), expected_manifest_root=release_root, runtime_checks=True)
+            dict(release_manifest), expected_manifest_root=release_root, runtime_checks=True,
+            expected_provider=expected_provider)
         runtime_release.recompute_admission(module_bytes, dict(release_manifest))
     except Exception as exc:
         raise ParentExecutionError(

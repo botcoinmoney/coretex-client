@@ -93,9 +93,9 @@ def _seed_genesis_objects(release: ReleaseDirectory, store: publication.InMemory
         raise SnapshotBuildError("release GENESIS-FRONTIER.json does not reproduce the release")
     composition_root = release.release.raw["genesis"]["composition_root"]
     composition = _load_json_bytes(composition_raw, "GENESIS-COMPOSITION.json")
-    body = {key: value for key, value in composition.items() if key != "composition_root"}
-    if composition.get("composition_root") != composition_root \
-            or _sha(_canonical(body)) != composition_root:
+    if composition.get("manifest_self_sha256") != composition_root \
+            or publication.root_of(publication.encode(composition, publication.HASH_RULE_MANIFEST_BODY),
+                                   publication.HASH_RULE_MANIFEST_BODY) != composition_root:
         raise SnapshotBuildError("release genesis composition does not reproduce its root")
     store.put(composition_root, composition_raw)
     baseline_root = release.release.raw["genesis"]["baseline_root"]
@@ -114,9 +114,16 @@ def _seed_genesis_objects(release: ReleaseDirectory, store: publication.InMemory
             raise SnapshotBuildError(f"genesis descriptor {profile} is unavailable: {exc}") \
                 from exc
         descriptor = _load_json_bytes(raw, f"genesis descriptor {profile}")
-        if _sha(_canonical(descriptor)) != declaration["root"]:
+        rule = (publication.HASH_RULE_FRONTIER_JSON if descriptor.get("exec") == "reference"
+                else publication.HASH_RULE_MANIFEST_BODY)
+        if publication.root_of(publication.encode(descriptor, rule), rule) != declaration["root"]:
             raise SnapshotBuildError(f"genesis descriptor {profile} does not reproduce its root")
         store.put(declaration["root"], raw)
+        if descriptor.get("exec") != "reference":
+            module = (release_path / "releases" / profile / "module.py").read_bytes()
+            if _sha(module) != descriptor["module_sha256"]:
+                raise SnapshotBuildError(f"baseline module {profile} does not reproduce its root")
+            store.put(descriptor["module_sha256"], module)
     return frontier_wrapper["manifest"]
 
 
@@ -520,10 +527,7 @@ def materialize(*, release: ReleaseDirectory, activation: PublicActivation,
         if frontier.frontier_root(current) != live_root:
             raise SnapshotBuildError("reconstructed frontier does not equal current chain live root")
 
-        reference_roots = {
-            profile: release.release.raw["genesis"]["profile_releases"][profile]["root"]
-            for profile in PROFILE_IDS
-        }
+        reference_roots = parent_execution.PRODUCTION_REFERENCE_RELEASE_ROOTS
         executions = {}
         for profile in PROFILE_IDS:
             try:

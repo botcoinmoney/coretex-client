@@ -2,6 +2,8 @@
   "artifact_names": [
     "adapter_wheel",
     "miner_validator_kit",
+    "numeric_runtime_aarch64",
+    "numeric_runtime_amd64",
     "portability_evidence",
     "runtime_wheel",
     "validator_wheel",
@@ -17,6 +19,7 @@
     "revision": "v2"
   },
   "object_names": [
+    "baseline_bridge_root",
     "benchmark_law_root",
     "canonical_suite_root",
     "counter_resource_law_root",
@@ -35,6 +38,7 @@
     "public_submission_reference",
     "public_submit_guide",
     "renderer_root",
+    "retrieval_config_root",
     "rig_contract_authority_root",
     "rig_mining_abi_root",
     "rig_registry_abi_root",
@@ -45,9 +49,9 @@
   ],
   "product": {
     "name": "coretex",
-    "predecessor": null,
-    "sequence": 1,
-    "version": "1.0.0"
+    "predecessor": "4782fe5d293c678a20e943b6acfce9e09682ab7aa06e2373348f96d45d2e19e5",
+    "sequence": 2,
+    "version": "1.1.0"
   },
   "profiles": [
     "conv.pref.v1",
