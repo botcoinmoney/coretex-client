@@ -353,14 +353,16 @@ randomizing retries or retroactively rejecting a valid result.
 
 ## 4. Measurement and resource authority
 
+The measurement policy is `final-render-trusted-hostwork.v5`.
 The deterministic scorer evaluates finalized consumer-visible renders. Raw measurements and their
 meaning are bound into the report:
 
 - utility objectives and composite use exact micro units;
 - rendered cost is the finalized rendered-cost counter;
-- work is trusted host `work_fuel`, not a candidate-reported duration;
+- work is trusted host `work_fuel`, including encoder token/attention work, vector scoring,
+  fusion and rendering under the published integer tariff, not a candidate-reported duration;
 - durable storage is the logical canonical-store byte count under
-  `logical-durable-storage.cbor.v1`;
+  `logical-durable-storage.cbor.v1+vectors.v1`;
 - operational latency is derived telemetry, never wall-clock consensus.
 
 The candidate and parent run with the same case selection, runtime identity, scorer, renderer,

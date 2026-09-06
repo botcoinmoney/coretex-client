@@ -82,6 +82,40 @@ class ReleaseError(ValueError):
     """The supplied directory is not one closed release graph."""
 
 
+def _verify_m5_extension_origin(origin, module_bytes, profile, parent_root):
+    """Verify the exact M5-only extension without claiming it was accepted on the old chain."""
+    parent = origin.get("parent")
+    if not isinstance(parent, dict) or set(parent) != {"release_root", "manifest", "module_source"}:
+        raise ReleaseError("prospective M5 origin must carry its exact predecessor")
+    document = parent["manifest"]
+    body = {k: v for k, v in document.items() if k != "manifest_self_sha256"}
+    observed = hashlib.sha256(json.dumps(body, sort_keys=True, separators=(",", ":"),
+                                        ensure_ascii=True, allow_nan=False).encode()).hexdigest()
+    if observed != parent_root or parent["release_root"] != parent_root:
+        raise ReleaseError("prospective M5 predecessor does not match the confirmed frontier")
+    if profile == "event.schema.v1":
+        if document.get("exec") != "reference" or parent["module_source"] is not None \
+                or hashlib.sha256(module_bytes).hexdigest() != \
+                "4b5410a383ca6cf902a27424504a3923532d74def8d6d8eafe9e68e96b9806e7":
+            raise ReleaseError("event baseline must be the reviewed M5 helper over its reference parent")
+    elif profile == "doc.tool.v1":
+        source = parent["module_source"]
+        if not isinstance(source, str) or hashlib.sha256(source.encode()).hexdigest() != document.get("module_sha256"):
+            raise ReleaseError("document predecessor module source hash differs")
+        entry = "def make_hooks(context):\n"
+        dispatch = "    dispatch.set_override(abi2.M6, m6_pack)"
+        if source.count(entry) != 1 or source.count(dispatch) != 1:
+            raise ReleaseError("document parent is not the reviewed M6 module")
+        expected = source.replace(entry, entry +
+            "    def m5_rank(question, candidates):\n"
+            "        return context.ref_m5_rank(question, candidates)\n\n")
+        expected = expected.replace(dispatch, "    dispatch.set_override(abi2.M5, m5_rank)\n" + dispatch)
+        if module_bytes != expected.encode():
+            raise ReleaseError("document baseline changes more than the reviewed M5 extension")
+    else:
+        raise ReleaseError("M5 extension is scoped to document and event profiles")
+
+
 def _reject_duplicates(pairs):
     result = {}
     for key, value in pairs:
@@ -699,7 +733,12 @@ def load(path: str) -> ReleaseDirectory:
                     or _sha(module_bytes) != origin["module_sha256"] \
                     or original["module_sha256"] != origin["module_sha256"]:
                 raise ReleaseError("baseline module source differs from its recorded origin")
-            if profile == "doc.tool.v1" and origin["release_root"] != bridge["parent_frontier"]["profiles"][profile]:
+            if origin.get("kind") == "prospective-m5-extension":
+                _verify_m5_extension_origin(origin, module_bytes, profile,
+                    bridge["parent_frontier"]["profiles"][profile])
+            elif profile == "event.schema.v1":
+                raise ReleaseError("event module requires a verified M5 extension origin")
+            elif profile == "doc.tool.v1" and origin["release_root"] != bridge["parent_frontier"]["profiles"][profile]:
                 raise ReleaseError("baseline does not retain the accepted doc module")
             if document["candidate_provider"] != baseline_authority["profiles"][profile]["candidate_provider"]:
                 raise ReleaseError("baseline module provider differs from sealed profile authority")
