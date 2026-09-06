@@ -212,7 +212,7 @@ def _metadata() -> bytes:
         "Classifier: Topic :: Security :: Cryptography\n"
         "\n"
         "# CoreTex validator\n\n"
-        "Independent validation for the first-public CoreTex 1.1.0 release.\n"
+        "Independent validation for the prospective CoreTex 1.1.0 fixed-suite release.\n"
     ).encode("utf-8")
 
 

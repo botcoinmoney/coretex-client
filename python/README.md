@@ -1,6 +1,6 @@
-# coretex-validator 1.0.0
+# coretex-validator 1.1.0
 
-`coretex-validator` independently verifies the first public CoreTex fixed-suite rig lane from
+`coretex-validator` independently verifies the prospective CoreTex fixed-suite rig lane from
 confirmed chain data and content-addressed release objects.
 
 The package ships the exact law, canonical suite, counter-resource law, release schema contract,
@@ -18,7 +18,7 @@ Verify a complete release and its paired chain activation:
 
 ```sh
 coretex-validator verify-release \
-  --release /path/to/v5/release \
+  --release /path/to/v5/release-1.1.0 \
   --activation /path/to/PUBLIC-ACTIVATION.json
 ```
 
@@ -32,4 +32,7 @@ python -m pip install -e '.[dev]'
 python -m pytest -q
 ```
 
-The wheel has no runtime dependencies.
+The wheel itself has no runtime dependencies. Full canonical hybrid replay materializes the
+release's closed CPU dependency and model inventory and requires Linux amd64 CPython 3.10.
+ARM adapter serving is separately qualified. Initial working module bindings are distinct from
+the builtin reference floors; accepted children are replayed against their actual parent module.

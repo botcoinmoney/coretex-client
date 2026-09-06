@@ -145,6 +145,27 @@ def test_presign_reexecutes_exact_parent_and_proves_installed_child(monkeypatch)
     assert runner.calls[0][3]["source_kind"] == "genesis"
 
 
+def test_initial_working_module_is_not_classified_as_builtin_reference(monkeypatch):
+    artifact, report, release, runner, child = _fixture(monkeypatch)
+    release.release.raw["genesis"]["profile_releases"][PROFILE]["root"] = "a" * 64
+    original = replay.parent_execution.fetch_parent_execution
+    observed = []
+
+    def resolve(**kwargs):
+        roots = kwargs["reference_release_roots"]
+        # This was the real snapshot failure: an initial module was promoted to
+        # reference authority, causing the resolver's private-wrapper refusal.
+        assert roots.get(PROFILE) != "a" * 64
+        observed.append(roots)
+        return original(**kwargs)
+
+    monkeypatch.setattr(replay.parent_execution, "fetch_parent_execution", resolve)
+    assert replay.pre_sign_reexecute(evaluation_artifact=artifact,
+        evaluation_report=report, release=release, store=SimpleNamespace(),
+        benchmark_runner=runner, child_manifest=child)["ok"]
+    assert observed
+
+
 def test_presign_refuses_missing_determinism_witness(monkeypatch):
     artifact, report, release, runner, child = _fixture(monkeypatch)
     del artifact["determinism_witness"]

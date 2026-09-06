@@ -202,10 +202,9 @@ def replay_screener(*, screener: Any, parent_manifest: Mapping[str, Any],
             expected_work_policy_hash=receipt["workPolicyHash"],
             resolve_witness_source=True)
         checks.append("fixed_suite_evaluation")
-        reference_roots = {
-            profile_id: row["root"]
-            for profile_id, row in release.release.raw["genesis"]["profile_releases"].items()
-        }
+        # Initial working slots may be admitted modules. Only the sealed floor
+        # authority identifies builtin reference executions.
+        reference_roots = parent_execution.PRODUCTION_REFERENCE_RELEASE_ROOTS
         incumbent = parent_execution.fetch_parent_execution(
             store=store, parent_manifest=parent_manifest, target_profile=profile,
             fr_module=frontier, pub_module=publication,
@@ -361,10 +360,9 @@ def pre_sign_reexecute(*, evaluation_artifact: Mapping[str, Any],
         else:
             child = derived_child
 
-        reference_roots = {
-            profile_id: row["root"]
-            for profile_id, row in release.release.raw["genesis"]["profile_releases"].items()
-        }
+        # Initial working slots may be admitted modules. Only the sealed floor
+        # authority identifies builtin reference executions.
+        reference_roots = parent_execution.PRODUCTION_REFERENCE_RELEASE_ROOTS
         incumbent = parent_execution.fetch_parent_execution(
             store=store, parent_manifest=parent, target_profile=profile,
             fr_module=frontier, pub_module=publication,
