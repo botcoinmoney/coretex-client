@@ -156,41 +156,18 @@ def _verify_and_replay(store, context, pins, current, eval_root):
     return artifact, report, child
 
 
-def test_two_transitions_reconstruct_from_genesis_under_law_v2():
+def test_archived_two_transition_context_cannot_be_adopted_under_the_new_release():
+    # Keep the archived bytes and addresses intact. Historical receipt verification uses the
+    # archived 1.0.0 validator; prospective replay must refuse to reinterpret its measurements.
     index, store, context = _load_fixture()
     pins = _epoch_pins(context)
     assert context["active_frontier_root"] == GENESIS_ROOT
-    assert context["baseline_manifest_hash"] == GENESIS_BASELINE_ROOT
-
     genesis = pub.fetch_json(GENESIS_ROOT, hash_rule=pub.HASH_RULE_FRONTIER_JSON, store=store)
-    frontier.validate_manifest(genesis)
     assert frontier.frontier_root(genesis) == GENESIS_ROOT
-    assert genesis["epoch"] == 0 and genesis["parent_frontier_root"] == "0" * 64
-
-    efficiency, efficiency_report, after_efficiency = _verify_and_replay(
-        store, context, pins, genesis, EFFICIENCY_EVAL_ROOT)
-    assert efficiency["admission_projection"]["class"] == "efficiency"
-    assert efficiency_report["witness_provenance"]["source_kind"] == "genesis"
-    assert efficiency_report["witness_provenance"]["source_root"] == GENESIS_BASELINE_ROOT
-    assert frontier.frontier_root(after_efficiency) == EFFICIENCY_FRONTIER_ROOT
-
-    prior_accept, prior_accept_report, after_prior_accept = _verify_and_replay(
-        store, context, pins, after_efficiency, PRIOR_ACCEPT_EVAL_ROOT)
-    assert prior_accept["admission_projection"]["class"] == "quality"
-    witness = prior_accept["determinism_witness"]
-    assert witness["source_kind"] == "prior_accept"
-    assert witness["source_root"] == EFFICIENCY_EVAL_ROOT
-    assert witness["release_root"] == efficiency["candidate"]["release_root"]
-    provenance = prior_accept_report["witness_provenance"]
-    assert provenance["source_kind"] == "prior_accept"
-    assert provenance["source_root"] == EFFICIENCY_EVAL_ROOT
-    assert provenance["source"]["candidate_hash"] == efficiency["candidate"]["candidate_hash"]
-    assert frontier.frontier_root(after_prior_accept) == PRIOR_ACCEPT_FRONTIER_ROOT
-
+    with pytest.raises(ea.SuiteMembershipError, match="canonical suite"):
+        _verify_and_replay(store, context, pins, genesis, EFFICIENCY_EVAL_ROOT)
     assert [step["frontier_root"] for step in index["chain"]] == [
         GENESIS_ROOT, EFFICIENCY_FRONTIER_ROOT, PRIOR_ACCEPT_FRONTIER_ROOT]
-    assert after_prior_accept["parent_frontier_root"] == EFFICIENCY_FRONTIER_ROOT
-    assert after_efficiency["parent_frontier_root"] == GENESIS_ROOT
 
 
 def test_prior_accept_witness_refuses_a_predecessor_that_does_not_reproduce():

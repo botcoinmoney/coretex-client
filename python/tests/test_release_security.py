@@ -47,11 +47,11 @@ def test_packaged_publication_rule_verifies_canonical_compatibility_lock_bytes()
 
 
 def _wheel(*, unsafe_member: Optional[str] = None) -> bytes:
-    prefix = "coretex_validator-1.0.0.dist-info/"
+    prefix = "coretex_validator-1.1.0.dist-info/"
     files = {
-        "coretex_validator/__init__.py": b"__version__ = '1.0.0'\n",
+        "coretex_validator/__init__.py": b"__version__ = '1.1.0'\n",
         prefix + "METADATA":
-            b"Metadata-Version: 2.1\nName: coretex-validator\nVersion: 1.0.0\n",
+            b"Metadata-Version: 2.1\nName: coretex-validator\nVersion: 1.1.0\n",
         prefix + "WHEEL":
             b"Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
         prefix + "entry_points.txt":
@@ -79,16 +79,16 @@ def _wheel(*, unsafe_member: Optional[str] = None) -> bytes:
 def test_wheel_payload_verifies_record_and_exact_pure_metadata():
     payload = release._wheel_payload(
         _wheel(), package="coretex_validator",
-        distribution_stem="coretex_validator-1.0.0", where="fixture")
+        distribution_stem="coretex_validator-1.1.0", where="fixture")
     assert payload == {
-        "__init__.py": hashlib.sha256(b"__version__ = '1.0.0'\n").hexdigest()}
+        "__init__.py": hashlib.sha256(b"__version__ = '1.1.0'\n").hexdigest()}
 
 
 def test_wheel_payload_rejects_archive_traversal_before_extracting():
     with pytest.raises(release.ReleaseError, match="member path"):
         release._wheel_payload(
             _wheel(unsafe_member="../escape"), package="coretex_validator",
-            distribution_stem="coretex_validator-1.0.0", where="fixture")
+            distribution_stem="coretex_validator-1.1.0", where="fixture")
 
 
 def test_wheel_payload_rejects_unrecorded_directory_members():
@@ -104,4 +104,4 @@ def test_wheel_payload_rejects_unrecorded_directory_members():
     with pytest.raises(release.ReleaseError, match="directory member"):
         release._wheel_payload(
             output.getvalue(), package="coretex_validator",
-            distribution_stem="coretex_validator-1.0.0", where="fixture")
+            distribution_stem="coretex_validator-1.1.0", where="fixture")

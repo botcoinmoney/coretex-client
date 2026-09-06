@@ -451,7 +451,7 @@ def _genesis_release_fixture(tmp_path, monkeypatch):
 
     composition_body = {"format": "coretex.genesis-composition/v1", "profiles": {}}
     composition_root = snapshot._sha(snapshot._canonical(composition_body))  # noqa: SLF001
-    composition = dict(composition_body, composition_root=composition_root)
+    composition = dict(composition_body, manifest_self_sha256=composition_root)
     (tmp_path / "GENESIS-COMPOSITION.json").write_bytes(
         snapshot._json_bytes(composition))  # noqa: SLF001
 
@@ -468,7 +468,7 @@ def _genesis_release_fixture(tmp_path, monkeypatch):
 
     profile_releases = {}
     for index, profile_id in enumerate(snapshot.PROFILE_IDS):
-        descriptor = {"format": "test-reference", "profile_id": profile_id}
+        descriptor = {"format": "test-reference", "profile_id": profile_id, "exec": "reference"}
         descriptor_root = snapshot._sha(snapshot._canonical(descriptor))  # noqa: SLF001
         filename = f"profile-{index}.json"
         (tmp_path / filename).write_bytes(snapshot._json_bytes(descriptor))  # noqa: SLF001

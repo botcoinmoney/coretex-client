@@ -39,11 +39,13 @@ def release_document():
         "wasmtime_amd64_wheel": "wasmtime",
     }
     filenames = {
-        "adapter_wheel": "coretex_memory_agent-1.0.0-py3-none-any.whl",
-        "miner_validator_kit": "coretex-miner-validator-kit-1.0.0.tar",
+        "adapter_wheel": "coretex_memory_agent-1.1.0-py3-none-any.whl",
+        "miner_validator_kit": "coretex-miner-validator-kit-1.1.0.tar",
         "portability_evidence": "portability-evidence.json",
-        "runtime_wheel": "coretex_memory-1.0.0-py3-none-any.whl",
-        "validator_wheel": "coretex_validator-1.0.0-py3-none-any.whl",
+        "numeric_runtime_amd64": "numeric-runtime-amd64.tar",
+        "numeric_runtime_aarch64": "numeric-runtime-aarch64.tar",
+        "runtime_wheel": "coretex_memory-1.1.0-py3-none-any.whl",
+        "validator_wheel": "coretex_validator-1.1.0-py3-none-any.whl",
         "wasmtime_aarch64_wheel":
             "wasmtime-46.0.1-py3-none-manylinux2014_aarch64.whl",
         "wasmtime_amd64_wheel":
@@ -55,7 +57,7 @@ def release_document():
             "sha256": f"{index:064x}"[-64:], "size": 1,
         }
         if name in distributions:
-            version = "46.0.1" if name.startswith("wasmtime_") else "1.0.0"
+            version = "46.0.1" if name.startswith("wasmtime_") else "1.1.0"
             entry.update(distribution=distributions[name], version=version)
             if name == "wasmtime_aarch64_wheel":
                 entry["tag"] = "py3-none-manylinux2014_aarch64"
@@ -85,12 +87,12 @@ def release_document():
         "law": law,
         "name": "coretex",
         "objects": objects,
-        "predecessor": None,
+        "predecessor": contract["product"]["predecessor"],
         "release_root": _root("0"),
         "rig_contract_authority_root": objects["rig_contract_authority_root"]["root"],
         "runtime_config_root": objects["runtime_config_root"]["root"],
-        "sequence": 1,
-        "version": "1.0.0",
+        "sequence": 2,
+        "version": "1.1.0",
     }
     body = {key: value for key, value in document.items() if key != "release_root"}
     document["release_root"] = hashlib.sha256(json.dumps(
@@ -98,13 +100,13 @@ def release_document():
     return document
 
 
-def test_release_schema_accepts_only_first_public_product():
+def test_release_schema_accepts_only_the_pinned_prospective_product():
     parsed = schema.parse_release(release_document())
-    assert parsed.raw["sequence"] == 1 and parsed.raw["predecessor"] is None
+    assert parsed.raw["sequence"] == 2 and parsed.raw["predecessor"] == schema._CONTRACT["product"]["predecessor"]
 
 
 @pytest.mark.parametrize("mutation", [
-    lambda value: value.update(sequence=2),
+    lambda value: value.update(sequence=1),
     lambda value: value.update(sequence=True),
     lambda value: value.update(predecessor="1" * 64),
     lambda value: value.update(history=[]),

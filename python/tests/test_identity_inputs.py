@@ -25,7 +25,8 @@ def test_fixed_suite_and_contract_are_current_closed_inputs():
     assert len(canonical_suite.suite_root()) == 64
     contract = json.loads((PACKAGE / "RELEASE-CONTRACT.v1.json").read_text())
     assert contract["product"] == {
-        "name": "coretex", "predecessor": None, "sequence": 1, "version": "1.0.0"}
+        "name": "coretex", "predecessor": "4782fe5d293c678a20e943b6acfce9e09682ab7aa06e2373348f96d45d2e19e5",
+        "sequence": 2, "version": "1.1.0"}
     assert set(contract["profiles"]) == set(canonical_suite.canonical_suite()["profiles"])
     assert release_schema.RELEASE_FORMAT == contract["release_format"]
 
