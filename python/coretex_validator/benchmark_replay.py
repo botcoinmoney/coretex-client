@@ -302,6 +302,12 @@ def _numeric_files(release: release_module.ReleaseDirectory) -> dict[str, bytes]
                 else:
                     continue
             if member.endswith(".pth"):
+                # This optional, environment-triggered logging hook is not part of numeric
+                # inference. Preserve the wheel inventory but do not install startup code
+                # into the replay root. No other .pth payload is permitted.
+                if member == "coloredlogs.pth" and content == (
+                        b'import os; exec(\'try: __import__("coloredlogs").auto_install() if os.environ.get("COLOREDLOGS_AUTO_INSTALL") else None\\nexcept ImportError: pass\')\n'):
+                    continue
                 raise BenchmarkReplayError("CPU wheel attempts ambient path injection")
             if member in output:
                 raise BenchmarkReplayError("CPU wheels overlap after installation mapping")

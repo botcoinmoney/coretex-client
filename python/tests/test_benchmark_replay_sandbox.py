@@ -74,3 +74,32 @@ def test_public_replay_tree_is_traversable_but_read_only(tmp_path: Path):
 
     benchmark_replay._remove_temporary(tmp_path)  # noqa: SLF001
     assert not tmp_path.exists()
+
+
+def test_cpu_archive_omits_only_the_known_optional_logging_startup_hook(monkeypatch):
+    import hashlib
+    import sys
+    import tarfile
+    from types import SimpleNamespace
+    monkeypatch.setattr(benchmark_replay.platform, 'system', lambda: 'Linux')
+    monkeypatch.setattr(benchmark_replay.platform, 'machine', lambda: 'x86_64')
+    monkeypatch.setattr(sys, 'version_info', (3, 10))
+    known = b'import os; exec(\'try: __import__("coloredlogs").auto_install() if os.environ.get("COLOREDLOGS_AUTO_INSTALL") else None\\nexcept ImportError: pass\')\n'
+
+    def archive_for(startup_name, startup):
+        wheel = _wheel({'numeric/__init__.py': b'pass\n', startup_name: startup})
+        name = 'numeric_fixture.whl'
+        doc = {'format': 'coretex.cpu-dependency-bundle/v1', 'machine': 'x86_64',
+            'python_abi': 'cp310', 'versions': {'onnxruntime':'1.19.2','numpy':'1.26.4','tokenizers':'0.20.3'},
+            'wheels': {name: {'bytes':len(wheel),'sha256':hashlib.sha256(wheel).hexdigest()}}}
+        out=io.BytesIO()
+        with tarfile.open(fileobj=out,mode='w') as tar:
+            for path, data in [('CPU-RUNTIME.json',json.dumps(doc).encode()),(name,wheel)]:
+                info=tarfile.TarInfo(path);info.size=len(data);tar.addfile(info,io.BytesIO(data))
+        return SimpleNamespace(artifacts={'numeric_runtime_amd64':out.getvalue()})
+
+    files=benchmark_replay._numeric_files(archive_for('coloredlogs.pth',known))
+    assert files=={'numeric/__init__.py':b'pass\n'}
+    for name, content in [('coloredlogs.pth',b'import arbitrary_startup\n'),('other.pth',known)]:
+        with pytest.raises(benchmark_replay.BenchmarkReplayError,match='path injection'):
+            benchmark_replay._numeric_files(archive_for(name,content))
