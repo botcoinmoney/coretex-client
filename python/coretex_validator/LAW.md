@@ -151,25 +151,18 @@ public law ships block `0` only. See §3A.7.
 The objective vocabulary is closed by the profile registry and mirrored in the suite. An omitted
 objective is not an unchanged objective; it is an invalid vector.
 
-#### Fixed product caps (law constants)
+#### Fixed product caps (release constants)
 
-Genesis `Q` and `R` are the sealed floor measurements already in this suite. `C` is a separate,
-explicit product SLO: it is not computed from a candidate and is not automatically equal to or a
-fixed additive offset from genesis `R`. The values below are rounded operational ceilings that
-leave approximately 24–29% reserve above each measured genesis axis while remaining far below the
-kit's hard-gate-6 submission ceilings. Gate and confirm are independently budgeted because they
-execute different case sets.
+Genesis `Q` and `R` are measured floors. `C` is a separate, explicit product SLO, never computed
+from a candidate or ratcheted from a parent. The release-bound canonical suite is the sole numeric
+authority for the 18 `envelope_*` integers across three profiles and two partitions. Every vector
+must reproduce those exact integers. Gate and confirm have independent fixed budgets.
 
-The exact 18 integers serialized in the suite's floor-vector `envelope_*` fields are:
+A prospective runtime/provider revision may require newly calibrated caps in its new release.
+It does not change caps or reinterpret vectors belonging to an earlier public release. Resource
+savings and bounded trade are evaluated within a profile against its exact parent; absolute fuel
+magnitudes across profiles are not reward multipliers.
 
-| profile | partition | C rendered cost micro | C work fuel | C logical durable storage bytes |
-|---|---|---:|---:|---:|
-| `conv.pref.v1` | gate | 140000000 | 1800000 | 700000 |
-| `conv.pref.v1` | confirm | 140000000 | 3600000 | 700000 |
-| `doc.tool.v1` | gate | 280000000 | 2600000 | 3200000 |
-| `doc.tool.v1` | confirm | 275000000 | 5000000 | 3200000 |
-| `event.schema.v1` | gate | 180000000 | 2500000 | 2000000 |
-| `event.schema.v1` | confirm | 180000000 | 5000000 | 2000000 |
 
 These are immutable constants for suite block 0 under this exact law descriptor. Repeated
 efficiency wins do not change them; a later quality win may use saved capacity up to them. They are
