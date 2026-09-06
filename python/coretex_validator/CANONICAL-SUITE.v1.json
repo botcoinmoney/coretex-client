@@ -631,49 +631,49 @@
         },
         "partitions": {
           "confirm": {
-            "composite_micro": 71450000,
+            "composite_micro": 72578750,
             "envelope_logical_durable_storage_bytes": 3200000,
             "envelope_rendered_cost_micro": 275000000,
             "envelope_work_fuel": 5000000,
             "logical_durable_storage_bytes": 2572152,
             "objectives_micro": {
               "abstention": 90235000,
-              "asof_correctness": 87500000,
+              "asof_correctness": 95537500,
               "conflict_supersession": 79296250,
               "consolidation": 75000000,
               "evidence_support": 75962500,
               "multihop_completeness": 24107500,
-              "provenance_citations": 52462500,
+              "provenance_citations": 54571250,
               "retraction_disclosure": 85843750,
               "workflow_provenance": 72656250
             },
-            "rendered_cost_micro": 218901250,
+            "rendered_cost_micro": 219261250,
             "suite_block_id": 0,
-            "work_fuel": 3867100
+            "work_fuel": 3868578
           },
           "gate": {
-            "composite_micro": 73310000,
+            "composite_micro": 74440000,
             "envelope_logical_durable_storage_bytes": 3200000,
             "envelope_rendered_cost_micro": 280000000,
             "envelope_work_fuel": 2600000,
             "logical_durable_storage_bytes": 2524305,
             "objectives_micro": {
               "abstention": 90625000,
-              "asof_correctness": 90180000,
+              "asof_correctness": 98215000,
               "conflict_supersession": 78907500,
               "consolidation": 68750000,
               "evidence_support": 73075000,
               "multihop_completeness": 26785000,
-              "provenance_citations": 55362500,
+              "provenance_citations": 57450000,
               "retraction_disclosure": 90187500,
               "workflow_provenance": 85937500
             },
-            "rendered_cost_micro": 223407500,
+            "rendered_cost_micro": 223517500,
             "suite_block_id": 0,
-            "work_fuel": 1979285
+            "work_fuel": 1979238
           }
         },
-        "release_root": "c1916240a708c3b7fb3b18bb155e1c943986d00b1f367c16d0c6f5d0015b9a51"
+        "release_root": "bb7ca54116f5cc82e05c5b82ea96780bff8a1ac095ca45b539818398be455989"
       },
       "event.schema.v1": {
         "candidate_provider": {
@@ -682,51 +682,51 @@
         },
         "partitions": {
           "confirm": {
-            "composite_micro": 66776250,
+            "composite_micro": 70892500,
             "envelope_logical_durable_storage_bytes": 2000000,
             "envelope_rendered_cost_micro": 180000000,
             "envelope_work_fuel": 5000000,
             "logical_durable_storage_bytes": 1599914,
             "objectives_micro": {
-              "abstention": 81692500,
-              "asof_correctness": 86718750,
-              "conflict_supersession": 91015000,
-              "evidence_support": 90625000,
-              "exact_lookup": 34375000,
-              "join_completeness": 44141250,
-              "multihop_completeness": 36111250,
-              "provenance_citations": 62151250,
+              "abstention": 80521250,
+              "asof_correctness": 98830000,
+              "conflict_supersession": 89062500,
+              "evidence_support": 97656250,
+              "exact_lookup": 32031250,
+              "join_completeness": 51950000,
+              "multihop_completeness": 40623750,
+              "provenance_citations": 68456250,
               "retraction_disclosure": 86251250,
-              "schema_evolution": 54686250
+              "schema_evolution": 63541250
             },
-            "rendered_cost_micro": 141957500,
+            "rendered_cost_micro": 143101250,
             "suite_block_id": 0,
-            "work_fuel": 3905666
+            "work_fuel": 3940691
           },
           "gate": {
-            "composite_micro": 66892500,
+            "composite_micro": 72437500,
             "envelope_logical_durable_storage_bytes": 2000000,
             "envelope_rendered_cost_micro": 180000000,
             "envelope_work_fuel": 2500000,
             "logical_durable_storage_bytes": 1558500,
             "objectives_micro": {
-              "abstention": 80887500,
-              "asof_correctness": 78907500,
-              "conflict_supersession": 90622500,
-              "evidence_support": 89062500,
-              "exact_lookup": 42187500,
-              "join_completeness": 45312500,
-              "multihop_completeness": 35415000,
-              "provenance_citations": 61317500,
+              "abstention": 80102500,
+              "asof_correctness": 98440000,
+              "conflict_supersession": 89060000,
+              "evidence_support": 98437500,
+              "exact_lookup": 46875000,
+              "join_completeness": 52342500,
+              "multihop_completeness": 40280000,
+              "provenance_citations": 70495000,
               "retraction_disclosure": 87917500,
-              "schema_evolution": 57292500
+              "schema_evolution": 60417500
             },
-            "rendered_cost_micro": 141467500,
+            "rendered_cost_micro": 143417500,
             "suite_block_id": 0,
-            "work_fuel": 1939475
+            "work_fuel": 1964982
           }
         },
-        "release_root": "1f11821f7bf56783a47c31a919b199b6aa8771872f8e65198cd466d853358037"
+        "release_root": "a9830b09479cfc4cfef690b358b5c60afad1ebfb92abba232c720cb46d2994f8"
       }
     }
   },
