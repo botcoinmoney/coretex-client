@@ -31,8 +31,7 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence
 
 #: Public endpoints cap ``eth_getLogs`` ranges. 2000 is below every limit we have met.
 DEFAULT_CHUNK_BLOCKS = 2000
-#: Base finalizes in ~2 blocks; 15 is the confirmation depth the memory lane already uses and
-#: there is no reason for the rig lane to be more optimistic than its predecessor.
+#: Base finalizes in ~2 blocks; 15 is the release's conservative confirmation depth.
 DEFAULT_CONFIRMATION_DEPTH = 15
 
 
@@ -77,12 +76,11 @@ class ChainMismatchError(RpcError):
     """The endpoint is serving a different chain than the caller asked for. Never a warning."""
 
 
-#: ``RigCoreTexStateRegistry.EpochContextNotSet()``. Matched by SELECTOR, never by message text.
+#: ``RigCoreTexRegistry.EpochContextNotSet()``. Matched by SELECTOR, never by message text.
 #:
 #: The registry delegates epoch reads to the verifier's context and reverts with this for an epoch
-#: that was never armed. On the real chain this is not hypothetical: below epoch 180 — that
-#: registry's genesis — ``liveStateRoot`` and ``epochParentStateRoot`` revert while
-#: ``epochFinalized`` and ``transitionCount`` answer normally.
+#: whose context was never set. ``liveStateRoot`` and ``epochParentStateRoot`` therefore refuse
+#: while context-independent reads may still answer normally.
 EPOCH_CONTEXT_NOT_SET_SELECTOR = "0xae3a262a"
 
 #: A browser-ish User-Agent, because the default one is refused.
@@ -91,7 +89,7 @@ EPOCH_CONTEXT_NOT_SET_SELECTOR = "0xae3a262a"
 #: 403 and no body — which reads exactly like an auth failure and sends you looking for an API key
 #: that was never required. Setting a UA fixes it. Recorded here rather than in a comment on a
 #: header dict because the next person to debug a 403 needs to find this.
-DEFAULT_USER_AGENT = "coretex-validator/0.1 (+https://github.com/botcoinmoney/coretex-client)"
+DEFAULT_USER_AGENT = "coretex-validator/1.0 (+https://github.com/botcoinmoney/coretex-client)"
 
 
 @dataclass(frozen=True)
@@ -421,19 +419,12 @@ class RigViews:
                            f"{32 * len(names)}")
         return {name: raw[i * 32:(i + 1) * 32].hex() for i, name in enumerate(names)}
 
-    def legacy_v2_header(self, epoch: int) -> Dict[str, str]:
-        """Historical eight-word header decoder; never used for a live descriptor-v3 registry."""
-        raw = self._call(self.deployment.registry, "getHeader(uint64)", _encode_uint(epoch))
-        names = ("parent_state_root", "final_state_root", "core_version_hash", "corpus_root",
-                 "active_frontier_root", "patch_set_root", "score_root",
-                 "baseline_manifest_hash")
-        if len(raw) < 32 * len(names):
-            raise RpcError(f"legacy getHeader({epoch}) returned {len(raw)} bytes, expected "
-                           f"{32 * len(names)}")
-        return {name: raw[i * 32:(i + 1) * 32].hex() for i, name in enumerate(names)}
-
     def core_tex_verifier(self) -> str:
         raw = self._call(self.deployment.registry, "coreTexVerifier()")
+        return "0x" + raw[-20:].hex()
+
+    def registry_epoch_clock(self) -> str:
+        raw = self._call(self.deployment.registry, "epochClock()")
         return "0x" + raw[-20:].hex()
 
     # -- verifier ---------------------------------------------------------- #
@@ -484,6 +475,10 @@ class RigViews:
     # -- mining ------------------------------------------------------------ #
     def coordinator_signer(self) -> str:
         raw = self._call(self.deployment.mining, "coordinatorSigner()")
+        return "0x" + raw[-20:].hex()
+
+    def mining_core_tex_verifier(self) -> str:
+        raw = self._call(self.deployment.mining, "coreTexVerifier()")
         return "0x" + raw[-20:].hex()
 
     def domain_separator(self) -> bytes:

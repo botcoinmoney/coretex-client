@@ -9,31 +9,25 @@ and total: it either returns a value derived solely from its arguments, or raise
 ``0x``-stripping, no int/float widening, no "absent means null".
 
 Canonicalization is NOT a new dialect. It is *literally* the rule the shipped runtime already
-uses for signed release manifests
+uses for content-addressed release manifests
 (``coretex_memory.release.canonical_manifest_bytes``)::
 
     json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
 
-The one difference is scope, not rule: the runtime excludes the two attestation fields
-(``manifest_self_sha256`` / ``operator_signature``) from the body because a document cannot hash
-or sign itself. A frontier manifest carries NEITHER field — its attestation is the on-chain root
-and the coordinator receipt — so the canonical body is the whole document and the rule applies
-unchanged. ``tests/test_canonicalization.py`` asserts byte-identity against the runtime function
-itself when the runtime source tree is importable.
+The frontier manifest carries no self-address or off-chain signature. Its authority is the
+on-chain root, so the canonical body is the whole document.
 """
 from __future__ import annotations
 
 import hashlib
 import json
-import os
 import re
-from typing import Any, Dict, Iterable, Mapping, Optional, Tuple
+from typing import Any, Dict, Iterable, Mapping, Tuple
 
 # --------------------------------------------------------------------------- #
 # Identity constants
 # --------------------------------------------------------------------------- #
-#: The frontier manifest artifact family. The version lives in the id (house convention:
-#: ``benchmark-v2/frontier-state/v1``, ``benchmark-v2/g8-deployment-signed/v1``, ...).
+#: The public frontier manifest artifact family.
 MANIFEST_FORMAT = "coretex.memory-frontier.v1"
 
 #: The transition-edit artifact family — the payload of ``CoreTexMemoryFrontierAdvanced``.
@@ -42,39 +36,17 @@ TRANSITION_FORMAT = "coretex.memory-frontier-transition.v1"
 #: The epoch-finalization record family (see :func:`finalize_epoch`).
 FINALIZATION_FORMAT = "coretex.memory-frontier.v1/epoch-finalization"
 
-#: The composition artifact a ``default_composition_root`` / ``resulting_composition_root``
-#: MUST address. This is the EXISTING signed family already in production use
-#: (``coretex_memory_agent.routing.DEPLOYMENT_MANIFEST_FORMAT``) — V5 does not mint a new one.
-COMPOSITION_ARTIFACT_FORMAT = "benchmark-v2/g8-deployment-signed/v1"
-
-#: Committed-evidence families the genesis derivation reads.
-G8_PROMOTION_FORMAT = "benchmark-v2/g8-default-promotion/v1"
-FRONTIER_STATE_FORMAT = "benchmark-v2/frontier-state/v1"
-
 #: The CLOSED set of frontier profile ids, in their normative TOTAL ORDER (see the spec §3).
 #: The order is the byte order of the UTF-8 id strings; for this all-ASCII set that coincides
 #: exactly with what ``json.dumps(..., sort_keys=True)`` emits, so the canonical serializer
 #: realizes the normative order with no separate ordering pass.
 PROFILE_IDS: Tuple[str, ...] = ("conv.pref.v1", "doc.tool.v1", "event.schema.v1")
 
-#: The frozen legacy profile. It is served by the LAW §7 baseline incumbent and is NOT mineable,
-#: so it is NOT a frontier profile: it is covered by the composition artifact addressed by
-#: ``default_composition_root``. Named here only so the genesis cross-check can assert it stayed
-#: on the baseline.
-LEGACY_PROFILE_ID = "legacy.structured.v1"
-LEGACY_BASELINE_INCUMBENT = "C4"
-
 #: Required top-level manifest fields. The schema is CLOSED: an unknown field is an error.
 MANIFEST_FIELDS: Tuple[str, ...] = (
     "benchmark_law_root", "default_composition_root", "epoch", "format",
     "parent_frontier_root", "profiles", "runtime_abi_root",
 )
-
-#: Historical production genesis carries this lock copy, while children produced under an
-#: explicitly verified epoch context retire it in favour of the on-chain ``coreVersionHash``.
-#: It is optional so both immutable historical roots and the prospective seven-field child shape
-#: remain addressable under one decoder; every other unknown field is still refused.
-MANIFEST_OPTIONAL_FIELDS: Tuple[str, ...] = ("compatibility_lock_root",)
 
 #: Required transition fields (CLOSED).
 TRANSITION_FIELDS: Tuple[str, ...] = (
@@ -89,13 +61,17 @@ ROOT_HEX_LEN = 64
 #: The reserved parent of the genesis manifest — the ONLY manifest permitted to carry it.
 ZERO_ROOT = "0" * ROOT_HEX_LEN
 
-#: Hard upper bound on ``transitionBytes``. The exact maximum over the closed profile set is
-#: 364 bytes (:func:`max_transition_bytes`); the enforced bound is rounded up to 384 so a future
-#: same-shape profile id has room without a law change. V5-B MUST mirror this bound on-chain.
+#: Hard upper bound on ``transitionBytes`` — the MEMORY LANE's canonical transition document, NOT
+#: the rig receipt's member 25. The exact maximum over the closed profile set is 364 bytes
+#: (:func:`max_transition_bytes`); the enforced bound is rounded up to 384 so a future same-shape
+#: profile id has room without a law change.
+#:
+#: The bound applies to this public frontier edit. The deployed descriptor-v3 chain wire carries
+#: a fixed commitment to the separately published transition artifact, not this JSON payload.
 MAX_TRANSITION_BYTES = 384
 
 #: Manifest epochs are unsigned and fit a uint64 (the on-chain mapping key type).
-MAX_EPOCH = 2 ** 63 - 1
+MAX_EPOCH = 2 ** 64 - 1
 
 #: Guard against pathological / cyclic inputs to the canonicalizer.
 _MAX_DEPTH = 32
@@ -143,7 +119,7 @@ class TransitionSizeError(FrontierError):
 
 class StaleParentError(FrontierError):
     """``expected_prior_release_root`` does not match the parent manifest's release root for the
-    target profile — the candidate was built against a superseded frontier."""
+    target profile — the candidate was built against a non-current parent."""
 
 
 class NoOpTransitionError(FrontierError):
@@ -166,10 +142,6 @@ class EpochRegressionError(FrontierError):
     make the manifest chain non-monotonic in the one field the on-chain mapping key agrees with,
     and would let an epoch-N binding be replayed into a closed epoch.
     """
-
-
-class GenesisEvidenceError(FrontierError):
-    """The committed promotion evidence is missing, unpromoted, or self-inconsistent."""
 
 
 # --------------------------------------------------------------------------- #
@@ -309,11 +281,6 @@ def check_profile_id(value: Any, field: str = "target_profile") -> str:
             raise UnknownProfileError(
                 f"{field}={value!r} differs from {lowered!r} only by case; profile ids are "
                 "matched EXACTLY and case is rejected, never folded")
-        if value == LEGACY_PROFILE_ID:
-            raise UnknownProfileError(
-                f"{field}={value!r} is the frozen legacy profile: it is not mineable and is not "
-                f"a frontier profile — it is covered by the composition artifact addressed by "
-                "default_composition_root")
         raise UnknownProfileError(
             f"{field}={value!r} is not in the CLOSED profile set for {MANIFEST_FORMAT} "
             f"{list(PROFILE_IDS)}; adding a profile is a NEW manifest version, never a runtime "
@@ -361,15 +328,13 @@ def validate_manifest(manifest: Any) -> Dict[str, Any]:
 
     Returns the manifest unchanged on success (never a copy, never a normalized version).
     """
-    _check_closed_fields(manifest, MANIFEST_FIELDS, MANIFEST_FORMAT, MANIFEST_OPTIONAL_FIELDS)
+    _check_closed_fields(manifest, MANIFEST_FIELDS, MANIFEST_FORMAT)
     if manifest["format"] != MANIFEST_FORMAT:
         raise FrontierSchemaError(
             f"format {manifest['format']!r} is not {MANIFEST_FORMAT!r}")
     check_epoch(manifest["epoch"])
     check_root(manifest["benchmark_law_root"], "benchmark_law_root")
     check_root(manifest["runtime_abi_root"], "runtime_abi_root")
-    if "compatibility_lock_root" in manifest:
-        check_root(manifest["compatibility_lock_root"], "compatibility_lock_root")
     check_root(manifest["default_composition_root"], "default_composition_root")
     check_root(manifest["parent_frontier_root"], "parent_frontier_root")
 
@@ -408,13 +373,8 @@ def parse_manifest_json(text: str) -> Dict[str, Any]:
 
 def new_manifest(*, epoch: int, parent_frontier_root: str, benchmark_law_root: str,
                  runtime_abi_root: str, default_composition_root: str,
-                 profiles: Mapping[str, str],
-                 compatibility_lock_root: Any = None) -> Dict[str, Any]:
-    """Construct + validate a manifest (the only sanctioned way to mint one by hand).
-
-    ``None`` means the optional historical ``compatibility_lock_root`` is absent. Passing a root
-    preserves it byte-for-byte; passing any malformed value is refused by :func:`validate_manifest`.
-    """
+                 profiles: Mapping[str, str]) -> Dict[str, Any]:
+    """Construct + validate the closed seven-field public manifest."""
     if not isinstance(profiles, Mapping):
         raise FrontierTypeError(
             f"profiles must be a mapping, got {type(profiles).__name__}")
@@ -427,8 +387,6 @@ def new_manifest(*, epoch: int, parent_frontier_root: str, benchmark_law_root: s
         "profiles": {pid: profiles[pid] for pid in sorted(profiles)},
         "runtime_abi_root": runtime_abi_root,
     }
-    if compatibility_lock_root is not None:
-        manifest["compatibility_lock_root"] = compatibility_lock_root
     return validate_manifest(manifest)
 
 
@@ -539,22 +497,18 @@ def max_transition_bytes() -> int:
 # --------------------------------------------------------------------------- #
 # The state transition (spec §7)
 # --------------------------------------------------------------------------- #
-#: Manifest fields owned by the independently verified epoch context. A child adopts these
-#: values; a miner never chooses them.
+#: The frontier-manifest fields an EPOCH CONTEXT pins on chain, and which an advance therefore
+#: ADOPTS rather than carries forward. See :func:`apply_transition`.
 EPOCH_PINNED_MANIFEST_FIELDS = ("benchmark_law_root", "runtime_abi_root")
 
 
-def _verified_epoch_pins(epoch_pins: Any) -> Optional[Dict[str, str]]:
-    """Validate the complete frontier-pin projection, or select historical carry semantics."""
-    if epoch_pins is None:
-        return None
-    if not isinstance(epoch_pins, Mapping):
-        raise FrontierTypeError(
-            f"epoch_pins must be a mapping, got {type(epoch_pins).__name__}")
-    return {
-        field: check_root(epoch_pins.get(field), f"epoch_pins.{field}")
-        for field in EPOCH_PINNED_MANIFEST_FIELDS
-    }
+def _adopt_or_carry(manifest: Mapping[str, Any], epoch_pins: Any, field: str) -> Any:
+    """Use a confirmed epoch pin when supplied; otherwise preserve the parent's current pin."""
+    if isinstance(epoch_pins, Mapping):
+        pinned = epoch_pins.get(field)
+        if isinstance(pinned, str) and pinned:
+            return check_root(pinned, f"epoch pin {field}")
+    return manifest[field]
 
 
 def apply_transition(manifest: Mapping[str, Any], transition: Mapping[str, Any], *,
@@ -563,6 +517,9 @@ def apply_transition(manifest: Mapping[str, Any], transition: Mapping[str, Any],
 
     ``manifest`` is never mutated — the returned document is built fresh, so a caller holding the
     parent (a validator mid-replay, the loser of a race) still has byte-identical parent state.
+
+    The current transition document is deliberately one-profile: its closed schema names one
+    ``target_profile`` and one replacement release root.
 
     Invariants enforced, each with its own error class:
 
@@ -574,52 +531,37 @@ def apply_transition(manifest: Mapping[str, Any], transition: Mapping[str, Any],
         (:class:`CompositionUnchangedError`);
       * ``epoch`` never regresses (:class:`EpochRegressionError`).
 
-    ``epoch`` — LAZY INHERITANCE (spec §8, ruling §17.237)
-    ------------------------------------------------------
+    ``epoch`` — explicit epoch-context parent
+    -------------------------------------------
     ``None`` (the default) means "same epoch as the parent": the ordinary within-epoch advance,
     identical to the pre-§17.237 behaviour.
 
-    An explicit ``epoch`` greater than the parent's is the FIRST transition of a new epoch. The
-    parent manifest is then the INHERITED head — the final head of the latest preceding epoch that
-    mined — and this call is the only thing that moves ``epoch``. It is a single fused operation
-    on purpose: an intermediate "carried-forward" manifest would mint a root that no confirmed
-    event ever names, and the whole point of the ruling is that every root is reachable by
-    replaying confirmed events.
+    An explicit ``epoch`` greater than the parent's is the first transition under an epoch context
+    whose operator-supplied ``parentStateRoot`` addresses that manifest. The relationship is
+    explicit chain data; this module never searches earlier epochs or infers inheritance. No
+    intermediate boundary manifest exists.
 
     The epoch is NOT read out of the transition (a transition is epoch-neutral, spec §6.3). It
     comes from the confirmed event's own ``epoch`` topic, i.e. from the contract's mapping key —
-    which is exactly where §17.237 puts the authority.
+    which is the chain authority.
 
-    ``epoch_pins`` is optional for historical replay. When present it contains the independently
-    verified current epoch context and the child adopts its ``benchmark_law_root`` and
-    ``runtime_abi_root``. This is the only constructible first edge after an epoch-boundary law
-    change: the inherited parent is immutable historical data and still carries its prior-era
-    values. The legacy ``compatibility_lock_root`` copy is omitted from a pinned-era child because
-    its authority is the on-chain ``coreVersionHash``. With no pins, every historical field is
-    carried exactly as before.
+    ``epoch_pins``
+    --------------
+    Supplying the confirmed epoch context's pins makes the child adopt them for
+    :data:`EPOCH_PINNED_MANIFEST_FIELDS`. This is how those fields ever move: an operator moves
+    them with ``setCoreTexEpochContext``. Without an explicit current pin, the same-format parent
+    value is carried forward. Every non-target profile release is carried forward unchanged.
+    ``parent_frontier_root`` becomes the parent's root, which is what makes the manifest chain a
+    total order (spec §9).
     """
     validate_manifest(manifest)
     validate_transition(transition)
-    verified_pins = _verified_epoch_pins(epoch_pins)
     child_epoch = manifest["epoch"] if epoch is None else check_epoch(epoch, "epoch")
     if child_epoch < manifest["epoch"]:
         raise EpochRegressionError(
             f"transition names epoch {child_epoch} but its parent manifest is already at epoch "
             f"{manifest['epoch']}; epochs only move forward, and a closed epoch's head is "
             "immutable once a later epoch has inherited from it")
-    inherited = child_epoch > manifest["epoch"]
-    if verified_pins is not None:
-        for pin in EPOCH_PINNED_MANIFEST_FIELDS:
-            if manifest[pin] != verified_pins[pin] and not inherited:
-                raise FrontierValueError(
-                    f"same-epoch transition cannot change {pin} from {manifest[pin]} to "
-                    f"{verified_pins[pin]}; only an inherited parent from an earlier epoch may "
-                    "adopt independently verified current-epoch pins")
-        if "compatibility_lock_root" in manifest and not inherited:
-            raise FrontierValueError(
-                "same-epoch transition cannot retire compatibility_lock_root; only the first "
-                "edge from an inherited prior-epoch parent retires that historical manifest "
-                "copy in favour of the on-chain coreVersionHash")
 
     target = transition["target_profile"]
     prior = manifest["profiles"][target]
@@ -627,27 +569,23 @@ def apply_transition(manifest: Mapping[str, Any], transition: Mapping[str, Any],
         raise StaleParentError(
             f"transition for {target!r} expects prior release root "
             f"{transition['expected_prior_release_root']} but the parent frontier holds {prior} "
-            "— the candidate was built against a superseded frontier and must rebase")
+            "— the candidate was built against a non-current parent and must rebase")
     if transition["resulting_composition_root"] == manifest["default_composition_root"]:
         raise CompositionUnchangedError(
             f"resulting_composition_root {transition['resulting_composition_root']} equals the "
             "parent's default_composition_root, but this transition changes the release serving "
             f"{target!r}: the signed composition binds a release per profile, so it MUST be "
-            "re-minted or the runtime would keep serving the superseded bundle")
+            "rebuilt or the runtime would keep serving the prior bundle")
 
     profiles = {pid: manifest["profiles"][pid] for pid in PROFILE_IDS}
     profiles[target] = transition["new_release_root"]
     return new_manifest(
         epoch=child_epoch,
         parent_frontier_root=frontier_root(manifest),
-        benchmark_law_root=(manifest["benchmark_law_root"] if verified_pins is None
-                            else verified_pins["benchmark_law_root"]),
-        runtime_abi_root=(manifest["runtime_abi_root"] if verified_pins is None
-                          else verified_pins["runtime_abi_root"]),
+        benchmark_law_root=_adopt_or_carry(manifest, epoch_pins, "benchmark_law_root"),
+        runtime_abi_root=_adopt_or_carry(manifest, epoch_pins, "runtime_abi_root"),
         default_composition_root=transition["resulting_composition_root"],
-        profiles=profiles,
-        compatibility_lock_root=(None if verified_pins is not None
-                                 else manifest.get("compatibility_lock_root")))
+        profiles=profiles)
 
 
 def verify_transition(parent_manifest: Mapping[str, Any], transition: Mapping[str, Any],
@@ -663,9 +601,15 @@ def verify_transition(parent_manifest: Mapping[str, Any], transition: Mapping[st
     is how a replayer reproduces a first-transition-of-an-epoch, which inherits its parent from a
     previous epoch. Omitting it replays a within-epoch advance.
 
+    ``epoch_pins`` MUST be threaded through wherever the minting side threaded it, or this
+    function reproduces a DIFFERENT child than the one that was minted and every adopting advance
+    fails ``RootMismatchError`` — a permanent BACKLOG on the first advance that moves a pin, from
+    a replayer that is behaving correctly. Reproduction has to be given the same inputs as
+    production; a pin the minter adopted and the replayer did not is exactly such an input.
+
     Returns ``{parent_root, new_root, new_manifest, transition_hash, target_profile, epoch,
-    inherited}``, where ``inherited`` is True iff this transition moved the epoch (i.e. it is the
-    lazily-initialized first transition of its epoch).
+    crossed_epoch}``, where ``crossed_epoch`` is true when the explicit context parent manifest
+    carries an earlier product epoch.
     """
     check_root(claimed_new_root, "claimed_new_root")
     parent_root = frontier_root(parent_manifest)
@@ -679,30 +623,11 @@ def verify_transition(parent_manifest: Mapping[str, Any], transition: Mapping[st
             "transition_hash": transition_hash(transition),
             "target_profile": transition["target_profile"],
             "epoch": child["epoch"],
-            "inherited": child["epoch"] != parent_manifest["epoch"]}
-
-
-def rollback_transition(manifest: Mapping[str, Any], *, target_profile: str,
-                        restore_release_root: str,
-                        resulting_composition_root: str) -> Dict[str, Any]:
-    """Build the transition that RESTORES ``restore_release_root`` for ``target_profile``.
-
-    A rollback is an ORDINARY transition — same shape, same CAS, same receipt, same event, same
-    fail-closed checks — whose ``new_release_root`` happens to be a previously live one. There is
-    no separate rollback opcode and no pointer to rewind (spec §9). It is refused as a no-op if
-    the profile already serves ``restore_release_root``.
-    """
-    validate_manifest(manifest)
-    check_profile_id(target_profile)
-    return make_transition(
-        target_profile=target_profile,
-        expected_prior_release_root=manifest["profiles"][target_profile],
-        new_release_root=restore_release_root,
-        resulting_composition_root=resulting_composition_root)
+            "crossed_epoch": child["epoch"] != parent_manifest["epoch"]}
 
 
 # --------------------------------------------------------------------------- #
-# Epoch head: LAZY INHERITANCE + finalization (spec §8, ruling §17.237)
+# Epoch finalization
 # --------------------------------------------------------------------------- #
 def finalize_epoch(manifest: Mapping[str, Any]) -> Dict[str, Any]:
     """The immutable finalization record for the epoch ``manifest`` heads.
@@ -718,190 +643,3 @@ def finalize_epoch(manifest: Mapping[str, Any]) -> Dict[str, Any]:
     }
     canonical_bytes(record)                      # fail closed before anyone addresses it
     return record
-
-
-def inherited_epoch_parent(head_manifest: Mapping[str, Any], *, epoch: Any) -> str:
-    """The root ``epoch`` inherits, given the head of the latest preceding epoch that MINED.
-
-    This is the off-chain twin of ``CoreTexMemoryRegistry.resolveEpochParent`` and it is
-    deliberately tiny, because lazy inheritance has nothing to compute: the inherited parent IS
-    the previous head's root. Nothing is minted, nothing is carried, and no document exists in
-    between. What the function actually enforces is the RULE around that root:
-
-      * ``head_manifest`` must be a valid manifest;
-      * ``epoch`` must be STRICTLY GREATER than the head's epoch — an epoch never inherits from
-        itself or from the future (:class:`EpochRegressionError`).
-
-    There is deliberately NO ``carry_forward``. Under §17.237 an epoch boundary is not an
-    operation: an epoch that never mines mints no root and has no head of its own, and the epoch
-    field moves on the first real transition via ``apply_transition(..., epoch=N)``. A function
-    that produced an epoch-N+1 "seed manifest" would produce exactly the kind of root the chain
-    never names — a local pointer with no confirmed event — which is the failure mode the ruling
-    exists to remove.
-
-    Empty epochs therefore need no handling here at all: they simply never appear as
-    ``head_manifest``, and the caller's walk-back (the contract's ``lastNonEmptyEpoch`` pointer,
-    the validator's derivation over confirmed advances) skips them.
-
-    SEAM (ledger §17.238). None, deliberately: this module is pure, total, stdlib-only and has no
-    ports at all (spec §1). It is the one component every validator must be able to run
-    identically and offline, so it takes the epoch as an ARGUMENT from whoever read the confirmed
-    event and never reaches for a chain, a config or a clock to find one. REVENDOR NEEDED: NO.
-    """
-    validate_manifest(head_manifest)
-    target = check_epoch(epoch, "epoch")
-    if target <= head_manifest["epoch"]:
-        raise EpochRegressionError(
-            f"epoch {target} cannot inherit from a head that is already at epoch "
-            f"{head_manifest['epoch']}; inheritance always crosses a boundary forwards")
-    return frontier_root(head_manifest)
-
-
-# --------------------------------------------------------------------------- #
-# Genesis (spec §10)
-# --------------------------------------------------------------------------- #
-def load_committed_promotion(evidence_dir: str) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-    """Read the two COMMITTED promotion-evidence documents (duplicate-key-refusing parse).
-
-    ``evidence_dir`` is ``benchmark-v2/promotion_g6/evidence``; returns
-    ``(g8_promotion.json, frontier-live/state.json)``.
-    """
-    paths = {"promotion": os.path.join(evidence_dir, "g8_promotion.json"),
-             "state": os.path.join(evidence_dir, "frontier-live", "state.json")}
-    out = {}
-    for name, path in paths.items():
-        try:
-            with open(path, "r", encoding="utf-8") as fh:
-                out[name] = parse_json(fh.read())
-        except OSError as exc:
-            raise GenesisEvidenceError(f"cannot read committed evidence {path}: {exc}") from exc
-    return out["promotion"], out["state"]
-
-
-def promoted_delegation(promotion_evidence: Mapping[str, Any],
-                        frontier_state: Mapping[str, Any]) -> Dict[str, str]:
-    """The delegation map, agreed across BOTH committed views, or :class:`GenesisEvidenceError`.
-
-    Mirrors the fail-closed cross-check ``integration.provisioning._promoted_delegation`` already
-    performs before it materialises a signed composition; the frontier genesis must not be built
-    on weaker evidence than the deployment it addresses.
-    """
-    if not isinstance(frontier_state, dict):
-        raise GenesisEvidenceError(
-            f"frontier state must be a JSON object, got {type(frontier_state).__name__}")
-    if frontier_state.get("format") != FRONTIER_STATE_FORMAT:
-        raise GenesisEvidenceError(
-            f"frontier state is not {FRONTIER_STATE_FORMAT!r} "
-            f"(got {frontier_state.get('format')!r})")
-    if not isinstance(promotion_evidence, dict) or \
-            promotion_evidence.get("format") != G8_PROMOTION_FORMAT:
-        raise GenesisEvidenceError(
-            f"promotion evidence is not {G8_PROMOTION_FORMAT!r}")
-
-    default = frontier_state.get("default_champion")
-    if not isinstance(default, dict):
-        raise GenesisEvidenceError("frontier state carries no default_champion")
-    if default.get("origin") != "promote_default":
-        raise GenesisEvidenceError(
-            f"default champion origin {default.get('origin')!r} is not 'promote_default' — the "
-            "composed default was never promoted; genesis refuses an unpromoted frontier")
-    composed_hash = default.get("candidate_hash")
-    check_root(composed_hash, "default_champion.candidate_hash")
-
-    if (promotion_evidence.get("tier3") or {}).get("ok") is not True:
-        raise GenesisEvidenceError("promotion evidence does not record a passing tier 3")
-    gate = promotion_evidence.get("downstream_gate") or {}
-    if gate.get("mode") != "PAID" or gate.get("passed") is not True:
-        raise GenesisEvidenceError(
-            f"promotion evidence Layer-C gate is not a PAID pass "
-            f"(mode={gate.get('mode')!r}, passed={gate.get('passed')!r})")
-    composed = promotion_evidence.get("composed_default") or {}
-    if composed.get("candidate_hash") != composed_hash:
-        raise GenesisEvidenceError(
-            "promotion evidence composed_default disagrees with the store's default champion")
-    if (promotion_evidence.get("default_champion_after") or {}).get("candidate_hash") \
-            != composed_hash:
-        raise GenesisEvidenceError(
-            "promotion evidence default_champion_after disagrees with the store's default")
-
-    coverage = default.get("coverage")
-    if not isinstance(coverage, dict):
-        raise GenesisEvidenceError("promoted default champion carries no coverage map")
-    expected_profiles = set(PROFILE_IDS) | {LEGACY_PROFILE_ID}
-    if set(coverage) != expected_profiles:
-        raise GenesisEvidenceError(
-            f"promoted coverage covers {sorted(coverage)} but this manifest version knows "
-            f"{sorted(expected_profiles)}; a changed profile set is a NEW manifest version")
-    delegation: Dict[str, str] = {}
-    for pid in sorted(expected_profiles):
-        entry = coverage.get(pid)
-        if not (isinstance(entry, dict) and entry.get("mode") == "delegation"
-                and isinstance(entry.get("delegate_to"), str)):
-            raise GenesisEvidenceError(
-                f"promoted default has no composition delegation for {pid}: {entry!r}")
-        delegation[pid] = entry["delegate_to"]
-    if composed.get("delegation") != delegation:
-        raise GenesisEvidenceError(
-            f"promotion evidence delegation {composed.get('delegation')} != the promoted "
-            f"default's composition {delegation}")
-    if delegation[LEGACY_PROFILE_ID] != LEGACY_BASELINE_INCUMBENT:
-        raise GenesisEvidenceError(
-            f"{LEGACY_PROFILE_ID} delegates to {delegation[LEGACY_PROFILE_ID]!r}, not the frozen "
-            f"baseline {LEGACY_BASELINE_INCUMBENT!r}")
-
-    store_profiles = frontier_state.get("profiles") or {}
-    for pid in PROFILE_IDS:
-        incumbent = (store_profiles.get(pid) or {}).get("incumbent") or {}
-        if incumbent.get("id") != delegation[pid]:
-            raise GenesisEvidenceError(
-                f"{pid}: promoted delegation names {delegation[pid]!r} but the store's standing "
-                f"incumbent is {incumbent.get('id')!r}")
-        cand = incumbent.get("candidate_hash")
-        check_root(cand, f"profiles[{pid}].incumbent.candidate_hash")
-        if not cand.startswith(delegation[pid]):
-            raise GenesisEvidenceError(
-                f"{pid}: incumbent candidate hash {cand[:12]} does not extend the delegation id "
-                f"{delegation[pid]!r}")
-    return delegation
-
-
-def genesis_manifest(*, promotion_evidence: Mapping[str, Any],
-                     frontier_state: Mapping[str, Any], benchmark_law_root: str,
-                     runtime_abi_root: str, default_composition_root: str,
-                     release_roots: Mapping[str, str], epoch: int = 0) -> Dict[str, Any]:
-    """Build the GENESIS frontier manifest from the COMMITTED promoted state.
-
-    Genesis is not a special document class — it is an ordinary manifest whose
-    ``parent_frontier_root`` is the reserved :data:`ZERO_ROOT`, the one place that sentinel is
-    legal. Its content is the currently approved composed champion: one release root per
-    mineable profile plus the root of the signed composition artifact that binds the whole
-    delegation (legacy profile included).
-
-    ``release_roots`` and ``default_composition_root`` are supplied by the caller because they
-    address SIGNED DEPLOYMENT artifacts of family :data:`COMPOSITION_ARTIFACT_FORMAT`, which are
-    materialised by the operator provisioner, not carried in the promotion evidence. This
-    function's job is to refuse to build genesis unless the committed evidence itself is a
-    promoted, internally consistent, PAID-gate-passing state (see :func:`promoted_delegation`);
-    ``v5/build_genesis.py`` supplies the roots and records their derivation.
-    """
-    promoted_delegation(promotion_evidence, frontier_state)   # fail closed on the evidence first
-    if not isinstance(release_roots, Mapping):
-        raise FrontierTypeError(
-            f"release_roots must be a mapping, got {type(release_roots).__name__}")
-    if set(release_roots) != set(PROFILE_IDS):
-        raise GenesisEvidenceError(
-            f"release_roots covers {sorted(release_roots)} but the closed frontier profile set "
-            f"is {list(PROFILE_IDS)} ({LEGACY_PROFILE_ID} is covered by the composition root, "
-            "never by a frontier release root)")
-    for pid in PROFILE_IDS:
-        check_root(release_roots[pid], f"release_roots[{pid!r}]")
-    # NOTE: the delegation ids themselves (12-hex nicknames like "32bcc4b0262e") are deliberately
-    # NOT carried in the manifest — the frontier addresses artifacts by FULL root only. They are
-    # provenance and belong in GENESIS.json's provenance block, via :func:`promoted_delegation`.
-    return new_manifest(
-        epoch=epoch,
-        parent_frontier_root=ZERO_ROOT,
-        benchmark_law_root=benchmark_law_root,
-        runtime_abi_root=runtime_abi_root,
-        default_composition_root=default_composition_root,
-        profiles={pid: release_roots[pid] for pid in PROFILE_IDS})

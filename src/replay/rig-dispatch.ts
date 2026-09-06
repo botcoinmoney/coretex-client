@@ -76,6 +76,7 @@ const SIG_CREDIT_ACCEPTED =
   'RigCreditAccepted(uint64,uint256,address,uint64,bytes32,bytes32,uint256)';
 const SIG_EPOCH_COMMIT_SET = 'EpochCommitSet(uint64,bytes32)';
 const SIG_EPOCH_SECRET_REVEALED = 'EpochSecretRevealed(uint64,bytes32)';
+const SIG_COORDINATOR_SIGNER_UPDATED = 'CoordinatorSignerUpdated(address,address)';
 /** `RigCoreTexVerifier.sol:82-89` — the epoch's law pins, on the VERIFIER. */
 const SIG_EPOCH_CONTEXT_SET =
   'CoreTexEpochContextSet(uint64,bytes32,bytes32,bytes32)';
@@ -99,6 +100,7 @@ export const RIG_EVENT_TOPICS = {
   EpochSecretRevealed: eventTopic(SIG_EPOCH_SECRET_REVEALED),
   CoreTexEpochContextSet: eventTopic(SIG_EPOCH_CONTEXT_SET),
   CoreTexPolicyScheduled: eventTopic(SIG_POLICY_SCHEDULED),
+  CoordinatorSignerUpdated: eventTopic(SIG_COORDINATOR_SIGNER_UPDATED),
 } as const;
 
 /** Which of the three contracts each event is only ever legitimate from. */
@@ -113,6 +115,7 @@ export const RIG_EXPECTED_EMITTER: Readonly<Record<string, RigEmitterRole>> = {
   [RIG_EVENT_TOPICS.EpochSecretRevealed]: 'mining',
   [RIG_EVENT_TOPICS.CoreTexEpochContextSet]: 'verifier',
   [RIG_EVENT_TOPICS.CoreTexPolicyScheduled]: 'verifier',
+  [RIG_EVENT_TOPICS.CoordinatorSignerUpdated]: 'mining',
 } as const;
 
 export const RIG_EVENT_NAMES: Readonly<Record<string, string>> = {
@@ -124,6 +127,7 @@ export const RIG_EVENT_NAMES: Readonly<Record<string, string>> = {
   [RIG_EVENT_TOPICS.EpochSecretRevealed]: 'EpochSecretRevealed',
   [RIG_EVENT_TOPICS.CoreTexEpochContextSet]: 'CoreTexEpochContextSet',
   [RIG_EVENT_TOPICS.CoreTexPolicyScheduled]: 'CoreTexPolicyScheduled',
+  [RIG_EVENT_TOPICS.CoordinatorSignerUpdated]: 'CoordinatorSignerUpdated',
 } as const;
 
 /**

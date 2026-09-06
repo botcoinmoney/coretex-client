@@ -1,0 +1,62 @@
+{
+  "artifact_names": [
+    "adapter_wheel",
+    "miner_validator_kit",
+    "numeric_runtime_aarch64",
+    "numeric_runtime_amd64",
+    "portability_evidence",
+    "runtime_wheel",
+    "validator_wheel",
+    "wasmtime_aarch64_wheel",
+    "wasmtime_amd64_wheel"
+  ],
+  "format": "coretex.validator-release-contract/v1",
+  "integration_format": "coretex.runtime-integration/v1",
+  "law": {
+    "decision_engine_id": "dominance.componentwise.v2",
+    "family": "benchmark-v2-law/dominance-fixed-suite",
+    "id": "benchmark-v2-law/dominance-fixed-suite.v2",
+    "revision": "v2"
+  },
+  "object_names": [
+    "baseline_bridge_root",
+    "benchmark_law_root",
+    "canonical_suite_root",
+    "counter_resource_law_root",
+    "counter_root",
+    "evaluation_law_root",
+    "evaluation_law_scorer_root",
+    "miner_module_abi_root",
+    "public_candidate_isolation",
+    "public_candidate_reference",
+    "public_evaluation_ports_module",
+    "public_miner_abi_guide",
+    "public_miner_submission_terms",
+    "public_profile_law",
+    "public_resource_envelope",
+    "public_resource_envelope_guide",
+    "public_submission_reference",
+    "public_submit_guide",
+    "renderer_root",
+    "retrieval_config_root",
+    "rig_contract_authority_root",
+    "rig_mining_abi_root",
+    "rig_registry_abi_root",
+    "rig_verifier_abi_root",
+    "runtime_config_root",
+    "runtime_protocol_abi_root",
+    "validator_wheel_payload_root"
+  ],
+  "product": {
+    "name": "coretex",
+    "predecessor": "4782fe5d293c678a20e943b6acfce9e09682ab7aa06e2373348f96d45d2e19e5",
+    "sequence": 2,
+    "version": "1.1.0"
+  },
+  "profiles": [
+    "conv.pref.v1",
+    "doc.tool.v1",
+    "event.schema.v1"
+  ],
+  "release_format": "coretex.runtime-release/v1"
+}

@@ -1,0 +1,201 @@
+# SPDX-License-Identifier: Apache-2.0
+"""Thin-client reconstruction of genesis -> efficiency -> prior_accept on the law-v2 fixtures.
+
+``fixtures/law-v2-two-transition.json`` holds byte copies (base64) of the current CoreTex 1.0.0
+release ``4782fe5d…`` local E2E evidence, each with its source path and sha256: every CAS object
+the two evaluation artifacts address, the genesis baseline the first determinism witness names,
+and the epoch context both transitions were pinned to.  Nothing else is consulted — no release
+directory, no chain, no worker result.  The
+client fetches each object by its content address, verifies the efficiency artifact and then the
+second-generation ``prior_accept`` artifact under the v2 fixed-suite law (``verify_dominance_block``
+recomputes the componentwise verdict from the bound vectors; ``verify_artifact`` binds every field
+to the chain-side roots), requires the second witness to resolve to the first artifact's stored
+vector, and replays both transition artifacts from the genesis manifest to the two frontier roots.
+"""
+from __future__ import annotations
+
+import base64
+import copy
+import hashlib
+import json
+from pathlib import Path
+
+import pytest
+
+from coretex_validator import dispatch
+from coretex_validator import eval_artifact as ea
+from coretex_validator import frontier
+from coretex_validator import publication as pub
+from coretex_validator import rig_events
+
+
+FIXTURE = Path(__file__).with_name("fixtures") / "law-v2-two-transition.json"
+FIXTURE_FORMAT = "coretex.law-v2-two-transition-fixture/v1"
+LAW_V2 = "benchmark-v2-law/dominance-fixed-suite.v2"
+ENGINE_V2 = "dominance.componentwise.v2"
+PROFILE = "doc.tool.v1"
+GENESIS_ROOT = "2e3d00b727d70cf96e9595d730057b3548a9f8d2db68755252bf498a42431dff"
+GENESIS_BASELINE_ROOT = "aa1299b9ee629fdbe35501c12f5fba3a37a41fb4267db95890923a2c887820af"
+EFFICIENCY_EVAL_ROOT = "9af2a5c6c2fd04545232f65d57b0910c823881ad4bb7c1b8c6276cd5fedc88b3"
+EFFICIENCY_FRONTIER_ROOT = "433979931d68518a2ef635c88b845aa4796b1f0e09033fb646401606911d9046"
+PRIOR_ACCEPT_EVAL_ROOT = "b0e5d3fb78b8ffb7d0196e55b5f7984248ba8cdb3824f5adc93d762bd6b3c20c"
+PRIOR_ACCEPT_FRONTIER_ROOT = "cd52bf3e5f3a948e68a66c07f6d09da5e327ef1d62fb7620b1b8eca3b76c46b8"
+EPOCH_CONTEXT_ROOT = "7630b4dec0def892289160bbc6811ff6ae9e502251aaa08f8396259b6ea2e116"
+COMPATIBILITY_LOCK_ROOT = "c68c9ccd2b07c7f77e7e9f5a10b23c763fad92c0ee0028cbc802aa1904d3ca14"
+EXPECTED_CHECKS = [
+    "chain_roots", "transition_identity", "frontier_replay", "suite_membership", "genesis_floor",
+    "dominance", "dominance_report_binding", "determinism_witness", "fixed_round_identity",
+    "receipt_bindings", "measurements", "decided_vectors_are_measured", "counter_resource_law",
+    "verdict", "rig_receipt_fields", "determinism_witness_source", "availability",
+]
+
+
+def _sha256(raw: bytes) -> str:
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _load_fixture():
+    """The closed inventory: every copied byte must still match its recorded digest."""
+    index = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    assert index["format"] == FIXTURE_FORMAT
+    store = pub.InMemoryCAS()
+    for root, record in index["cas_objects"].items():
+        raw = base64.b64decode(record["base64"], validate=True)
+        assert len(raw) == record["bytes"] and _sha256(raw) == record["sha256"], root
+        assert record["sources"], root
+        store.put(root, raw)
+    context_record = index["epoch_context"]
+    context_raw = base64.b64decode(context_record["base64"], validate=True)
+    assert len(context_raw) == context_record["bytes"]
+    assert _sha256(context_raw) == context_record["sha256"]
+    context = json.loads(context_raw)
+    return index, store, context
+
+
+def _fetch(store, item):
+    return pub.fetch_json(item["root"], hash_rule=item["hash_rule"], store=store,
+                          expected_bytes_len=item["bytes"])
+
+
+def _epoch_pins(context):
+    """Pin 3 recomputed from the fetched context bytes, never taken from an artifact."""
+    root = dispatch.epoch_context_root(context)
+    assert root == EPOCH_CONTEXT_ROOT
+    return {
+        "benchmark_law_root": context["benchmark_law_root"],
+        "epoch": context["epoch"],
+        "epoch_context_root": root,
+        "runtime_abi_root": context["runtime_abi_root"],
+    }
+
+
+def _verify_and_replay(store, context, pins, current, eval_root):
+    """Verify one artifact against the CURRENT frontier and replay its transition on top of it."""
+    artifact = pub.fetch_json(eval_root, hash_rule=pub.HASH_RULE_FRONTIER_JSON, store=store)
+    assert ea.eval_report_hash(artifact) == eval_root
+    assert ea.artifact_law(artifact) == LAW_V2
+    assert artifact["suite"]["law_id"] == LAW_V2
+    assert artifact["determinism_witness"]["law_id"] == LAW_V2
+    assert artifact["dominance"]["engine"] == ENGINE_V2
+    assert ea.verify_dominance_block(artifact) == {"engine": ENGINE_V2, "admit": True}
+    assert artifact["verdict"]["admit"] is True
+    assert artifact["candidate"]["target_profile"] == PROFILE
+
+    availability = artifact["availability"]
+    resulting = _fetch(store, availability["resulting_frontier_manifest"])
+    parent_root = frontier.frontier_root(current)
+    resulting_root = frontier.frontier_root(resulting)
+    # The parent the artifact claims must be the frontier we actually arrived at.
+    assert artifact["candidate"]["prior_release_root"] == current["profiles"][PROFILE]
+    report = ea.verify_artifact(
+        artifact,
+        expected_parent_root=parent_root,
+        expected_new_root=resulting_root,
+        expected_release_root=resulting["profiles"][PROFILE],
+        expected_composition_root=resulting["default_composition_root"],
+        expected_runtime_abi_root=context["runtime_abi_root"],
+        expected_benchmark_law_root=context["benchmark_law_root"],
+        expected_counter_resource_law_root=context["counter_resource_law_root"],
+        expected_epoch=context["epoch"],
+        expected_target_profile=PROFILE,
+        store=store,
+        check_availability=True,
+        require_rig_receipt=True,
+        expected_epoch_context_root=pins["epoch_context_root"],
+        expected_core_version_hash=COMPATIBILITY_LOCK_ROOT,
+        resolve_witness_source=True,
+    )
+    assert report["ok"] is True
+    assert report["law_id"] == LAW_V2
+    assert report["checks"] == EXPECTED_CHECKS
+    assert report["witness_provenance"]["resolved"] is True
+
+    # The descriptor a receipt would carry, built from the addressed roots (no receipt is in the
+    # fixture) and re-read by the same decoder the chain join uses.
+    transition_item = availability["transition_artifact"]
+    transition_raw = pub.read_back(
+        transition_item["root"], hash_rule=transition_item["hash_rule"], store=store,
+        expected_bytes_len=transition_item["bytes"])
+    descriptor_bytes = dispatch.encode_transition_descriptor(
+        patch_artifact_hash=transition_item["root"], parent_state_root=parent_root,
+        new_state_root=resulting_root)
+    descriptor = dispatch.decode_transition_descriptor(
+        descriptor_bytes, parent_state_root=parent_root, new_state_root=resulting_root,
+        expected_patch_hash=dispatch.transition_descriptor_hash(descriptor_bytes),
+        transition_format_version=ea.RIG_TRANSITION_FORMAT_VERSION)
+    projection = artifact["admission_projection"]
+    transition = rig_events.verify_transition_artifact_bytes(
+        transition_raw, descriptor=descriptor,
+        score_delta_ppm=projection["score_after_ppm"] - projection["score_before_ppm"],
+        epoch_context_root_=pins["epoch_context_root"])
+    child = rig_events.replay_transition_artifact(current, transition, epoch_pins=pins)
+    assert frontier.frontier_root(child) == resulting_root
+    assert child == resulting
+    assert child["parent_frontier_root"] == parent_root
+    assert child["profiles"][PROFILE] == artifact["candidate"]["release_root"]
+    return artifact, report, child
+
+
+def test_archived_two_transition_context_cannot_be_adopted_under_the_new_release():
+    # Keep the archived bytes and addresses intact. Historical receipt verification uses the
+    # archived 1.0.0 validator; prospective replay must refuse to reinterpret its measurements.
+    index, store, context = _load_fixture()
+    pins = _epoch_pins(context)
+    assert context["active_frontier_root"] == GENESIS_ROOT
+    genesis = pub.fetch_json(GENESIS_ROOT, hash_rule=pub.HASH_RULE_FRONTIER_JSON, store=store)
+    assert frontier.frontier_root(genesis) == GENESIS_ROOT
+    with pytest.raises(ea.SuiteMembershipError, match="canonical suite"):
+        _verify_and_replay(store, context, pins, genesis, EFFICIENCY_EVAL_ROOT)
+    assert [step["frontier_root"] for step in index["chain"]] == [
+        GENESIS_ROOT, EFFICIENCY_FRONTIER_ROOT, PRIOR_ACCEPT_FRONTIER_ROOT]
+
+
+def test_prior_accept_witness_refuses_a_predecessor_that_does_not_reproduce():
+    _index, store, _context = _load_fixture()
+    prior_accept = pub.fetch_json(
+        PRIOR_ACCEPT_EVAL_ROOT, hash_rule=pub.HASH_RULE_FRONTIER_JSON, store=store)
+    assert ea.resolve_determinism_witness_source(prior_accept, store=store)["resolved"] is True
+
+    # An absent predecessor is unavailable, never presumed.
+    without_predecessor = pub.InMemoryCAS()
+    for root in (PRIOR_ACCEPT_EVAL_ROOT,):
+        without_predecessor.put(root, store.get(root))
+    with pytest.raises(ea.EvalArtifactError, match="no object published"):
+        ea.resolve_determinism_witness_source(prior_accept, store=without_predecessor)
+
+    # A witness that restates the predecessor's stored vector is refused against the object.
+    tampered = copy.deepcopy(prior_accept)
+    vector = tampered["determinism_witness"]["partitions"]["confirm"]
+    vector["composite_micro"] += 1
+    with pytest.raises(ea.WitnessSourceMismatchError, match="different 'confirm' stored vector"):
+        ea.resolve_determinism_witness_source(tampered, store=store)
+
+
+def test_dominance_block_is_recomputed_not_trusted_on_the_fixture_artifacts():
+    _index, store, _context = _load_fixture()
+    for eval_root in (EFFICIENCY_EVAL_ROOT, PRIOR_ACCEPT_EVAL_ROOT):
+        artifact = pub.fetch_json(eval_root, hash_rule=pub.HASH_RULE_FRONTIER_JSON, store=store)
+        forged = copy.deepcopy(artifact)
+        forged["dominance"]["partitions"]["confirm"]["admission_gain_ppm"] += 1
+        with pytest.raises(ea.VerdictMismatchError, match="admission_gain_ppm"):
+            ea.verify_dominance_block(forged)
