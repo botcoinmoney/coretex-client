@@ -112,7 +112,7 @@ describe('rig dispatch coexists with V4 rather than replacing it', () => {
     assert.ok(RIG_LOG_TOPICS.includes(RIG_EVENT_TOPICS.CoreTexEpochFinalized));
     assert.ok(!RIG_LOG_TOPICS.includes(CORETEX_EVENT_TOPICS.CoreTexStateAdvanced));
     assert.ok(!RIG_LOG_TOPICS.includes(CORETEX_EVENT_TOPICS.CoreTexEpochFinalized));
-    assert.equal(RIG_LOG_TOPICS.length, 8);
+    assert.equal(RIG_LOG_TOPICS.length, 9);
   });
 
   test('one identical log is routed by ADDRESS, not by topic0', () => {
@@ -146,6 +146,8 @@ describe('rig dispatch coexists with V4 rather than replacing it', () => {
     assert.equal(RIG_EXPECTED_EMITTER[RIG_EVENT_TOPICS.CoreTexEpochContextSet], 'verifier');
     assert.equal(RIG_EXPECTED_EMITTER[RIG_EVENT_TOPICS.CoreTexPolicyScheduled], 'verifier');
     assert.equal(RIG_EXPECTED_EMITTER[RIG_EVENT_TOPICS.RigCoreTexCreditAccepted], 'mining');
+    assert.equal(RIG_EXPECTED_EMITTER[RIG_EVENT_TOPICS.CoordinatorSignerUpdated], 'mining');
+    assert.equal(routeRigLog({address: DEPLOYMENT.mining, topics: [RIG_EVENT_TOPICS.CoordinatorSignerUpdated]}, DEPLOYMENT).event, 'CoordinatorSignerUpdated');
   });
 });
 
@@ -181,22 +183,14 @@ describe('cross-language parity with the Python validator', () => {
   test('both implementations DERIVE the same rig topic0 table', () => {
     // Two independent derivations that agree is worth more than one derivation copied twice.
     // Neither side reads the other's constants: each hashes the signature strings itself.
-    let raw;
-    try {
-      raw = execFileSync(
-        'python3',
-        ['-c',
-         'import json,sys;sys.path.insert(0,"' + PYTHON_ROOT + '");' +
-         'from coretex_validator import rig_events as r;' +
-         'print(json.dumps({t: r.EVENT_NAMES[t] for t in r.RIG_LOG_TOPICS}))'],
-        { encoding: 'utf8', timeout: 60_000 },
-      );
-    } catch (err) {
-      // A host without python3 cannot run this comparison. Skipping is honest; asserting
-      // "they agree" because we could not check would not be.
-      assert.ok(err, 'python3 unavailable — parity unchecked on this host');
-      return;
-    }
+    const raw = execFileSync(
+      'python3',
+      ['-c',
+       'import json,sys;sys.path.insert(0,"' + PYTHON_ROOT + '");' +
+       'from coretex_validator import rig_events as r;' +
+       'print(json.dumps({t: r.EVENT_NAMES[t] for t in r.RIG_LOG_TOPICS}))'],
+      { encoding: 'utf8', timeout: 60_000 },
+    );
     // The two lanes render bytes32 differently ON PURPOSE — TypeScript `0x`-prefixed, Python
     // bare — so the comparison is over the BYTES. Comparing the renderings would fail on a
     // convention difference and say nothing about whether the digests agree.
@@ -209,6 +203,6 @@ describe('cross-language parity with the Python validator', () => {
       Object.fromEntries(RIG_LOG_TOPICS.map((topic) => [topic, RIG_EVENT_NAMES[topic]])),
     );
     assert.deepEqual(fromTypeScript, fromPython);
-    assert.equal(Object.keys(fromPython).length, 8);
+    assert.equal(Object.keys(fromPython).length, 9);
   });
 });
