@@ -344,6 +344,8 @@ def _validate(document: Any) -> Dict[str, Any]:
                      f"{where}.release_root must be sha256 hex")
     baseline = document.get("release_baseline_authority")
     if baseline is not None:
+        _require(floor.get("status") == "resolved",
+                 "release baseline requires resolved fixed product caps")
         _require(isinstance(baseline, dict) and set(baseline) == {
             "predecessor_release_root", "parent_frontier_root", "profiles"},
             "release baseline authority has an unknown or open schema")
