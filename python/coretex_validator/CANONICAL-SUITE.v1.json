@@ -673,7 +673,7 @@
             "work_fuel": 1979238
           }
         },
-        "release_root": "bb7ca54116f5cc82e05c5b82ea96780bff8a1ac095ca45b539818398be455989"
+        "release_root": "673997ed0ad1c67a4a64571cd9fb454a2eddc76919c69896c3134cea1da2bff1"
       },
       "event.schema.v1": {
         "candidate_provider": {
@@ -726,7 +726,7 @@
             "work_fuel": 1964982
           }
         },
-        "release_root": "a9830b09479cfc4cfef690b358b5c60afad1ebfb92abba232c720cb46d2994f8"
+        "release_root": "08c6908c1b36af6acd4b671e889c698b6493ef6cd7b8ac471296c6ab7c2a4b24"
       }
     }
   },
