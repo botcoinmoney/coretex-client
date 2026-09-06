@@ -76,6 +76,27 @@ def test_public_replay_tree_is_traversable_but_read_only(tmp_path: Path):
     assert not tmp_path.exists()
 
 
+def test_brokered_status_cannot_substitute_for_legacy_proof_or_vice_versa(tmp_path):
+    status = tmp_path / "status.json"
+    record = {"detail": "landlock_abi=6,brokered_hooks=1", "inner_returncode": 0,
+              "observed_at": 1, "state": "enforced"}
+    status.write_text(json.dumps(record))
+    check = benchmark_replay.ReleaseBenchmarkRunner._require_isolation_status
+    check(status, brokered_hooks=True)
+    with pytest.raises(benchmark_replay.BenchmarkReplayError):
+        check(status)
+    for change in ({"detail": "landlock_abi=2,brokered_hooks=1"},
+                   {"detail": "landlock_abi=6,brokered_hooks=0"},
+                   {"detail": "landlock_abi=6,path_rules=9"},
+                   {"state": "failed"}, {"inner_returncode": -9}):
+        status.write_text(json.dumps(dict(record, **change)))
+        with pytest.raises(benchmark_replay.BenchmarkReplayError):
+            check(status, brokered_hooks=True)
+    status.unlink()
+    with pytest.raises(benchmark_replay.BenchmarkReplayError, match="no enforced"):
+        check(status, brokered_hooks=True)
+
+
 def test_cpu_archive_omits_only_the_known_optional_logging_startup_hook(monkeypatch):
     import hashlib
     import sys

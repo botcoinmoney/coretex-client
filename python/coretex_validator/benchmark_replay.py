@@ -587,15 +587,16 @@ class ReleaseBenchmarkRunner:
         return stdout, stderr
 
     @staticmethod
-    def _require_isolation_status(status: Path) -> None:
+    def _require_isolation_status(status: Path, *, brokered_hooks: bool = False) -> None:
         try:
             value = _json(status.read_bytes(), "candidate isolation status")
         except (OSError, BenchmarkReplayError) as exc:
             raise BenchmarkReplayError(
                 "candidate pack worker produced no enforced isolation observation") from exc
         detail = value.get("detail")
-        match = re.fullmatch(r"landlock_abi=([0-9]+),path_rules=([0-9]+)",
-                             detail if isinstance(detail, str) else "")
+        pattern = (r"landlock_abi=([0-9]+),brokered_hooks=(1)" if brokered_hooks
+                   else r"landlock_abi=([0-9]+),path_rules=([0-9]+)")
+        match = re.fullmatch(pattern, detail if isinstance(detail, str) else "")
         if set(value) != {"detail", "inner_returncode", "observed_at", "state"} \
                 or value.get("state") != "enforced" \
                 or value.get("inner_returncode") != 0 \
@@ -604,42 +605,64 @@ class ReleaseBenchmarkRunner:
             raise BenchmarkReplayError(
                 "candidate pack worker did not install the release-bound OS confinement")
 
+    def _retrieval_profiles(self) -> Mapping[str, Any]:
+        return _json(self.release.objects["retrieval_config_root"], "retrieval config")["profiles"]
+
     def probe_isolation(self) -> None:
-        """Fast real kernel proof through the exact sitecustomize → outer → inner path."""
+        """Fast real kernel proof for every execution path declared by the release."""
         repo, bench, _site = self._paths
         assert self._temporary is not None
-        probe = self._temporary / "control" / "isolation-probe"
-        probe.mkdir(exist_ok=True)
-        view = probe / "view.json"
-        store = probe / "store"
-        spec = probe / "spec.json"
-        view.write_text("{}\n", encoding="utf-8")
-        source = "def make_hooks(context): return None\n"
-        spec.write_text(json.dumps({
-            "store_dir": str(store), "view_path": str(view), "module_source": source,
-            "module_sha256": _sha(source.encode("utf-8")),
-        }, sort_keys=True), encoding="utf-8")
-        status = self._new_status_path()
-        env = self._base_env(status)
-        env["CORETEX_CANDIDATE_ISOLATION_PROBE"] = "1"
-        try:
-            process = subprocess.Popen(
-                [os.sys.executable, str(bench / "miner_abi" / "pack_worker.py"), str(spec)],
-                cwd=repo, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE, text=True, start_new_session=True)
-            stdout, stderr = self._finish_process(
-                process, input_text="", timeout=min(self.timeout, 120),
-                label="candidate isolation probe")
-        except OSError as exc:
-            raise BenchmarkReplayError(f"candidate isolation probe could not start: {exc}") from exc
-        if process.returncode != 0 or "PACK_RESULT " not in stdout:
-            raise BenchmarkReplayError(
-                f"candidate isolation probe refused ({process.returncode}): "
-                f"{(stderr or stdout)[-2000:]}")
-        try:
-            self._require_isolation_status(status)
-        finally:
-            status.unlink(missing_ok=True)
+        routes = [("legacy", None)] + [
+            (profile, row) for profile, row in self._retrieval_profiles().items()
+            if row["descriptor"]["kind"] == "hybrid"]
+        source = ("from coretex_memory import abi2\n"
+                  "from coretex_memory.hooks import HookDispatch\n"
+                  "def make_hooks(context):\n"
+                  "    def rank(question, candidates):\n"
+                  "        return context.ref_m5_rank(question, candidates)\n"
+                  "    dispatch = HookDispatch()\n"
+                  "    dispatch.set_override(abi2.M5, rank)\n"
+                  "    return dispatch\n")
+        for label, retrieval in routes:
+            brokered = retrieval is not None
+            probe = self._temporary / "control" / ("isolation-probe-" + label)
+            probe.mkdir(exist_ok=True)
+            view, store, spec = probe / "view.json", probe / "store", probe / "spec.json"
+            store.mkdir(exist_ok=True)
+            public_view = {"profile_id": label, "seed": 0, "scale": "small",
+                           "scope_map": {"tenant": "probe", "user": "probe", "agent": "probe"},
+                           "episodes": [], "queries": []} if brokered else {}
+            view.write_text(json.dumps(public_view), encoding="utf-8")
+            document = {"store_dir": str(store), "view_path": str(view),
+                        "module_source": source, "module_sha256": _sha(source.encode("utf-8"))}
+            if brokered:
+                document.update(retrieval_descriptor=retrieval["descriptor"],
+                    retrieval_model_dir=str(repo / "v5" / "release-1.1.0" /
+                                            retrieval["model_bundle"]["path"]))
+            spec.write_text(json.dumps(document, sort_keys=True), encoding="utf-8")
+            status = self._new_status_path()
+            env = self._base_env(status)
+            if not brokered:
+                env["CORETEX_CANDIDATE_ISOLATION_PROBE"] = "1"
+            entrypoint = "pack_host.py" if brokered else "pack_worker.py"
+            try:
+                process = subprocess.Popen(
+                    [os.sys.executable, str(bench / "miner_abi" / entrypoint), str(spec)],
+                    cwd=repo, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE, text=True, start_new_session=True)
+                stdout, stderr = self._finish_process(
+                    process, input_text="", timeout=min(self.timeout, 120),
+                    label="candidate isolation probe " + label)
+            except OSError as exc:
+                raise BenchmarkReplayError(f"candidate isolation probe could not start: {exc}") from exc
+            if process.returncode != 0 or "PACK_RESULT " not in stdout:
+                raise BenchmarkReplayError(
+                    f"candidate isolation probe {label} refused ({process.returncode}): "
+                    f"{(stderr or stdout)[-2000:]}")
+            try:
+                self._require_isolation_status(status, brokered_hooks=brokered)
+            finally:
+                status.unlink(missing_ok=True)
 
     def _run(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         repo, bench, site = self._paths
@@ -673,7 +696,12 @@ class ReleaseBenchmarkRunner:
             raise BenchmarkReplayError("fixed-suite child did not prove network denial")
         if payload.get("mode") == "replay":
             try:
-                self._require_isolation_status(status)
+                profile = payload["report"].get("profile_id")
+                profiles = self._retrieval_profiles()
+                if profile not in profiles:
+                    raise BenchmarkReplayError("replay report has an unknown retrieval profile")
+                self._require_isolation_status(
+                    status, brokered_hooks=profiles[profile]["descriptor"]["kind"] == "hybrid")
             finally:
                 status.unlink(missing_ok=True)
         else:
