@@ -74,11 +74,14 @@ def init_sync_config(path, *, release_dir, settings, store=None, profile=DEFAULT
     """Publish a following configuration only after the first successful sync."""
     from coretex_memory_agent.authority import PROFILE_IDS
     from .current_sync import _atomic_write
+    from .chain_reader import PUBLIC_RPC
     if profile not in PROFILE_IDS:
         raise ConfigError("unknown profile")
     target = Path(path).expanduser().absolute()
     if target.exists():
         raise ConfigError("configuration already exists; use coretex-consumer sync --config to refresh")
+    if all(settings.get(key) is None for key in ("rpc", "rpc_env", "rpc_file")):
+        settings = dict(settings, rpc=PUBLIC_RPC, rpc_env=None, rpc_file=None)
     validate_sync_settings(settings)
     settings = dict(settings, output_dir=str(Path(settings["output_dir"]).expanduser().absolute()))
     if settings["rpc_file"]:

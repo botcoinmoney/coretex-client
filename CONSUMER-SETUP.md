@@ -57,18 +57,20 @@ coretex-env/bin/python -m pip check
 coretex-env/bin/coretex-consumer sync --config ./consumer.json \
   --release-dir ./release \
   --expected-release-root fb1a0c66ce641b9df4ca1a9c630357a0057d7ea4159c910c4a09776ed0749bec \
-  --rpc https://mainnet.base.org --out ./current \
+  --out ./current \
   --store ./memory.db --profile conv.pref.v1
 ```
 
-This reads the current epoch and frontier at one confirmed block, checks the
+No RPC account, API key or endpoint setup is required. The consumer uses public
+Base and CoreTex endpoints automatically. It reads the current epoch and frontier
+at one confirmed block, checks the
 release's deployed contracts and context, and downloads/re-hashes the current
 frontier, composition and three module bundles. Runtime ABI, provider and static
 module-capability checks remain enforced. No `eth_getLogs`, receipt scan or
 benchmark replay occurs. Progress is printed to stderr. Initial release/model
 download and large-store vector backfill remain separate costs.
 
-**Trust:** your configured RPC supplies confirmed chain state; content hashes
+**Trust:** the public RPC (or your optional override) supplies confirmed chain state; content hashes
 bind the downloaded bytes to that state. This answers “which modules are current?”
 It does not independently prove that each admission was lawful. The local format
 is `coretex.current-state/v1` with `admission_replayed: false`, distinct from an
@@ -77,9 +79,9 @@ block hashes and the frontier before publishing, retries a moving frontier up to
 three times, and refuses an RPC behind the previous successful observation.
 A provider outage or unsupported release fails explicitly and preserves local data.
 
-For a credential-bearing RPC use `--rpc-env NAME` or `--rpc-file PATH`. Public
-endpoints can be rate limited; a dedicated RPC makes setup and restart latency
-more predictable. There is no automatic endpoint switch. Repeat
+Advanced users may optionally set `--rpc URL`, `--rpc-env NAME` or `--rpc-file PATH`;
+ordinary consumers need none of these. Public endpoint rate limits can affect
+refresh latency. No account or payment is required. Repeat
 `coretex-consumer sync --config ./consumer.json` to refresh explicitly.
 
 ## Start one private sidecar

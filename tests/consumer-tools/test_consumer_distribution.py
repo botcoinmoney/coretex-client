@@ -1,9 +1,21 @@
 """The downloadable consumer wheel must contain precisely the reviewed public source."""
 import hashlib
+import json
 from pathlib import Path
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_consumer_source_manifest_matches_public_tracked_inputs():
+    manifest = json.loads((ROOT / 'consumer-artifacts/SOURCE.json').read_bytes())
+    source = ROOT / 'integrations/consumer'
+    expected = {'LICENSE', 'README.md', 'pyproject.toml'} | {
+        'coretex_consumer/' + path.name for path in (source / 'coretex_consumer').glob('*.py')}
+    assert set(manifest['files']) == expected
+    for name, digest in manifest['files'].items():
+        assert hashlib.sha256((source / name).read_bytes()).hexdigest() == digest
+    assert hashlib.sha256((ROOT / manifest['wheel']['path']).read_bytes()).hexdigest() == manifest['wheel']['sha256']
 
 
 def test_consumer_wheel_matches_source_and_declares_no_validator():

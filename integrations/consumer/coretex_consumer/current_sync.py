@@ -17,7 +17,7 @@ from urllib.parse import urlencode
 
 from coretex_memory_agent.authority import (CurrentReleaseAuthority, PROFILE_IDS, _canonical_bytes, _json_bytes,
                         _parse_json_bytes, _root, _strict_object)
-from .chain_reader import ChainReader, SyncError, Transport, validate_url
+from .chain_reader import ChainReader, SyncError, Transport, validate_url, PUBLIC_RPC
 from .current_state import CURRENT_STATE_FORMAT, CurrentState, authority_from_current
 
 FRONTIER_RULE = "sha256-frontier-canonical-json"
@@ -184,7 +184,8 @@ def _materialize(directory, document, fetch, authority, release_dir):
     (directory / "current-state.json").write_bytes(_json_bytes(document))
 
 
-def sync_current(*, release_dir, expected_release_root, rpc_url, object_url, output_dir,
+def sync_current(*, release_dir, expected_release_root, output_dir, rpc_url=PUBLIC_RPC,
+                 object_url="https://coordinator.agentmoney.net/coretex/v5/object/",
                  confirmations=12, progress=None, rpc=None, fetch=None):
     """Return one immutable, freshly checked consumer snapshot. Existing stores are never opened."""
     if type(confirmations) is not int or not 1 <= confirmations <= 256:

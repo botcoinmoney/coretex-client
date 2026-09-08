@@ -8,12 +8,14 @@ provider checks. The sealed product release and its build inputs stay unchanged.
 ```sh
 coretex-consumer sync --config ./consumer.json --release-dir ./release \
   --expected-release-root fb1a0c66ce641b9df4ca1a9c630357a0057d7ea4159c910c4a09776ed0749bec \
-  --rpc https://mainnet.base.org --out ./current --store ./memory.db --profile conv.pref.v1
+  --out ./current --store ./memory.db --profile conv.pref.v1
 coretex-consumer prewarm --config ./consumer.json
 coretex-consumer context --config ./consumer.json --budget 800 'What do we remember?'
 ```
 
-Initial release/model download is still required. Sync makes current-state RPC
+No RPC account, API key, or endpoint configuration is needed. Sync automatically
+uses the public Base endpoint and public CoreTex object service. Initial
+release/model download is still required. Sync makes current-state RPC
 reads at a single confirmed block and downloads only the current executable
 closure. It verifies chain id, deployed contract code and bindings, epoch context,
 compatibility lock, frontier, composition, per-profile module roots, source bytes,
@@ -35,9 +37,9 @@ the store or stop a sidecar already running. An offline application can explicit
 load a retained `CurrentState` and call `authority_from_current` without claiming
 freshness. A new product compatibility lock requires bootstrapping that release.
 
-Use `--rpc-env NAME` or `--rpc-file PATH` for credential-bearing endpoints. The
+Optional advanced overrides are `--rpc URL`, `--rpc-env NAME` and `--rpc-file PATH`. The
 default is 12 confirmations; “latest” means the current confirmed frontier.
-Use a dedicated RPC when public endpoint limits matter. Cache and immutable
+Public endpoint rate limits can affect refresh latency. Cache and immutable
 generation files belong to the local user and must not be writable by untrusted
 processes. Automatic module use still needs trust or external process confinement;
 the adapter's serving worker is not the evaluator's kernel sandbox.

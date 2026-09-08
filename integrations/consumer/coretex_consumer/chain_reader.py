@@ -12,6 +12,7 @@ from coretex_memory_agent._keccak import keccak256
 from coretex_memory_agent.authority import _parse_json_bytes
 
 MAX_RESPONSE = 2 * 1024 * 1024
+PUBLIC_RPC = "https://mainnet.base.org"
 
 
 class SyncError(RuntimeError):
