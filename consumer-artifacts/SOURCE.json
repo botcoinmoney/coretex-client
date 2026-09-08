@@ -1,0 +1,34 @@
+{
+  "build": {
+    "build": "1.4.0",
+    "python": "3.10",
+    "setuptools": "84.0.0",
+    "source_date_epoch": 1788825600,
+    "wheel": "0.46.3"
+  },
+  "commit": "4527fe2aad058dbcd6d94cd1faf7ba857a330b0e",
+  "files": {
+    "LICENSE": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+    "README.md": "08eb304edb9ed566d3e53523b2b593fb7d8dc3624e171e14f0c365cc92d96dd9",
+    "build/lib/coretex_consumer/__init__.py": "637674a8ef6dc9f4b41e5ee7d9b9279e365b46a51b22539acc874345a1ad79a0",
+    "build/lib/coretex_consumer/chain_reader.py": "97a3c52862c5ab9ace253b05e3f17494593540fc581aaea92647f906f06bedc1",
+    "build/lib/coretex_consumer/cli.py": "a243fd88d6950df40ec5a43803b8278a2e63c2e4edddd103f296441ec31b1aad",
+    "build/lib/coretex_consumer/config.py": "6b56611521ce385d6f0649d19fc6c7b37549426faf3f191864c4b2149b00cea9",
+    "build/lib/coretex_consumer/current_state.py": "971ae87347a97307245e2822a90683fb34d73cd45cb69b77033209d78bfd3064",
+    "build/lib/coretex_consumer/current_sync.py": "c127e4c94dc7737f50593c166913d301ced14450d4961ef4628462dd9e1670c9",
+    "coretex_consumer/__init__.py": "637674a8ef6dc9f4b41e5ee7d9b9279e365b46a51b22539acc874345a1ad79a0",
+    "coretex_consumer/chain_reader.py": "97a3c52862c5ab9ace253b05e3f17494593540fc581aaea92647f906f06bedc1",
+    "coretex_consumer/cli.py": "a243fd88d6950df40ec5a43803b8278a2e63c2e4edddd103f296441ec31b1aad",
+    "coretex_consumer/config.py": "6b56611521ce385d6f0649d19fc6c7b37549426faf3f191864c4b2149b00cea9",
+    "coretex_consumer/current_state.py": "971ae87347a97307245e2822a90683fb34d73cd45cb69b77033209d78bfd3064",
+    "coretex_consumer/current_sync.py": "c127e4c94dc7737f50593c166913d301ced14450d4961ef4628462dd9e1670c9",
+    "pyproject.toml": "625ae5c87ebcd5a86a1efa69e81ec152819e84f3bd9ba6f4b4fb2402ff77ac1e"
+  },
+  "format": "coretex.consumer-source/v1",
+  "path": "coretex-consumer",
+  "repository": "https://github.com/botcoinmoney/botcoin-coordinator",
+  "wheel": {
+    "path": "consumer-artifacts/coretex_consumer-0.1.0-py3-none-any.whl",
+    "sha256": "8bb0b1bcb707bfaa9b310abe5933e5c87f9022157ea5f5a87dad1107ddc6c7b9"
+  }
+}

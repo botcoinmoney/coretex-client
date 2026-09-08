@@ -2,6 +2,7 @@
 
 For a fresh memory adapter or Hermes setup, follow [CONSUMER-SETUP.md](CONSUMER-SETUP.md).
 The public bootstrap downloads the complete release and runs its exact sealed verifier.
+`coretex-consumer` follows current confirmed modules without replaying admission history.
 Consumer tools and the optional Hermes connector live outside the sealed validator package.
 Do not replace the release's verifier with a locally rebuilt or newer wheel.
 

@@ -8,9 +8,11 @@ BM25/BGE-small RRF60 provider; event and document remain lexical. All three
 profiles adopt their confirmed M5 modules. The adapter defaults to event, so
 select conversation explicitly when you want hybrid retrieval.
 
-These companion tools do not change the release, law, evaluator or validator.
-The validator and adapter verify the exact installed 1.1.0 validator payload.
-A locally modified validator or an arbitrary 1.1.1 wheel cannot replace it.
+Consumer sync adopts the current confirmed modules without replaying admission
+history or installing the validator. `coretex-consumer` is a small companion to
+the unchanged 1.1.0 memory adapter. Release bootstrap still runs the sealed
+verifier once to check downloaded product bytes; it does not replay the chain.
+Independent admission auditing remains an optional, separate validator task.
 
 ## Download and verify the complete release
 
@@ -42,60 +44,93 @@ coordinator-hashed transport catalog, not an additional sealed release object.
 python3.10 -m venv coretex-env
 coretex-env/bin/python -m pip install --no-index \
   --find-links release/artifacts --find-links release/wheelhouse \
-  'coretex-memory[hybrid]==1.1.0' coretex-memory-agent==1.1.0 coretex-validator==1.1.0
+  'coretex-memory[hybrid]==1.1.0' coretex-memory-agent==1.1.0
+sha256sum -c consumer-artifacts/SHA256SUMS
+coretex-env/bin/python -m pip install --no-deps \
+  ./consumer-artifacts/coretex_consumer-0.1.0-py3-none-any.whl
 coretex-env/bin/python -m pip check
-coretex-env/bin/coretex-validator verify-release --release ./release
 ```
 
-## Verify current mined modules
-
-An adapter adopts a locally verified chain snapshot, not an operator's unexplained
-module file. Creating a cold snapshot replays the confirmed improvements. The
-first consumer proof took 54 minutes, about 38 of which were deterministic replay;
-this is an observation, not an ETA. More accepted transitions can increase cost.
+## Sync current mined modules
 
 ```sh
-coretex-env/bin/python tools/coretex-snapshot.py --release ./release \
-  --activation https://coordinator.agentmoney.net/coretex/v5/activation \
-  --rpc https://mainnet.base.org \
-  --objects https://coordinator.agentmoney.net/coretex/v5/object/ \
-  --out ./resolver --confirmations 12
-coretex-env/bin/coretex verify-authority ./release ./resolver/resolver-snapshot.json
+coretex-env/bin/coretex-consumer sync --config ./consumer.json \
+  --release-dir ./release \
+  --expected-release-root fb1a0c66ce641b9df4ca1a9c630357a0057d7ea4159c910c4a09776ed0749bec \
+  --rpc https://mainnet.base.org --out ./current \
+  --store ./memory.db --profile conv.pref.v1
 ```
 
-The companion prints discovery block windows, periodic elapsed-time updates,
-CAS fetch activity and receipt-window read progress to stderr. Its output format
-and checks are those of the unchanged sealed validator. `--preflight-only`
-tests release verification and RPC log access without building a snapshot.
-For a secret-bearing RPC URL, use the existing `--rpc-env NAME` or `--rpc-file PATH`
-options. An RPC that answers `eth_chainId` may still refuse `eth_getLogs` with
-403. The official Base endpoint worked in qualification; public endpoints are
-rate limited and availability can change. No endpoint is switched automatically.
-The default log window is 2,000 blocks. `--log-window 10000` is an optional
-transport optimization only for endpoints that support it, not a universal rule.
+This reads the current epoch and frontier at one confirmed block, checks the
+release's deployed contracts and context, and downloads/re-hashes the current
+frontier, composition and three module bundles. Runtime ABI, provider and static
+module-capability checks remain enforced. No `eth_getLogs`, receipt scan or
+benchmark replay occurs. Progress is printed to stderr. Initial release/model
+download and large-store vector backfill remain separate costs.
 
-There is no `--scope frontier` shortcut here: full transition replay, signer
-verification, interleaved standard/CoreTex receipt continuity and reorg checks
-remain enforced. Future acceleration must preserve these checks. The adapter's
-snapshot parser is not evidence that a reduced scan proved equivalent trust.
+**Trust:** your configured RPC supplies confirmed chain state; content hashes
+bind the downloaded bytes to that state. This answers “which modules are current?”
+It does not independently prove that each admission was lawful. The local format
+is `coretex.current-state/v1` with `admission_replayed: false`, distinct from an
+auditor's replay snapshot. Default confirmation depth is 12. The observer rechecks
+block hashes and the frontier before publishing, retries a moving frontier up to
+three times, and refuses an RPC behind the previous successful observation.
+A provider outage or unsupported release fails explicitly and preserves local data.
+
+For a credential-bearing RPC use `--rpc-env NAME` or `--rpc-file PATH`. Public
+endpoints can be rate limited; a dedicated RPC makes setup and restart latency
+more predictable. There is no automatic endpoint switch. Repeat
+`coretex-consumer sync --config ./consumer.json` to refresh explicitly.
 
 ## Start one private sidecar
 
 ```sh
-coretex-env/bin/coretex init --config ./adapter.json --store ./memory.db \
-  --profile conv.pref.v1 --release-dir ./release \
-  --resolver-snapshot ./resolver/resolver-snapshot.json
-coretex-env/bin/coretex prewarm --config ./adapter.json
-coretex-env/bin/python tools/coretex-sidecar.py --config ./adapter.json --port 18761
+coretex-env/bin/coretex-consumer prewarm --config ./consumer.json
+coretex-env/bin/python tools/coretex-sidecar.py --config ./consumer.json --port 18761
 ```
 
-Keep that process running. Wait for `ready: true`. Large existing lexical stores
-should be prewarmed before traffic. The sidecar binds only 127.0.0.1 and opens
-the module selected by the verified snapshot. One store is one user's private
-scope/profile; this connector is not a multi-user gateway. The loopback API has
-no authentication: isolate it from untrusted local processes. Future mined
-Python modules require operator trust or external process/container confinement;
-the pip serving worker is not the evaluator's kernel sandbox.
+The launcher refreshes confirmed state before each open/restart, then uses one
+stable module for that session. It does not swap executable modules during a
+turn. Keep it running and wait for `ready: true`. Large existing lexical stores
+should be prewarmed before traffic. A refresh failure refuses the new open; it
+does not erase the store or stop an already-running sidecar. Cache generations
+remain immutable so another sync cannot replace an open store's module files.
+
+For an existing installation, create `consumer.json` pointing `--store` to the
+existing database and keep the same profile. Stop the old sidecar before opening
+that store through the new config. Its durable records survive adoption and
+restart. An offline application may explicitly open a retained `CurrentState`
+using `authority_from_current`; that checks local bindings without claiming
+freshness. See `integrations/consumer/README.md` for the API and trust boundary.
+
+The sidecar binds only 127.0.0.1. One store is one user's private scope/profile;
+this connector is not a multi-user gateway. The loopback API has no authentication:
+isolate it from untrusted local processes. Future mined Python modules require
+operator trust or external process/container confinement; the pip serving worker
+is not the evaluator's kernel sandbox.
+
+## Optional independent audit
+
+Validators and miners can still install the exact release-bound validator and
+run full replay. Consumer sync does not change that package, its payload pin,
+or the coordinator's pre-sign verification. Do not replace it with an arbitrary
+newer validator wheel.
+
+```sh
+coretex-env/bin/python -m pip install --no-index --find-links release/artifacts coretex-validator==1.1.0
+coretex-env/bin/python tools/coretex-snapshot.py --release ./release \
+  --activation https://coordinator.agentmoney.net/coretex/v5/activation \
+  --rpc https://mainnet.base.org \
+  --objects https://coordinator.agentmoney.net/coretex/v5/object/ \
+  --out ./audit --confirmations 12
+```
+
+The original full snapshot took 54 minutes, including about 38 minutes of
+deterministic replay. That audit cost is no longer on the default consumer path.
+The audit companion retains progress, full lineage/receipt checks, a 2,000-block
+log window, RPC secret options and `--preflight-only`. A 10,000-block window is
+an explicit provider-dependent option. The sidecar also continues to accept an
+existing `coretex init` config that selects a specific full audit snapshot.
 
 ## Install Hermes and the connector
 
