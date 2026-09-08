@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""Serve one snapshot-bound profile using the unchanged installed CoreTex adapter."""
+"""Serve a confirmed current profile, or an explicitly selected audit snapshot."""
 import argparse
 import json
 import signal
 import threading
+from pathlib import Path
+import sys
 
 
 def main():
@@ -14,8 +16,15 @@ def main():
     parser.add_argument('--config', required=True)
     parser.add_argument('--port', type=int, default=18761)
     args = parser.parse_args()
-    config = load_config(args.config, required=True)
-    authority = load_authority(config)
+    kind = json.loads(Path(args.config).read_text()).get('format')
+    if kind == 'coretex-consumer/config/v1':
+        from coretex_consumer.config import load_config, load_authority
+        config = load_config(args.config)
+        authority = load_authority(config, progress=lambda message:
+                                   print(message, file=sys.stderr, flush=True))
+    else:
+        config = load_config(args.config, required=True)
+        authority = load_authority(config)
     if authority is None:
         parser.error('config must name a verified release_dir and resolver_snapshot')
     with authority.open_memory(config['profile'], config['store']) as memory:

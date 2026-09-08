@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools==84.0.0", "wheel==0.46.3"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "coretex-consumer"
+version = "0.1.0"
+description = "Confirmed current-state sync for the CoreTex memory adapter, without admission replay"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+dependencies = ["coretex-memory-agent==1.1.0"]
+
+[project.scripts]
+coretex-consumer = "coretex_consumer.cli:main"
+
+[tool.setuptools]
+packages = ["coretex_consumer"]
+include-package-data = false

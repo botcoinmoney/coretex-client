@@ -1,0 +1,28 @@
+{
+  "build": {
+    "build": "1.4.0",
+    "python": "3.10",
+    "setuptools": "84.0.0",
+    "source_date_epoch": 1788825600,
+    "wheel": "0.46.3"
+  },
+  "commit": "330a08581b919f7864b804fd98a390d45d206686",
+  "files": {
+    "LICENSE": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+    "README.md": "c9e01b9642e2100b4226d452254cc510bf94c160784532001b06583ebfba1170",
+    "coretex_consumer/__init__.py": "637674a8ef6dc9f4b41e5ee7d9b9279e365b46a51b22539acc874345a1ad79a0",
+    "coretex_consumer/chain_reader.py": "c9c50bf5935b037e369afc05b9800237f3766f1ca7476f65ff11b98ee20e0081",
+    "coretex_consumer/cli.py": "a243fd88d6950df40ec5a43803b8278a2e63c2e4edddd103f296441ec31b1aad",
+    "coretex_consumer/config.py": "ce38c20e235c0620e6eaccf283762f39dd059db74b5de32d9d62075968485ad4",
+    "coretex_consumer/current_state.py": "971ae87347a97307245e2822a90683fb34d73cd45cb69b77033209d78bfd3064",
+    "coretex_consumer/current_sync.py": "7550284d06df54018784c98de45eb736cb5e0d2cd5b16861da6b4c6ca93aa790",
+    "pyproject.toml": "625ae5c87ebcd5a86a1efa69e81ec152819e84f3bd9ba6f4b4fb2402ff77ac1e"
+  },
+  "format": "coretex.consumer-source/v1",
+  "path": "coretex-consumer",
+  "repository": "https://github.com/botcoinmoney/botcoin-coordinator",
+  "wheel": {
+    "path": "consumer-artifacts/coretex_consumer-0.1.0-py3-none-any.whl",
+    "sha256": "37dfad0ac9c1a2837124759751d72e5e26ce9397ba7d0ffaeb4ce5b53ae48275"
+  }
+}
