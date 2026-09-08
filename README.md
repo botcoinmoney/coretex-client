@@ -1,4 +1,9 @@
-# CoreTex validator client 1.0.0
+# CoreTex validator client 1.1.0
+
+For a fresh memory adapter or Hermes setup, follow [CONSUMER-SETUP.md](CONSUMER-SETUP.md).
+The public bootstrap downloads the complete release and runs its exact sealed verifier.
+Consumer tools and the optional Hermes connector live outside the sealed validator package.
+Do not replace the release's verifier with a locally rebuilt or newer wheel.
 
 The first-public standalone client in this repository is the `coretex-validator` Python package
 under `python/`. The root TypeScript workspace is a private contract-codec test harness; it has no

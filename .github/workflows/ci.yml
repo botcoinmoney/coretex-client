@@ -30,3 +30,21 @@ jobs:
       # The published client is Python; npm is a private contract-codec harness.
       - run: python -m pip install -e "./python[dev]"
       - run: python -m pytest -q python/tests
+      - run: python -m pytest -q tests/consumer-tools
+
+  hermes-connector:
+    name: Hermes connector lifecycle
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install qualified Hermes and the connector
+        run: |
+          git clone --filter=blob:none https://github.com/NousResearch/hermes-agent.git /tmp/hermes-source
+          git -C /tmp/hermes-source checkout e624e9fde561e1add9388384012b295fde669ade
+          python -m pip install pytest==8.3.3 -e /tmp/hermes-source ./integrations/hermes
+      - run: python -m pytest -q integrations/hermes/test_sidecar.py
+        env:
+          HERMES_HOME: /tmp/coretex-hermes-ci
