@@ -1,0 +1,3 @@
+name: coretex_sidecar
+version: 0.1.0
+description: CoreTex loopback memory; use coretex-hermes-chat for checked write completion

@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools==75.3.0", "wheel==0.44.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "coretex-hermes-sidecar"
+version = "0.1.0"
+description = "Hermes memory provider and guarded chat over the sealed CoreTex loopback sidecar"
+requires-python = ">=3.11"
+license = {text = "Apache-2.0"}
+dependencies = []
+
+[project.entry-points."hermes_agent.memory_providers"]
+coretex_sidecar = "coretex_hermes_sidecar.provider:CoreTexSidecarProvider"
+
+[project.scripts]
+coretex-hermes-chat = "coretex_hermes_sidecar.chat:main"
+
+[tool.setuptools]
+packages = ["coretex_hermes_sidecar"]
+
+[tool.setuptools.package-data]
+coretex_hermes_sidecar = ["plugin.yaml"]
