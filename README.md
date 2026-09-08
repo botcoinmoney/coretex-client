@@ -1,10 +1,17 @@
 # CoreTex validator client 1.1.0
 
-For a fresh memory adapter or Hermes setup, follow [CONSUMER-SETUP.md](CONSUMER-SETUP.md).
-The public bootstrap downloads the complete release and runs its exact sealed verifier.
-`coretex-consumer` follows current confirmed modules without replaying admission history.
-Consumer tools and the optional Hermes connector live outside the sealed validator package.
-Do not replace the release's verifier with a locally rebuilt or newer wheel.
+Install and sync the memory adapter on Linux amd64 (curl and Python 3.8+):
+
+```sh
+curl -fsSLo coretex-setup.py https://agentmoney.net/coretex-setup.py
+python3 coretex-setup.py --dir ./coretex --profile conv.pref.v1
+```
+
+Then use `./coretex/bin/coretex sync` to refresh current mined modules or
+`./coretex/bin/coretex serve` for the agent sidecar. No personal RPC, key or
+admission-history replay is required. Full adapter and Hermes instructions are in
+[CONSUMER-SETUP.md](CONSUMER-SETUP.md). The consumer tools sit outside the unchanged
+sealed validator package; independent validator instructions follow.
 
 The first-public standalone client in this repository is the `coretex-validator` Python package
 under `python/`. The root TypeScript workspace is a private contract-codec test harness; it has no

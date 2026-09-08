@@ -6,10 +6,10 @@
     "source_date_epoch": 1788825600,
     "wheel": "0.46.3"
   },
-  "commit": "330a08581b919f7864b804fd98a390d45d206686",
+  "commit": "7727cb9e56fe45846df304a778432d8abacdd463",
   "files": {
     "LICENSE": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
-    "README.md": "c9e01b9642e2100b4226d452254cc510bf94c160784532001b06583ebfba1170",
+    "README.md": "a015cc9f8da97fabe7501b5bd03334ffbb331f42a3ba6bf1135e557935074683",
     "coretex_consumer/__init__.py": "637674a8ef6dc9f4b41e5ee7d9b9279e365b46a51b22539acc874345a1ad79a0",
     "coretex_consumer/chain_reader.py": "c9c50bf5935b037e369afc05b9800237f3766f1ca7476f65ff11b98ee20e0081",
     "coretex_consumer/cli.py": "a243fd88d6950df40ec5a43803b8278a2e63c2e4edddd103f296441ec31b1aad",

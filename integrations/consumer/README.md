@@ -5,6 +5,23 @@ without installing the validator or replaying admission history. It uses the
 unchanged `coretex-memory-agent==1.1.0` and its runtime, module, ABI and retrieval
 provider checks. The sealed product release and its build inputs stay unchanged.
 
+For a new installation on Linux amd64 with curl and Python 3.8+:
+
+```sh
+curl -fsSLo coretex-setup.py https://agentmoney.net/coretex-setup.py
+python3 coretex-setup.py --dir ./coretex --profile conv.pref.v1
+```
+
+Setup manages Python 3.10, the exact release/dependency downloads, current-state
+sync and store readiness. No RPC configuration, sudo or validator replay is needed.
+Use `./coretex/bin/coretex sync` for later updates and
+`./coretex/bin/coretex serve` for the private sidecar. The
+[full setup guide](https://github.com/botcoinmoney/coretex-client/blob/main/CONSUMER-SETUP.md)
+includes ingestion, recall, existing stores and the separate Hermes installation.
+
+The lower-level API below is for an already installed consumer package and
+verified release directory.
+
 ```sh
 coretex-consumer sync --config ./consumer.json --release-dir ./release \
   --expected-release-root fb1a0c66ce641b9df4ca1a9c630357a0057d7ea4159c910c4a09776ed0749bec \
