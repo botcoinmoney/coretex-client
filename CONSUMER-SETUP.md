@@ -111,6 +111,90 @@ Hermes uses a separate Python 3.11 environment and the sidecar connector below.
 The memory adapter install above is already complete; these additional commands
 install and configure the agent harness itself.
 
+## Optional: the Jev evidence filter (addon)
+
+The adapter works with no key and no account. The **Jev addon** is optional and
+**default OFF**: install it, hand it a key once, and every serve is checked by a
+third-party evidence judge that drops served records it rules are not evidence for
+the query. Without it — or with it installed but not enabled — the adapter serves
+exactly the bytes it serves today.
+
+```sh
+./coretex/.venv/bin/pip install coretex-memory-jev        # or: coretex-memory[jev]
+./coretex/bin/coretex setup --jev-key                      # prompts; never echoes the key
+```
+
+`setup --jev-key` writes the key to `~/.coretex/jev.key` (mode `0600`) and a
+**key-free** `~/.coretex/jev.json`:
+
+```json
+{"enabled": true, "key_file": "/home/you/.coretex/jev.key",
+ "policy_pack": "gns-cond-lex-v1"}
+```
+
+Equivalent without the CLI: export `JEV_API_KEY` and `CORETEX_JEV_ENABLED=1`.
+A key placed in the config *file* is refused — keys live in the `0600` file or the
+environment only.
+
+A key alone is not enough: the adapter refuses to run any consumer stage unless the
+store was opened asking for one. That is the second, deliberate switch — an
+evaluator or benchmark store can never be given a filter, because nothing but this
+adapter can ask:
+
+```python
+from coretex_memory_agent.agent import AgentMemory
+
+memory = AgentMemory.open("./coretex/store.db", profile="doc.tool.v1",
+                          allow_consumer_stage=True)   # default False
+```
+
+Check it without spending anything (`GET /v1/models` is free):
+
+```sh
+./coretex/bin/coretex jev status     # {"key_available": true, "key_length": 107, "status": 200}
+```
+
+**What "on" changes.** Each serve may issue up to one judge call per served
+record. Records the judge rules non-evidence are dropped before rendering, so the
+reader pays for fewer tokens; the receipt gains a `consumer_filter` block naming
+the rule, the threshold and every dropped record. **What "off" guarantees:** the
+rendered context and the receipt are byte-identical to an install without the
+addon.
+
+**Cost and latency.** Roughly $0.000049 per record judged; the defaults cap a
+session at 2,000 calls / $1.00 and one serve at 16 calls and 400 ms. Answers are
+cached by content, so a repeated query costs nothing. If the service is slow,
+down, or the cap is reached, the serve proceeds **unfiltered** — never blocked,
+never degraded.
+
+**Privacy.** When the filter runs, the query text and the text of each served
+record are sent to `api.typesafe.ai`. Nothing else leaves: no receipts, cycle
+ids, provenance roots, sidecars, scope (tenant/user/agent/session), module
+identity, or rendered context. If your records may not leave the host, do not
+enable the addon.
+
+**Choosing a rule.** `--policy-pack` selects a versioned rule set:
+
+| pack | calls | measured |
+|---|---|---|
+| `gns-cond-lex-v1` *(default)* | only on lexically ambiguous queries | −18 to −21 % reader bytes, 0 lost answers on 3 offline cases |
+| `gns-eager-v1` | every served record | same quality, more calls and latency |
+| `s-only-cond-lex-v1` | ambiguous queries | cheaper guard; **document stores lose an answer** — event-shaped stores only |
+| `off-v1` | none | installed and inert |
+
+All figures are offline diagnostics on generated cases, not a service guarantee.
+
+The addon is a **separate optional wheel**, published on its own and not part of the
+runtime or adapter release. The runtime only provides the seam it plugs into; with
+no addon installed there is nothing to turn on.
+
+### With Hermes
+
+The addon lives in the **sidecar process** that owns the store, not in the Hermes
+plugin. `hermes-home/config.yaml` is unchanged. Start the sidecar with the addon
+enabled and the sealed render the provider wraps verbatim is unchanged — only
+which records reached the renderer.
+
 ## Install Hermes and the connector
 
 The qualified Hermes source is
