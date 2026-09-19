@@ -32,6 +32,40 @@ python -m pip install -e '.[dev]'
 python -m pytest -q
 ```
 
+## Building the wheel as a release sub-build
+
+`build_release.py` is the only package builder, and it is meant to be invoked by the coordinator's
+release cut rather than run by hand. The build target is derived from `pyproject.toml`, never
+restated, so a caller discovers it instead of assuming it:
+
+```sh
+python3 build_release.py --print-target
+# {"distribution": "coretex_validator", "out_dir": "...", "sdist_name": "...",
+#  "version": "1.1.0", "wheel_name": "..."}
+```
+
+`--version X.Y.Z` asserts the version a caller expects: it can only agree with `pyproject.toml`,
+never override it.
+
+Five package data members — `CANONICAL-SUITE.v1.json`, `COUNTER_RESOURCE_LAW.v1.json`, `LAW.md`,
+`RIG-CONTRACT-AUTHORITY.base-mainnet.json` and `RIG-WIRE-BINDING.v1.json` — are verbatim copies of
+the coordinator tree's own law sources, and `RELEASE-CONTRACT.v1.json` names that tree's product
+and law identity. Before cutting, prove the copies are still current:
+
+```sh
+python3 build_release.py --coordinator-repo /path/to/coordinator --verify-law-inputs
+```
+
+That writes nothing and exits non-zero naming every member that drifted. The source paths come out
+of the coordinator's `v5/RELEASE-MANIFEST.<version>.json`, so relocating the law text there does
+not need a matching edit here. Refreshing the copies is a separate, explicit step — law inputs are
+never synced implicitly:
+
+```sh
+python3 build_release.py --coordinator-repo /path/to/coordinator \
+  --sync-law-inputs --sync-release-contract
+```
+
 The wheel itself has no runtime dependencies. Full canonical hybrid replay materializes the
 release's closed CPU dependency and model inventory and requires Linux amd64 CPython 3.10.
 ARM adapter serving is separately qualified. Initial working module bindings are distinct from

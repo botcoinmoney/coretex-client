@@ -1,10 +1,22 @@
 #!/usr/bin/env python3
-"""Build and verify the deterministic first-public validator wheel and source archive.
+"""Build and verify the deterministic public validator wheel and source archive.
 
 This is the only package builder. It uses only the Python standard library, consumes one exact
 source inventory, emits byte-stable archives, and then re-opens every decompressed member before
 publishing either output. The externally supplied CoreTex RELEASE.json binds the wheel hash; the
 wheel intentionally does not embed RELEASE.json or its own hash.
+
+The build target is an INPUT, never a literal: the version is whatever ``pyproject.toml``
+declares under ``[project]``, and the wheel/sdist filenames are derived from it.  ``--version``
+lets a caller assert the version it expects (it can only agree, never override), and
+``--print-target`` lets a caller discover the target before spending a build.
+
+Five package data members are not this repository's own text: they are the coordinator's law
+sources, copied in.  ``--coordinator-repo`` plus ``--verify-law-inputs`` proves the embedded
+bytes still equal that coordinator tree's own bytes (and that RELEASE-CONTRACT.v1.json still
+names that tree's product and law), so a release cut can invoke this builder as a sub-build and
+fail closed on drift.  ``--sync-law-inputs`` is the only path that rewrites those members, and it
+never runs implicitly.
 """
 from __future__ import annotations
 
@@ -27,16 +39,69 @@ import zipfile
 from pathlib import Path
 from typing import Iterable, Mapping
 
-VERSION = "1.1.0"
+class BuildError(RuntimeError):
+    """The source tree or an emitted archive is not the one public package."""
+
+
 DIST = "coretex_validator"
 PACKAGE = "coretex_validator"
+PYPROJECT = "pyproject.toml"
+#: A release version is MAJOR.MINOR.PATCH — the same shape the coordinator's
+#: RELEASE-MANIFEST.<version>.json filename is built from, so one can address the other.
+VERSION_RE = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+")
+MAX_MEMBER_BYTES = 64 * 1024 * 1024
+MAX_TOTAL_BYTES = 256 * 1024 * 1024
+MAX_ARCHIVE_MEMBERS = 4_096
+#: A pyproject.toml large enough to hide a second [project] table in is not this one.
+MAX_PYPROJECT_BYTES = 256 * 1024
+
+
+def declared_version(root: Path) -> str:
+    """Return the one version ``pyproject.toml`` declares under its ``[project]`` table.
+
+    This is the single source of the build target.  The builder never restates a version, so a
+    product version bump is one edit in one file and every derived name follows it.  The scan is
+    table-aware on purpose: ``[project.urls]`` and ``[build-system]`` may not contribute a
+    version, and two declarations under ``[project]`` are a drift, not a preference.
+    """
+    path = root / PYPROJECT
+    try:
+        if path.stat().st_size > MAX_PYPROJECT_BYTES:
+            raise BuildError(f"{PYPROJECT} exceeds the {MAX_PYPROJECT_BYTES} byte bound")
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise BuildError(f"cannot read {path}: {exc}") from exc
+    except UnicodeDecodeError as exc:
+        raise BuildError(f"{PYPROJECT} is not UTF-8: {exc}") from exc
+    table = None
+    found: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            table = stripped[1:-1].strip()
+            continue
+        if table != "project":
+            continue
+        match = re.fullmatch(r'version\s*=\s*"([^"]*)"', stripped)
+        if match is not None:
+            found.append(match.group(1))
+    if len(found) != 1:
+        raise BuildError(
+            f"{PYPROJECT} must declare exactly one [project] version, found {len(found)}: "
+            f"{found}")
+    version = found[0]
+    if not VERSION_RE.fullmatch(version):
+        raise BuildError(
+            f"{PYPROJECT} [project] version {version!r} is not a MAJOR.MINOR.PATCH release "
+            f"version")
+    return version
+
+
+VERSION = declared_version(Path(__file__).resolve().parent)
 WHEEL_NAME = f"{DIST}-{VERSION}-py3-none-any.whl"
 SDIST_NAME = f"{DIST}-{VERSION}.tar.gz"
 DIST_INFO = f"{DIST}-{VERSION}.dist-info"
 SDIST_ROOT = f"{DIST}-{VERSION}"
-MAX_MEMBER_BYTES = 64 * 1024 * 1024
-MAX_TOTAL_BYTES = 256 * 1024 * 1024
-MAX_ARCHIVE_MEMBERS = 4_096
 
 PYTHON_MEMBERS = frozenset({
     "__init__.py", "abi.py", "activation.py", "benchmark_replay.py", "canonical_suite.py",
@@ -54,10 +119,21 @@ DATA_MEMBERS = frozenset({
 PACKAGE_MEMBERS = PYTHON_MEMBERS | DATA_MEMBERS
 SDIST_TOP_LEVEL = frozenset({"README.md", "build_release.py", "pyproject.toml", "reproduce.sh"})
 
-
-class BuildError(RuntimeError):
-    """The source tree or an emitted archive is not the one public package."""
-
+#: Package data members that are NOT this repository's own text: each one is a verbatim copy of a
+#: file in the coordinator tree the release is cut from.  A stale copy here would ship a validator
+#: that replays a law the coordinator no longer publishes, which is why the coordinator's own
+#: release build refuses a wheel whose member hashes differ from its sources.
+LAW_INPUT_MEMBERS = (
+    "CANONICAL-SUITE.v1.json", "COUNTER_RESOURCE_LAW.v1.json", "LAW.md",
+    "RIG-CONTRACT-AUTHORITY.base-mainnet.json", "RIG-WIRE-BINDING.v1.json",
+)
+#: The one law input the coordinator manifest does not name a path for; the coordinator's
+#: build_current_release.py carries the same constant.
+RIG_WIRE_BINDING_SOURCE = "v5/contract-authority/base-mainnet/rig-wire-binding.json"
+#: Self-described, not copied: it names the release graph rather than carrying law text, and it
+#: is checked field-by-field against the manifest instead of byte-by-byte against a source.
+RELEASE_CONTRACT_MEMBER = "RELEASE-CONTRACT.v1.json"
+MANIFEST_DIR = "v5"
 
 #: The one test subdirectory the sdist admits (JSON parity fixtures only).
 TEST_FIXTURES_DIR = "fixtures"
@@ -125,7 +201,14 @@ def _safe_name(name: str, where: str, *, directory: bool = False) -> str:
     return raw
 
 
-def _read_regular(path: Path, where: str) -> bytes:
+def _read_regular(path: Path, where: str, *, scan: bool = True) -> bytes:
+    """Read one stable regular file.
+
+    ``scan=False`` is for bytes that are only ever HASHED AND COMPARED, never published: a
+    coordinator source being verified must be allowed to report "these two differ" rather than
+    "this file mentions a private marker", or drift detection would fail for the wrong reason.
+    Every path that WRITES coordinator bytes into the package keeps the scan on.
+    """
     try:
         before = path.lstat()
     except OSError as exc:
@@ -145,11 +228,20 @@ def _read_regular(path: Path, where: str) -> bytes:
                               value.st_ctime_ns)
     if identity(before) != identity(after) or len(data) != before.st_size:
         raise BuildError(f"{where} changed while it was read")
-    _scan(data, where)
+    if scan:
+        _scan(data, where)
     return data
 
 
 def _source_files(root: Path) -> dict[str, bytes]:
+    # The archive names were derived from THIS file's pyproject.toml. A root whose pyproject
+    # declares something else would be packaged under the wrong filename and the wrong METADATA,
+    # so it is a refusal rather than a silent relabel.
+    observed_version = declared_version(root)
+    if observed_version != VERSION:
+        raise BuildError(
+            f"{root}/{PYPROJECT} declares version {observed_version!r}, but this builder targets "
+            f"{VERSION!r}")
     package_dir = root / PACKAGE
     observed = {path.name for path in package_dir.iterdir() if path.is_file()}
     if observed != PACKAGE_MEMBERS:
@@ -212,7 +304,7 @@ def _metadata() -> bytes:
         "Classifier: Topic :: Security :: Cryptography\n"
         "\n"
         "# CoreTex validator\n\n"
-        "Independent validation for the prospective CoreTex 1.1.0 fixed-suite release.\n"
+        f"Independent validation for the prospective CoreTex {VERSION} fixed-suite release.\n"
     ).encode("utf-8")
 
 
@@ -445,6 +537,260 @@ def _atomic_write(path: Path, data: bytes) -> None:
             pass
 
 
+def manifest_relative_path(version: str = VERSION) -> str:
+    """The coordinator-relative path of the release manifest for one product version."""
+    if not VERSION_RE.fullmatch(version):
+        raise BuildError(f"{version!r} is not a MAJOR.MINOR.PATCH release version")
+    return f"{MANIFEST_DIR}/RELEASE-MANIFEST.{version}.json"
+
+
+def _coordinator_path(coordinator_repo: Path, relative: str) -> Path:
+    """Resolve one repository-relative coordinator path, refusing anything that escapes."""
+    _safe_name(relative, f"coordinator source {relative!r}")
+    return coordinator_repo / relative
+
+
+def load_coordinator_manifest(coordinator_repo: Path, version: str = VERSION) -> dict:
+    """Load the coordinator's release manifest for this build's product version."""
+    relative = manifest_relative_path(version)
+    raw = _read_regular(
+        _coordinator_path(coordinator_repo, relative), f"coordinator {relative}", scan=False)
+    try:
+        manifest = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise BuildError(f"coordinator {relative} is not readable JSON: {exc}") from exc
+    if not isinstance(manifest, dict):
+        raise BuildError(f"coordinator {relative} is not a JSON object")
+    return manifest
+
+
+def coordinator_law_sources(manifest: Mapping[str, object]) -> dict[str, str]:
+    """Map each embedded law member to the coordinator path it must equal.
+
+    Four of the five paths are READ OUT OF the manifest rather than hardcoded, so a coordinator
+    that relocates its law text stays verifiable without a matching edit here.
+    """
+    law = manifest.get("law")
+    authority = manifest.get("rig_contract_authority")
+    if not isinstance(law, dict) or not isinstance(authority, dict):
+        raise BuildError(
+            "coordinator manifest has no law / rig_contract_authority table to resolve law "
+            "inputs from")
+    sources = {
+        "CANONICAL-SUITE.v1.json": law.get("canonical_suite_path"),
+        "COUNTER_RESOURCE_LAW.v1.json": law.get("counter_resource_law_path"),
+        "LAW.md": law.get("law_md_path"),
+        "RIG-CONTRACT-AUTHORITY.base-mainnet.json": authority.get("path"),
+        "RIG-WIRE-BINDING.v1.json": RIG_WIRE_BINDING_SOURCE,
+    }
+    unresolved = sorted(name for name, value in sources.items()
+                        if not isinstance(value, str) or not value)
+    if unresolved:
+        raise BuildError(f"coordinator manifest does not name a source for {unresolved}")
+    if sorted(sources) != sorted(LAW_INPUT_MEMBERS):
+        raise BuildError("law input source map is not the exact embedded law member set")
+    return {name: str(value) for name, value in sources.items()}
+
+
+def contract_identity(manifest: Mapping[str, object]) -> dict[str, dict]:
+    """The exact ``product`` and ``law`` blocks RELEASE-CONTRACT.v1.json must carry.
+
+    This mirrors the coordinator's own release build, which rejects a validator wheel whose
+    contract does not name that build's product and law identity verbatim.
+    """
+    product = manifest.get("product")
+    law = manifest.get("law")
+    release = manifest.get("release")
+    if not isinstance(product, dict) or not isinstance(law, dict) or not isinstance(release, dict):
+        raise BuildError("coordinator manifest has no product / law / release identity to bind")
+    for table, keys in (("product", ("name", "version")),
+                        ("law", ("family", "revision", "decision_engine_id")),
+                        ("release", ("sequence", "predecessor"))):
+        missing = [key for key in keys if key not in manifest[table]]
+        if missing:
+            raise BuildError(f"coordinator manifest {table} is missing {missing}")
+    return {
+        "product": {
+            "name": product["name"],
+            "predecessor": release["predecessor"],
+            "sequence": release["sequence"],
+            "version": product["version"],
+        },
+        "law": {
+            "decision_engine_id": law["decision_engine_id"],
+            "family": law["family"],
+            "id": f"{law['family']}.{law['revision']}",
+            "revision": law["revision"],
+        },
+    }
+
+
+def _load_release_contract(root: Path) -> tuple[bytes, dict]:
+    path = root / PACKAGE / RELEASE_CONTRACT_MEMBER
+    raw = _read_regular(path, f"package member {RELEASE_CONTRACT_MEMBER}", scan=False)
+    try:
+        contract = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise BuildError(f"{RELEASE_CONTRACT_MEMBER} is not readable JSON: {exc}") from exc
+    if not isinstance(contract, dict):
+        raise BuildError(f"{RELEASE_CONTRACT_MEMBER} is not a JSON object")
+    return raw, contract
+
+
+def _serialize_contract(contract: Mapping[str, object]) -> bytes:
+    """The file's own convention: two-space indent, sorted keys, one trailing newline."""
+    return (json.dumps(contract, indent=2, sort_keys=True) + "\n").encode("utf-8")
+
+
+def verify_law_inputs(root: Path, coordinator_repo: Path, *, version: str = VERSION) -> dict:
+    """Compare every embedded law input, and the release contract's identity, to a coordinator.
+
+    Writes nothing.  A member the coordinator cannot supply is reported as a failure with a null
+    coordinator hash rather than raised, so one run names EVERY drifted member instead of
+    stopping at the first.
+    """
+    manifest = load_coordinator_manifest(coordinator_repo, version)
+    sources = coordinator_law_sources(manifest)
+    entries = []
+    for member in LAW_INPUT_MEMBERS:
+        relative = sources[member]
+        package_sha = sha256(_read_regular(
+            root / PACKAGE / member, f"package member {member}", scan=False))
+        detail = None
+        try:
+            coordinator_sha = sha256(_read_regular(
+                _coordinator_path(coordinator_repo, relative),
+                f"coordinator {relative}", scan=False))
+        except BuildError as exc:
+            coordinator_sha, detail = None, str(exc)
+        entries.append({
+            "coordinator_sha256": coordinator_sha,
+            "detail": detail,
+            "kind": "bytes",
+            "member": member,
+            "ok": coordinator_sha is not None and coordinator_sha == package_sha,
+            "package_sha256": package_sha,
+            "source": relative,
+        })
+    _, contract = _load_release_contract(root)
+    identity = contract_identity(manifest)
+    for field in ("product", "law"):
+        observed = contract.get(field)
+        entries.append({
+            "coordinator_sha256": None,
+            "detail": None if observed == identity[field] else
+                      f"expected {json.dumps(identity[field], sort_keys=True)}, "
+                      f"found {json.dumps(observed, sort_keys=True)}",
+            "expected": identity[field],
+            "kind": "identity",
+            "member": f"{RELEASE_CONTRACT_MEMBER}:{field}",
+            "observed": observed,
+            "ok": observed == identity[field],
+            "package_sha256": None,
+            "source": manifest_relative_path(version),
+        })
+    failures = [entry["member"] for entry in entries if not entry["ok"]]
+    return {
+        "coordinator_repo": str(coordinator_repo),
+        "entries": entries,
+        "failures": failures,
+        "manifest": manifest_relative_path(version),
+        "ok": not failures,
+        "version": version,
+    }
+
+
+def render_law_inputs(result: Mapping[str, object]) -> str:
+    """One fixed-width line per checked member, in the builder's stable member order."""
+    lines = [
+        f"law inputs vs {result['coordinator_repo']} ({result['manifest']})",
+    ]
+    width = max(len(str(entry["member"])) for entry in result["entries"])
+    for entry in result["entries"]:
+        status = "OK  " if entry["ok"] else "DIFF"
+        lines.append(f"  {status}  {str(entry['member']).ljust(width)}  {entry['source']}")
+        if entry["kind"] == "bytes":
+            lines.append(f"        package     {entry['package_sha256']}")
+            lines.append(f"        coordinator {entry['coordinator_sha256'] or '<unreadable>'}")
+            if entry["detail"] is not None:
+                lines.append(f"        {entry['detail']}")
+        elif not entry["ok"]:
+            lines.append(f"        {entry['detail']}")
+    lines.append("law inputs: OK" if result["ok"]
+                 else "law inputs DRIFTED: " + ", ".join(result["failures"]))
+    return "\n".join(lines)
+
+
+def sync_law_inputs(root: Path, coordinator_repo: Path, *, version: str = VERSION) -> list[dict]:
+    """Copy the coordinator's law bytes over the embedded members. The only writing path.
+
+    The incoming bytes go through the ordinary private-marker scan: a coordinator file that still
+    carries a pre-public marker must not become a published package member.
+    """
+    manifest = load_coordinator_manifest(coordinator_repo, version)
+    sources = coordinator_law_sources(manifest)
+    changed = []
+    for member in LAW_INPUT_MEMBERS:
+        relative = sources[member]
+        incoming = _read_regular(
+            _coordinator_path(coordinator_repo, relative), f"coordinator {relative}")
+        target = root / PACKAGE / member
+        current = _read_regular(target, f"package member {member}", scan=False)
+        if current == incoming:
+            continue
+        _atomic_write(target, incoming)
+        changed.append({
+            "after": sha256(incoming),
+            "before": sha256(current),
+            "member": member,
+            "source": relative,
+        })
+    return changed
+
+
+def sync_release_contract(root: Path, coordinator_repo: Path, *,
+                          version: str = VERSION) -> dict | None:
+    """Rewrite ONLY the contract's ``product`` and ``law`` blocks from the coordinator manifest.
+
+    Every other key is carried through untouched, and the rewrite refuses unless the file already
+    round-trips through its own serialization convention — so a file someone reformatted by hand
+    is reported rather than silently reformatted.  RELEASE-CONTRACT.v1.json is not
+    self-addressed: it carries no hash of its own bytes (the coordinator hashes the wheel member
+    externally), so there is nothing to recompute here.
+    """
+    manifest = load_coordinator_manifest(coordinator_repo, version)
+    identity = contract_identity(manifest)
+    raw, contract = _load_release_contract(root)
+    if _serialize_contract(contract) != raw:
+        raise BuildError(
+            f"{RELEASE_CONTRACT_MEMBER} is not serialized as its own convention (two-space "
+            f"indent, sorted keys, trailing newline); refusing to rewrite it")
+    updated = dict(contract)
+    updated["product"] = identity["product"]
+    updated["law"] = identity["law"]
+    data = _serialize_contract(updated)
+    if data == raw:
+        return None
+    _atomic_write(root / PACKAGE / RELEASE_CONTRACT_MEMBER, data)
+    return {
+        "after": {"law": identity["law"], "product": identity["product"]},
+        "before": {"law": contract.get("law"), "product": contract.get("product")},
+        "member": RELEASE_CONTRACT_MEMBER,
+        "source": manifest_relative_path(version),
+    }
+
+
+def target(out_dir: Path) -> dict:
+    """The build target a caller can discover without spending a build."""
+    return {
+        "distribution": DIST,
+        "out_dir": str(out_dir),
+        "sdist_name": SDIST_NAME,
+        "version": VERSION,
+        "wheel_name": WHEEL_NAME,
+    }
+
+
 def build(root: Path, out_dir: Path, *, check: bool = False) -> dict:
     source = _source_files(root)
     wheel = build_wheel(source)
@@ -477,12 +823,79 @@ def build(root: Path, out_dir: Path, *, check: bool = False) -> dict:
 
 
 def main(argv: Iterable[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--out-dir", default="dist")
-    parser.add_argument("--check", action="store_true")
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--out-dir", default="dist",
+                        help="where the wheel and sdist are written (default: dist)")
+    parser.add_argument("--check", action="store_true",
+                        help="rebuild and compare against existing outputs; refuse on drift")
+    parser.add_argument("--version", dest="expect_version", metavar="VERSION",
+                        help="assert the version this build targets; refused unless it equals "
+                             f"the version {PYPROJECT} declares")
+    parser.add_argument("--print-target", action="store_true",
+                        help="print the target as one line of JSON and exit without building")
+    parser.add_argument("--coordinator-repo", metavar="PATH",
+                        help="the coordinator worktree this release is being cut from")
+    parser.add_argument("--verify-law-inputs", action="store_true",
+                        help="compare every embedded law input and the release contract identity "
+                             "against --coordinator-repo; writes nothing, exits non-zero on drift")
+    parser.add_argument("--sync-law-inputs", action="store_true",
+                        help="copy --coordinator-repo's law bytes over the embedded members "
+                             "(the only path that rewrites them; never implicit)")
+    parser.add_argument("--sync-release-contract", action="store_true",
+                        help="rewrite only RELEASE-CONTRACT.v1.json's product and law blocks from "
+                             "--coordinator-repo's release manifest")
     args = parser.parse_args(argv)
     root = Path(__file__).resolve().parent
-    result = build(root, (root / args.out_dir).resolve(), check=args.check)
+    out_dir = (root / args.out_dir).resolve()
+
+    if args.expect_version is not None and args.expect_version != VERSION:
+        raise BuildError(
+            f"--version {args.expect_version!r} is not the version this tree declares: "
+            f"{PYPROJECT} [project] version is {VERSION!r}")
+    if args.print_target:
+        print(json.dumps(target(out_dir), sort_keys=True))
+        return 0
+
+    wants_coordinator = (args.verify_law_inputs or args.sync_law_inputs
+                         or args.sync_release_contract)
+    if wants_coordinator and args.coordinator_repo is None:
+        raise BuildError(
+            "--verify-law-inputs/--sync-law-inputs/--sync-release-contract require "
+            "--coordinator-repo")
+    coordinator_repo = None
+    if args.coordinator_repo is not None:
+        if not wants_coordinator:
+            # Naming a coordinator must never be enough to pull its bytes in.
+            raise BuildError(
+                "--coordinator-repo does nothing on its own; add --verify-law-inputs, "
+                "--sync-law-inputs or --sync-release-contract. Law inputs are never synced "
+                "implicitly")
+        coordinator_repo = Path(args.coordinator_repo).resolve()
+        if not coordinator_repo.is_dir():
+            raise BuildError(f"--coordinator-repo {coordinator_repo} is not a directory")
+
+    if args.sync_law_inputs:
+        changed = sync_law_inputs(root, coordinator_repo)
+        print(f"synced law inputs from {coordinator_repo}: "
+              f"{len(changed)} of {len(LAW_INPUT_MEMBERS)} member(s) rewritten")
+        for entry in changed:
+            print(f"  {entry['member']}  {entry['before']} -> {entry['after']}  "
+                  f"({entry['source']})")
+    if args.sync_release_contract:
+        rewritten = sync_release_contract(root, coordinator_repo)
+        if rewritten is None:
+            print(f"{RELEASE_CONTRACT_MEMBER} already names this release; unchanged")
+        else:
+            print(f"rewrote {RELEASE_CONTRACT_MEMBER} product/law from {rewritten['source']}")
+            print(f"  product {json.dumps(rewritten['after']['product'], sort_keys=True)}")
+            print(f"  law     {json.dumps(rewritten['after']['law'], sort_keys=True)}")
+    if args.verify_law_inputs:
+        result = verify_law_inputs(root, coordinator_repo)
+        print(render_law_inputs(result))
+        return 0 if result["ok"] else 1
+
+    result = build(root, out_dir, check=args.check)
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0
 
