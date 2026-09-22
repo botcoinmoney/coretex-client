@@ -1,4 +1,4 @@
-# CoreTex validator client 1.1.0
+# CoreTex validator client 1.1.2
 
 Install and sync the memory adapter on Linux amd64 (curl and Python 3.8+):
 

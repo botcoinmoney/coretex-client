@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -24,9 +25,19 @@ def test_fixed_suite_and_contract_are_current_closed_inputs():
     assert canonical_suite.suite_law_id() == "benchmark-v2-law/dominance-fixed-suite.v2"
     assert len(canonical_suite.suite_root()) == 64
     contract = json.loads((PACKAGE / "RELEASE-CONTRACT.v1.json").read_text())
-    assert contract["product"] == {
-        "name": "coretex", "predecessor": "4782fe5d293c678a20e943b6acfce9e09682ab7aa06e2373348f96d45d2e19e5",
-        "sequence": 2, "version": "1.1.0"}
+    # THE CLOSED SHAPE, not a frozen release. The product block moves with every cut -- version,
+    # sequence and predecessor all change -- so a literal here is a second declaration of the
+    # release that has to be edited in lockstep with the one the cut actually syncs, and the cut
+    # after the one that forgets ships a package whose own test contradicts its own contract.
+    # What is INVARIANT is that the block is closed, well-formed, and the identity the rest of
+    # the package verifies against.
+    product = contract["product"]
+    assert set(product) == {"name", "predecessor", "sequence", "version"}
+    assert product["name"] == "coretex"
+    assert re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", product["version"])
+    assert type(product["sequence"]) is int and product["sequence"] >= 1
+    assert re.fullmatch(r"[0-9a-f]{64}", product["predecessor"])
+    assert release_schema.PRODUCT_VERSION == product["version"]
     assert set(contract["profiles"]) == set(canonical_suite.canonical_suite()["profiles"])
     assert release_schema.RELEASE_FORMAT == contract["release_format"]
 

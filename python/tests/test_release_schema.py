@@ -38,14 +38,18 @@ def release_document():
         "wasmtime_aarch64_wheel": "wasmtime",
         "wasmtime_amd64_wheel": "wasmtime",
     }
+    # DERIVED from the packaged contract, like the schema under test. A fixture that types the
+    # version builds a release for whichever cut the fixture was written in, and then asserts
+    # that the CURRENT schema accepts it -- which is a test of the fixture, not of the schema.
+    version = schema.PRODUCT_VERSION
     filenames = {
-        "adapter_wheel": "coretex_memory_agent-1.1.0-py3-none-any.whl",
-        "miner_validator_kit": "coretex-miner-validator-kit-1.1.0.tar",
+        "adapter_wheel": f"coretex_memory_agent-{version}-py3-none-any.whl",
+        "miner_validator_kit": f"coretex-miner-validator-kit-{version}.tar",
         "portability_evidence": "portability-evidence.json",
         "numeric_runtime_amd64": "numeric-runtime-amd64.tar",
         "numeric_runtime_aarch64": "numeric-runtime-aarch64.tar",
-        "runtime_wheel": "coretex_memory-1.1.0-py3-none-any.whl",
-        "validator_wheel": "coretex_validator-1.1.0-py3-none-any.whl",
+        "runtime_wheel": f"coretex_memory-{version}-py3-none-any.whl",
+        "validator_wheel": f"coretex_validator-{version}-py3-none-any.whl",
         "wasmtime_aarch64_wheel":
             "wasmtime-46.0.1-py3-none-manylinux2014_aarch64.whl",
         "wasmtime_amd64_wheel":
@@ -57,8 +61,8 @@ def release_document():
             "sha256": f"{index:064x}"[-64:], "size": 1,
         }
         if name in distributions:
-            version = "46.0.1" if name.startswith("wasmtime_") else "1.1.0"
-            entry.update(distribution=distributions[name], version=version)
+            entry_version = "46.0.1" if name.startswith("wasmtime_") else version
+            entry.update(distribution=distributions[name], version=entry_version)
             if name == "wasmtime_aarch64_wheel":
                 entry["tag"] = "py3-none-manylinux2014_aarch64"
             elif name == "wasmtime_amd64_wheel":
@@ -91,8 +95,8 @@ def release_document():
         "release_root": _root("0"),
         "rig_contract_authority_root": objects["rig_contract_authority_root"]["root"],
         "runtime_config_root": objects["runtime_config_root"]["root"],
-        "sequence": 2,
-        "version": "1.1.0",
+        "sequence": contract["product"]["sequence"],
+        "version": version,
     }
     body = {key: value for key, value in document.items() if key != "release_root"}
     document["release_root"] = hashlib.sha256(json.dumps(
@@ -102,7 +106,8 @@ def release_document():
 
 def test_release_schema_accepts_only_the_pinned_prospective_product():
     parsed = schema.parse_release(release_document())
-    assert parsed.raw["sequence"] == 2 and parsed.raw["predecessor"] == schema._CONTRACT["product"]["predecessor"]
+    assert parsed.raw["sequence"] == schema._CONTRACT["product"]["sequence"] \
+        and parsed.raw["predecessor"] == schema._CONTRACT["product"]["predecessor"]
 
 
 @pytest.mark.parametrize("mutation", [

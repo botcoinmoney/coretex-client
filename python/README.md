@@ -1,4 +1,4 @@
-# coretex-validator 1.1.0
+# coretex-validator 1.1.2
 
 `coretex-validator` independently verifies the prospective CoreTex fixed-suite rig lane from
 confirmed chain data and content-addressed release objects.
@@ -18,7 +18,7 @@ Verify a complete release and its paired chain activation:
 
 ```sh
 coretex-validator verify-release \
-  --release /path/to/v5/release-1.1.0 \
+  --release /path/to/v5/release-1.1.2 \
   --activation /path/to/PUBLIC-ACTIVATION.json
 ```
 
@@ -41,7 +41,7 @@ restated, so a caller discovers it instead of assuming it:
 ```sh
 python3 build_release.py --print-target
 # {"distribution": "coretex_validator", "out_dir": "...", "sdist_name": "...",
-#  "version": "1.1.0", "wheel_name": "..."}
+#  "version": "1.1.2", "wheel_name": "..."}
 ```
 
 `--version X.Y.Z` asserts the version a caller expects: it can only agree with `pyproject.toml`,

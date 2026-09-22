@@ -142,8 +142,9 @@ enter the vector or the admission rule.
 
 `R` is measured. The existing serialized `E` fields carry `C`, the fixed law-owned product cap;
 they are not a re-measurement and not the kit file `RESOURCE_ENVELOPE.json` (those are much larger
-declared submission ceilings for hard gate 6). For a profile and partition, every valid parent and
-candidate must carry the exact cap sealed by the canonical suite: `E(A) = E(B) = C`.
+declared submission ceilings for hard gate 6). For a profile, a partition and an evaluation **mode**
+(§3A.9), every valid parent and candidate measured in that mode must carry the exact cap sealed by
+the canonical suite for that mode: `E(A) = E(B) = C[mode]`.
 
 `suite_block_id` identifies which append-only suite block the vector was measured on. Genesis
 public law ships block `0` only. See §3A.7.
@@ -155,8 +156,28 @@ objective is not an unchanged objective; it is an invalid vector.
 
 Genesis `Q` and `R` are measured floors. `C` is a separate, explicit product SLO, never computed
 from a candidate or ratcheted from a parent. The release-bound canonical suite is the sole numeric
-authority for the 18 `envelope_*` integers across three profiles and two partitions. Every vector
-must reproduce those exact integers. Gate and confirm have independent fixed budgets.
+authority for the `envelope_*` integers: 18 per evaluation mode, across three profiles and two
+partitions. Every vector must reproduce the exact integers of the mode it was measured in. Gate and
+confirm have independent fixed budgets, and so do local and enhanced.
+
+**`C` is per mode, and the local cap is the protected one.** The judgment tariff (§4A) charges an
+elected judgment on the `work_fuel` axis at a rate denominated in local-encoder tokens. On a
+profile whose local path serves from a lexical index and runs no encoder, the enhanced measurement
+is therefore ~1,270×–1,660× the local one on that axis. A single integer for both modes must be
+sized for the enhanced arm, which would hand the **local** arm the same multiple of headroom it
+never spends — an enhanced-mode capability buying local resource capacity, which is exactly what
+§3A.9 clause 1/1B forbids. So each mode is judged inside its own `C`:
+
+* **local `C`** is a release constant. It is the envelope the product that exists with no key, no
+  table and no vendor is judged inside, it is carried unchanged across a release whose local
+  behaviour is byte-identical, and no measurement — in either mode — derives or moves it;
+* **enhanced `C`** is calibrated from the enhanced measurement of the release it ships with, and is
+  never **below** the local cap: an enhanced measurement is the local work plus the judgment fuel
+  the policy elects, so a narrower enhanced envelope is unreachable by construction.
+
+A mode's cap governs only measurements taken in that mode. There is no averaging, no maximum over
+modes, and no substitution of one mode's cap for the other's; a vector measured in a mode the suite
+seals no cap for is not decidable and is refused.
 
 A prospective runtime/provider revision may require newly calibrated caps in its new release.
 It does not change caps or reinterpret vectors belonging to an earlier public release. Resource
@@ -197,7 +218,8 @@ dips   = Σ_i dip_i                                gains  = Σ_i gain_i
      `composite_ppm(B) >= composite_ppm(G)` — the composite floor stays exact. Resources are not
      compared to genesis `R`;
    - **(2.3) paid trade:** `gains >= ρ * dips` (trivially true when `dips = 0`);
-3. `R_j(B) <= C_j` for every protected resource axis `j`;
+3. `R_j(B) <= C_j[mode]` for every protected resource axis `j`, where `mode` is the mode `B` was
+   measured in (§3A.2, §3A.9);
 4. strict progress, exactly one winning class (if both (4a) and (4b) hold, the class is
    **quality**):
    - **(4a) Quality advance:** `composite_ppm(B) >= composite_ppm(A) + 1`. Resources may rise
@@ -209,8 +231,9 @@ dips   = Σ_i dip_i                                gains  = Σ_i gain_i
      `gains >= ρ * dips`, an efficiency admit that carries dips is only possible when the
      composite does not rise by a full ppm (rounding); otherwise the step is a quality advance.
 5. The serialized cap is exact and constant: parent `E(A)`, candidate `E(B)`, and the canonical
-   suite's `C` must be byte-equal on all three axes. A forged tighter or looser envelope fails
-   closed; no measurement or transition derives a new cap.
+   suite's `C` **for the mode both were measured in** must be byte-equal on all three axes. A
+   forged tighter or looser envelope fails closed; no measurement or transition derives a new cap,
+   and a cap sealed for one mode is never read as the other mode's.
 
 #### Trade constants (law constants)
 
@@ -267,7 +290,8 @@ supplies the broader confirmed chain and deployment view. Receipt scores are **a
 (compatibility)**, never utility.
 
 The counter-resource aggregate is still recomputed and bound as non-admission telemetry. Each
-side is normalized against the same positive fixed product cap `C`, not against `R(A)`, so a zero
+side is normalized against the same positive fixed product cap `C` for the mode of record, not
+against `R(A)`, so a zero
 resource reading is valid and every cap-valid side lies in `[0, 1_000_000]`. On an efficiency
 admit, raw componentwise `R(B) <= R(A)` implies
 `resource_after_ppm <= resource_before_ppm`; on a quality admit the aggregate may rise inside that
@@ -285,7 +309,8 @@ stored qualifying vector from a content-addressed public source:
 - after an accepted improvement, that release's accepting evaluation artifact.
 
 The freshly re-executed parent **measured** `Q` and `R` must equal the stored measured fields
-byte-for-byte. Stored `E` is not re-measured: it must equal the canonical suite's fixed `C`, while
+byte-for-byte. Stored `E` is not re-measured: it must equal the canonical suite's fixed `C` for the
+mode the vector was measured in, while
 `suite_block_id` is carried unchanged. A measured mismatch is an environment or artifact drift
 refusal; it never adjusts a score and can never make a candidate pass. The source object must be
 published and hash-verified before evaluation is enqueued. Tampering with stored `E` changes
@@ -295,9 +320,12 @@ published and hash-verified before evaluation is enqueued. Tampering with stored
 
 The suite contains one resolved reference floor vector for each profile and partition, including
 genesis `Q`, measured genesis `R`, law-owned fixed `C` serialized as `E`, and
-`suite_block_id = 0`. These are part of the law. A missing or pending floor makes admission
+`suite_block_id = 0`, **per evaluation mode**: the local measurement is the suite's floor block and
+the enhanced one is its sibling, each carrying its own `C` (§3A.2, §3A.9). These are part of the
+law. A missing or pending floor makes admission
 impossible; it is never treated as zero or skipped. Quality floor checks compare `Q` only.
-Resource checks compare `R(B)` to fixed `C`, not to genesis or parent `R` (except that the
+Resource checks compare `R(B)` to the fixed `C` of the mode `B` was measured in, not to genesis or
+parent `R` (except that the
 efficiency class separately compares candidate `R` to exact-parent `R`). From genesis,
 `logical_durable_storage_bytes` cannot strictly decrease because the meter charges host-built
 store state plus the candidate's own `cm_artifacts`, a hook can only add artifacts (never remove
@@ -372,12 +400,15 @@ recovery is enhanced; `availability = live` is refused.
 
 1. **Protection.** A candidate is refused unless every evaluated mode holds §3A.3 clauses 1, 2, 3
    and 5 against its own same-mode parent. The hard gates, the profile composite floor, the genesis
-   floor and the fixed product cap `C` apply unchanged in both modes. Only clause 4, strict
-   progress, may fail in a mode. A local quality or resource regression therefore refuses the
-   release outright, whatever the enhanced mode did: an enhanced gain never pays for a local loss.
+   floor and the fixed product cap `C` apply unchanged in both modes — each mode against **its own**
+   `C[mode]` (§3A.2), never the other's. Only clause 4, strict progress, may fail in a mode. A local
+   quality or resource regression therefore refuses the release outright, whatever the enhanced mode
+   did: an enhanced gain never pays for a local loss.
 
-   1B. **Strict local protection.** The fixed cap `C` is an absolute ceiling, not a budget an
-   enhanced advance may spend. When the **local** mode makes no strict clause-4 advance of its own,
+   1B. **Strict local protection.** The local fixed cap `C[local]` is an absolute ceiling, not a
+   budget an enhanced advance may spend — and, because the caps are per mode, the enhanced arm's
+   wider envelope is not reachable from the local arm at all. When the **local** mode makes no
+   strict clause-4 advance of its own,
    it must additionally be non-regressing against the local parent: no protected resource axis may
    rise vs the local parent, and the local composite may not fall. Either of those, with no local
    advance, is a clause-1 protection failure — even when every fixed cap is respected, and even

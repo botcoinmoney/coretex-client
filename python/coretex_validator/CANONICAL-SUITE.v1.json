@@ -244,7 +244,7 @@
           "composite_micro": 74466250,
           "envelope_logical_durable_storage_bytes": 1200000,
           "envelope_rendered_cost_micro": 140000000,
-          "envelope_work_fuel": 1290000000,
+          "envelope_work_fuel": 265000000,
           "logical_durable_storage_bytes": 934815,
           "objectives_micro": {
             "abstention": 89062500,
@@ -265,7 +265,7 @@
           "composite_micro": 75425000,
           "envelope_logical_durable_storage_bytes": 1200000,
           "envelope_rendered_cost_micro": 140000000,
-          "envelope_work_fuel": 616000000,
+          "envelope_work_fuel": 135000000,
           "logical_durable_storage_bytes": 922044,
           "objectives_micro": {
             "abstention": 93332500,
@@ -286,9 +286,9 @@
       "doc.tool.v1": {
         "confirm": {
           "composite_micro": 79628750,
-          "envelope_logical_durable_storage_bytes": 3250000,
+          "envelope_logical_durable_storage_bytes": 3200000,
           "envelope_rendered_cost_micro": 275000000,
-          "envelope_work_fuel": 7930000000,
+          "envelope_work_fuel": 5000000,
           "logical_durable_storage_bytes": 2593354,
           "objectives_micro": {
             "abstention": 91278750,
@@ -309,7 +309,7 @@
           "composite_micro": 78390000,
           "envelope_logical_durable_storage_bytes": 3200000,
           "envelope_rendered_cost_micro": 280000000,
-          "envelope_work_fuel": 4000000000,
+          "envelope_work_fuel": 2600000,
           "logical_durable_storage_bytes": 2545545,
           "objectives_micro": {
             "abstention": 90625000,
@@ -331,8 +331,8 @@
         "confirm": {
           "composite_micro": 71460000,
           "envelope_logical_durable_storage_bytes": 2000000,
-          "envelope_rendered_cost_micro": 186000000,
-          "envelope_work_fuel": 6310000000,
+          "envelope_rendered_cost_micro": 180000000,
+          "envelope_work_fuel": 5000000,
           "logical_durable_storage_bytes": 1599914,
           "objectives_micro": {
             "abstention": 80521250,
@@ -353,8 +353,8 @@
         "gate": {
           "composite_micro": 73052500,
           "envelope_logical_durable_storage_bytes": 2000000,
-          "envelope_rendered_cost_micro": 188000000,
-          "envelope_work_fuel": 3130000000,
+          "envelope_rendered_cost_micro": 180000000,
+          "envelope_work_fuel": 2500000,
           "logical_durable_storage_bytes": 1558500,
           "objectives_micro": {
             "abstention": 79840000,
@@ -753,7 +753,7 @@
             "composite_micro": 74466250,
             "envelope_logical_durable_storage_bytes": 1200000,
             "envelope_rendered_cost_micro": 140000000,
-            "envelope_work_fuel": 1290000000,
+            "envelope_work_fuel": 265000000,
             "logical_durable_storage_bytes": 934815,
             "objectives_micro": {
               "abstention": 89062500,
@@ -774,7 +774,7 @@
             "composite_micro": 75425000,
             "envelope_logical_durable_storage_bytes": 1200000,
             "envelope_rendered_cost_micro": 140000000,
-            "envelope_work_fuel": 616000000,
+            "envelope_work_fuel": 135000000,
             "logical_durable_storage_bytes": 922044,
             "objectives_micro": {
               "abstention": 93332500,
@@ -802,9 +802,9 @@
         "partitions": {
           "confirm": {
             "composite_micro": 72578750,
-            "envelope_logical_durable_storage_bytes": 3250000,
+            "envelope_logical_durable_storage_bytes": 3200000,
             "envelope_rendered_cost_micro": 275000000,
-            "envelope_work_fuel": 7930000000,
+            "envelope_work_fuel": 5000000,
             "logical_durable_storage_bytes": 2572152,
             "objectives_micro": {
               "abstention": 90235000,
@@ -825,7 +825,7 @@
             "composite_micro": 74440000,
             "envelope_logical_durable_storage_bytes": 3200000,
             "envelope_rendered_cost_micro": 280000000,
-            "envelope_work_fuel": 4000000000,
+            "envelope_work_fuel": 2600000,
             "logical_durable_storage_bytes": 2524305,
             "objectives_micro": {
               "abstention": 90625000,
@@ -854,8 +854,8 @@
           "confirm": {
             "composite_micro": 70892500,
             "envelope_logical_durable_storage_bytes": 2000000,
-            "envelope_rendered_cost_micro": 186000000,
-            "envelope_work_fuel": 6310000000,
+            "envelope_rendered_cost_micro": 180000000,
+            "envelope_work_fuel": 5000000,
             "logical_durable_storage_bytes": 1599914,
             "objectives_micro": {
               "abstention": 80521250,
@@ -876,8 +876,8 @@
           "gate": {
             "composite_micro": 72437500,
             "envelope_logical_durable_storage_bytes": 2000000,
-            "envelope_rendered_cost_micro": 188000000,
-            "envelope_work_fuel": 3130000000,
+            "envelope_rendered_cost_micro": 180000000,
+            "envelope_work_fuel": 2500000,
             "logical_durable_storage_bytes": 1558500,
             "objectives_micro": {
               "abstention": 80102500,

@@ -33,10 +33,16 @@ COORDINATOR_BYTES = {
 }
 #: The identity the checked-in RELEASE-CONTRACT.v1.json already carries, expressed the way a
 #: coordinator manifest expresses it (product.version + release.sequence/predecessor).
+_CONTRACT_PRODUCT = json.loads(
+    (Path(build_release.__file__).resolve().parent / "coretex_validator"
+     / "RELEASE-CONTRACT.v1.json").read_text())["product"]
 MANIFEST_PRODUCT = {"name": "coretex", "version": build_release.VERSION}
+# READ off the checked-in contract, not typed. The sequence and the predecessor move with every
+# cut exactly as the version does, and `build_release.VERSION` on the line above already reads
+# its half of the same identity -- a literal here just guarantees the two halves drift apart.
 MANIFEST_RELEASE = {
-    "predecessor": "4782fe5d293c678a20e943b6acfce9e09682ab7aa06e2373348f96d45d2e19e5",
-    "sequence": 2,
+    "predecessor": _CONTRACT_PRODUCT["predecessor"],
+    "sequence": _CONTRACT_PRODUCT["sequence"],
 }
 MANIFEST_LAW_IDENTITY = {
     "decision_engine_id": "dominance.componentwise.v2",
@@ -325,12 +331,14 @@ def test_release_contract_identity_matches_a_matching_manifest(coordinator, pack
 
 
 def test_release_contract_product_mismatch_is_named(tmp_path, package_copy):
-    coordinator = make_coordinator(tmp_path / "moved-on",
-                                   release=dict(MANIFEST_RELEASE, sequence=3))
+    coordinator = make_coordinator(
+        tmp_path / "moved-on",
+        release=dict(MANIFEST_RELEASE, sequence=MANIFEST_RELEASE["sequence"] + 1))
     result = build_release.verify_law_inputs(package_copy, coordinator)
     assert result["failures"] == [f"{build_release.RELEASE_CONTRACT_MEMBER}:product"]
     entry = result["entries"][-2]
-    assert entry["expected"]["sequence"] == 3 and entry["observed"]["sequence"] == 2
+    assert entry["expected"]["sequence"] == MANIFEST_RELEASE["sequence"] + 1 \
+        and entry["observed"]["sequence"] == MANIFEST_RELEASE["sequence"]
 
 
 def test_release_contract_law_mismatch_is_named(tmp_path, package_copy):
@@ -346,13 +354,15 @@ def test_release_contract_law_mismatch_is_named(tmp_path, package_copy):
 
 
 def test_sync_release_contract_rewrites_only_product_and_law(tmp_path, package_copy):
-    coordinator = make_coordinator(tmp_path / "moved-on",
-                                   release=dict(MANIFEST_RELEASE, sequence=3))
+    coordinator = make_coordinator(
+        tmp_path / "moved-on",
+        release=dict(MANIFEST_RELEASE, sequence=MANIFEST_RELEASE["sequence"] + 1))
     contract_path = (package_copy / build_release.PACKAGE
                      / build_release.RELEASE_CONTRACT_MEMBER)
     before = json.loads(contract_path.read_text(encoding="utf-8"))
     rewritten = build_release.sync_release_contract(package_copy, coordinator)
-    assert rewritten is not None and rewritten["after"]["product"]["sequence"] == 3
+    assert rewritten is not None \
+        and rewritten["after"]["product"]["sequence"] == MANIFEST_RELEASE["sequence"] + 1
     after = json.loads(contract_path.read_text(encoding="utf-8"))
     assert set(after) == set(before)
     assert {key: value for key, value in after.items() if key not in ("product", "law")} == \

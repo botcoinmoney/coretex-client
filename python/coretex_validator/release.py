@@ -294,7 +294,7 @@ def _archive_name(value: str, where: str) -> str:
 
 
 def _wheel_payload(raw: bytes, *, package: str, distribution_stem: str,
-                   where: str, version: str = "1.1.0",
+                   where: str, version: str = "1.1.2",
                    tag: str = "py3-none-any") -> Dict[str, str]:
     """Verify one pure wheel's safe closed archive and return package member hashes."""
     try:
@@ -537,13 +537,16 @@ def load(path: str) -> ReleaseDirectory:
 
     runtime_payload = _wheel_payload(
         artifact_bytes["runtime_wheel"], package="coretex_memory",
-        distribution_stem="coretex_memory-1.1.0", where="artifacts.runtime_wheel")
+        distribution_stem=f"coretex_memory-{schema.PRODUCT_VERSION}",
+        where="artifacts.runtime_wheel")
     validator_payload = _wheel_payload(
         artifact_bytes["validator_wheel"], package="coretex_validator",
-        distribution_stem="coretex_validator-1.1.0", where="artifacts.validator_wheel")
+        distribution_stem=f"coretex_validator-{schema.PRODUCT_VERSION}",
+        where="artifacts.validator_wheel")
     _wheel_payload(
         artifact_bytes["adapter_wheel"], package="coretex_memory_agent",
-        distribution_stem="coretex_memory_agent-1.1.0", where="artifacts.adapter_wheel")
+        distribution_stem=f"coretex_memory_agent-{schema.PRODUCT_VERSION}",
+        where="artifacts.adapter_wheel")
     _wheel_payload(
         artifact_bytes["wasmtime_amd64_wheel"], package="wasmtime",
         distribution_stem="wasmtime-46.0.1", where="artifacts.wasmtime_amd64_wheel",
@@ -560,7 +563,7 @@ def load(path: str) -> ReleaseDirectory:
             or payload_document.get("format") != "coretex.validator-wheel-payload/v1" \
             or payload_document.get("distribution") != "coretex-validator" \
             or payload_document.get("package") != "coretex_validator" \
-            or payload_document.get("version") != "1.1.0" \
+            or payload_document.get("version") != schema.PRODUCT_VERSION \
             or payload_document.get("wheel_sha256") \
             != parsed.raw["artifacts"]["validator_wheel"]["sha256"] \
             or payload_document.get("members") != validator_payload \

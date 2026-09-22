@@ -132,7 +132,7 @@ def _kit_files(release: release_module.ReleaseDirectory) -> dict[str, bytes]:
         "closure", "format", "law", "members", "packages", "product", "support_trees",
     }, _MANIFEST)
     if document["format"] != _KIT_FORMAT \
-            or document["product"] != {"name": "coretex", "version": "1.1.0"}:
+            or document["product"] != {"name": "coretex", "version": "1.1.2"}:
         raise BenchmarkReplayError("miner kit has another public product identity")
     if document["closure"] != {
             "manifest_member": _MANIFEST,
@@ -414,7 +414,7 @@ if payload["mode"] == "runtime":
     root = payload["execution"]["release_root"]
     from validator.retrieval_config import resolve_profile_retrieval
     descriptor, _, _ = resolve_profile_retrieval(
-        payload["repo"] + "/v5/release-1.1.0", manifest["deployment_profile"])
+        payload["repo"] + "/v5/release-1.1.2", manifest["deployment_profile"])
     runtime_release.load_content_addressed_release(
         manifest, expected_manifest_root=root, runtime_checks=True,
         expected_provider={"id": descriptor.id, "version": descriptor.version})
@@ -501,7 +501,7 @@ class ReleaseBenchmarkRunner:
             _write_files(site, wasmtime_files)
             _write_files(site, _numeric_files(self.release))
             # The same release config and model payload are used by the ordinary eval_worker.
-            target_release = repo / "v5" / "release-1.1.0"
+            target_release = repo / "v5" / "release-1.1.2"
             target_release.mkdir(parents=True)
             for relative in ("RELEASE.json", "objects/retrieval-config.json"):
                 target = target_release / relative
@@ -637,7 +637,7 @@ class ReleaseBenchmarkRunner:
                         "module_source": source, "module_sha256": _sha(source.encode("utf-8"))}
             if brokered:
                 document.update(retrieval_descriptor=retrieval["descriptor"],
-                    retrieval_model_dir=str(repo / "v5" / "release-1.1.0" /
+                    retrieval_model_dir=str(repo / "v5" / "release-1.1.2" /
                                             retrieval["model_bundle"]["path"]))
             spec.write_text(json.dumps(document, sort_keys=True), encoding="utf-8")
             status = self._new_status_path()

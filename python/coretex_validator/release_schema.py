@@ -234,10 +234,15 @@ def _validate_artifacts(value: Any) -> Dict[str, Mapping[str, Any]]:
             if entry["distribution"] != _WHEEL_DISTRIBUTIONS[name]:
                 raise ReleaseSchemaError(
                     f"artifacts.{name}.distribution must be {_WHEEL_DISTRIBUTIONS[name]!r}")
+            # DERIVED from the packaged contract's product version, not typed. These three
+            # filenames carry the release's version, so a literal here has to be rewritten by
+            # hand on every cut -- and the one cut where it is forgotten ships a verifier that
+            # refuses its own release while its embedded RELEASE-CONTRACT names it.
             expected_filename = {
-                "adapter_wheel": "coretex_memory_agent-1.1.0-py3-none-any.whl",
-                "runtime_wheel": "coretex_memory-1.1.0-py3-none-any.whl",
-                "validator_wheel": "coretex_validator-1.1.0-py3-none-any.whl",
+                "adapter_wheel":
+                    f"coretex_memory_agent-{PRODUCT_VERSION}-py3-none-any.whl",
+                "runtime_wheel": f"coretex_memory-{PRODUCT_VERSION}-py3-none-any.whl",
+                "validator_wheel": f"coretex_validator-{PRODUCT_VERSION}-py3-none-any.whl",
                 "wasmtime_aarch64_wheel":
                     "wasmtime-46.0.1-py3-none-manylinux2014_aarch64.whl",
                 "wasmtime_amd64_wheel":
@@ -258,7 +263,7 @@ def _validate_artifacts(value: Any) -> Dict[str, Mapping[str, Any]]:
                     or entry["filename"] != "portability-evidence.json":
                 raise ReleaseSchemaError("portability evidence has another format or filename")
         elif name == "miner_validator_kit" \
-                and entry["filename"] != "coretex-miner-validator-kit-1.1.0.tar":
+                and entry["filename"] != f"coretex-miner-validator-kit-{PRODUCT_VERSION}.tar":
             raise ReleaseSchemaError("miner validator kit has another filename")
         result[name] = entry
     return result
@@ -290,7 +295,9 @@ def parse_release(value: Any) -> RuntimeRelease:
         raise ReleaseSchemaError(f"runtime release format must be {RELEASE_FORMAT!r}")
     product = _CONTRACT["product"]
     if document["name"] != product["name"] or document["version"] != PRODUCT_VERSION:
-        raise ReleaseSchemaError("the first public runtime release must be coretex 1.1.0")
+        raise ReleaseSchemaError(
+            f"the runtime release this package verifies must be "
+            f"{product['name']} {PRODUCT_VERSION}")
     if type(document["sequence"]) is not int \
             or document["sequence"] != product["sequence"] \
             or document["predecessor"] != product["predecessor"]:
@@ -361,7 +368,8 @@ def parse_integration(value: Any, release: RuntimeRelease) -> Mapping[str, Any]:
         "rig_contract_authority_root", "runtime_config"))
     document = dict(_closed(value, required, "runtime integration"))
     if document["format"] != INTEGRATION_FORMAT or document["product_version"] != PRODUCT_VERSION:
-        raise ReleaseSchemaError("runtime integration is not the 1.1.0 public format")
+        raise ReleaseSchemaError(
+            f"runtime integration is not the {PRODUCT_VERSION} public format")
     if document["release_root"] != release.release_root:
         raise ReleaseSchemaError("runtime integration and RELEASE.json name different releases")
     validate_public_genesis(document["public_genesis"], release)
