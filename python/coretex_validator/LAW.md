@@ -351,9 +351,76 @@ meaningful adapter behavior rather than a privileged test path. Still, public ca
 in benchmark coverage. Such a gap is repaired prospectively by improving the benchmark, not by
 randomizing retries or retroactively rejecting a valid result.
 
+### 3A.9 Dual-mode evaluation and deterministic mode selection
+
+The host judgment capability is optional. The unenhanced local path is a complete product, and
+ordinary local improvements stay eligible for mining rewards without a key, a table or a vendor.
+The engine is `dual-mode.local-protected.v1`.
+
+Every candidate is evaluated in **local** mode, on every release: the judgment capability is bound
+to the unavailable provider, no judgment is requested and no judgment fuel is charged. When the
+release binds a sealed judge table, the candidate is **also** evaluated in **enhanced** mode against
+that table. A live provider never measures a candidate; it serves consumers only. Each mode is
+compared only with the parent measured in the same mode. The modes are never averaged.
+
+The mode of a measurement is read from the trusted judgment meter, never from a candidate claim:
+`availability = unavailable` is local; `recovery = true` is local whatever availability says, because
+a typed judgment failure re-executes the complete local read path; `availability = sealed` without
+recovery is enhanced; `availability = live` is refused.
+
+**The rule.**
+
+1. **Protection.** A candidate is refused unless every evaluated mode holds §3A.3 clauses 1, 2, 3
+   and 5 against its own same-mode parent. The hard gates, the profile composite floor, the genesis
+   floor and the fixed product cap `C` apply unchanged in both modes. Only clause 4, strict
+   progress, may fail in a mode. A local quality or resource regression therefore refuses the
+   release outright, whatever the enhanced mode did: an enhanced gain never pays for a local loss.
+
+   1B. **Strict local protection.** The fixed cap `C` is an absolute ceiling, not a budget an
+   enhanced advance may spend. When the **local** mode makes no strict clause-4 advance of its own,
+   it must additionally be non-regressing against the local parent: no protected resource axis may
+   rise vs the local parent, and the local composite may not fall. Either of those, with no local
+   advance, is a clause-1 protection failure — even when every fixed cap is respected, and even
+   though §3A.3 read alone would record only a clause-4 (progress) failure.
+
+   Clause 1B is narrow by construction, and the narrowness is part of the rule:
+
+   * it guards the **local** mode only. The local arm is what every consumer gets without a vendor,
+     a key or a table, and is the thing the clause exists to protect; the enhanced arm remains
+     bound by clause 1 alone, so an enhanced arm that regresses inside its own protection while the
+     local arm advances is an ordinary off-mode non-advance, not a refusal;
+   * it applies only when the local mode does **not** advance. A local arm that independently earns
+     admission under the unchanged §3A.3 engine stays admissible exactly as before — including the
+     ordinary, legal trade of buying a local quality advance with more work inside `C` — whatever
+     the enhanced arm did;
+   * it is therefore **not** "refuse any local resource increase". That reading would be stricter
+     than admission law and would remove legitimate local improvements from miners' reward paths.
+
+   Clause 1B adds no measurement, no axis and no tolerance. It reads two facts the unchanged §3A.3
+   verdict already records — the axes raised vs the parent, and the composite delta — and refuses to
+   treat them as mere progress failures when the admission would have to come from the enhanced arm.
+2. **Progress.** Given protection, the candidate is admitted iff at least one evaluated mode makes a
+   strict §3A.3 clause-4 advance. The other mode may tie; an off-mode tie is allowed and is not a
+   refusal.
+3. **Attribution.** The admitted release's mode of record is `local` when the local mode advances
+   and `enhanced` otherwise. Local wins every tie, including when both modes advance, because the
+   local advance is the one that depends on no vendor, key or table. The receipt carries both modes'
+   full sub-verdicts, so the choice hides nothing.
+
+With no sealed table bound the rule degenerates to exactly the single-mode §3A.3 law, with clause 1B
+as its only addition: a local-only release that ties on quality while spending more resources is
+refused as a protection failure rather than as a bare absence of progress.
+
+**Refusals are decisions.** Every fail-closed condition of this section — a live provider offered as
+a measurement, a side measured in one mode and compared in another, a missing local evaluation, a
+`sealed_table_bound` declaration that disagrees with the modes actually evaluated — is a REJECT
+verdict carrying a typed refusal code, never an aborted round. A refused candidate and a failed
+evaluation are different outcomes, and only the first is this law's.
+
 ## 4. Measurement and resource authority
 
-The measurement policy is `final-render-trusted-hostwork.v5`.
+The measurement policy is `final-render-trusted-hostwork-judged.v6`, superseding
+`final-render-trusted-hostwork.v5`.
 The deterministic scorer evaluates finalized consumer-visible renders. Raw measurements and their
 meaning are bound into the report:
 
@@ -369,6 +436,74 @@ The candidate and parent run with the same case selection, runtime identity, sco
 counter law, and resource policy. Every report restatement—declared limits, gate resource map,
 storage meter, policy label, replay scope, compute figure, and latency figure—is recomputed from the
 authoritative raw values before mint and again before signing.
+
+## 4A. Judgment tariff
+
+Host judgment is charged on the **existing work axis**. `.v6` adds no fourth protected axis: §3A.2
+keeps exactly `rendered_cost`, `work_fuel` and `logical_durable_storage_bytes`.
+
+### 4A.1 The published tariff
+
+The tariff identity is `judge-tariff.model-token-equivalent.v2` and it is part of the measurement
+policy identity. It applies published integers to four trusted host counters:
+
+| counter | meaning | fuel |
+|---|---|---:|
+| `logical_judgments` | judgments the policy logically elects, deduplicated per query | 12,288 |
+| `request_size_units` | `ceil(state_bytes / 256)` of host-built canonical state | 594,944 |
+| `waves` | dependent batches — judgments that cannot be co-scheduled with their predecessor | 49,152 |
+| `duplicate_lookups` | repeat lookups of a state already charged once in this query | 3,072 |
+
+The common unit is the model-token equivalent. `RETRIEVAL_FUEL_SCHEDULE` already prices one
+model-processed token at 1,024 fuel when the local encoder processes it; the judgment tariff prices a
+token of canonical state judged by the host capability at the same 1,024 fuel. One 256-byte request
+unit is 581 model tokens at the frozen suite's measured 0.440366 bytes per token, so
+`581 × 1,024 = 594,944`. The other three weights are small integer multiples of the same unit: 12
+tokens for the fixed per-judgment request/response envelope, 48 for a dependent wave, 3 for a
+duplicate lookup. This is a deterministic cost model, not a claim that vendor milliseconds are fuel.
+
+**Calibration.** The tariff is FROZEN at the release cut and is calibrated on the frozen canonical
+suite itself, not on the diagnostic probes: six validated instances, 652 judged queries of the
+release's own initial M6 policy (`jev.m6.composed.v3` / `trim.conservative.v1`), with the counters
+taken from sealed zero-network replays. Those queries elect 2,607 logical judgments, 6,094
+request-size units, 652 waves and no duplicate lookups, against 3,542,650 encoder tokens over the
+same instances — `256 × 6,094 / 3,542,650 = 0.440366` bytes per model token, declared as the exact
+rational `780032/1771325`. One judged query then costs 5,659,004 fuel against 5,563,916 fuel for the
+encoder work over the same number of model-processed tokens: a ratio of 1.017. One judged query is
+therefore comparable to the encoder work it displaces. Call latency (p50 258 ms) is an operational
+figure and never a tariff input.
+
+The superseded `judge-tariff.model-token-equivalent.v1` published 65,536 for the request-size unit
+and shipped marked PROVISIONAL, with its own published record naming the freeze as the moment its
+weights would move. Its 64 model-token equivalents came from a probe figure of 4,608 "state bytes
+per call" at 4.0 bytes per token, but 4,608 B is the whole request payload — the six-question
+template plus the state. The trusted `JudgeMeter` does not meter that: it counts
+`ceil(len(canonical_bytes(state_body)) / 256)`, and the frozen suite's own sealed replays report
+2.34 request-size units per call, about 600 B of state. `.v1` therefore priced roughly 18 units of
+work at a rate set for 2.34 units of counter and under-charged the dominant term by an order of
+magnitude. `.v2` prices the unit the meter actually counts, and the fixed product caps and the
+genesis floors are recomputed once for the composition against it.
+
+### 4A.2 Consensus charge is independent of cache warmth
+
+The counters are the requests the policy **logically elects** at that query — not the requests that
+missed a cache. A sealed row the evaluator retrieves for free, a row a warm worker already holds and
+a row bought on the spot all produce identical counters and identical fuel, so the same candidate
+measures identically on a cold and a warm machine. Per-query deduplication is declared: an identical
+state judged twice in one query is one `logical_judgment` plus one `duplicate_lookup`. A meter
+carrying a cache-warmth or transport key is a refusal, not an ignored extra.
+
+### 4A.3 Receipts, and what stays outside admission
+
+A judged measurement binds a closed `judge_attribution` record: module identity, judge descriptor
+root, judge table root, measurement policy, tariff id, derived mode, availability, recovery, the four
+deciding counters, the judgment fuel, and the final authoritative pack hash. Local-mode measurements
+carry null judge roots and zero counters.
+
+Live-provider operational records — transport attempts, retries, provider-returned usage, real
+latency, cache hits and spend — are recorded separately, come from the host or client rather than
+being inferred from an error string, and are **explicitly outside deterministic admission**. They are
+never folded into `work_fuel` and never reach a verdict.
 
 ## 5. Evaluation, minting, and public replay
 

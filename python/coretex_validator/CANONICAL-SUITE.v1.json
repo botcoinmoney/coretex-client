@@ -31,14 +31,184 @@
   "format": "benchmark-v2/canonical-suite/v1",
   "genesis_floor_authority": {
     "decision_time_rule": "a pending floor is a REFUSAL, never a skipped check: no admission under this suite's law is computable without a resolved floor",
+    "enhanced": {
+      "source": {
+        "exec": "reference",
+        "measurement": "ops/coretex-v5/m5-encoder-integration/final-measurement/run.py over release-cut/measurements/enhanced/INPUTS.enhanced-composed.json, 36 cases, every case a fresh-process double run with replay_identical and zero oracle/integrity violations; aggregated by validator.evaluate._aggregate and frontier.dominance.to_micro",
+        "policy": "final-render-trusted-hostwork-judged.v6",
+        "profiles": {
+          "conv.pref.v1": {
+            "exec": "reference",
+            "reference_runtime": {
+              "id": "reference-runtime",
+              "protocol": "rrm1"
+            },
+            "release_root": "c2899d8e6b89aee3b47f0ee7c057ab27bbf073c3db4fc5749beb338b4c55d8d0"
+          },
+          "doc.tool.v1": {
+            "exec": "reference",
+            "reference_runtime": {
+              "id": "reference-runtime",
+              "protocol": "rrm1"
+            },
+            "release_root": "218a99aeb69cb3518c3af2613d3cdbac221a8d31ae86a63bc4d1170aa5c23b98"
+          },
+          "event.schema.v1": {
+            "exec": "reference",
+            "reference_runtime": {
+              "id": "reference-runtime",
+              "protocol": "rrm1"
+            },
+            "release_root": "b4dc35cc725adaef96de70ad6249c1d9a8dc3db3c73fde653022f40cdcb7c588"
+          }
+        },
+        "qualification": "the three shipped composed v3 baselines (conv.pref.jev.v3, doc.tool.jev.v3, event.schema.jev.v3, parent.conv.pref.v1, parent.doc.tool.v1, parent.event.schema.v1), measured over the FROZEN canonical suite by the release's own double-run evaluator with the SEALED judge table bound on every arm (table_root 30baa7d4248c79e7bc125fda8151f8275e5ce5b9e56fe525c6a0dc3a76680557), the tariffed judgment fuel charged onto work_fuel"
+      },
+      "vectors": {
+        "conv.pref.v1": {
+          "confirm": {
+            "composite_micro": 74492500,
+            "envelope_logical_durable_storage_bytes": 1200000,
+            "envelope_rendered_cost_micro": 140000000,
+            "envelope_work_fuel": 1290000000,
+            "logical_durable_storage_bytes": 934815,
+            "objectives_micro": {
+              "abstention": 89192500,
+              "alias_resolution": 37498750,
+              "asof_correctness": 92188750,
+              "conflict_supersession": 82421250,
+              "evidence_support": 67968750,
+              "multihop_completeness": 51785000,
+              "provenance_citations": 64688750,
+              "retraction_disclosure": 92917500,
+              "selective_forgetting": 91771250
+            },
+            "rendered_cost_micro": 106906250,
+            "suite_block_id": 0,
+            "work_fuel": 1031274723
+          },
+          "gate": {
+            "composite_micro": 75452500,
+            "envelope_logical_durable_storage_bytes": 1200000,
+            "envelope_rendered_cost_micro": 140000000,
+            "envelope_work_fuel": 616000000,
+            "logical_durable_storage_bytes": 922044,
+            "objectives_micro": {
+              "abstention": 93592500,
+              "alias_resolution": 39582500,
+              "asof_correctness": 89060000,
+              "conflict_supersession": 81250000,
+              "evidence_support": 71092500,
+              "multihop_completeness": 50892500,
+              "provenance_citations": 65382500,
+              "retraction_disclosure": 95085000,
+              "selective_forgetting": 93127500
+            },
+            "rendered_cost_micro": 108065000,
+            "suite_block_id": 0,
+            "work_fuel": 492567267
+          }
+        },
+        "doc.tool.v1": {
+          "confirm": {
+            "composite_micro": 83990000,
+            "envelope_logical_durable_storage_bytes": 3250000,
+            "envelope_rendered_cost_micro": 275000000,
+            "envelope_work_fuel": 7930000000,
+            "logical_durable_storage_bytes": 2593354,
+            "objectives_micro": {
+              "abstention": 92450000,
+              "asof_correctness": 97570000,
+              "conflict_supersession": 89845000,
+              "consolidation": 88281250,
+              "evidence_support": 92858750,
+              "multihop_completeness": 37502500,
+              "provenance_citations": 68463750,
+              "retraction_disclosure": 95187500,
+              "workflow_provenance": 93750000
+            },
+            "rendered_cost_micro": 189608750,
+            "suite_block_id": 0,
+            "work_fuel": 6336498901
+          },
+          "gate": {
+            "composite_micro": 82545000,
+            "envelope_logical_durable_storage_bytes": 3200000,
+            "envelope_rendered_cost_micro": 280000000,
+            "envelope_work_fuel": 4000000000,
+            "logical_durable_storage_bytes": 2545545,
+            "objectives_micro": {
+              "abstention": 91925000,
+              "asof_correctness": 97915000,
+              "conflict_supersession": 88282500,
+              "consolidation": 87500000,
+              "evidence_support": 85715000,
+              "multihop_completeness": 36667500,
+              "provenance_citations": 67270000,
+              "retraction_disclosure": 95437500,
+              "workflow_provenance": 92187500
+            },
+            "rendered_cost_micro": 192830000,
+            "suite_block_id": 0,
+            "work_fuel": 3197801359
+          }
+        },
+        "event.schema.v1": {
+          "confirm": {
+            "composite_micro": 76210000,
+            "envelope_logical_durable_storage_bytes": 2000000,
+            "envelope_rendered_cost_micro": 186000000,
+            "envelope_work_fuel": 6310000000,
+            "logical_durable_storage_bytes": 1599914,
+            "objectives_micro": {
+              "abstention": 80521250,
+              "asof_correctness": 99610000,
+              "conflict_supersession": 91797500,
+              "evidence_support": 100000000,
+              "exact_lookup": 67968750,
+              "join_completeness": 53513750,
+              "multihop_completeness": 42707500,
+              "provenance_citations": 75653750,
+              "retraction_disclosure": 86251250,
+              "schema_evolution": 64062500
+            },
+            "rendered_cost_micro": 144712500,
+            "suite_block_id": 0,
+            "work_fuel": 5042784233
+          },
+          "gate": {
+            "composite_micro": 76555000,
+            "envelope_logical_durable_storage_bytes": 2000000,
+            "envelope_rendered_cost_micro": 188000000,
+            "envelope_work_fuel": 3130000000,
+            "logical_durable_storage_bytes": 1558500,
+            "objectives_micro": {
+              "abstention": 79840000,
+              "asof_correctness": 98440000,
+              "conflict_supersession": 89842500,
+              "evidence_support": 100000000,
+              "exact_lookup": 75000000,
+              "join_completeness": 53907500,
+              "multihop_completeness": 40280000,
+              "provenance_citations": 75732500,
+              "retraction_disclosure": 87917500,
+              "schema_evolution": 64585000
+            },
+            "rendered_cost_micro": 146607500,
+            "suite_block_id": 0,
+            "work_fuel": 2500145792
+          }
+        }
+      }
+    },
     "resolved_requires": [
       "status == 'resolved'",
       "vectors present for every profile and both partitions"
     ],
     "source": {
       "exec": "reference",
-      "measurement": "fresh double-run combined-substrate qualification; source and raw hashes in final-measurement/MEASUREMENTS.json",
-      "policy": "final-render-trusted-hostwork.v5",
+      "measurement": "ops/coretex-v5/m5-encoder-integration/final-measurement/run.py over release-cut/measurements/local/INPUTS.local-composed.json, 36 cases, every case a fresh-process double run with replay_identical and zero oracle/integrity violations; aggregated by validator.evaluate._aggregate and frontier.dominance.to_micro",
+      "policy": "final-render-trusted-hostwork-judged.v6",
       "profiles": {
         "conv.pref.v1": {
           "exec": "reference",
@@ -46,7 +216,7 @@
             "id": "reference-runtime",
             "protocol": "rrm1"
           },
-          "release_root": "5fcbdade33a7e8bd18b9766c6a4ef05b225d7a247147c0cf0f56c15440bca1fb"
+          "release_root": "c2899d8e6b89aee3b47f0ee7c057ab27bbf073c3db4fc5749beb338b4c55d8d0"
         },
         "doc.tool.v1": {
           "exec": "reference",
@@ -54,7 +224,7 @@
             "id": "reference-runtime",
             "protocol": "rrm1"
           },
-          "release_root": "5a3347303f206a58c7fecbb266c18d813c5af72a4eb9b0747b8ce25571fc6acd"
+          "release_root": "218a99aeb69cb3518c3af2613d3cdbac221a8d31ae86a63bc4d1170aa5c23b98"
         },
         "event.schema.v1": {
           "exec": "reference",
@@ -62,145 +232,145 @@
             "id": "reference-runtime",
             "protocol": "rrm1"
           },
-          "release_root": "1f11821f7bf56783a47c31a919b199b6aa8771872f8e65198cd466d853358037"
+          "release_root": "b4dc35cc725adaef96de70ad6249c1d9a8dc3db3c73fde653022f40cdcb7c588"
         }
       },
-      "qualification": "reference runtime on the unchanged canonical draws under the 1.1.0 profile retrieval configuration"
+      "qualification": "the three shipped composed v3 baselines (conv.pref.jev.v3, doc.tool.jev.v3, event.schema.jev.v3, parent.conv.pref.v1, parent.doc.tool.v1, parent.event.schema.v1), measured over the FROZEN canonical suite by the release's own double-run evaluator with NO judge bound"
     },
     "status": "resolved",
     "vectors": {
       "conv.pref.v1": {
         "confirm": {
-          "composite_micro": 73202500,
+          "composite_micro": 74466250,
           "envelope_logical_durable_storage_bytes": 1200000,
           "envelope_rendered_cost_micro": 140000000,
-          "envelope_work_fuel": 265000000,
+          "envelope_work_fuel": 1290000000,
           "logical_durable_storage_bytes": 934815,
           "objectives_micro": {
             "abstention": 89062500,
             "alias_resolution": 37498750,
-            "asof_correctness": 83592500,
+            "asof_correctness": 92188750,
             "conflict_supersession": 82421250,
             "evidence_support": 67968750,
             "multihop_completeness": 51785000,
-            "provenance_citations": 61916250,
+            "provenance_citations": 64688750,
             "retraction_disclosure": 92917500,
             "selective_forgetting": 91666250
           },
-          "rendered_cost_micro": 109767500,
+          "rendered_cost_micro": 109736250,
           "suite_block_id": 0,
-          "work_fuel": 210097515
+          "work_fuel": 209995688
         },
         "gate": {
-          "composite_micro": 74395000,
+          "composite_micro": 75425000,
           "envelope_logical_durable_storage_bytes": 1200000,
           "envelope_rendered_cost_micro": 140000000,
-          "envelope_work_fuel": 135000000,
+          "envelope_work_fuel": 616000000,
           "logical_durable_storage_bytes": 922044,
           "objectives_micro": {
             "abstention": 93332500,
             "alias_resolution": 39582500,
-            "asof_correctness": 82032500,
+            "asof_correctness": 89060000,
             "conflict_supersession": 81250000,
             "evidence_support": 71092500,
             "multihop_completeness": 50892500,
-            "provenance_citations": 63150000,
+            "provenance_citations": 65382500,
             "retraction_disclosure": 95085000,
             "selective_forgetting": 93127500
           },
-          "rendered_cost_micro": 110452500,
+          "rendered_cost_micro": 110230000,
           "suite_block_id": 0,
-          "work_fuel": 107112465
+          "work_fuel": 107060301
         }
       },
       "doc.tool.v1": {
         "confirm": {
-          "composite_micro": 71450000,
-          "envelope_logical_durable_storage_bytes": 3200000,
+          "composite_micro": 79628750,
+          "envelope_logical_durable_storage_bytes": 3250000,
           "envelope_rendered_cost_micro": 275000000,
-          "envelope_work_fuel": 5000000,
-          "logical_durable_storage_bytes": 2572152,
+          "envelope_work_fuel": 7930000000,
+          "logical_durable_storage_bytes": 2593354,
           "objectives_micro": {
-            "abstention": 90235000,
-            "asof_correctness": 87500000,
-            "conflict_supersession": 79296250,
-            "consolidation": 75000000,
-            "evidence_support": 75962500,
-            "multihop_completeness": 24107500,
-            "provenance_citations": 52462500,
-            "retraction_disclosure": 85843750,
-            "workflow_provenance": 72656250
+            "abstention": 91278750,
+            "asof_correctness": 93748750,
+            "conflict_supersession": 83986250,
+            "consolidation": 82812500,
+            "evidence_support": 85715000,
+            "multihop_completeness": 32500000,
+            "provenance_citations": 63303750,
+            "retraction_disclosure": 94250000,
+            "workflow_provenance": 89062500
           },
-          "rendered_cost_micro": 218901250,
+          "rendered_cost_micro": 217132500,
           "suite_block_id": 0,
-          "work_fuel": 4010869
+          "work_fuel": 3821527
         },
         "gate": {
-          "composite_micro": 73310000,
+          "composite_micro": 78390000,
           "envelope_logical_durable_storage_bytes": 3200000,
           "envelope_rendered_cost_micro": 280000000,
-          "envelope_work_fuel": 2600000,
-          "logical_durable_storage_bytes": 2524305,
+          "envelope_work_fuel": 4000000000,
+          "logical_durable_storage_bytes": 2545545,
           "objectives_micro": {
             "abstention": 90625000,
-            "asof_correctness": 90180000,
-            "conflict_supersession": 78907500,
-            "consolidation": 68750000,
-            "evidence_support": 73075000,
-            "multihop_completeness": 26785000,
-            "provenance_citations": 55362500,
-            "retraction_disclosure": 90187500,
-            "workflow_provenance": 85937500
+            "asof_correctness": 95137500,
+            "conflict_supersession": 83595000,
+            "consolidation": 79687500,
+            "evidence_support": 78570000,
+            "multihop_completeness": 33335000,
+            "provenance_citations": 62242500,
+            "retraction_disclosure": 93250000,
+            "workflow_provenance": 89062500
           },
-          "rendered_cost_micro": 223407500,
+          "rendered_cost_micro": 221550000,
           "suite_block_id": 0,
-          "work_fuel": 2051560
+          "work_fuel": 1927252
         }
       },
       "event.schema.v1": {
         "confirm": {
-          "composite_micro": 66776250,
+          "composite_micro": 71460000,
           "envelope_logical_durable_storage_bytes": 2000000,
-          "envelope_rendered_cost_micro": 180000000,
-          "envelope_work_fuel": 5000000,
+          "envelope_rendered_cost_micro": 186000000,
+          "envelope_work_fuel": 6310000000,
           "logical_durable_storage_bytes": 1599914,
           "objectives_micro": {
-            "abstention": 81692500,
-            "asof_correctness": 86718750,
-            "conflict_supersession": 91015000,
-            "evidence_support": 90625000,
-            "exact_lookup": 34375000,
-            "join_completeness": 44141250,
-            "multihop_completeness": 36111250,
-            "provenance_citations": 62151250,
+            "abstention": 80521250,
+            "asof_correctness": 98830000,
+            "conflict_supersession": 89843750,
+            "evidence_support": 97656250,
+            "exact_lookup": 32031250,
+            "join_completeness": 53513750,
+            "multihop_completeness": 42707500,
+            "provenance_citations": 69202500,
             "retraction_disclosure": 86251250,
-            "schema_evolution": 54686250
+            "schema_evolution": 64062500
           },
-          "rendered_cost_micro": 141957500,
+          "rendered_cost_micro": 148363750,
           "suite_block_id": 0,
-          "work_fuel": 3905666
+          "work_fuel": 3970986
         },
         "gate": {
-          "composite_micro": 66892500,
+          "composite_micro": 73052500,
           "envelope_logical_durable_storage_bytes": 2000000,
-          "envelope_rendered_cost_micro": 180000000,
-          "envelope_work_fuel": 2500000,
+          "envelope_rendered_cost_micro": 188000000,
+          "envelope_work_fuel": 3130000000,
           "logical_durable_storage_bytes": 1558500,
           "objectives_micro": {
-            "abstention": 80887500,
-            "asof_correctness": 78907500,
-            "conflict_supersession": 90622500,
-            "evidence_support": 89062500,
-            "exact_lookup": 42187500,
-            "join_completeness": 45312500,
-            "multihop_completeness": 35415000,
-            "provenance_citations": 61317500,
+            "abstention": 79840000,
+            "asof_correctness": 98440000,
+            "conflict_supersession": 89060000,
+            "evidence_support": 98437500,
+            "exact_lookup": 46875000,
+            "join_completeness": 53907500,
+            "multihop_completeness": 40280000,
+            "provenance_citations": 71177500,
             "retraction_disclosure": 87917500,
-            "schema_evolution": 57292500
+            "schema_evolution": 64585000
           },
-          "rendered_cost_micro": 141467500,
+          "rendered_cost_micro": 149775000,
           "suite_block_id": 0,
-          "work_fuel": 1939475
+          "work_fuel": 1994749
         }
       }
     },
@@ -328,56 +498,56 @@
     "doc.tool.v1": {
       "confirm": [
         {
-          "instance_hash": "d2148a1b6cdbeaffcd1d5d35dcda3a2c81a5cf19693ec171091986bf663800e5",
+          "instance_hash": "0cfe6e9786b9b209e957ae4a9c0a46079232f7570697c7e52737d941eb8cebff",
           "instance_id": "doc.tool.v1@small#s2085897833",
           "profile_id": "doc.tool.v1",
           "scale": "small",
           "seed": 2085897833
         },
         {
-          "instance_hash": "b9d1eb141bdb07264c0abe3c4bc07e66f104ca8069e2de8789ed7decc96094da",
+          "instance_hash": "f1820bd807ffd963e0059a4696b29f989eea8df14105eee34494fc8a5c96fcdd",
           "instance_id": "doc.tool.v1@small#s2085897834",
           "profile_id": "doc.tool.v1",
           "scale": "small",
           "seed": 2085897834
         },
         {
-          "instance_hash": "0a235d4458eca039a469c245cd38d9e448f503b9b7a1bcad1f16f5fab2b42630",
+          "instance_hash": "7c50f963ed760cf2a02af6bedbaaa03ce1678d6f811be949207a4f7d4d580d42",
           "instance_id": "doc.tool.v1@small#s2085897838",
           "profile_id": "doc.tool.v1",
           "scale": "small",
           "seed": 2085897838
         },
         {
-          "instance_hash": "a61173f2fe891b367bdbfdec61c7a15e9f902d9138ffe0cec47d63c906a5ca52",
+          "instance_hash": "bcb921d5660c42886a9857b1dd70d5b2f1ec6b5ac1db94a482b58f02b38ecd96",
           "instance_id": "doc.tool.v1@small#s2085897839",
           "profile_id": "doc.tool.v1",
           "scale": "small",
           "seed": 2085897839
         },
         {
-          "instance_hash": "ae316298a84f3c15a6882bb5d70131e0c810190fb236e7205aa9586b086c5b48",
+          "instance_hash": "30269f361ea457ad8a55aca3ada811feb57e86e8779c4b9e3f37c3f3d9a7f085",
           "instance_id": "doc.tool.v1@small#s2085897840",
           "profile_id": "doc.tool.v1",
           "scale": "small",
           "seed": 2085897840
         },
         {
-          "instance_hash": "8468efe32e50f39470d2ac9121d4bac706c612b3add841d037f5b44e9244af61",
+          "instance_hash": "e86591966351cf5bafe597578bbdf0783dca3e12157f1bee6d2ff5ca0c95f0fa",
           "instance_id": "doc.tool.v1@small#s2085897842",
           "profile_id": "doc.tool.v1",
           "scale": "small",
           "seed": 2085897842
         },
         {
-          "instance_hash": "18220fac2adbe54ab1496ab1ace64c5973a203b918cd2f6dfed9d03cee4dc95b",
+          "instance_hash": "32dc23c23186fb386a18b7c3baa092ff632ce0e5b30cb3f6ac9904b83fc083f4",
           "instance_id": "doc.tool.v1@small#s2085897843",
           "profile_id": "doc.tool.v1",
           "scale": "small",
           "seed": 2085897843
         },
         {
-          "instance_hash": "005a306620680127f94c4431231f23a4e29c36f1aed4442789c8e58460c8198a",
+          "instance_hash": "05d37a4f543b1dd954fd896da1f84a2d2843539d34840cc51f2664c7fe4b253c",
           "instance_id": "doc.tool.v1@small#s2085897844",
           "profile_id": "doc.tool.v1",
           "scale": "small",
@@ -390,28 +560,28 @@
       },
       "gate": [
         {
-          "instance_hash": "6f460b0dae45bb7c5171ca57a97b7233cbc8cb5e955ce2205914d04be8388576",
+          "instance_hash": "ec50ee2cb3d8aac0d5d3418e22c3dfea06abec77d412e3153870739455ae3b77",
           "instance_id": "doc.tool.v1@small#s2085897827",
           "profile_id": "doc.tool.v1",
           "scale": "small",
           "seed": 2085897827
         },
         {
-          "instance_hash": "772eed4c76a7ebadd44b4933ae69f9d01b94bf5f61652ebcd15825b5c7bf51ae",
+          "instance_hash": "01086a1d9b4fefddbb397ef79dbe482ab5241e04ad046596beb0087302969f3e",
           "instance_id": "doc.tool.v1@small#s2085897828",
           "profile_id": "doc.tool.v1",
           "scale": "small",
           "seed": 2085897828
         },
         {
-          "instance_hash": "c7b4585aad878f9758de4b629d1bf74ed759e747f0175048b9a81629212cd3b8",
+          "instance_hash": "467a7b2b0b54aeebb7876b10bcccfe3e802a35711545fe312bf299094565c058",
           "instance_id": "doc.tool.v1@small#s2085897830",
           "profile_id": "doc.tool.v1",
           "scale": "small",
           "seed": 2085897830
         },
         {
-          "instance_hash": "ac6de0632f3b08468423a5c00249788bb5a34f3fabd138f37de8917596be52e3",
+          "instance_hash": "9b36d5970f28dd3099ff3e4cea6959178a69c65cb1a22d98c38015176fa85590",
           "instance_id": "doc.tool.v1@small#s2085897831",
           "profile_id": "doc.tool.v1",
           "scale": "small",
@@ -566,7 +736,7 @@
   ],
   "provenance": {
     "built_by": "deterministic canonical-suite builder",
-    "generators_code_root": "20a8402bc5de5ca791963efd33a31df09ab9cd451e926399a546d8e431d65d15",
+    "generators_code_root": "7b9366548273eaeb03c768a57be3c67ec136dab236589e344fa8f6cfbdad0304",
     "note": "The explicit ordered case list, case hashes, partitions, and floor vectors are the binding record; build-environment labels are deliberately outside law identity."
   },
   "release_baseline_authority": {
@@ -583,7 +753,7 @@
             "composite_micro": 74466250,
             "envelope_logical_durable_storage_bytes": 1200000,
             "envelope_rendered_cost_micro": 140000000,
-            "envelope_work_fuel": 265000000,
+            "envelope_work_fuel": 1290000000,
             "logical_durable_storage_bytes": 934815,
             "objectives_micro": {
               "abstention": 89062500,
@@ -604,7 +774,7 @@
             "composite_micro": 75425000,
             "envelope_logical_durable_storage_bytes": 1200000,
             "envelope_rendered_cost_micro": 140000000,
-            "envelope_work_fuel": 135000000,
+            "envelope_work_fuel": 616000000,
             "logical_durable_storage_bytes": 922044,
             "objectives_micro": {
               "abstention": 93332500,
@@ -632,9 +802,9 @@
         "partitions": {
           "confirm": {
             "composite_micro": 72578750,
-            "envelope_logical_durable_storage_bytes": 3200000,
+            "envelope_logical_durable_storage_bytes": 3250000,
             "envelope_rendered_cost_micro": 275000000,
-            "envelope_work_fuel": 5000000,
+            "envelope_work_fuel": 7930000000,
             "logical_durable_storage_bytes": 2572152,
             "objectives_micro": {
               "abstention": 90235000,
@@ -655,7 +825,7 @@
             "composite_micro": 74440000,
             "envelope_logical_durable_storage_bytes": 3200000,
             "envelope_rendered_cost_micro": 280000000,
-            "envelope_work_fuel": 2600000,
+            "envelope_work_fuel": 4000000000,
             "logical_durable_storage_bytes": 2524305,
             "objectives_micro": {
               "abstention": 90625000,
@@ -684,8 +854,8 @@
           "confirm": {
             "composite_micro": 70892500,
             "envelope_logical_durable_storage_bytes": 2000000,
-            "envelope_rendered_cost_micro": 180000000,
-            "envelope_work_fuel": 5000000,
+            "envelope_rendered_cost_micro": 186000000,
+            "envelope_work_fuel": 6310000000,
             "logical_durable_storage_bytes": 1599914,
             "objectives_micro": {
               "abstention": 80521250,
@@ -706,8 +876,8 @@
           "gate": {
             "composite_micro": 72437500,
             "envelope_logical_durable_storage_bytes": 2000000,
-            "envelope_rendered_cost_micro": 180000000,
-            "envelope_work_fuel": 2500000,
+            "envelope_rendered_cost_micro": 188000000,
+            "envelope_work_fuel": 3130000000,
             "logical_durable_storage_bytes": 1558500,
             "objectives_micro": {
               "abstention": 80102500,
