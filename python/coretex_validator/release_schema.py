@@ -70,6 +70,16 @@ _RELEASE_FIELDS = frozenset((
     "artifacts", "compatibility_lock_root", "format", "genesis", "law", "name", "objects",
     "predecessor", "release_root", "rig_contract_authority_root", "runtime_config_root",
     "sequence", "version"))
+#: PRESENT WHEN THE RELEASE BINDS A SEALED ADJUDICATION TABLE, absent otherwise. The shipped
+#: block carries no repository-relative path -- where the hundred-megabyte rows artifact sits on a
+#: host is not a fact about the release -- so the four identity facts below, inside the document
+#: whose canonical root IS the release root, are what a consumer verifies the bytes against.
+_RELEASE_OPTIONAL_FIELDS = frozenset(("judge",))
+_JUDGE_FIELDS = frozenset((
+    "capability", "descriptor", "descriptor_mapping", "table", "tariff_id"))
+_JUDGE_TABLE_FIELDS = frozenset(("filename", "rows", "sha256", "table_root"))
+_JUDGE_MAPPING_FIELDS = frozenset(("product_descriptor_root", "release_descriptor_root"))
+_JUDGE_CAPABILITY = "cap.judge.v1"
 _LAW_FIELDS = frozenset((
     "benchmark_law_root", "canonical_suite_root", "decision_engine_id",
     "evaluation_law_root", "family", "id", "revision"))
@@ -130,11 +140,20 @@ class ReleaseSchemaError(ValueError):
     """A release document is malformed or cross-binds two different products."""
 
 
-def _closed(value: Any, fields: frozenset[str], where: str) -> Mapping[str, Any]:
+def _closed(value: Any, fields: frozenset[str], where: str,
+            optional: frozenset[str] = frozenset()) -> Mapping[str, Any]:
+    """Closure over a declared key set.
+
+    ``fields`` are required; ``optional`` keys may be absent but are still INSIDE the closure, so
+    a key outside both remains fatal. Optionality is for keys whose presence is a property of what
+    the release binds -- a release that binds no sealed adjudication table carries no ``judge``
+    block at all, and its document is byte-identical to the one it produced before that capability
+    existed -- never for a key a document may simply forget.
+    """
     if not isinstance(value, Mapping):
         raise ReleaseSchemaError(f"{where} must be an object")
     missing = sorted(fields - set(value))
-    unknown = sorted(set(value) - fields)
+    unknown = sorted(set(value) - fields - optional)
     if missing or unknown:
         raise ReleaseSchemaError(
             f"{where} is not closed (missing={missing}, unknown={unknown})")
@@ -289,8 +308,41 @@ class RuntimeRelease:
         return str(self.raw["genesis"]["frontier_root"])
 
 
+def _validate_judge(value: Any) -> Mapping[str, Any]:
+    """The sealed ``cap.judge.v1`` binding a judged release publishes.
+
+    This package does not open the table here -- recomputing a table root costs a parse of every
+    row and belongs to the loader that is about to answer from it -- but it does require the
+    release to have committed to ONE specific artifact: a bare filename, a byte digest, a positive
+    row count and a table root, plus the release->product descriptor mapping a replay needs to
+    check that the rows it was handed are the rows the judged arm answered from.
+    """
+    judge = _closed(value, _JUDGE_FIELDS, "runtime release judge")
+    if judge["capability"] != _JUDGE_CAPABILITY:
+        raise ReleaseSchemaError(f"judge.capability must be {_JUDGE_CAPABILITY!r}")
+    if not isinstance(judge["tariff_id"], str) or not judge["tariff_id"]:
+        raise ReleaseSchemaError("judge.tariff_id must be a non-empty string")
+    if not isinstance(judge["descriptor"], Mapping) or not judge["descriptor"]:
+        raise ReleaseSchemaError("judge.descriptor must be the product descriptor projection")
+    mapping = _closed(judge["descriptor_mapping"], _JUDGE_MAPPING_FIELDS,
+                      "runtime release judge descriptor_mapping")
+    for field in sorted(_JUDGE_MAPPING_FIELDS):
+        root(mapping[field], f"judge.descriptor_mapping.{field}")
+    table = _closed(judge["table"], _JUDGE_TABLE_FIELDS, "runtime release judge table")
+    root(table["sha256"], "judge.table.sha256")
+    root(table["table_root"], "judge.table.table_root")
+    filename = table["filename"]
+    if not isinstance(filename, str) or not filename or "/" in filename or "\\" in filename \
+            or filename in (".", ".."):
+        raise ReleaseSchemaError("judge.table.filename must be a bare filename")
+    if type(table["rows"]) is not int or table["rows"] <= 0:
+        raise ReleaseSchemaError("judge.table.rows must be a positive integer")
+    return judge
+
+
 def parse_release(value: Any) -> RuntimeRelease:
-    document = dict(_closed(value, _RELEASE_FIELDS, "runtime release"))
+    document = dict(_closed(value, _RELEASE_FIELDS, "runtime release",
+                            _RELEASE_OPTIONAL_FIELDS))
     if document["format"] != RELEASE_FORMAT:
         raise ReleaseSchemaError(f"runtime release format must be {RELEASE_FORMAT!r}")
     product = _CONTRACT["product"]
@@ -336,6 +388,8 @@ def parse_release(value: Any) -> RuntimeRelease:
     for field in ("benchmark_law_root", "canonical_suite_root", "evaluation_law_root"):
         if law[field] != objects[field]["root"]:
             raise ReleaseSchemaError(f"law.{field} disagrees with objects.{field}.root")
+    if "judge" in document:
+        document["judge"] = _validate_judge(document["judge"])
     expected = _json_root(document, "release_root")
     if root(document["release_root"], "release_root") != expected:
         raise ReleaseSchemaError(
@@ -366,12 +420,20 @@ def parse_integration(value: Any, release: RuntimeRelease) -> Mapping[str, Any]:
         "artifacts", "code_roots", "compatibility_lock", "evaluation_law", "format", "genesis",
         "integration_root", "law", "objects", "product_version", "public_genesis", "release_root",
         "rig_contract_authority_root", "runtime_config"))
-    document = dict(_closed(value, required, "runtime integration"))
+    document = dict(_closed(value, required, "runtime integration",
+                            _RELEASE_OPTIONAL_FIELDS))
     if document["format"] != INTEGRATION_FORMAT or document["product_version"] != PRODUCT_VERSION:
         raise ReleaseSchemaError(
             f"runtime integration is not the {PRODUCT_VERSION} public format")
     if document["release_root"] != release.release_root:
         raise ReleaseSchemaError("runtime integration and RELEASE.json name different releases")
+    # ONE BINDING, TWO DOCUMENTS. The integration projection republishes the release's judge block
+    # verbatim; a consumer that read only one of them could otherwise be pointed at two tables.
+    if document.get("judge") != release.raw.get("judge"):
+        raise ReleaseSchemaError(
+            "runtime integration and RELEASE.json publish different cap.judge.v1 bindings")
+    if "judge" in document:
+        document["judge"] = _validate_judge(document["judge"])
     validate_public_genesis(document["public_genesis"], release)
     if document["law"] != release.raw["law"] or document["genesis"] != release.raw["genesis"]:
         raise ReleaseSchemaError("runtime integration restates different law or genesis values")

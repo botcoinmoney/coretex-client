@@ -127,3 +127,77 @@ def test_release_schema_refuses_other_identity_or_open_fields(mutation):
     mutation(value)
     with pytest.raises(schema.ReleaseSchemaError):
         schema.parse_release(value)
+
+
+def judged_release_document():
+    """The same release, binding a sealed `cap.judge.v1` table.
+
+    1.1.2 is the first release to bind one. The block is OPTIONAL by construction: a release with
+    no table produces the byte-identical document -- and therefore the identical release root -- it
+    produced before the capability existed, which is why this fixture recomputes the root rather
+    than reusing the unjudged one.
+    """
+    document = copy.deepcopy(release_document())
+    document["judge"] = {
+        "capability": "cap.judge.v1",
+        "descriptor": {"model_id": "jev-1.13.0", "battery": "need.m1"},
+        "descriptor_mapping": {
+            "product_descriptor_root": _root("a"),
+            "release_descriptor_root": _root("b"),
+        },
+        "table": {
+            "filename": "sealed-table.jsonl",
+            "rows": 352658,
+            "sha256": _root("c"),
+            "table_root": _root("d"),
+        },
+        "tariff_id": "judge-tariff.model-token-equivalent.v2",
+    }
+    body = {key: value for key, value in document.items() if key != "release_root"}
+    document["release_root"] = hashlib.sha256(json.dumps(
+        body, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()).hexdigest()
+    return document
+
+
+def test_a_judged_release_document_is_accepted_and_still_reproduces_its_root():
+    parsed = schema.parse_release(judged_release_document())
+    judge = parsed.raw["judge"]
+    assert judge["capability"] == "cap.judge.v1"
+    assert judge["table"]["filename"] == "sealed-table.jsonl" and judge["table"]["rows"] == 352658
+    # The unjudged document is unchanged by the capability existing.
+    assert "judge" not in schema.parse_release(release_document()).raw
+
+
+@pytest.mark.parametrize("mutation", [
+    lambda value: value["judge"].update(capability="cap.text.v1"),
+    lambda value: value["judge"].update(tariff_id=""),
+    lambda value: value["judge"].update(descriptor={}),
+    lambda value: value["judge"].pop("tariff_id"),
+    lambda value: value["judge"].update(enabled=True),
+    lambda value: value["judge"]["table"].update(filename="sub/sealed-table.jsonl"),
+    lambda value: value["judge"]["table"].update(filename=".."),
+    lambda value: value["judge"]["table"].update(rows=0),
+    lambda value: value["judge"]["table"].update(rows=True),
+    lambda value: value["judge"]["table"].update(sha256="not-a-root"),
+    lambda value: value["judge"]["table"].update(table_root="0" * 64),
+    lambda value: value["judge"]["table"].pop("table_root"),
+    lambda value: value["judge"]["table"].update(path="release-cut/sealed-table.jsonl"),
+    lambda value: value["judge"]["descriptor_mapping"].pop("product_descriptor_root"),
+])
+def test_a_malformed_judge_binding_refuses(mutation):
+    value = judged_release_document()
+    mutation(value)
+    # The mutations above change the body, so the root has to follow or every case would refuse
+    # for the wrong reason: what is under test is the judge block, not the hash.
+    body = {key: item for key, item in value.items() if key != "release_root"}
+    value["release_root"] = hashlib.sha256(json.dumps(
+        body, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()).hexdigest()
+    with pytest.raises(schema.ReleaseSchemaError):
+        schema.parse_release(value)
+
+
+def test_an_unknown_top_level_key_is_still_fatal_beside_the_optional_one():
+    value = judged_release_document()
+    value["history"] = []
+    with pytest.raises(schema.ReleaseSchemaError):
+        schema.parse_release(value)
