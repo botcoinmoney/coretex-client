@@ -151,7 +151,15 @@ def _kit_files(release: release_module.ReleaseDirectory) -> dict[str, bytes]:
                 if name in seen:
                     raise BenchmarkReplayError(f"miner kit repeats member {name!r}")
                 seen.add(name)
-                if not member.isfile() or member.size < 1 or member.size > _MAX_MEMBER_BYTES:
+                # AN EMPTY FILE IS A LEGITIMATE KIT MEMBER. The bound exists to refuse a member
+                # too large to ship; a zero-byte `__init__.py` is not that, it is the package
+                # marker that makes `benchmark-v2/validator/tools` importable, and it is tracked,
+                # intentional and meaningful. Refusing it stopped the whole replay runner from
+                # opening the kit and reported it as a byte-bound violation, which reads like
+                # corruption. `member.isfile()` is what catches a member that is not a file, and
+                # the manifest's own per-member digest is what catches one whose bytes are wrong.
+                # The kit builder learned the same lesson: see `v5/current_miner_kit._read_regular`.
+                if not member.isfile() or member.size < 0 or member.size > _MAX_MEMBER_BYTES:
                     raise BenchmarkReplayError(
                         f"miner kit {name!r} is not one bounded regular file")
                 stream = archive.extractfile(member)
@@ -190,7 +198,8 @@ def _kit_files(release: release_module.ReleaseDirectory) -> dict[str, bytes]:
         path = release_module._archive_name(record["path"], "miner kit inventory")  # noqa: SLF001
         if path == _MANIFEST or path in records or not isinstance(record["role"], str) \
                 or not _ROOT.fullmatch(str(record["sha256"])) \
-                or type(record["size"]) is not int or not 0 < record["size"] <= _MAX_MEMBER_BYTES:
+                or type(record["size"]) is not int \
+                or not 0 <= record["size"] <= _MAX_MEMBER_BYTES:
             raise BenchmarkReplayError(f"miner kit has invalid member record {path!r}")
         data = files.get(path)
         if data is None or len(data) != record["size"] or _sha(data) != record["sha256"]:

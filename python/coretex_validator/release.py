@@ -655,16 +655,43 @@ def load(path: str) -> ReleaseDirectory:
             or baseline.get("law_id") != parsed.raw["law"]["id"] \
             or baseline.get("suite_root") != parsed.raw["law"]["canonical_suite_root"]:
         raise ReleaseError("genesis composition or baseline has another closed product shape")
+    # THE BASELINE BRIDGE COMES IN TWO SHAPES, and both are live.
+    #
+    # `v1` is the FIRST combined release: it bridges a sealed predecessor into a newly composed
+    # genesis, so its frontier is epoch zero. `v2` is every release after that one: it FREEZES the
+    # parent frontier exactly as the chain left it and emits the child that follows, so the
+    # successor's frontier carries the epoch context the parent was observed at.
+    # `v5/successor_baseline.py` is the rule; a validator that knows only `v1` refuses every
+    # successor release it is shipped inside, which is how a judged 1.1.2 image failed to build.
     bridge = _json(object_bytes["baseline_bridge_root"], "baseline bridge")
-    if bridge.get("format") != "coretex.release-baseline-bridge/v1" \
-            or bridge.get("predecessor_release_root") != parsed.raw["predecessor"] \
+    bridge_format = bridge.get("format")
+    if bridge_format == "coretex.release-baseline-bridge/v2":
+        frozen = bridge.get("frozen_parent")
+        if not isinstance(frozen, Mapping) or set(frozen) != {
+                "frontier", "frontier_root", "observed_epoch_context", "status_sha256"}:
+            raise ReleaseError("release baseline bridge has another frozen-parent shape")
+        parent_frontier = frozen.get("frontier")
+        parent_frontier_root = frozen.get("frontier_root")
+        expected_frontier_epoch = frozen.get("observed_epoch_context")
+        parent_epoch = parent_frontier.get("epoch") if isinstance(parent_frontier, Mapping) else None
+        if type(expected_frontier_epoch) is not int or expected_frontier_epoch < 1 \
+                or type(parent_epoch) is not int or parent_epoch >= expected_frontier_epoch:
+            raise ReleaseError(
+                "the frozen parent must sit behind the epoch context it was observed at")
+    elif bridge_format == "coretex.release-baseline-bridge/v1":
+        parent_frontier = bridge.get("parent_frontier")
+        parent_frontier_root = bridge.get("parent_frontier_root")
+        expected_frontier_epoch = 0
+    else:
+        raise ReleaseError("release baseline bridge is inconsistent")
+    if bridge.get("predecessor_release_root") != parsed.raw["predecessor"] \
             or bridge.get("credits") != 0 \
             or bridge.get("composition") != composition \
-            or fr.frontier_root(bridge["parent_frontier"]) != bridge.get("parent_frontier_root"):
+            or fr.frontier_root(parent_frontier) != parent_frontier_root:
         raise ReleaseError("release baseline bridge is inconsistent")
     from . import canonical_suite
     baseline_authority = canonical_suite.release_baseline_authority()
-    if baseline_authority["parent_frontier_root"] != bridge["parent_frontier_root"] \
+    if baseline_authority["parent_frontier_root"] != parent_frontier_root \
             or baseline_authority["predecessor_release_root"] != parsed.raw["predecessor"]:
         raise ReleaseError("baseline predecessor differs from this validator's sealed authority")
     frontier_manifest = frontier_record["manifest"]
@@ -672,8 +699,8 @@ def load(path: str) -> ReleaseDirectory:
             "benchmark_law_root", "default_composition_root", "epoch", "format",
             "parent_frontier_root", "profiles", "runtime_abi_root"} \
             or frontier_manifest.get("format") != "coretex.memory-frontier.v1" \
-            or frontier_manifest.get("epoch") != 0 \
-            or frontier_manifest.get("parent_frontier_root") != bridge["parent_frontier_root"] \
+            or frontier_manifest.get("epoch") != expected_frontier_epoch \
+            or frontier_manifest.get("parent_frontier_root") != parent_frontier_root \
             or frontier_manifest.get("benchmark_law_root") \
             != parsed.raw["law"]["benchmark_law_root"] \
             or frontier_manifest.get("default_composition_root") \
@@ -729,7 +756,45 @@ def load(path: str) -> ReleaseDirectory:
             raise ReleaseError("baseline descriptor differs from the release profile binding")
         if is_reference and document.get("abi") != expected_reference_abi:
             raise ReleaseError("baseline reference ABI differs from this release")
-        if not is_reference:
+        if not is_reference and bridge_format == "coretex.release-baseline-bridge/v2":
+            # A SUCCESSOR DOES NOT RECORD WHERE A MODULE CAME FROM, IT RECORDS A REWRAP. `v1`'s
+            # `origins` said "this module was imported from there"; `v2`'s `modules` says "the
+            # parent frontier's accepted module for this profile, re-wrapped so its runtime bounds
+            # pin this release, with the SOURCE BYTES UNCHANGED". `v5/successor_baseline.py` is
+            # the rule this mirrors, and the chain it checks is the one that matters here:
+            #
+            #   parent frontier profile root == original manifest self hash == modules.<p>.
+            #     original_release_root
+            #   module.py bytes == modules.<p>.module_sha256 == original == successor
+            #   successor manifest self hash == modules.<p>.successor_release_root ==
+            #     bridge.profile_releases.<p>
+            #
+            # so a module the parent never accepted, or source bytes that moved under the rewrap,
+            # refuse here exactly as they refuse in the builder.
+            row = bridge["modules"][profile]
+            if not isinstance(row, Mapping) or set(row) != {
+                    "path", "module_sha256", "original_release_root", "original_manifest",
+                    "successor_release_root"}:
+                raise ReleaseError(f"successor bridge module {profile} has another shape")
+            original = row["original_manifest"]
+            original_root = pub.root_of(
+                pub.encode(original, pub.HASH_RULE_MANIFEST_BODY), pub.HASH_RULE_MANIFEST_BODY)
+            if original_root != original.get("manifest_self_sha256") \
+                    or row["original_release_root"] != original_root \
+                    or row["original_release_root"] \
+                    != parent_frontier["profiles"].get(profile):
+                raise ReleaseError(
+                    "successor bridge does not rewrap the module the parent frontier accepted")
+            if _sha(module_bytes) != row["module_sha256"] \
+                    or original.get("module_sha256") != row["module_sha256"] \
+                    or document.get("module_sha256") != row["module_sha256"]:
+                raise ReleaseError("baseline module source differs from its recorded origin")
+            if document.get("manifest_self_sha256") != row["successor_release_root"] \
+                    or bridge["profile_releases"].get(profile) != row["successor_release_root"]:
+                raise ReleaseError("successor module root differs from the bridge's own record")
+            if document["candidate_provider"] != baseline_authority["profiles"][profile]["candidate_provider"]:
+                raise ReleaseError("baseline module provider differs from sealed profile authority")
+        elif not is_reference:
             origin = bridge["origins"][profile]
             original = origin["manifest"]
             if pub.root_of(pub.encode(original, pub.HASH_RULE_MANIFEST_BODY), pub.HASH_RULE_MANIFEST_BODY) != origin["release_root"] \
@@ -738,10 +803,10 @@ def load(path: str) -> ReleaseDirectory:
                 raise ReleaseError("baseline module source differs from its recorded origin")
             if origin.get("kind") == "prospective-m5-extension":
                 _verify_m5_extension_origin(origin, module_bytes, profile,
-                    bridge["parent_frontier"]["profiles"][profile])
+                    parent_frontier["profiles"][profile])
             elif profile == "event.schema.v1":
                 raise ReleaseError("event module requires a verified M5 extension origin")
-            elif profile == "doc.tool.v1" and origin["release_root"] != bridge["parent_frontier"]["profiles"][profile]:
+            elif profile == "doc.tool.v1" and origin["release_root"] != parent_frontier["profiles"][profile]:
                 raise ReleaseError("baseline does not retain the accepted doc module")
             if document["candidate_provider"] != baseline_authority["profiles"][profile]["candidate_provider"]:
                 raise ReleaseError("baseline module provider differs from sealed profile authority")
