@@ -94,6 +94,40 @@ def _cmd_verify_descriptor(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_replay_report(args: argparse.Namespace) -> int:
+    from . import benchmark_replay, release
+
+    report = _load_json(args.report)
+    try:
+        # Decided before any release is opened or any child is spawned: a judged report without
+        # its sealed table is unreplayable, and replay says so instead of scoring locally.
+        benchmark_replay.resolve_judge_rows(report, args.judge_rows)
+    except benchmark_replay.BenchmarkReplayError as exc:
+        _emit({"code": exc.code, "reason": str(exc), "reproduced": False})
+        return 1
+    incumbent = _load_json(args.incumbent_execution)
+    parent_stored_vector = _load_json(args.parent_stored_vector)
+    installed = release.load(args.release)
+    try:
+        with benchmark_replay.ReleaseBenchmarkRunner(installed) as runner:
+            result = runner.replay_report(
+                report, expected_root=args.expect_root, incumbent_execution=incumbent,
+                parent_stored_vector=parent_stored_vector, judge_rows_path=args.judge_rows)
+    except benchmark_replay.BenchmarkReplayError as exc:
+        _emit({"code": exc.code, "reason": str(exc), "reproduced": False})
+        return 1
+    value = {
+        "release_root": installed.release_root,
+        "report_root": result.get("report_root", args.expect_root),
+        "reproduced": True,
+    }
+    for key in ("judge_table_root", "enhanced_replay_root"):
+        if result.get(key) is not None:
+            value[key] = result[key]
+    _emit(value)
+    return 0
+
+
 def _cmd_topics(_args: argparse.Namespace) -> int:
     from . import rig_events
 
@@ -207,6 +241,25 @@ def build_parser() -> argparse.ArgumentParser:
     descriptor.add_argument("--score-before-ppm", required=True, type=int)
     descriptor.add_argument("--score-after-ppm", required=True, type=int)
     descriptor.set_defaults(func=_cmd_verify_descriptor)
+
+    replay_report = commands.add_parser(
+        "replay-report",
+        help="re-execute one public fixed-suite report against the installed release")
+    replay_report.add_argument("--release", required=True)
+    replay_report.add_argument("--report", required=True, help="the public report JSON")
+    replay_report.add_argument(
+        "--expect-root", required=True, help="the report's content address (sha256)")
+    replay_report.add_argument(
+        "--incumbent-execution", required=True,
+        help="resolved public parent execution descriptor JSON")
+    replay_report.add_argument(
+        "--parent-stored-vector", required=True,
+        help="artifact-bound determinism_witness JSON for the exact public parent")
+    replay_report.add_argument(
+        "--judge-rows",
+        help="sealed cap.judge.v1 rows artifact; required exactly when the report binds a judge "
+             "table, and its recomputed root must equal the bound one")
+    replay_report.set_defaults(func=_cmd_replay_report)
 
     topics = commands.add_parser("topics", help="print the current public event topics")
     topics.set_defaults(func=_cmd_topics)

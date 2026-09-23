@@ -51,6 +51,46 @@ _ROOT = re.compile(r"^[0-9a-f]{64}$")
 class BenchmarkReplayError(RuntimeError):
     """The release cannot independently reproduce one reported benchmark result."""
 
+    def __init__(self, message: str, *, code: Optional[str] = None) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+def resolve_judge_rows(report: Mapping[str, Any], judge_rows_path: Optional[str]) -> Optional[str]:
+    """Decide, in the parent, whether this replay may run and with which sealed table.
+
+    A report that binds ``cap.judge.v1`` cannot be re-executed without the exact rows the judged
+    arm answered from, so a missing table is a refusal (``judge_table_required``) and never a
+    silent fall back to local scoring.  The path itself is not a fact about the release: the root
+    check inside the frozen engine proves the supplied rows are the bound table, so a replayer
+    cannot be quietly pointed at another row set.  The reverse direction is equally closed — an
+    unjudged report takes no table (``judge_table_unexpected``), so a consumer cannot attach one.
+    """
+    record = report.get("judge") if isinstance(report, Mapping) else None
+    if record is None:
+        if judge_rows_path is not None:
+            raise BenchmarkReplayError(
+                "judge_table_unexpected: this report binds no cap.judge.v1 table, so replay takes "
+                "no rows artifact; a table cannot be attached to an unjudged report",
+                code="judge_table_unexpected")
+        return None
+    if not isinstance(record, Mapping):
+        raise BenchmarkReplayError(
+            "judge_table_required: the report's judge binding is not an object",
+            code="judge_table_required")
+    if judge_rows_path is None:
+        raise BenchmarkReplayError(
+            "judge_table_required: this report binds a sealed cap.judge.v1 table "
+            f"({record.get('table_root')}); replay must be given that rows artifact, because the "
+            "judged arm cannot be re-executed — and therefore cannot be reproduced — without it",
+            code="judge_table_required")
+    resolved = os.path.abspath(os.fspath(judge_rows_path))
+    if not os.path.isfile(resolved) or not os.access(resolved, os.R_OK):
+        raise BenchmarkReplayError(
+            f"judge_table_unreadable: sealed cap.judge.v1 rows artifact {resolved} is not a "
+            "readable file", code="judge_table_unreadable")
+    return resolved
+
 
 def _sha(raw: bytes) -> str:
     return hashlib.sha256(raw).hexdigest()
@@ -422,10 +462,15 @@ if payload["mode"] == "runtime":
     result = {"ok": True, "networkless_proof": proof}
 else:
     from validator.replay import replay_report
+    # The sealed judgment table is far larger than the private materialization and is not part of
+    # the release, so it stays on the host filesystem and the child is handed its absolute path.
+    # Reading it is all the child needs: network is denied, and the engine's own root check proves
+    # the rows are the table the report bound.
     result = replay_report(
         payload["report"], expected_root=payload["expected_root"],
         repo_root=payload["repo"], incumbent_execution=payload["incumbent"],
-        parent_stored_vector=payload["parent_stored_vector"])
+        parent_stored_vector=payload["parent_stored_vector"],
+        judge_rows_path=payload.get("judge_rows"))
     result["networkless_proof"] = proof
 print("<<<JSON>>>" + json.dumps(result, sort_keys=True, default=str))
 '''
@@ -710,7 +755,12 @@ class ReleaseBenchmarkRunner:
 
     def replay_report(self, report: Mapping[str, Any], *, expected_root: str,
                       incumbent_execution: Mapping[str, Any],
-                      parent_stored_vector: Mapping[str, Any]) -> Mapping[str, Any]:
+                      parent_stored_vector: Mapping[str, Any],
+                      judge_rows_path: Optional[str] = None) -> Mapping[str, Any]:
+        # Refuse before anything is spawned: an unreplayable pairing of report and table is a
+        # structural fact, not an execution outcome.
+        rows_path = resolve_judge_rows(report, judge_rows_path)
+        judge_record = report.get("judge") if isinstance(report, Mapping) else None
         profile_id = report.get("profile_id") if isinstance(report, Mapping) else None
         release_root = incumbent_execution.get("release_root") \
             if isinstance(incumbent_execution, Mapping) else None
@@ -721,16 +771,37 @@ class ReleaseBenchmarkRunner:
         except evaluation.EvalArtifactError as exc:
             raise BenchmarkReplayError(
                 f"replay requires a complete exact-parent stored vector: {exc}") from exc
-        result = self._run({
+        payload = {
             "mode": "replay", "report": dict(report), "expected_root": expected_root,
             "incumbent": dict(incumbent_execution),
             "parent_stored_vector": dict(parent_stored_vector),
-        })
+        }
+        if rows_path is not None:
+            payload["judge_rows"] = rows_path
+        result = self._run(payload)
         if result.get("reproduced") is not True or result.get("report_root", expected_root) \
                 != expected_root:
             raise BenchmarkReplayError(
                 f"fixed-suite report did not reproduce: {result.get('code')}: "
-                f"{result.get('reason')}")
+                f"{result.get('reason')}", code=result.get("code"))
+        if judge_record is not None:
+            # "The judged arm reproduces" must be an observed value.  The child re-executes the
+            # enhanced arm from the sealed rows and folds its own replay hashes; that fold has to
+            # be the one the report bound, or this report is not reproduced.
+            observed = result.get("enhanced_replay_root")
+            bound = judge_record.get("enhanced_replay_root")
+            if not isinstance(observed, str) or not _ROOT.fullmatch(observed) \
+                    or observed != bound:
+                raise BenchmarkReplayError(
+                    f"judged fixed-suite report did not reproduce its enhanced arm: replay "
+                    f"rebuilt enhanced_replay_root {observed!r}, report binds {bound!r}",
+                    code="enhanced_replay_root_mismatch")
+            table_root = result.get("judge_table_root")
+            if table_root != judge_record.get("table_root"):
+                raise BenchmarkReplayError(
+                    f"judged fixed-suite report replayed against another table: replay bound "
+                    f"{table_root!r}, report binds {judge_record.get('table_root')!r}",
+                    code="judge_table_root_mismatch")
         return result
 
     def validate_execution(self, execution: Mapping[str, Any]) -> None:
@@ -746,4 +817,4 @@ class ReleaseBenchmarkRunner:
             self._validated_releases.add(release_root)
 
 
-__all__ = ["BenchmarkReplayError", "ReleaseBenchmarkRunner"]
+__all__ = ["BenchmarkReplayError", "ReleaseBenchmarkRunner", "resolve_judge_rows"]

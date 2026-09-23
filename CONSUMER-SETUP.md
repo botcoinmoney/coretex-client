@@ -93,6 +93,41 @@ The loopback API is private to the host and has no authentication. One store is
 one user's scope/profile. Mined Python modules require trust or external process
 confinement; the pip serving worker is not the evaluator's kernel sandbox.
 
+## Replay one public report yourself
+
+The validator re-executes a published fixed-suite report against your installed
+release and accepts it only when the rebuilt report reaches the same content
+address, byte for byte:
+
+```
+coretex-validator replay-report \
+  --release ./coretex/release \
+  --report ./report.json \
+  --expect-root <sha256 of the report> \
+  --incumbent-execution ./incumbent-execution.json \
+  --parent-stored-vector ./determinism-witness.json \
+  [--judge-rows ./sealed-judgments.jsonl]
+```
+
+A **judged report** carries a `judge` block: its scores were produced with a
+sealed `cap.judge.v1` judgment table rather than from the suite alone. That
+table is large and is not part of the release, so it is not shipped with it —
+obtain it separately and point `--judge-rows` at it. The path is not a fact
+about the release and does not need to be trusted: replay recomputes the table's
+root and requires the value the report bound, so a replay pointed at a different
+row set fails instead of passing.
+
+Output fields: `reproduced` is the verdict, `report_root` the content address the
+replay rebuilt, and — for a judged report — `judge_table_root` the table replay
+actually answered from and `enhanced_replay_root` the fold the judged arm
+re-executed to, which must equal the one the report bound. Exit status is 0 on
+reproduction and 1 otherwise.
+
+Replaying a judged report without `--judge-rows` is refused before anything runs
+with `{"reproduced": false, "code": "judge_table_required"}`; replay never falls
+back to scoring the judged arm locally. The reverse is refused too: an unjudged
+report takes no table (`judge_table_unexpected`).
+
 ## Python integration
 
 Use the installation's `./coretex/.venv/bin/python`:

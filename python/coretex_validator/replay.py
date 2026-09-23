@@ -33,6 +33,24 @@ class ReplayError(ValueError):
         self.message = message
 
 
+def _judge_rows_argument(judge_rows_path: Optional[str]) -> dict[str, Any]:
+    """Pass the sealed rows artifact only when one was supplied.
+
+    An unjudged replay must reach the runner exactly as it always did; a judged report with no
+    table is still refused, because the runner decides that from the report body itself.
+    """
+    return {} if judge_rows_path is None else {"judge_rows_path": judge_rows_path}
+
+
+def _judge_replay_evidence(benchmark_result: Any) -> dict[str, Any]:
+    """Carry the judged arm's re-executed evidence out; an unjudged result adds no keys."""
+    if not isinstance(benchmark_result, Mapping):
+        return {}
+    return {key: benchmark_result[key]
+            for key in ("judge_table_root", "enhanced_replay_root")
+            if benchmark_result.get(key) is not None}
+
+
 def _validated_parent_witness(evaluation_artifact: Mapping[str, Any],
                               parent_manifest: Mapping[str, Any],
                               profile_id: str) -> Mapping[str, Any]:
@@ -132,7 +150,8 @@ def replay_screener(*, screener: Any, parent_manifest: Mapping[str, Any],
                     evaluation_report: Mapping[str, Any],
                     epoch_context: Mapping[str, Any],
                     counter_resource_law: Mapping[str, Any],
-                    store: publication.ContentStore, benchmark_runner: Any) -> Mapping[str, Any]:
+                    store: publication.ContentStore, benchmark_runner: Any,
+                    judge_rows_path: Optional[str] = None) -> Mapping[str, Any]:
     """Verify a credited outcome-1 receipt without pretending it advanced the frontier."""
     receipt = screener.receipt
     credit = screener.credit
@@ -235,13 +254,15 @@ def replay_screener(*, screener: Any, parent_manifest: Mapping[str, Any],
                     "EVALUATION_INSTALLATION_MISMATCH",
                     f"screener availability.{kind} is not the scored object")
         witness = _validated_parent_witness(evaluation_artifact, parent_manifest, profile)
-        benchmark_runner.replay_report(
+        benchmark_result = benchmark_runner.replay_report(
             evaluation_report,
             expected_root=evaluation_artifact["receipt"]["eval_report_root"],
             incumbent_execution=incumbent,
-            parent_stored_vector=dict(witness))
+            parent_stored_vector=dict(witness),
+            **_judge_rows_argument(judge_rows_path))
         checks.append("fixed_suite_reexecution")
-        return {"checks": checks, "evaluation": report, "parent_state_root": current_root}
+        return {"checks": checks, "evaluation": report, "parent_state_root": current_root,
+                **_judge_replay_evidence(benchmark_result)}
     except ReplayError:
         raise
     except (evaluation.EvalArtifactError, frontier.FrontierError,
@@ -311,7 +332,8 @@ def pre_sign_reexecute(*, evaluation_artifact: Mapping[str, Any],
                        release: release_module.ReleaseDirectory,
                        store: publication.ContentStore,
                        benchmark_runner: Any,
-                       child_manifest: Optional[Mapping[str, Any]] = None) -> Mapping[str, Any]:
+                       child_manifest: Optional[Mapping[str, Any]] = None,
+                       judge_rows_path: Optional[str] = None) -> Mapping[str, Any]:
     """Reproduce the score and installed execution before a coordinator signature.
 
     The caller first runs :func:`eval_artifact.verify_artifact`; this shared second stage owns
@@ -410,7 +432,8 @@ def pre_sign_reexecute(*, evaluation_artifact: Mapping[str, Any],
             evaluation_report,
             expected_root=evaluation_artifact["receipt"]["eval_report_root"],
             incumbent_execution=incumbent,
-            parent_stored_vector=dict(witness))
+            parent_stored_vector=dict(witness),
+            **_judge_rows_argument(judge_rows_path))
 
         child_executions = {}
         parent_executions = {}
@@ -453,6 +476,7 @@ def pre_sign_reexecute(*, evaluation_artifact: Mapping[str, Any],
             "incumbent": compact_incumbent,
             "installed": parent_execution.compact_identity(installed),
             "ok": True,
+            **_judge_replay_evidence(benchmark_result),
         }
     except ReplayError:
         raise
