@@ -740,8 +740,8 @@
     "note": "The explicit ordered case list, case hashes, partitions, and floor vectors are the binding record; build-environment labels are deliberately outside law identity."
   },
   "release_baseline_authority": {
-    "parent_frontier_root": "9da9e9f9b2157ac66fe46ad332cb5607d259cdfd386a56f5ac464c695474da68",
-    "predecessor_release_root": "4782fe5d293c678a20e943b6acfce9e09682ab7aa06e2373348f96d45d2e19e5",
+    "parent_frontier_root": "c54212b84ae42c3c84f08f324a69963f197108f9ab88122a61a14bd7a20216e6",
+    "predecessor_release_root": "7beda14d3957d4bf63b38f2f4c39c7fa653970a697eb9c3b1856c3d3c59136c2",
     "profiles": {
       "conv.pref.v1": {
         "candidate_provider": {
@@ -768,7 +768,7 @@
             },
             "rendered_cost_micro": 109736250,
             "suite_block_id": 0,
-            "work_fuel": 210096257
+            "work_fuel": 209995688
           },
           "gate": {
             "composite_micro": 75425000,
@@ -789,10 +789,10 @@
             },
             "rendered_cost_micro": 110230000,
             "suite_block_id": 0,
-            "work_fuel": 107110460
+            "work_fuel": 107060301
           }
         },
-        "release_root": "b28eb2275b8b9368bc8fd5f5248bf93c198d0b0187e9edaaf7bc6a05c8eadfa9"
+        "release_root": "3b144b900cdecca44510e5892feecbf2702b15406ce612645235e6392c5853c0"
       },
       "doc.tool.v1": {
         "candidate_provider": {
@@ -801,49 +801,49 @@
         },
         "partitions": {
           "confirm": {
-            "composite_micro": 72578750,
+            "composite_micro": 79628750,
             "envelope_logical_durable_storage_bytes": 3200000,
             "envelope_rendered_cost_micro": 275000000,
             "envelope_work_fuel": 5000000,
-            "logical_durable_storage_bytes": 2572152,
+            "logical_durable_storage_bytes": 2593354,
             "objectives_micro": {
-              "abstention": 90235000,
-              "asof_correctness": 95537500,
-              "conflict_supersession": 79296250,
-              "consolidation": 75000000,
-              "evidence_support": 75962500,
-              "multihop_completeness": 24107500,
-              "provenance_citations": 54571250,
-              "retraction_disclosure": 85843750,
-              "workflow_provenance": 72656250
+              "abstention": 91278750,
+              "asof_correctness": 93748750,
+              "conflict_supersession": 83986250,
+              "consolidation": 82812500,
+              "evidence_support": 85715000,
+              "multihop_completeness": 32500000,
+              "provenance_citations": 63303750,
+              "retraction_disclosure": 94250000,
+              "workflow_provenance": 89062500
             },
-            "rendered_cost_micro": 219261250,
+            "rendered_cost_micro": 217132500,
             "suite_block_id": 0,
-            "work_fuel": 3868578
+            "work_fuel": 3821527
           },
           "gate": {
-            "composite_micro": 74440000,
+            "composite_micro": 78390000,
             "envelope_logical_durable_storage_bytes": 3200000,
             "envelope_rendered_cost_micro": 280000000,
             "envelope_work_fuel": 2600000,
-            "logical_durable_storage_bytes": 2524305,
+            "logical_durable_storage_bytes": 2545545,
             "objectives_micro": {
               "abstention": 90625000,
-              "asof_correctness": 98215000,
-              "conflict_supersession": 78907500,
-              "consolidation": 68750000,
-              "evidence_support": 73075000,
-              "multihop_completeness": 26785000,
-              "provenance_citations": 57450000,
-              "retraction_disclosure": 90187500,
-              "workflow_provenance": 85937500
+              "asof_correctness": 95137500,
+              "conflict_supersession": 83595000,
+              "consolidation": 79687500,
+              "evidence_support": 78570000,
+              "multihop_completeness": 33335000,
+              "provenance_citations": 62242500,
+              "retraction_disclosure": 93250000,
+              "workflow_provenance": 89062500
             },
-            "rendered_cost_micro": 223517500,
+            "rendered_cost_micro": 221550000,
             "suite_block_id": 0,
-            "work_fuel": 1979238
+            "work_fuel": 1927252
           }
         },
-        "release_root": "673997ed0ad1c67a4a64571cd9fb454a2eddc76919c69896c3134cea1da2bff1"
+        "release_root": "7285e18391105322ff697b989167020d236f42e3dbf0b8c1d2204334cf978d8c"
       },
       "event.schema.v1": {
         "candidate_provider": {
@@ -852,7 +852,7 @@
         },
         "partitions": {
           "confirm": {
-            "composite_micro": 70892500,
+            "composite_micro": 71460000,
             "envelope_logical_durable_storage_bytes": 2000000,
             "envelope_rendered_cost_micro": 180000000,
             "envelope_work_fuel": 5000000,
@@ -860,43 +860,43 @@
             "objectives_micro": {
               "abstention": 80521250,
               "asof_correctness": 98830000,
-              "conflict_supersession": 89062500,
+              "conflict_supersession": 89843750,
               "evidence_support": 97656250,
               "exact_lookup": 32031250,
-              "join_completeness": 51950000,
-              "multihop_completeness": 40623750,
-              "provenance_citations": 68456250,
+              "join_completeness": 53513750,
+              "multihop_completeness": 42707500,
+              "provenance_citations": 69202500,
               "retraction_disclosure": 86251250,
-              "schema_evolution": 63541250
+              "schema_evolution": 64062500
             },
-            "rendered_cost_micro": 143101250,
+            "rendered_cost_micro": 148363750,
             "suite_block_id": 0,
-            "work_fuel": 3940691
+            "work_fuel": 3970986
           },
           "gate": {
-            "composite_micro": 72437500,
+            "composite_micro": 73052500,
             "envelope_logical_durable_storage_bytes": 2000000,
             "envelope_rendered_cost_micro": 180000000,
             "envelope_work_fuel": 2500000,
             "logical_durable_storage_bytes": 1558500,
             "objectives_micro": {
-              "abstention": 80102500,
+              "abstention": 79840000,
               "asof_correctness": 98440000,
               "conflict_supersession": 89060000,
               "evidence_support": 98437500,
               "exact_lookup": 46875000,
-              "join_completeness": 52342500,
+              "join_completeness": 53907500,
               "multihop_completeness": 40280000,
-              "provenance_citations": 70495000,
+              "provenance_citations": 71177500,
               "retraction_disclosure": 87917500,
-              "schema_evolution": 60417500
+              "schema_evolution": 64585000
             },
-            "rendered_cost_micro": 143417500,
+            "rendered_cost_micro": 149775000,
             "suite_block_id": 0,
-            "work_fuel": 1964982
+            "work_fuel": 1994749
           }
         },
-        "release_root": "08c6908c1b36af6acd4b671e889c698b6493ef6cd7b8ac471296c6ab7c2a4b24"
+        "release_root": "2efa129a82a21a281d7e1998d243b8f1907fd9044df65931d1e3611e0229e3fc"
       }
     }
   },
