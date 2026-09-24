@@ -5,8 +5,8 @@
    "distribution": "coretex-memory-agent",
    "filename": "coretex_memory_agent-1.1.2-py3-none-any.whl",
    "path": "artifacts/coretex_memory_agent-1.1.2-py3-none-any.whl",
-   "sha256": "91fc5750486b847e66b9b706864cd84af6dc5a9261899aa53f4b3b2bbda74bd9",
-   "size": 223817,
+   "sha256": "067905430f7254d8f726d1fbed2915c98605e45919afc7707b879c9d4a9dc0db",
+   "size": 232413,
    "version": "1.1.2"
   },
   "runtime_wheel": {
@@ -57,9 +57,9 @@
   "conv.pref.v1",
   "doc.tool.v1"
  ],
- "release_root": "8703e1ca880fe2abdafa4d758eb3e813fe651bce993c5e66c2cb2d4f30aa827e",
- "source": "https://raw.githubusercontent.com/botcoinmoney/coretex-client/49a1da37db0556b2b17c00c250da3f9ee3144c91/",
- "source_commit": "49a1da37db0556b2b17c00c250da3f9ee3144c91",
+ "release_root": "c1616ec3c6c02a6dda55da5ef4b40ce402a0fe4cc4a3965f9c3697108de18218",
+ "source": "https://raw.githubusercontent.com/botcoinmoney/coretex-client/c7565fc005a9249a99bba8700b3e644210d9db27/",
+ "source_commit": "c7565fc005a9249a99bba8700b3e644210d9db27",
  "support": {
   "numeric_runtime_amd64": {
    "filename": "numeric-runtime-amd64.tar",
@@ -81,13 +81,13 @@
   },
   "coretex-run.py": {
    "path": "tools/coretex-run.py",
-   "sha256": "6aab0bf16c7b778ef1f4014982e6b00200e55838b646086a2ad74b9b277c67ba",
-   "size": 5513
+   "sha256": "8c8918844326f94322d5153173ec2140880189d9cf9bc30ceb38bdb8a83fd953",
+   "size": 6259
   },
   "coretex-sidecar.py": {
    "path": "tools/coretex-sidecar.py",
-   "sha256": "bd4049d4c0329b1ae5625a524584c67008d74e939907c2325f20cbab6e925931",
-   "size": 5420
+   "sha256": "70ca34fdbd6c1c0b71532f934a210502f9c92d5e9981866f9f1daade030c96d9",
+   "size": 5541
   },
   "coretex_consumer-0.1.1-py3-none-any.whl": {
    "path": "consumer-artifacts/coretex_consumer-0.1.1-py3-none-any.whl",
@@ -107,8 +107,8 @@
    "distribution": "coretex-validator",
    "filename": "coretex_validator-1.1.2-py3-none-any.whl",
    "path": "artifacts/coretex_validator-1.1.2-py3-none-any.whl",
-   "sha256": "e310b9abfc2bbb6dbe2f757c925297268f33c0a395959efec9c86ca9c160589c",
-   "size": 888881,
+   "sha256": "c0a1e2c62b86432745260ed1171cda45454579675c5e37dd4b99d85b033a8a0c",
+   "size": 889866,
    "version": "1.1.2"
   }
  },

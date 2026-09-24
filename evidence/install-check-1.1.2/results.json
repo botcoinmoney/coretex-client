@@ -623,23 +623,17 @@
    },
    "install": {
     "authority_mode": "genesis",
-    "command": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/fresh/bin/coretex",
-    "config": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/fresh/consumer.json",
+    "command": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/pass2/run3/fresh/bin/coretex",
+    "config": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/pass2/run3/fresh/consumer.json",
     "epoch": null,
-    "extra_wheels": [
-     {
-      "filename": "coretex_memory_agent-1.1.2+consumerfix1-py3-none-any.whl",
-      "sha256": "39718563c1f9c85a6eb3d2eef61b563daafa9a8541ae6cdbe62beee2a3f144c6",
-      "size": 71719
-     }
-    ],
-    "frontier_root": "61dc53eaa635564527c599677c0b979b670d4482c380647ce60cf5e18334a1a5",
+    "extra_wheels": [],
+    "frontier_root": "13e908bd4f19dafe353dba3829e34bae54338e9f90b8de6702b83a97178ed22e",
     "module_root": "2efa129a82a21a281d7e1998d243b8f1907fd9044df65931d1e3611e0229e3fc",
     "ok": true,
     "operation": "install",
     "profile": "event.schema.v1",
-    "release_root": "8703e1ca880fe2abdafa4d758eb3e813fe651bce993c5e66c2cb2d4f30aa827e",
-    "store": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/fresh/memory.db",
+    "release_root": "c1616ec3c6c02a6dda55da5ef4b40ce402a0fe4cc4a3965f9c3697108de18218",
+    "store": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/pass2/run3/fresh/memory.db",
     "store_retained": false,
     "version": "1.1.2"
    },
@@ -666,9 +660,9 @@
       "reason": null,
       "requested": true,
       "scope_id": "agent=default|profile=event.schema.v1|tenant=default|user=default",
-      "store_id": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/fresh/memory.db"
+      "store_id": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/pass2/run3/fresh/memory.db"
      },
-     "config_path": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/fresh/.jev/jev.json",
+     "config_path": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/pass2/run3/fresh/.jev/jev.json",
      "configured": {
       "effective": true,
       "key_available": true,
@@ -677,19 +671,19 @@
       "requested": true
      },
      "control": "coretex jev enable|disable",
-     "install": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/fresh",
-     "key_path": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/fresh/.jev/jev.key",
+     "install": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/pass2/run3/fresh",
+     "key_path": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/pass2/run3/fresh/.jev/jev.key",
      "probe": "running-sidecar",
      "provider_attached": true,
      "restart_required": false,
      "sets": {
-      "CORETEX_JEV_CONFIG": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/fresh/.jev/jev.json",
+      "CORETEX_JEV_CONFIG": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/pass2/run3/fresh/.jev/jev.json",
       "CORETEX_JEV_ENABLED": "1",
       "CORETEX_JUDGE_ENABLED": "1"
      },
      "sidecar": {
-      "pid": 1648243,
-      "started_at": "2026-09-24T19:29:27Z",
+      "pid": 1787377,
+      "started_at": "2026-09-24T21:07:54Z",
       "url": "http://127.0.0.1:18799"
      },
      "summary": "a judgment provider IS attached to this store"
@@ -699,25 +693,19 @@
   "upgrade": {
    "install_1_1_1": {
     "authority_mode": "genesis",
-    "command": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/upgrade/bin/coretex",
-    "config": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/upgrade/consumer.json",
+    "command": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/pass2/run3/upgrade/bin/coretex",
+    "config": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/pass2/run3/upgrade/consumer.json",
     "epoch": null,
-    "extra_wheels": [
-     {
-      "filename": "coretex_memory_agent-1.1.2+consumerfix1-py3-none-any.whl",
-      "sha256": "39718563c1f9c85a6eb3d2eef61b563daafa9a8541ae6cdbe62beee2a3f144c6",
-      "size": 71719
-     }
-    ],
-    "frontier_root": "c54212b84ae42c3c84f08f324a69963f197108f9ab88122a61a14bd7a20216e6",
-    "module_root": "2e42a4fccdd9bef401ba63f0b2a4cf3ae90ccd13d0f67fb0ab2549785820444f",
+    "extra_wheels": [],
+    "frontier_root": "10664878dfcf6d199b0e8d442c2621f36af9f7020bd5eff9bfd81f635dc176af",
+    "module_root": "08c6908c1b36af6acd4b671e889c698b6493ef6cd7b8ac471296c6ab7c2a4b24",
     "ok": true,
     "operation": "install",
     "profile": "event.schema.v1",
-    "release_root": "7beda14d3957d4bf63b38f2f4c39c7fa653970a697eb9c3b1856c3d3c59136c2",
-    "store": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/upgrade/memory.db",
+    "release_root": "fb1a0c66ce641b9df4ca1a9c630357a0057d7ea4159c910c4a09776ed0749bec",
+    "store": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/pass2/run3/upgrade/memory.db",
     "store_retained": false,
-    "version": "1.1.1"
+    "version": "1.1.0"
    },
    "post": {
     "event_counts": {
@@ -1345,7 +1333,7 @@
      "retracted": 0,
      "total": 12
     },
-    "module_root": "2e42a4fccdd9bef401ba63f0b2a4cf3ae90ccd13d0f67fb0ab2549785820444f",
+    "module_root": "08c6908c1b36af6acd4b671e889c698b6493ef6cd7b8ac471296c6ab7c2a4b24",
     "packs": {
      "what did the team decide about the storage budget": {
       "context_sha256": "b5038ec8174ecd65d146fecb1f6c66eabf755922d1bc9a0afe6621facaabecec",
@@ -1389,10 +1377,8 @@
         "rows_read": 83,
         "rows_visited": 83,
         "scope.hook.cardinality.m5_results": 11,
-        "scope.hook.cardinality.m6_selected": 11,
         "scope.hook.hook.m5_rank.invocations": 1,
-        "scope.hook.hook.m6_pack.invocations": 1,
-        "scope.hook.hook_invocations": 2,
+        "scope.hook.hook_invocations": 1,
         "scope.hook.logical_storage_reads": 24,
         "scope.hook.operation.SELECT.rows_materialized": 35,
         "scope.hook.operation.SELECT.rows_read": 35,
@@ -1403,8 +1389,10 @@
         "scope.hook.rows_visited": 35,
         "scope.hook.sql_statements": 24,
         "scope.host.cardinality.m4_candidates": 11,
+        "scope.host.cardinality.m6_selected": 11,
         "scope.host.hook.m4_candidates.invocations": 1,
-        "scope.host.hook_invocations": 1,
+        "scope.host.hook.m6_pack.invocations": 1,
+        "scope.host.hook_invocations": 2,
         "scope.host.logical_storage_reads": 16,
         "scope.host.operation.SELECT.rows_materialized": 48,
         "scope.host.operation.SELECT.rows_read": 48,
@@ -1545,24 +1533,20 @@
        },
        "serving_module": {
         "abi_version": 2,
-        "capabilities": [
-         "cap.text.v1",
-         "cap.lexicon.v1"
-        ],
+        "capabilities": [],
         "hooks": {
-         "m5_rank": "1",
-         "m6_pack": "1"
+         "m5_rank": "1"
         },
-        "module_root": "2e42a4fccdd9bef401ba63f0b2a4cf3ae90ccd13d0f67fb0ab2549785820444f",
-        "module_sha256": "135b66c56251b8496377188afd125ccf010d60232730c92aef0cbdb704359e26",
-        "policy_id": "slayston-bridgefill-event.schema.v1",
+        "module_root": "08c6908c1b36af6acd4b671e889c698b6493ef6cd7b8ac471296c6ab7c2a4b24",
+        "module_sha256": "4b5410a383ca6cf902a27424504a3923532d74def8d6d8eafe9e68e96b9806e7",
+        "policy_id": "combined-m5-event.schema.v1",
         "profile": "event.schema.v1"
        },
        "token_budget": 800,
        "total_units": 357,
        "truncated": false
       },
-      "receipt_sha256": "cda459988bd4ea6e8dc573d1cf11a37c56a73bda851ca3e2a1f7bf651f125949"
+      "receipt_sha256": "d89ad6fc6631d536937439ff88b2b08be96c7ee2c430aa1b112072bccb4a1042"
      },
      "which vendor was chosen and why": {
       "context_sha256": "6494b9f8ed6fb1c999eed0cbd8807f1290d2ba18ee627e7923d584d42822edf3",
@@ -1606,10 +1590,8 @@
         "rows_read": 58,
         "rows_visited": 58,
         "scope.hook.cardinality.m5_results": 5,
-        "scope.hook.cardinality.m6_selected": 5,
         "scope.hook.hook.m5_rank.invocations": 1,
-        "scope.hook.hook.m6_pack.invocations": 1,
-        "scope.hook.hook_invocations": 2,
+        "scope.hook.hook_invocations": 1,
         "scope.hook.logical_storage_reads": 18,
         "scope.hook.operation.SELECT.rows_materialized": 29,
         "scope.hook.operation.SELECT.rows_read": 29,
@@ -1620,8 +1602,10 @@
         "scope.hook.rows_visited": 29,
         "scope.hook.sql_statements": 18,
         "scope.host.cardinality.m4_candidates": 5,
+        "scope.host.cardinality.m6_selected": 5,
         "scope.host.hook.m4_candidates.invocations": 1,
-        "scope.host.hook_invocations": 1,
+        "scope.host.hook.m6_pack.invocations": 1,
+        "scope.host.hook_invocations": 2,
         "scope.host.logical_storage_reads": 14,
         "scope.host.operation.SELECT.rows_materialized": 29,
         "scope.host.operation.SELECT.rows_read": 29,
@@ -1720,24 +1704,20 @@
        },
        "serving_module": {
         "abi_version": 2,
-        "capabilities": [
-         "cap.text.v1",
-         "cap.lexicon.v1"
-        ],
+        "capabilities": [],
         "hooks": {
-         "m5_rank": "1",
-         "m6_pack": "1"
+         "m5_rank": "1"
         },
-        "module_root": "2e42a4fccdd9bef401ba63f0b2a4cf3ae90ccd13d0f67fb0ab2549785820444f",
-        "module_sha256": "135b66c56251b8496377188afd125ccf010d60232730c92aef0cbdb704359e26",
-        "policy_id": "slayston-bridgefill-event.schema.v1",
+        "module_root": "08c6908c1b36af6acd4b671e889c698b6493ef6cd7b8ac471296c6ab7c2a4b24",
+        "module_sha256": "4b5410a383ca6cf902a27424504a3923532d74def8d6d8eafe9e68e96b9806e7",
+        "policy_id": "combined-m5-event.schema.v1",
         "profile": "event.schema.v1"
        },
        "token_budget": 800,
        "total_units": 170,
        "truncated": false
       },
-      "receipt_sha256": "40e979c8bab665697289d264423826c75853af1a12c4b7bf9622000216772cf5"
+      "receipt_sha256": "7d333c5906ddfcaebc937f4002205a61b71faaab9bd9b6ff15f293bcba40555d"
      },
      "who reported the checkout latency regression": {
       "context_sha256": "95693088f82b73d73e6d7d757c78183b69e85aceb4ceabed0fbd04e0bc1e5764",
@@ -1781,10 +1761,8 @@
         "rows_read": 82,
         "rows_visited": 82,
         "scope.hook.cardinality.m5_results": 11,
-        "scope.hook.cardinality.m6_selected": 11,
         "scope.hook.hook.m5_rank.invocations": 1,
-        "scope.hook.hook.m6_pack.invocations": 1,
-        "scope.hook.hook_invocations": 2,
+        "scope.hook.hook_invocations": 1,
         "scope.hook.logical_storage_reads": 24,
         "scope.hook.operation.SELECT.rows_materialized": 35,
         "scope.hook.operation.SELECT.rows_read": 35,
@@ -1795,8 +1773,10 @@
         "scope.hook.rows_visited": 35,
         "scope.hook.sql_statements": 24,
         "scope.host.cardinality.m4_candidates": 11,
+        "scope.host.cardinality.m6_selected": 11,
         "scope.host.hook.m4_candidates.invocations": 1,
-        "scope.host.hook_invocations": 1,
+        "scope.host.hook.m6_pack.invocations": 1,
+        "scope.host.hook_invocations": 2,
         "scope.host.logical_storage_reads": 14,
         "scope.host.operation.SELECT.rows_materialized": 47,
         "scope.host.operation.SELECT.rows_read": 47,
@@ -1937,46 +1917,42 @@
        },
        "serving_module": {
         "abi_version": 2,
-        "capabilities": [
-         "cap.text.v1",
-         "cap.lexicon.v1"
-        ],
+        "capabilities": [],
         "hooks": {
-         "m5_rank": "1",
-         "m6_pack": "1"
+         "m5_rank": "1"
         },
-        "module_root": "2e42a4fccdd9bef401ba63f0b2a4cf3ae90ccd13d0f67fb0ab2549785820444f",
-        "module_sha256": "135b66c56251b8496377188afd125ccf010d60232730c92aef0cbdb704359e26",
-        "policy_id": "slayston-bridgefill-event.schema.v1",
+        "module_root": "08c6908c1b36af6acd4b671e889c698b6493ef6cd7b8ac471296c6ab7c2a4b24",
+        "module_sha256": "4b5410a383ca6cf902a27424504a3923532d74def8d6d8eafe9e68e96b9806e7",
+        "policy_id": "combined-m5-event.schema.v1",
         "profile": "event.schema.v1"
        },
        "token_budget": 800,
        "total_units": 357,
        "truncated": false
       },
-      "receipt_sha256": "934ed541648ac2cec682bbdcbd6184ee49e88aeb4866769e26d57f15902a7fc2"
+      "receipt_sha256": "1962638308890c7b94f3c67a2853350c0ffe236127228a19618516acfecd5b78"
      }
     },
     "profile_id": "event.schema.v1"
    },
    "pre_store": {
-    "path": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/upgrade/memory.db",
+    "path": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/pass2/run3/upgrade/memory.db",
     "sha256": "792fb7d9c2d75a392774ac6e59cfae5ca62c87897ef3b23b2641674aedfb2bf7"
    },
    "rollback": {
-    "command": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/upgrade/bin/coretex",
+    "command": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/pass2/run3/upgrade/bin/coretex",
     "event_counts": {
      "live": 12,
      "retracted": 0,
      "total": 12
     },
-    "module_root": "2e42a4fccdd9bef401ba63f0b2a4cf3ae90ccd13d0f67fb0ab2549785820444f",
+    "module_root": "08c6908c1b36af6acd4b671e889c698b6493ef6cd7b8ac471296c6ab7c2a4b24",
     "ok": true,
     "operation": "rollback",
-    "release_root": "7beda14d3957d4bf63b38f2f4c39c7fa653970a697eb9c3b1856c3d3c59136c2",
-    "store": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/upgrade/memory.db",
+    "release_root": "fb1a0c66ce641b9df4ca1a9c630357a0057d7ea4159c910c4a09776ed0749bec",
+    "store": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/pass2/run3/upgrade/memory.db",
     "store_retained": true,
-    "version": "1.1.1"
+    "version": "1.1.0"
    },
    "sidecar": {
     "ready": {
@@ -2001,9 +1977,9 @@
       "reason": null,
       "requested": true,
       "scope_id": "agent=default|profile=event.schema.v1|tenant=default|user=default",
-      "store_id": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/upgrade/memory.db"
+      "store_id": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/pass2/run3/upgrade/memory.db"
      },
-     "config_path": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/upgrade/.jev/jev.json",
+     "config_path": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/pass2/run3/upgrade/.jev/jev.json",
      "configured": {
       "effective": true,
       "key_available": true,
@@ -2012,19 +1988,19 @@
       "requested": true
      },
      "control": "coretex jev enable|disable",
-     "install": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/upgrade",
-     "key_path": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/upgrade/.jev/jev.key",
+     "install": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/pass2/run3/upgrade",
+     "key_path": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/pass2/run3/upgrade/.jev/jev.key",
      "probe": "running-sidecar",
      "provider_attached": true,
      "restart_required": false,
      "sets": {
-      "CORETEX_JEV_CONFIG": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/upgrade/.jev/jev.json",
+      "CORETEX_JEV_CONFIG": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/pass2/run3/upgrade/.jev/jev.json",
       "CORETEX_JEV_ENABLED": "1",
       "CORETEX_JUDGE_ENABLED": "1"
      },
      "sidecar": {
-      "pid": 1649356,
-      "started_at": "2026-09-24T19:29:55Z",
+      "pid": 1788982,
+      "started_at": "2026-09-24T21:08:26Z",
       "url": "http://127.0.0.1:18799"
      },
      "summary": "a judgment provider IS attached to this store"
@@ -2033,30 +2009,24 @@
    "upgrade": {
     "authority_mode": "genesis",
     "changed": true,
-    "command": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/upgrade/bin/coretex",
+    "command": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/pass2/run3/upgrade/bin/coretex",
     "event_counts": {
      "live": 12,
      "retracted": 0,
      "total": 12
     },
-    "extra_wheels": [
-     {
-      "filename": "coretex_memory_agent-1.1.2+consumerfix1-py3-none-any.whl",
-      "sha256": "39718563c1f9c85a6eb3d2eef61b563daafa9a8541ae6cdbe62beee2a3f144c6",
-      "size": 71719
-     }
-    ],
-    "from_release": "7beda14d3957d4bf63b38f2f4c39c7fa653970a697eb9c3b1856c3d3c59136c2",
-    "from_version": "1.1.1",
+    "extra_wheels": [],
+    "from_release": "fb1a0c66ce641b9df4ca1a9c630357a0057d7ea4159c910c4a09776ed0749bec",
+    "from_version": "1.1.0",
     "module_root": "2efa129a82a21a281d7e1998d243b8f1907fd9044df65931d1e3611e0229e3fc",
     "ok": true,
     "operation": "upgrade",
-    "previous_generation_kept": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/upgrade/gen/7beda14d3957d4bf63b38f2f4c39c7fa653970a697eb9c3b1856c3d3c59136c2",
+    "previous_generation_kept": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/pass2/run3/upgrade/gen/fb1a0c66ce641b9df4ca1a9c630357a0057d7ea4159c910c4a09776ed0749bec",
     "profile": "event.schema.v1",
     "re_ingestion": false,
-    "release_root": "8703e1ca880fe2abdafa4d758eb3e813fe651bce993c5e66c2cb2d4f30aa827e",
-    "rollback": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/upgrade/bin/coretex rollback",
-    "store": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/upgrade/memory.db",
+    "release_root": "c1616ec3c6c02a6dda55da5ef4b40ce402a0fe4cc4a3965f9c3697108de18218",
+    "rollback": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/pass2/run3/upgrade/bin/coretex rollback",
+    "store": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/pass2/run3/upgrade/memory.db",
     "store_retained": true,
     "store_size_after": 77824,
     "store_size_before": 77824,
@@ -2098,11 +2068,11 @@
      "reason": null,
      "requested": false,
      "scope_id": null,
-     "store": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/fresh/memory.db",
+     "store": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/pass2/run3/fresh/memory.db",
      "store_id": null
     },
     "sets": {
-     "CORETEX_JEV_CONFIG": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/fresh/.jev/jev.json",
+     "CORETEX_JEV_CONFIG": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/pass2/run3/fresh/.jev/jev.json",
      "CORETEX_JEV_ENABLED": "0",
      "CORETEX_JUDGE_ENABLED": "0"
     },
@@ -2155,11 +2125,11 @@
      "reason": null,
      "requested": false,
      "scope_id": null,
-     "store": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/fresh/memory.db",
+     "store": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/pass2/run3/fresh/memory.db",
      "store_id": null
     },
     "sets": {
-     "CORETEX_JEV_CONFIG": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/fresh/.jev/jev.json",
+     "CORETEX_JEV_CONFIG": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/pass2/run3/fresh/.jev/jev.json",
      "CORETEX_JEV_ENABLED": "0",
      "CORETEX_JUDGE_ENABLED": "0"
     },
@@ -2195,7 +2165,7 @@
    "bed": "fresh",
    "check": "launcher sets JUDGE=0 and JEV=0",
    "detail": {
-    "CORETEX_JEV_CONFIG": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/fresh/.jev/jev.json",
+    "CORETEX_JEV_CONFIG": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/pass2/run3/fresh/.jev/jev.json",
     "CORETEX_JEV_ENABLED": "0",
     "CORETEX_JUDGE_ENABLED": "0"
    },
@@ -2230,11 +2200,11 @@
      "reason": null,
      "requested": false,
      "scope_id": null,
-     "store": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/fresh/memory.db",
+     "store": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/pass2/run3/fresh/memory.db",
      "store_id": null
     },
     "sets": {
-     "CORETEX_JEV_CONFIG": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/fresh/.jev/jev.json",
+     "CORETEX_JEV_CONFIG": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/pass2/run3/fresh/.jev/jev.json",
      "CORETEX_JEV_ENABLED": "0",
      "CORETEX_JUDGE_ENABLED": "0"
     },
@@ -2294,11 +2264,11 @@
      "reason": null,
      "requested": true,
      "scope_id": "agent=default|profile=event.schema.v1|tenant=default|user=default",
-     "store": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/fresh/memory.db",
-     "store_id": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/fresh/memory.db"
+     "store": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/pass2/run3/fresh/memory.db",
+     "store_id": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/pass2/run3/fresh/memory.db"
     },
     "sets": {
-     "CORETEX_JEV_CONFIG": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/fresh/.jev/jev.json",
+     "CORETEX_JEV_CONFIG": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/pass2/run3/fresh/.jev/jev.json",
      "CORETEX_JEV_ENABLED": "1",
      "CORETEX_JUDGE_ENABLED": "1"
     },
@@ -2328,7 +2298,7 @@
    "bed": "fresh",
    "check": "launcher sets JUDGE=1 and JEV=1",
    "detail": {
-    "CORETEX_JEV_CONFIG": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/fresh/.jev/jev.json",
+    "CORETEX_JEV_CONFIG": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/pass2/run3/fresh/.jev/jev.json",
     "CORETEX_JEV_ENABLED": "1",
     "CORETEX_JUDGE_ENABLED": "1"
    },
@@ -2385,7 +2355,7 @@
     "reason": null,
     "requested": true,
     "scope_id": "agent=default|profile=event.schema.v1|tenant=default|user=default",
-    "store_id": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/fresh/memory.db"
+    "store_id": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/pass2/run3/fresh/memory.db"
    },
    "pass": true
   },
@@ -2404,11 +2374,11 @@
      "reason": null,
      "requested": true,
      "scope_id": "agent=default|profile=event.schema.v1|tenant=default|user=default",
-     "store": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/fresh/memory.db",
-     "store_id": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/fresh/memory.db"
+     "store": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/pass2/run3/fresh/memory.db",
+     "store_id": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/pass2/run3/fresh/memory.db"
     },
     "sets": {
-     "CORETEX_JEV_CONFIG": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/fresh/.jev/jev.json",
+     "CORETEX_JEV_CONFIG": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/pass2/run3/fresh/.jev/jev.json",
      "CORETEX_JEV_ENABLED": "1",
      "CORETEX_JUDGE_ENABLED": "1"
     },
@@ -2461,11 +2431,11 @@
      "reason": null,
      "requested": true,
      "scope_id": "agent=default|profile=event.schema.v1|tenant=default|user=default",
-     "store": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/fresh/memory.db",
-     "store_id": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/fresh/memory.db"
+     "store": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/pass2/run3/fresh/memory.db",
+     "store_id": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/pass2/run3/fresh/memory.db"
     },
     "sets": {
-     "CORETEX_JEV_CONFIG": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/fresh/.jev/jev.json",
+     "CORETEX_JEV_CONFIG": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/pass2/run3/fresh/.jev/jev.json",
      "CORETEX_JEV_ENABLED": "1",
      "CORETEX_JUDGE_ENABLED": "1"
     },
@@ -2518,11 +2488,11 @@
      "reason": "disabled",
      "requested": true,
      "scope_id": "agent=default|profile=event.schema.v1|tenant=default|user=default",
-     "store": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/fresh/memory.db",
-     "store_id": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/fresh/memory.db"
+     "store": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/pass2/run3/fresh/memory.db",
+     "store_id": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/pass2/run3/fresh/memory.db"
     },
     "sets": {
-     "CORETEX_JEV_CONFIG": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/fresh/.jev/jev.json",
+     "CORETEX_JEV_CONFIG": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/pass2/run3/fresh/.jev/jev.json",
      "CORETEX_JEV_ENABLED": "1",
      "CORETEX_JUDGE_ENABLED": "1"
     },
@@ -2575,11 +2545,11 @@
      "reason": null,
      "requested": false,
      "scope_id": null,
-     "store": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/fresh/memory.db",
+     "store": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/pass2/run3/fresh/memory.db",
      "store_id": null
     },
     "sets": {
-     "CORETEX_JEV_CONFIG": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/fresh/.jev/jev.json",
+     "CORETEX_JEV_CONFIG": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/pass2/run3/fresh/.jev/jev.json",
      "CORETEX_JEV_ENABLED": "0",
      "CORETEX_JUDGE_ENABLED": "0"
     },
@@ -2621,14 +2591,14 @@
    "arm": "digest",
    "bed": "refusal",
    "check": "a wheel digest that differs from the inventory is refused",
-   "detail": "h: source check5/refused/gen/8703e1ca880fe2abdafa4d758eb3e813fe651bce993c5e66c2cb2d4f30aa827e/.venv/bin/activate\n{\"ok\": false, \"error\": \"ValueError\", \"detail\": \"inventory/release artifact mismatch: runtime_wheel\", \"retry\": \"Fix the reported issue and rerun the same command; local data is retained.\"}",
+   "detail": "60924/pass2/run3/refused/gen/c1616ec3c6c02a6dda55da5ef4b40ce402a0fe4cc4a3965f9c3697108de18218/.venv/bin/activate\n{\"ok\": false, \"error\": \"ValueError\", \"detail\": \"inventory/release artifact mismatch: runtime_wheel\", \"retry\": \"Fix the reported issue and rerun the same command; local data is retained.\"}",
    "pass": true
   },
   {
    "arm": "pin",
    "bed": "refusal",
    "check": "a tampered cached inventory never shadows the pinned bytes",
-   "detail": "agent==1.1.2+consumerfix1 (from file:///var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/pinned/gen/8703e1ca880fe2abdafa4d758eb3e813fe651bce993c5e66c2cb2d4f30aa827e/tools/coretex_memory_agent-1.1.2+consumerfix1-py3-none-any.whl)\n4/4 Bind the memory store and prepare the vector index",
+   "detail": " 3.10.12 environment at: /var/lib/botcoin-coordinator-data/claude-installer-20260924/pass2/run3/pinned/gen/c1616ec3c6c02a6dda55da5ef4b40ce402a0fe4cc4a3965f9c3697108de18218/.venv\nChecked 26 packages in 0.57ms\nAll installed packages are compatible\n4/4 Bind the memory store and prepare the vector index",
    "pass": true
   },
   {
@@ -2640,8 +2610,8 @@
   {
    "arm": "pre",
    "bed": "upgrade",
-   "check": "1.1.1 installation completes",
-   "detail": "1.1.1",
+   "check": "1.1.0 installation completes",
+   "detail": "1.1.0",
    "pass": true
   },
   {
@@ -2655,7 +2625,7 @@
    "arm": "upgrade",
    "bed": "upgrade",
    "check": "the SAME store file is retained",
-   "detail": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/upgrade/memory.db",
+   "detail": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/pass2/run3/upgrade/memory.db",
    "pass": true
   },
   {
@@ -2693,7 +2663,7 @@
    "bed": "upgrade",
    "check": "the serving module is the 1.1.2 generation",
    "detail": {
-    "1.1.1": "2e42a4fccdd9bef401ba63f0b2a4cf3ae90ccd13d0f67fb0ab2549785820444f",
+    "1.1.0": "08c6908c1b36af6acd4b671e889c698b6493ef6cd7b8ac471296c6ab7c2a4b24",
     "1.1.2": "2efa129a82a21a281d7e1998d243b8f1907fd9044df65931d1e3611e0229e3fc"
    },
    "pass": true
@@ -2719,11 +2689,11 @@
      "reason": null,
      "requested": false,
      "scope_id": null,
-     "store": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/upgrade/memory.db",
+     "store": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/pass2/run3/upgrade/memory.db",
      "store_id": null
     },
     "sets": {
-     "CORETEX_JEV_CONFIG": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/upgrade/.jev/jev.json",
+     "CORETEX_JEV_CONFIG": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/pass2/run3/upgrade/.jev/jev.json",
      "CORETEX_JEV_ENABLED": "0",
      "CORETEX_JUDGE_ENABLED": "0"
     },
@@ -2776,11 +2746,11 @@
      "reason": null,
      "requested": false,
      "scope_id": null,
-     "store": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/upgrade/memory.db",
+     "store": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/pass2/run3/upgrade/memory.db",
      "store_id": null
     },
     "sets": {
-     "CORETEX_JEV_CONFIG": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/upgrade/.jev/jev.json",
+     "CORETEX_JEV_CONFIG": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/pass2/run3/upgrade/.jev/jev.json",
      "CORETEX_JEV_ENABLED": "0",
      "CORETEX_JUDGE_ENABLED": "0"
     },
@@ -2816,7 +2786,7 @@
    "bed": "upgrade",
    "check": "launcher sets JUDGE=0 and JEV=0",
    "detail": {
-    "CORETEX_JEV_CONFIG": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/upgrade/.jev/jev.json",
+    "CORETEX_JEV_CONFIG": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/pass2/run3/upgrade/.jev/jev.json",
     "CORETEX_JEV_ENABLED": "0",
     "CORETEX_JUDGE_ENABLED": "0"
    },
@@ -2851,11 +2821,11 @@
      "reason": null,
      "requested": false,
      "scope_id": null,
-     "store": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/upgrade/memory.db",
+     "store": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/pass2/run3/upgrade/memory.db",
      "store_id": null
     },
     "sets": {
-     "CORETEX_JEV_CONFIG": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/upgrade/.jev/jev.json",
+     "CORETEX_JEV_CONFIG": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/pass2/run3/upgrade/.jev/jev.json",
      "CORETEX_JEV_ENABLED": "0",
      "CORETEX_JUDGE_ENABLED": "0"
     },
@@ -2915,11 +2885,11 @@
      "reason": null,
      "requested": true,
      "scope_id": "agent=default|profile=event.schema.v1|tenant=default|user=default",
-     "store": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/upgrade/memory.db",
-     "store_id": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/upgrade/memory.db"
+     "store": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/pass2/run3/upgrade/memory.db",
+     "store_id": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/pass2/run3/upgrade/memory.db"
     },
     "sets": {
-     "CORETEX_JEV_CONFIG": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/upgrade/.jev/jev.json",
+     "CORETEX_JEV_CONFIG": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/pass2/run3/upgrade/.jev/jev.json",
      "CORETEX_JEV_ENABLED": "1",
      "CORETEX_JUDGE_ENABLED": "1"
     },
@@ -2949,7 +2919,7 @@
    "bed": "upgrade",
    "check": "launcher sets JUDGE=1 and JEV=1",
    "detail": {
-    "CORETEX_JEV_CONFIG": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/upgrade/.jev/jev.json",
+    "CORETEX_JEV_CONFIG": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/pass2/run3/upgrade/.jev/jev.json",
     "CORETEX_JEV_ENABLED": "1",
     "CORETEX_JUDGE_ENABLED": "1"
    },
@@ -3006,7 +2976,7 @@
     "reason": null,
     "requested": true,
     "scope_id": "agent=default|profile=event.schema.v1|tenant=default|user=default",
-    "store_id": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/upgrade/memory.db"
+    "store_id": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/pass2/run3/upgrade/memory.db"
    },
    "pass": true
   },
@@ -3025,11 +2995,11 @@
      "reason": null,
      "requested": true,
      "scope_id": "agent=default|profile=event.schema.v1|tenant=default|user=default",
-     "store": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/upgrade/memory.db",
-     "store_id": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/upgrade/memory.db"
+     "store": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/pass2/run3/upgrade/memory.db",
+     "store_id": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/pass2/run3/upgrade/memory.db"
     },
     "sets": {
-     "CORETEX_JEV_CONFIG": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/upgrade/.jev/jev.json",
+     "CORETEX_JEV_CONFIG": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/pass2/run3/upgrade/.jev/jev.json",
      "CORETEX_JEV_ENABLED": "1",
      "CORETEX_JUDGE_ENABLED": "1"
     },
@@ -3082,11 +3052,11 @@
      "reason": null,
      "requested": true,
      "scope_id": "agent=default|profile=event.schema.v1|tenant=default|user=default",
-     "store": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/upgrade/memory.db",
-     "store_id": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/upgrade/memory.db"
+     "store": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/pass2/run3/upgrade/memory.db",
+     "store_id": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/pass2/run3/upgrade/memory.db"
     },
     "sets": {
-     "CORETEX_JEV_CONFIG": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/upgrade/.jev/jev.json",
+     "CORETEX_JEV_CONFIG": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/pass2/run3/upgrade/.jev/jev.json",
      "CORETEX_JEV_ENABLED": "1",
      "CORETEX_JUDGE_ENABLED": "1"
     },
@@ -3139,11 +3109,11 @@
      "reason": "disabled",
      "requested": true,
      "scope_id": "agent=default|profile=event.schema.v1|tenant=default|user=default",
-     "store": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/upgrade/memory.db",
-     "store_id": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/upgrade/memory.db"
+     "store": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/pass2/run3/upgrade/memory.db",
+     "store_id": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/pass2/run3/upgrade/memory.db"
     },
     "sets": {
-     "CORETEX_JEV_CONFIG": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/upgrade/.jev/jev.json",
+     "CORETEX_JEV_CONFIG": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/pass2/run3/upgrade/.jev/jev.json",
      "CORETEX_JEV_ENABLED": "1",
      "CORETEX_JUDGE_ENABLED": "1"
     },
@@ -3196,11 +3166,11 @@
      "reason": null,
      "requested": false,
      "scope_id": null,
-     "store": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/upgrade/memory.db",
+     "store": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/pass2/run3/upgrade/memory.db",
      "store_id": null
     },
     "sets": {
-     "CORETEX_JEV_CONFIG": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/upgrade/.jev/jev.json",
+     "CORETEX_JEV_CONFIG": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/pass2/run3/upgrade/.jev/jev.json",
      "CORETEX_JEV_ENABLED": "0",
      "CORETEX_JUDGE_ENABLED": "0"
     },
@@ -3241,8 +3211,8 @@
   {
    "arm": "rollback",
    "bed": "upgrade",
-   "check": "rollback returns the launcher to 1.1.1",
-   "detail": "1.1.1",
+   "check": "rollback returns the launcher to 1.1.0",
+   "detail": "1.1.0",
    "pass": true
   },
   {
@@ -3276,10 +3246,81 @@
    "pass": true
   }
  ],
- "finished_at": "2026-09-24T19:30:03Z",
+ "finished_at": "2026-09-24T21:08:34Z",
  "format": "coretex.consumer-install-check/v1",
- "release": {},
- "started_at": "2026-09-24T19:29:13Z",
+ "purity": {
+  "fresh": {
+   "extra_wheels": [],
+   "pure_release": true,
+   "release_root": "c1616ec3c6c02a6dda55da5ef4b40ce402a0fe4cc4a3965f9c3697108de18218",
+   "version": "1.1.2"
+  },
+  "upgrade/after": {
+   "extra_wheels": [],
+   "pure_release": true,
+   "release_root": "c1616ec3c6c02a6dda55da5ef4b40ce402a0fe4cc4a3965f9c3697108de18218",
+   "version": "1.1.2"
+  },
+  "upgrade/before": {
+   "extra_wheels": [],
+   "pure_release": true,
+   "release_root": "fb1a0c66ce641b9df4ca1a9c630357a0057d7ea4159c910c4a09776ed0749bec",
+   "version": "1.1.0"
+  },
+  "upgrade/rolled-back": {
+   "extra_wheels": [],
+   "pure_release": true,
+   "release_root": "fb1a0c66ce641b9df4ca1a9c630357a0057d7ea4159c910c4a09776ed0749bec",
+   "version": "1.1.0"
+  }
+ },
+ "release": {
+  "1.1.0": {
+   "adapter_wheel": {
+    "distribution": "coretex-memory-agent",
+    "filename": "coretex_memory_agent-1.1.0-py3-none-any.whl",
+    "path": "artifacts/coretex_memory_agent-1.1.0-py3-none-any.whl",
+    "sha256": "226cf6fcb9ecc76a41a287f26530a449b43a8fd4797764fa0466aadebff24810",
+    "size": 206449,
+    "version": "1.1.0"
+   },
+   "optional": [],
+   "release_root": "fb1a0c66ce641b9df4ca1a9c630357a0057d7ea4159c910c4a09776ed0749bec",
+   "sha256": "fbe42316de44e4bc151c4eab206b8fb6d9a5173acaccbb84e5c3d73d89690919",
+   "size": 3334,
+   "source_commit": "c7565fc005a9249a99bba8700b3e644210d9db27",
+   "version": "1.1.0"
+  },
+  "1.1.2": {
+   "adapter_wheel": {
+    "distribution": "coretex-memory-agent",
+    "filename": "coretex_memory_agent-1.1.2-py3-none-any.whl",
+    "path": "artifacts/coretex_memory_agent-1.1.2-py3-none-any.whl",
+    "sha256": "067905430f7254d8f726d1fbed2915c98605e45919afc7707b879c9d4a9dc0db",
+    "size": 232413,
+    "version": "1.1.2"
+   },
+   "optional": [
+    "jev_addon"
+   ],
+   "release_root": "c1616ec3c6c02a6dda55da5ef4b40ce402a0fe4cc4a3965f9c3697108de18218",
+   "sha256": "6dbe6ffdfbca1d2b81e8f599db174a534d9a7209e7f7aad64bc6220806b1755a",
+   "size": 4258,
+   "source_commit": "c7565fc005a9249a99bba8700b3e644210d9db27",
+   "version": "1.1.2"
+  },
+  "addon_wheel": {
+   "filename": "coretex_jev_addon-0.1.0-py3-none-any.whl",
+   "sha256": "1edb33e2ecdd635dbbea3c7f3a1f4b8907363f3243170c1a4673c81a06deef94",
+   "size": 140763
+  },
+  "fake_judge_wheel": {
+   "filename": "coretex_fake_judge-0.1.0-py3-none-any.whl",
+   "sha256": "22fe87196dacff08485b88f5c0130e6cc241fc28009949f50c15b41c29ae28e1",
+   "size": 2646
+  }
+ },
+ "started_at": "2026-09-24T21:07:40Z",
  "summary": {
   "checks": 111,
   "failed": 0,

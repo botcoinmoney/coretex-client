@@ -411,14 +411,26 @@ def resolve_parent_execution(*, parent_manifest: Mapping[str, Any], target_profi
             raise ParentExecutionError(
                 f"parent composition binding {field} for {target_profile!r} does not equal "
                 f"the release/delegation it serves")
+    # THE DISPATCH IDENTITY IS THE MANIFEST'S OWN ``policy_id``. The composition names it; this
+    # is where the two are required to agree, and it is strictly stronger than what was checked
+    # before -- the composition can no longer name an identity no bundle in the release declares.
+    if binding.get("miner_id") != parent_release_manifest.get("policy_id"):
+        raise ParentExecutionError(
+            f"parent composition binding miner_id for {target_profile!r} does not equal the "
+            "release manifest's own policy_id")
     provenance = parent_release_manifest.get("source_provenance")
     if not isinstance(provenance, abc.Mapping) \
             or provenance.get("profile_id") != target_profile:
         raise ParentExecutionError(
             f"parent release provenance does not bind profile {target_profile!r}")
-    if provenance.get("miner") not in (None, binding.get("miner_id")):
+    # ATTRIBUTION. ``source_provenance.miner`` names who AUTHORED the module and may differ from
+    # what the module was admitted AS: ``botcoin6-render-prefix`` authored the bundle whose
+    # policy_id is ``botcoin6-render-prefix-e202``. Requiring attribution to equal the dispatch
+    # identity conflated the two and refused a release for naming its own miner; requiring it to
+    # be PRESENT is the rule that was meant.
+    if not isinstance(provenance.get("miner"), str) or not provenance.get("miner"):
         raise ParentExecutionError(
-            "parent release miner provenance disagrees with the composition binding")
+            "parent release carries no miner attribution for the composition binding")
 
     if is_reference:
         raise ParentExecutionError(
