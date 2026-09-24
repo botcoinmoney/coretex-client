@@ -1,0 +1,116 @@
+{
+ "format": "coretex.consumer-release-inventory/v1",
+ "install": {
+  "adapter_wheel": {
+   "distribution": "coretex-memory-agent",
+   "filename": "coretex_memory_agent-1.1.2-py3-none-any.whl",
+   "path": "artifacts/coretex_memory_agent-1.1.2-py3-none-any.whl",
+   "sha256": "91fc5750486b847e66b9b706864cd84af6dc5a9261899aa53f4b3b2bbda74bd9",
+   "size": 223817,
+   "version": "1.1.2"
+  },
+  "runtime_wheel": {
+   "distribution": "coretex-memory",
+   "filename": "coretex_memory-1.1.2-py3-none-any.whl",
+   "path": "artifacts/coretex_memory-1.1.2-py3-none-any.whl",
+   "sha256": "75f35eeab56fdb246240783874933048eb37f6560667cedd75f675617577451b",
+   "size": 1201619,
+   "version": "1.1.2"
+  },
+  "wasmtime_amd64_wheel": {
+   "distribution": "wasmtime",
+   "filename": "wasmtime-46.0.1-py3-none-manylinux1_x86_64.whl",
+   "path": "artifacts/wasmtime-46.0.1-py3-none-manylinux1_x86_64.whl",
+   "sha256": "e53c65abe31aeeb19a3f794b6e53140d401c4c79ad91c89caefdc502ee2b10c1",
+   "size": 9843167,
+   "version": "46.0.1"
+  }
+ },
+ "judge": {
+  "capability": "cap.judge.v1",
+  "descriptor_mapping": {
+   "product_descriptor_root": "f4a7d0e379278c3443f8990fc7e3a8a06d2cf545fc3b8fa492e5940f0f92c436",
+   "release_descriptor_root": "c17bfd53412f05849762851963d505d883c8b6915b537d6ea151dae64fb3e810"
+  },
+  "model_id": "jev-1.13.0",
+  "sealed_table": {
+   "filename": "sealed-table.jsonl",
+   "rows": 352658,
+   "sha256": "7214033f9a10e21599f33358b90590e3502127383e916293e945f00381c9cb23",
+   "table_root": "30baa7d4248c79e7bc125fda8151f8275e5ce5b9e56fe525c6a0dc3a76680557"
+  },
+  "tariff_id": "judge-tariff.model-token-equivalent.v2"
+ },
+ "optional": {
+  "jev_addon": {
+   "distribution": "coretex-jev-addon",
+   "filename": "coretex_jev_addon-0.1.0-py3-none-any.whl",
+   "note": "optional; default OFF; never required by the local M1-M6 path",
+   "sha256": "1edb33e2ecdd635dbbea3c7f3a1f4b8907363f3243170c1a4673c81a06deef94",
+   "size": 140763,
+   "version": "0.1.0"
+  }
+ },
+ "predecessor_release_root": "7beda14d3957d4bf63b38f2f4c39c7fa653970a697eb9c3b1856c3d3c59136c2",
+ "profiles": [
+  "event.schema.v1",
+  "conv.pref.v1",
+  "doc.tool.v1"
+ ],
+ "release_root": "8703e1ca880fe2abdafa4d758eb3e813fe651bce993c5e66c2cb2d4f30aa827e",
+ "source": "https://raw.githubusercontent.com/botcoinmoney/coretex-client/49a1da37db0556b2b17c00c250da3f9ee3144c91/",
+ "source_commit": "49a1da37db0556b2b17c00c250da3f9ee3144c91",
+ "support": {
+  "numeric_runtime_amd64": {
+   "filename": "numeric-runtime-amd64.tar",
+   "path": "artifacts/numeric-runtime-amd64.tar",
+   "sha256": "5d72b9802b4e262ac69aa6c731b9cfeda629db515c75837ced7996de12032ec3",
+   "size": 48803840
+  }
+ },
+ "tools": {
+  "coretex-bootstrap.py": {
+   "path": "tools/coretex-bootstrap.py",
+   "sha256": "a8d9e136de77f6b49d640410f1589e84cd53b4d06db25e9a997fa94a22b3c12d",
+   "size": 12980
+  },
+  "coretex-jevctl.py": {
+   "path": "tools/coretex-jevctl.py",
+   "sha256": "b09281155b2e818388ba8dea0fc600d93afcfa2838ad169f1184a0bfd2ba382a",
+   "size": 13913
+  },
+  "coretex-run.py": {
+   "path": "tools/coretex-run.py",
+   "sha256": "6aab0bf16c7b778ef1f4014982e6b00200e55838b646086a2ad74b9b277c67ba",
+   "size": 5513
+  },
+  "coretex-sidecar.py": {
+   "path": "tools/coretex-sidecar.py",
+   "sha256": "bd4049d4c0329b1ae5625a524584c67008d74e939907c2325f20cbab6e925931",
+   "size": 5420
+  },
+  "coretex_consumer-0.1.1-py3-none-any.whl": {
+   "path": "consumer-artifacts/coretex_consumer-0.1.1-py3-none-any.whl",
+   "sha256": "fab13adf1586aad8fdcd539248fc7a4778e750f29733dd3615c4483238aeddc2",
+   "size": 19476
+  }
+ },
+ "uv": {
+  "script": "uv-0.8.15.data/scripts/uv",
+  "sha256": "07765f99fd5fd3b257d7e210e8d0844c0a8fd111612e31fcca66a85656cc728e",
+  "size": 21009338,
+  "url": "https://files.pythonhosted.org/packages/13/fc/e0da45ee179367dcc1e1040ad00ed8a99b78355d43024b0b5fc2edf5c389/uv-0.8.15-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+  "version": "0.8.15"
+ },
+ "verify": {
+  "validator_wheel": {
+   "distribution": "coretex-validator",
+   "filename": "coretex_validator-1.1.2-py3-none-any.whl",
+   "path": "artifacts/coretex_validator-1.1.2-py3-none-any.whl",
+   "sha256": "e310b9abfc2bbb6dbe2f757c925297268f33c0a395959efec9c86ca9c160589c",
+   "size": 888881,
+   "version": "1.1.2"
+  }
+ },
+ "version": "1.1.2"
+}

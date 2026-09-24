@@ -33,9 +33,8 @@ import zipfile
 
 INVENTORY = {'name': 'release-inventory.json',
              'url': 'https://agentmoney.net/coretex-release-inventory.json',
-             'size': 0,
-             'sha256': '0000000000000000000000000000000000000000000000000000000000000000'}
-
+             'size': 4258,
+             'sha256': 'dccfe7d71f9968c614eec26ca3823df255b5c4b3f4425aaab1b688bb9c6a27a8'}
 INVENTORY_FORMAT = 'coretex.consumer-release-inventory/v1'
 PINNED_FORMAT = 'coretex.consumer-pinned/v1'
 INSTALL_FORMAT = 'coretex.consumer-install/v2'
