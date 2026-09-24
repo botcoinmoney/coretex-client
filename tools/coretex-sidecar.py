@@ -44,6 +44,16 @@ def _judge_env_fingerprint():
             for name in ('CORETEX_JUDGE_ENABLED', 'CORETEX_JEV_ENABLED')}
 
 
+def _runner():
+    """The launcher's own run helper, loaded from beside this file."""
+    import importlib.util
+    path = Path(__file__).resolve().parent / 'coretex-run.py'
+    spec = importlib.util.spec_from_file_location('coretex_install_runner', path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def _load_authority(config_path):
     """The chain-refreshing consumer config, this installation's pinned config, or a snapshot."""
     kind = json.loads(Path(config_path).read_text()).get('format')
@@ -54,11 +64,7 @@ def _load_authority(config_path):
                                    print(message, file=sys.stderr, flush=True))
         return config, authority, 'chain'
     if kind == 'coretex.consumer-pinned/v1':
-        runner = Path(__file__).resolve().parent / 'coretex-run.py'
-        import importlib.util
-        spec = importlib.util.spec_from_file_location('coretex_install_runner', runner)
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
+        module = _runner()
         config = module.read_config(config_path)
         authority, mode = module.load_authority(config)
         return config, authority, mode
@@ -89,7 +95,7 @@ def main():
             health = memory.health()
             if not health['ok'] or not health['serving_module'].get('module_root'):
                 raise RuntimeError('sidecar has no healthy bound module')
-            judge = memory.judge_status()
+            judge = _runner().judge_status_of(memory)
             ready = {'ready': True, 'url': server.url, 'profile': config['profile'],
                      'authority_mode': mode,
                      'module_root': health['serving_module']['module_root'],

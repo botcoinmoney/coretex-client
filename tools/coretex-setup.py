@@ -440,7 +440,8 @@ with memory as bound:
                          print('vector index %d/%d' % (done, total), file=sys.stderr))
     health = bound.health()
     assert health['ok'] and health['serving_module'].get('module_root'), health
-    print(json.dumps(dict(health, authority_mode=mode, judge=bound.judge_status()), default=str))
+    print(json.dumps(dict(health, authority_mode=mode, judge=runner.judge_status_of(bound)),
+                     default=str))
 '''
 
 

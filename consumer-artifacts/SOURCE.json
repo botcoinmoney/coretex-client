@@ -6,7 +6,7 @@
     "source_date_epoch": 1788825600,
     "wheel": "0.46.3"
   },
-  "commit": "jev-one-cut/release-1.1.2-images@c1f0c892",
+  "commit": "jev-one-cut/release-1.1.2-images@f3d5f974",
   "files": {
     "LICENSE": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
     "README.md": "a015cc9f8da97fabe7501b5bd03334ffbb331f42a3ba6bf1135e557935074683",
@@ -16,10 +16,10 @@
     "coretex_consumer/config.py": "ce38c20e235c0620e6eaccf283762f39dd059db74b5de32d9d62075968485ad4",
     "coretex_consumer/current_state.py": "971ae87347a97307245e2822a90683fb34d73cd45cb69b77033209d78bfd3064",
     "coretex_consumer/current_sync.py": "7550284d06df54018784c98de45eb736cb5e0d2cd5b16861da6b4c6ca93aa790",
-    "pyproject.toml": "eb084e6ca4411e58747194290292989c59b0015ba4dfcc22288c9ae2a276013b"
+    "pyproject.toml": "2d54b9cba3b4cc59d549b2ef3ef1bcfbb3edc27b9a2b09519adbb5a68324cf60"
   },
   "format": "coretex.consumer-source/v1",
-  "note": "rebuilt for the 1.1.2 line: the adapter pin is a compatibility RANGE, not a literal version, because the exact adapter an installation runs is decided by the release inventory it installs from",
+  "note": "rebuilt for the 1.1.2 line: the adapter pin is a compatibility RANGE, not a literal version, because the exact adapter an installation runs is decided by the release inventory it installs from; the wheel recorded here is byte-identical to the one this source produces at the coordinator commit named above",
   "path": "coretex-consumer",
   "repository": "https://github.com/botcoinmoney/botcoin-coordinator",
   "wheel": {

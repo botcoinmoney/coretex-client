@@ -63,11 +63,26 @@ def open_memory(config, *, progress=None):
     return authority.open_memory(config['profile'], config['store']), mode
 
 
+def judge_status_of(bound) -> dict:
+    """``judge_status`` where the bound adapter has one; a typed absence where it does not.
+
+    The launcher tools are always the CURRENT client's, but the generation they open may carry
+    an OLDER release's adapter: an installation of 1.1.0, or the generation kept for rollback
+    after an upgrade. ``cap.judge.v1`` reached the adapter in the 1.1.2 line; before it there is
+    no judge to report, which is an ANSWER about that generation, not a crash in the launcher.
+    """
+    probe = getattr(bound, 'judge_status', None)
+    if probe is None:
+        return {'bound': None, 'available': False,
+                'reason': "this generation's adapter has no cap.judge.v1 binding"}
+    return probe()
+
+
 def judge_status(config) -> dict:
     """What the serving process would bind RIGHT NOW, read off a real open of this store."""
     memory, mode = open_memory(config)
     with memory as bound:
-        status = bound.judge_status()
+        status = judge_status_of(bound)
         status['authority_mode'] = mode
         status['profile'] = config['profile']
         status['store'] = config['store']

@@ -2,16 +2,18 @@
 # SPDX-License-Identifier: Apache-2.0
 """The bounded consumer installation check for release 1.1.2 with the optional Jev addon.
 
-It exercises the PUBLIC installer and the GENERATED launcher — never the source tree and never a
-hand-bound adapter — in throw-away installations on a data volume, offline, with a network
-kill-switch armed for every arm that claims "no Jev calls".
+It exercises the PUBLIC installer and the GENERATED launcher — never the source tree, never a
+hand-bound adapter and never an extra wheel — in throw-away installations on a data volume,
+offline, with a network kill-switch armed for every arm that claims "no Jev calls". Every
+installation here is built from RELEASE BYTES ALONE, so every ``CURRENT.json`` it writes reports
+``pure_release: true``.
 
 Two beds:
 
   FRESH    a 1.1.2 installation, populated, then taken through the addon arms.
-  UPGRADE  a POPULATED 1.1.1 installation upgraded to 1.1.2 tools, asserted to keep its
-           memories and open with no re-ingestion, then taken through the same arms, then
-           rolled back.
+  UPGRADE  a POPULATED installation of the PREVIOUS release upgraded to 1.1.2 tools, asserted to
+           keep its memories and open with no re-ingestion, then taken through the same arms,
+           then rolled back.
 
 Arms (each bed): addon absent; addon installed but disabled; enabled with no key; enabled with a
 deterministic FAKE provider; provider failure; provider deadline; disabled and uninstalled after
@@ -177,6 +179,21 @@ class Install:
         self.pip('uninstall', distribution, expect=expect)
 
 
+def file_digest(path: Path) -> dict:
+    raw = path.read_bytes()
+    return {'size': len(raw), 'sha256': sha(raw)}
+
+
+def describe_inventory(path: Path) -> dict:
+    """The generated inventory an arm installed from, by its own bytes and what it pins."""
+    inventory = json.loads(path.read_bytes())
+    return dict(file_digest(path), version=inventory['version'],
+                release_root=inventory['release_root'],
+                source_commit=inventory.get('source_commit'),
+                adapter_wheel=inventory['install']['adapter_wheel'],
+                optional=sorted(inventory.get('optional', {})))
+
+
 def diff_packs(baseline: dict, other: dict):
     changed = []
     for query, row in baseline['packs'].items():
@@ -197,7 +214,16 @@ class Harness:
         self.work = Path(args.work).resolve()
         self.results = {'format': 'coretex.consumer-install-check/v1',
                         'started_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
-                        'release': {}, 'beds': {}, 'checks': []}
+                        'release': {}, 'beds': {}, 'purity': {}, 'checks': []}
+
+    def purity(self, label: str, root: Path) -> dict:
+        """What the generation pointer says about how this installation was built."""
+        pointer = json.loads((root / 'CURRENT.json').read_bytes())
+        row = {'version': pointer['version'], 'release_root': pointer['release_root'],
+               'pure_release': pointer['pure_release'],
+               'extra_wheels': pointer['extra_wheels']}
+        self.results['purity'][label] = row
+        return row
 
     def record(self, bed, arm, name, passed, detail=None):
         row = {'bed': bed, 'arm': arm, 'check': name, 'pass': bool(passed)}
@@ -208,13 +234,13 @@ class Harness:
               file=sys.stderr, flush=True)
         return passed
 
-    def setup(self, target: Path, source: Path, inventory: Path, extra=()):
+    def setup(self, target: Path, source: Path, inventory: Path):
+        """A release-bytes-only installation: the installer's --extra-wheel path is never used,
+        so the generation pointer this writes reports ``pure_release: true``."""
         argv = [sys.executable, str(self.args.installer), '--dir', str(target),
                 '--profile', 'event.schema.v1', '--authority', 'genesis', '--offline',
                 '--source-dir', str(source), '--inventory', str(inventory),
                 '--python', self.args.python]
-        for wheel in extra:
-            argv += ['--extra-wheel', str(wheel)]
         result = subprocess.run(argv, capture_output=True, text=True, timeout=3600)
         if result.returncode:
             raise RuntimeError('setup failed: ' + result.stderr[-3000:])
@@ -357,9 +383,6 @@ class Harness:
 
     # ------------------------------------------------------------------ #
     def refusal_checks(self):
-        extra = []
-        for wheel in ([self.args.candidate_adapter] if self.args.candidate_adapter else []):
-            extra += ['--extra-wheel', str(wheel)]
         """Gap 1: the installer reads the release from ONE generated inventory and refuses a
         digest that does not match; and a tampered cached inventory can never shadow the pin."""
         inventory = json.loads(Path(self.args.inventory_112).read_bytes())
@@ -371,7 +394,7 @@ class Harness:
         tampered.write_text(json.dumps(bad, sort_keys=True, indent=1) + '\n')
         argv = [sys.executable, str(self.args.installer), '--dir', str(self.work / 'refused'),
                 '--authority', 'genesis', '--offline', '--source-dir', self.args.source_112,
-                '--inventory', str(tampered), '--python', self.args.python] + extra
+                '--inventory', str(tampered), '--python', self.args.python]
         result = subprocess.run(argv, capture_output=True, text=True, timeout=3600)
         self.record('refusal', 'digest', 'a wheel digest that differs from the inventory is refused',
                     result.returncode != 0 and 'mismatch' in result.stderr,
@@ -393,7 +416,7 @@ class Harness:
         (target / 'tools/release-inventory.json').write_bytes(b'{"format": "tampered"}\n')
         result = subprocess.run([sys.executable, str(pinned), '--dir', str(target),
                                  '--authority', 'genesis', '--offline', '--source-dir',
-                                 self.args.source_112, '--python', self.args.python] + extra,
+                                 self.args.source_112, '--python', self.args.python],
                                 capture_output=True, text=True, timeout=3600)
         self.record('refusal', 'pin',
                     'a tampered cached inventory never shadows the pinned bytes',
@@ -405,14 +428,21 @@ class Harness:
 
     # ------------------------------------------------------------------ #
     def run(self):
-        extra = [self.args.candidate_adapter] if self.args.candidate_adapter else []
+        self.results['release'] = {
+            '1.1.2': describe_inventory(Path(self.args.inventory_112)),
+            self.args.prev_version: describe_inventory(Path(self.args.inventory_prev)),
+            'addon_wheel': dict(file_digest(Path(self.args.addon_wheel)),
+                                filename=Path(self.args.addon_wheel).name),
+            'fake_judge_wheel': dict(file_digest(Path(self.args.fake_wheel)),
+                                     filename=Path(self.args.fake_wheel).name)}
 
         # ---------------- FRESH ---------------- #
         fresh_root = self.work / 'fresh'
         installed = self.setup(fresh_root, Path(self.args.source_112),
-                               Path(self.args.inventory_112), extra)
+                               Path(self.args.inventory_112))
         fresh = Install(fresh_root, self)
         self.results['beds']['fresh'] = {'install': installed}
+        self.purity('fresh', fresh_root)
         self.record('fresh', 'install', 'fresh install completes on the public installer',
                     installed['ok'] and installed['version'] == '1.1.2', installed['version'])
         fresh.arm_netguard()
@@ -428,11 +458,13 @@ class Harness:
 
         # ---------------- UPGRADE ---------------- #
         upgrade_root = self.work / 'upgrade'
-        before = self.setup(upgrade_root, Path(self.args.source_111),
-                            Path(self.args.inventory_111), extra)
+        before = self.setup(upgrade_root, Path(self.args.source_prev),
+                            Path(self.args.inventory_prev))
         old = Install(upgrade_root, self)
-        self.record('upgrade', 'pre', '1.1.1 installation completes',
-                    before['ok'] and before['version'] == '1.1.1', before['version'])
+        self.purity('upgrade/before', upgrade_root)
+        self.record('upgrade', 'pre', '%s installation completes' % self.args.prev_version,
+                    before['ok'] and before['version'] == self.args.prev_version,
+                    before['version'])
         old.arm_netguard()
         old.ingest_all()
         pre = old.snapshot()
@@ -443,8 +475,6 @@ class Harness:
 
         argv = ['upgrade', '--offline', '--source-dir', self.args.source_112,
                 '--inventory', self.args.inventory_112, '--python', self.args.python]
-        for wheel in extra:
-            argv += ['--extra-wheel', str(wheel)]
         upgraded = old.json_launcher(*argv, timeout=3600)
         self.results['beds']['upgrade']['upgrade'] = upgraded
         self.record('upgrade', 'upgrade', 'upgrade completes and reports 1.1.2',
@@ -453,6 +483,7 @@ class Harness:
                     upgraded['store'] == str(store) and store.exists(), upgraded['store'])
         self.record('upgrade', 'upgrade', 'the installer declares no re-ingestion',
                     upgraded['re_ingestion'] is False and upgraded['store_retained'] is True)
+        self.purity('upgrade/after', upgrade_root)
         old.arm_netguard()
         post = old.snapshot()
         self.results['beds']['upgrade']['post'] = post
@@ -463,7 +494,8 @@ class Harness:
                     post['profile_id'] == pre['profile_id'])
         self.record('upgrade', 'upgrade', 'the serving module is the 1.1.2 generation',
                     post['module_root'] != pre['module_root'],
-                    {'1.1.1': pre['module_root'], '1.1.2': post['module_root']})
+                    {self.args.prev_version: pre['module_root'],
+                     '1.1.2': post['module_root']})
         pointer = json.loads((upgrade_root / 'CURRENT.json').read_bytes())
         self.record('upgrade', 'upgrade', 'the previous generation is kept for rollback',
                     Path(upgraded['previous_generation_kept']).exists())
@@ -472,8 +504,10 @@ class Harness:
 
         rolled = old.json_launcher('rollback', timeout=3600)
         self.results['beds']['upgrade']['rollback'] = rolled
-        self.record('upgrade', 'rollback', 'rollback returns the launcher to 1.1.1',
-                    rolled['version'] == '1.1.1', rolled['version'])
+        self.purity('upgrade/rolled-back', upgrade_root)
+        self.record('upgrade', 'rollback',
+                    'rollback returns the launcher to ' + self.args.prev_version,
+                    rolled['version'] == self.args.prev_version, rolled['version'])
         self.record('upgrade', 'rollback', 'the same store is still served',
                     rolled['store'] == str(store) and rolled['store_retained'])
         old.arm_netguard()
@@ -498,11 +532,12 @@ def main(argv=None) -> int:
     parser.add_argument('--installer', required=True)
     parser.add_argument('--source-112', required=True)
     parser.add_argument('--inventory-112', required=True)
-    parser.add_argument('--source-111', required=True)
-    parser.add_argument('--inventory-111', required=True)
+    parser.add_argument('--source-prev', required=True,
+                        help='source directory for the PREVIOUS release the upgrade starts from')
+    parser.add_argument('--inventory-prev', required=True)
+    parser.add_argument('--prev-version', default='1.1.0')
     parser.add_argument('--addon-wheel', required=True)
     parser.add_argument('--fake-wheel', required=True)
-    parser.add_argument('--candidate-adapter', default=None)
     parser.add_argument('--python', default='/usr/bin/python3.10')
     parser.add_argument('--port', type=int, default=18799)
     parser.add_argument('--out', required=True)
