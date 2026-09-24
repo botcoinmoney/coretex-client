@@ -121,6 +121,19 @@ environment.
   `>=1.1.0`: which adapter an installation runs is decided by the release inventory it installs
   from, not by a literal in the client's metadata.
 
+## The candidate adapter against the shipped suites
+
+With the candidate adapter installed in a 1.1.2 installation's own environment
+(`TMPDIR` on the data volume, because the fixtures hard-link the model bundle):
+
+* `coretex-memory-agent/tests` — **39 passed, 0 failed**, including the retrieval-authority
+  suite that binds the hybrid `conv.pref.v1` profile.
+* `coretex-consumer/tests` — 12 passed, 16 failed, **all pre-existing and unrelated**: those
+  fixtures synthesize releases declaring `runtime_version_min = "1.1.0"`, and `verify_bundle`
+  requires it to equal the installed runtime, so they can only pass against a 1.1.0 runtime.
+  The failures are raised inside `verify_bundle`, not in anything this change touches. The
+  fixtures need carrying forward with the release line.
+
 ## Reproducing
 
 ```sh
