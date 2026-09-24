@@ -1,0 +1,3288 @@
+{
+ "beds": {
+  "fresh": {
+   "baseline": {
+    "event_counts": {
+     "live": 12,
+     "retracted": 0,
+     "total": 12
+    },
+    "module_root": "2efa129a82a21a281d7e1998d243b8f1907fd9044df65931d1e3611e0229e3fc",
+    "packs": {
+     "what did the team decide about the storage budget": {
+      "context_sha256": "b5038ec8174ecd65d146fecb1f6c66eabf755922d1bc9a0afe6621facaabecec",
+      "items": 11,
+      "receipt": {
+       "as_of": null,
+       "at": 0,
+       "counter": {
+        "id": "counter.v1",
+        "version": "1"
+       },
+       "cycle_id": "e2a03aa9760d021302d9c6f01210eaf6",
+       "deterministic_host_work": {
+        "cardinality.m4_candidates": 11,
+        "cardinality.m5_results": 11,
+        "cardinality.m6_selected": 11,
+        "hook.m4_candidates.invocations": 1,
+        "hook.m5_rank.invocations": 1,
+        "hook.m6_pack.invocations": 1,
+        "hook_invocations": 3,
+        "logical_storage_reads": 40,
+        "operation.SELECT.rows_materialized": 83,
+        "operation.SELECT.rows_read": 83,
+        "operation.SELECT.rows_visited": 83,
+        "operation.SELECT.sql_statements": 40,
+        "renderer.consumer_visible_tokens": 357,
+        "renderer.counter_calls": 14,
+        "renderer.counter_input_bytes": 2024,
+        "renderer.escaped_text_input_bytes": 884,
+        "renderer.final_counter_calls": 1,
+        "renderer.final_counter_input_bytes": 1018,
+        "renderer.fragment_counter_calls": 13,
+        "renderer.fragment_counter_input_bytes": 1006,
+        "renderer.items_considered": 11,
+        "renderer.items_rendered": 11,
+        "renderer.rendered_bytes": 1018,
+        "renderer.sidecar_bytes": 5372,
+        "renderer.sidecar_entries": 11,
+        "renderer.visible_bytes": 1018,
+        "rows_materialized": 83,
+        "rows_read": 83,
+        "rows_visited": 83,
+        "scope.hook.cardinality.m5_results": 11,
+        "scope.hook.cardinality.m6_selected": 11,
+        "scope.hook.hook.m5_rank.invocations": 1,
+        "scope.hook.hook.m6_pack.invocations": 1,
+        "scope.hook.hook_invocations": 2,
+        "scope.hook.logical_storage_reads": 24,
+        "scope.hook.operation.SELECT.rows_materialized": 35,
+        "scope.hook.operation.SELECT.rows_read": 35,
+        "scope.hook.operation.SELECT.rows_visited": 35,
+        "scope.hook.operation.SELECT.sql_statements": 24,
+        "scope.hook.rows_materialized": 35,
+        "scope.hook.rows_read": 35,
+        "scope.hook.rows_visited": 35,
+        "scope.hook.sql_statements": 24,
+        "scope.host.cardinality.m4_candidates": 11,
+        "scope.host.hook.m4_candidates.invocations": 1,
+        "scope.host.hook_invocations": 1,
+        "scope.host.logical_storage_reads": 16,
+        "scope.host.operation.SELECT.rows_materialized": 48,
+        "scope.host.operation.SELECT.rows_read": 48,
+        "scope.host.operation.SELECT.rows_visited": 48,
+        "scope.host.operation.SELECT.sql_statements": 16,
+        "scope.host.renderer.consumer_visible_tokens": 357,
+        "scope.host.renderer.counter_calls": 14,
+        "scope.host.renderer.counter_input_bytes": 2024,
+        "scope.host.renderer.escaped_text_input_bytes": 884,
+        "scope.host.renderer.final_counter_calls": 1,
+        "scope.host.renderer.final_counter_input_bytes": 1018,
+        "scope.host.renderer.fragment_counter_calls": 13,
+        "scope.host.renderer.fragment_counter_input_bytes": 1006,
+        "scope.host.renderer.items_considered": 11,
+        "scope.host.renderer.items_rendered": 11,
+        "scope.host.renderer.rendered_bytes": 1018,
+        "scope.host.renderer.sidecar_bytes": 5372,
+        "scope.host.renderer.sidecar_entries": 11,
+        "scope.host.renderer.visible_bytes": 1018,
+        "scope.host.rows_materialized": 48,
+        "scope.host.rows_read": 48,
+        "scope.host.rows_visited": 48,
+        "scope.host.sql_statements": 16,
+        "sql_input_bytes": 3400,
+        "sql_statements": 40
+       },
+       "item_count": 11,
+       "items": [
+        {
+         "citation": "user:m11 [doc fbe45690b754; chunk 1/1; event fb636a5d4cb5; asserted]",
+         "content_sha256": "db70c5ebbb4aa39f74d29ec4704bea2191001170b60b95c81ad510e40cac83c8",
+         "event_id": "fb636a5d4cb539ac95ef3330443d973c",
+         "source": "user:m11",
+         "units": 21
+        },
+        {
+         "citation": "user:m04 [doc 0918b9a08e21; chunk 1/1; event debc191d82a4; asserted]",
+         "content_sha256": "7d86ef80524a080580dcdba8e12bfb2ac720a026fe9022dc6f9c73aa6ed74a0d",
+         "event_id": "debc191d82a4e46ff1285256a0153251",
+         "source": "user:m04",
+         "units": 22
+        },
+        {
+         "citation": "user:m00 [doc 3e973189b99a; chunk 1/1; event e7c9e9ff9e21; asserted]",
+         "content_sha256": "36874d565494087b953e5affbe821cf69480386091a34c7688716b0934ba9d2b",
+         "event_id": "e7c9e9ff9e215c81531944242fe893e1",
+         "source": "user:m00",
+         "units": 23
+        },
+        {
+         "citation": "user:m08 [doc 0ad116061924; chunk 1/1; event f5bb2031ca26; asserted]",
+         "content_sha256": "a9be4b0e8234053306c38fc49c1b2d04b0984e692176bc182f9c38711a18a617",
+         "event_id": "f5bb2031ca26ecc97ee67f0610dbdff7",
+         "source": "user:m08",
+         "units": 22
+        },
+        {
+         "citation": "user:m07 [doc 6a7741707049; chunk 1/1; event c87563e071dd; asserted]",
+         "content_sha256": "ffe6acda51fb0898ca6864681c102b30d9d9c91b56bb8908f0d2bdf95dffc13d",
+         "event_id": "c87563e071ddff7d7a66bbea85eed13f",
+         "source": "user:m07",
+         "units": 22
+        },
+        {
+         "citation": "user:m02 [doc e0ccfc429dd1; chunk 1/1; event ad461b9bf8aa; asserted]",
+         "content_sha256": "950b8063ab84f4b802a1f67a93deb73b27dc8b0059bbc4e90034600cb6eef34e",
+         "event_id": "ad461b9bf8aaaec57fd0c9369bf530ea",
+         "source": "user:m02",
+         "units": 29
+        },
+        {
+         "citation": "user:m05 [doc 0e3bcef85847; chunk 1/1; event b39201dbbe3f; asserted]",
+         "content_sha256": "473fa51221b0c9a34990c1ea9d14538332e26038be787166f75503651e0f84e7",
+         "event_id": "b39201dbbe3fa731ad4ef4be52e5522e",
+         "source": "user:m05",
+         "units": 25
+        },
+        {
+         "citation": "user:m06 [doc a539dadcfb6e; chunk 1/1; event 221b3de9e51e; asserted]",
+         "content_sha256": "924da2a8061d525eecb131b8683153f8915d0eff1766281688367881cabdf684",
+         "event_id": "221b3de9e51edaae06a3c5565e214b9a",
+         "source": "user:m06",
+         "units": 27
+        },
+        {
+         "citation": "user:m03 [doc 505fce84d841; chunk 1/1; event 71200b95c193; asserted]",
+         "content_sha256": "d289760c5f00ff57652fd4750c622c9250a6a7237fa70a1084d6eac193ed9064",
+         "event_id": "71200b95c1938007faf66e128887a3b9",
+         "source": "user:m03",
+         "units": 25
+        },
+        {
+         "citation": "user:m01 [doc bb8195ab22af; chunk 1/1; event 49e3a1c38e88; asserted]",
+         "content_sha256": "b892a28da05f1734b5fdc3d26c711aa718e012274d3bd06942ec48aa0ba51069",
+         "event_id": "49e3a1c38e881a4a47df2fddbdb0a897",
+         "source": "user:m01",
+         "units": 21
+        },
+        {
+         "citation": "user:m09 [doc c92017d14c49; chunk 1/1; event 9063b98dfd7a; asserted]",
+         "content_sha256": "175fe882f6694ba8a5a4bcdbd47b50cb2663cc2e35374aa8f5666d1cc899e277",
+         "event_id": "9063b98dfd7ac4d0c52c5da8748639cb",
+         "source": "user:m09",
+         "units": 25
+        }
+       ],
+       "privacy": "content-free",
+       "query": "what did the team decide about the storage budget",
+       "renderer": {
+        "cycle_id": "e2a03aa9760d021302d9c6f01210eaf6",
+        "id": "consumer-context.compact-citations.v2",
+        "operations": {
+         "algorithm": "additive-fragments.v1",
+         "counter_calls": 14,
+         "counter_input_bytes": 2024,
+         "escaped_text_input_bytes": 884,
+         "final_counter_calls": 1,
+         "final_counter_input_bytes": 1018,
+         "fragment_counter_calls": 13,
+         "fragment_counter_input_bytes": 1006,
+         "items_considered": 11,
+         "items_rendered": 11,
+         "prefix_renders": 0,
+         "sidecar_bytes": 5372,
+         "sidecar_entries": 11,
+         "visible_bytes": 1018
+        },
+        "provenance_root": "3e89dbf63e944c9bcfab73fab8af433caa19547978c6615ccd7fcef3ecfb2ed8",
+        "rendered_bytes": 1018,
+        "rendered_sha256": "b5038ec8174ecd65d146fecb1f6c66eabf755922d1bc9a0afe6621facaabecec",
+        "sidecar_sha256": "ec14353e01ccdb994f96caa6f09b0e7b1d9f6bf5290f7de6afd87b55601eed21"
+       },
+       "scope": {
+        "agent": "default",
+        "profile": "event.schema.v1",
+        "tenant": "default",
+        "user": "default"
+       },
+       "serving_module": {
+        "abi_version": 2,
+        "capabilities": [
+         "cap.text.v1",
+         "cap.lexicon.v1"
+        ],
+        "hooks": {
+         "m5_rank": "1",
+         "m6_pack": "1"
+        },
+        "module_root": "2efa129a82a21a281d7e1998d243b8f1907fd9044df65931d1e3611e0229e3fc",
+        "module_sha256": "135b66c56251b8496377188afd125ccf010d60232730c92aef0cbdb704359e26",
+        "policy_id": "slayston-bridgefill-event.schema.v1",
+        "profile": "event.schema.v1"
+       },
+       "token_budget": 800,
+       "total_units": 357,
+       "truncated": false
+      },
+      "receipt_sha256": "5cc9992bb08ed2e564082644d6a2137ca1947eb20e117e6706ff712d5f5d959f"
+     },
+     "which vendor was chosen and why": {
+      "context_sha256": "6494b9f8ed6fb1c999eed0cbd8807f1290d2ba18ee627e7923d584d42822edf3",
+      "items": 5,
+      "receipt": {
+       "as_of": null,
+       "at": 0,
+       "counter": {
+        "id": "counter.v1",
+        "version": "1"
+       },
+       "cycle_id": "508f45983f089ec023d3a795c75a925b",
+       "deterministic_host_work": {
+        "cardinality.m4_candidates": 5,
+        "cardinality.m5_results": 5,
+        "cardinality.m6_selected": 5,
+        "hook.m4_candidates.invocations": 1,
+        "hook.m5_rank.invocations": 1,
+        "hook.m6_pack.invocations": 1,
+        "hook_invocations": 3,
+        "logical_storage_reads": 32,
+        "operation.SELECT.rows_materialized": 58,
+        "operation.SELECT.rows_read": 58,
+        "operation.SELECT.rows_visited": 58,
+        "operation.SELECT.sql_statements": 32,
+        "renderer.consumer_visible_tokens": 170,
+        "renderer.counter_calls": 8,
+        "renderer.counter_input_bytes": 978,
+        "renderer.escaped_text_input_bytes": 425,
+        "renderer.final_counter_calls": 1,
+        "renderer.final_counter_input_bytes": 492,
+        "renderer.fragment_counter_calls": 7,
+        "renderer.fragment_counter_input_bytes": 486,
+        "renderer.items_considered": 5,
+        "renderer.items_rendered": 5,
+        "renderer.rendered_bytes": 492,
+        "renderer.sidecar_bytes": 2550,
+        "renderer.sidecar_entries": 5,
+        "renderer.visible_bytes": 492,
+        "rows_materialized": 58,
+        "rows_read": 58,
+        "rows_visited": 58,
+        "scope.hook.cardinality.m5_results": 5,
+        "scope.hook.cardinality.m6_selected": 5,
+        "scope.hook.hook.m5_rank.invocations": 1,
+        "scope.hook.hook.m6_pack.invocations": 1,
+        "scope.hook.hook_invocations": 2,
+        "scope.hook.logical_storage_reads": 18,
+        "scope.hook.operation.SELECT.rows_materialized": 29,
+        "scope.hook.operation.SELECT.rows_read": 29,
+        "scope.hook.operation.SELECT.rows_visited": 29,
+        "scope.hook.operation.SELECT.sql_statements": 18,
+        "scope.hook.rows_materialized": 29,
+        "scope.hook.rows_read": 29,
+        "scope.hook.rows_visited": 29,
+        "scope.hook.sql_statements": 18,
+        "scope.host.cardinality.m4_candidates": 5,
+        "scope.host.hook.m4_candidates.invocations": 1,
+        "scope.host.hook_invocations": 1,
+        "scope.host.logical_storage_reads": 14,
+        "scope.host.operation.SELECT.rows_materialized": 29,
+        "scope.host.operation.SELECT.rows_read": 29,
+        "scope.host.operation.SELECT.rows_visited": 29,
+        "scope.host.operation.SELECT.sql_statements": 14,
+        "scope.host.renderer.consumer_visible_tokens": 170,
+        "scope.host.renderer.counter_calls": 8,
+        "scope.host.renderer.counter_input_bytes": 978,
+        "scope.host.renderer.escaped_text_input_bytes": 425,
+        "scope.host.renderer.final_counter_calls": 1,
+        "scope.host.renderer.final_counter_input_bytes": 492,
+        "scope.host.renderer.fragment_counter_calls": 7,
+        "scope.host.renderer.fragment_counter_input_bytes": 486,
+        "scope.host.renderer.items_considered": 5,
+        "scope.host.renderer.items_rendered": 5,
+        "scope.host.renderer.rendered_bytes": 492,
+        "scope.host.renderer.sidecar_bytes": 2550,
+        "scope.host.renderer.sidecar_entries": 5,
+        "scope.host.renderer.visible_bytes": 492,
+        "scope.host.rows_materialized": 29,
+        "scope.host.rows_read": 29,
+        "scope.host.rows_visited": 29,
+        "scope.host.sql_statements": 14,
+        "sql_input_bytes": 2690,
+        "sql_statements": 32
+       },
+       "item_count": 5,
+       "items": [
+        {
+         "citation": "user:m03 [doc 505fce84d841; chunk 1/1; event 71200b95c193; asserted]",
+         "content_sha256": "d289760c5f00ff57652fd4750c622c9250a6a7237fa70a1084d6eac193ed9064",
+         "event_id": "71200b95c1938007faf66e128887a3b9",
+         "source": "user:m03",
+         "units": 25
+        },
+        {
+         "citation": "user:m09 [doc c92017d14c49; chunk 1/1; event 9063b98dfd7a; asserted]",
+         "content_sha256": "175fe882f6694ba8a5a4bcdbd47b50cb2663cc2e35374aa8f5666d1cc899e277",
+         "event_id": "9063b98dfd7ac4d0c52c5da8748639cb",
+         "source": "user:m09",
+         "units": 25
+        },
+        {
+         "citation": "user:m11 [doc fbe45690b754; chunk 1/1; event fb636a5d4cb5; asserted]",
+         "content_sha256": "db70c5ebbb4aa39f74d29ec4704bea2191001170b60b95c81ad510e40cac83c8",
+         "event_id": "fb636a5d4cb539ac95ef3330443d973c",
+         "source": "user:m11",
+         "units": 21
+        },
+        {
+         "citation": "user:m05 [doc 0e3bcef85847; chunk 1/1; event b39201dbbe3f; asserted]",
+         "content_sha256": "473fa51221b0c9a34990c1ea9d14538332e26038be787166f75503651e0f84e7",
+         "event_id": "b39201dbbe3fa731ad4ef4be52e5522e",
+         "source": "user:m05",
+         "units": 25
+        },
+        {
+         "citation": "user:m06 [doc a539dadcfb6e; chunk 1/1; event 221b3de9e51e; asserted]",
+         "content_sha256": "924da2a8061d525eecb131b8683153f8915d0eff1766281688367881cabdf684",
+         "event_id": "221b3de9e51edaae06a3c5565e214b9a",
+         "source": "user:m06",
+         "units": 27
+        }
+       ],
+       "privacy": "content-free",
+       "query": "which vendor was chosen and why",
+       "renderer": {
+        "cycle_id": "508f45983f089ec023d3a795c75a925b",
+        "id": "consumer-context.compact-citations.v2",
+        "operations": {
+         "algorithm": "additive-fragments.v1",
+         "counter_calls": 8,
+         "counter_input_bytes": 978,
+         "escaped_text_input_bytes": 425,
+         "final_counter_calls": 1,
+         "final_counter_input_bytes": 492,
+         "fragment_counter_calls": 7,
+         "fragment_counter_input_bytes": 486,
+         "items_considered": 5,
+         "items_rendered": 5,
+         "prefix_renders": 0,
+         "sidecar_bytes": 2550,
+         "sidecar_entries": 5,
+         "visible_bytes": 492
+        },
+        "provenance_root": "529e4e9666190949f3054f267a490bc25d6e2b32eff6af602912b4872400053c",
+        "rendered_bytes": 492,
+        "rendered_sha256": "6494b9f8ed6fb1c999eed0cbd8807f1290d2ba18ee627e7923d584d42822edf3",
+        "sidecar_sha256": "4e27603f0bcdbbe5272086fdd782b0da60adbf37df42c18cbc2261f43e56df02"
+       },
+       "scope": {
+        "agent": "default",
+        "profile": "event.schema.v1",
+        "tenant": "default",
+        "user": "default"
+       },
+       "serving_module": {
+        "abi_version": 2,
+        "capabilities": [
+         "cap.text.v1",
+         "cap.lexicon.v1"
+        ],
+        "hooks": {
+         "m5_rank": "1",
+         "m6_pack": "1"
+        },
+        "module_root": "2efa129a82a21a281d7e1998d243b8f1907fd9044df65931d1e3611e0229e3fc",
+        "module_sha256": "135b66c56251b8496377188afd125ccf010d60232730c92aef0cbdb704359e26",
+        "policy_id": "slayston-bridgefill-event.schema.v1",
+        "profile": "event.schema.v1"
+       },
+       "token_budget": 800,
+       "total_units": 170,
+       "truncated": false
+      },
+      "receipt_sha256": "ac36c1866a02849f69896fd63a90552bbe46fd0da044c0768218559a06900d08"
+     },
+     "who reported the checkout latency regression": {
+      "context_sha256": "95693088f82b73d73e6d7d757c78183b69e85aceb4ceabed0fbd04e0bc1e5764",
+      "items": 11,
+      "receipt": {
+       "as_of": null,
+       "at": 0,
+       "counter": {
+        "id": "counter.v1",
+        "version": "1"
+       },
+       "cycle_id": "7e97d2cac812273291a80d0ebab90c89",
+       "deterministic_host_work": {
+        "cardinality.m4_candidates": 11,
+        "cardinality.m5_results": 11,
+        "cardinality.m6_selected": 11,
+        "hook.m4_candidates.invocations": 1,
+        "hook.m5_rank.invocations": 1,
+        "hook.m6_pack.invocations": 1,
+        "hook_invocations": 3,
+        "logical_storage_reads": 38,
+        "operation.SELECT.rows_materialized": 82,
+        "operation.SELECT.rows_read": 82,
+        "operation.SELECT.rows_visited": 82,
+        "operation.SELECT.sql_statements": 38,
+        "renderer.consumer_visible_tokens": 357,
+        "renderer.counter_calls": 14,
+        "renderer.counter_input_bytes": 2024,
+        "renderer.escaped_text_input_bytes": 884,
+        "renderer.final_counter_calls": 1,
+        "renderer.final_counter_input_bytes": 1018,
+        "renderer.fragment_counter_calls": 13,
+        "renderer.fragment_counter_input_bytes": 1006,
+        "renderer.items_considered": 11,
+        "renderer.items_rendered": 11,
+        "renderer.rendered_bytes": 1018,
+        "renderer.sidecar_bytes": 5372,
+        "renderer.sidecar_entries": 11,
+        "renderer.visible_bytes": 1018,
+        "rows_materialized": 82,
+        "rows_read": 82,
+        "rows_visited": 82,
+        "scope.hook.cardinality.m5_results": 11,
+        "scope.hook.cardinality.m6_selected": 11,
+        "scope.hook.hook.m5_rank.invocations": 1,
+        "scope.hook.hook.m6_pack.invocations": 1,
+        "scope.hook.hook_invocations": 2,
+        "scope.hook.logical_storage_reads": 24,
+        "scope.hook.operation.SELECT.rows_materialized": 35,
+        "scope.hook.operation.SELECT.rows_read": 35,
+        "scope.hook.operation.SELECT.rows_visited": 35,
+        "scope.hook.operation.SELECT.sql_statements": 24,
+        "scope.hook.rows_materialized": 35,
+        "scope.hook.rows_read": 35,
+        "scope.hook.rows_visited": 35,
+        "scope.hook.sql_statements": 24,
+        "scope.host.cardinality.m4_candidates": 11,
+        "scope.host.hook.m4_candidates.invocations": 1,
+        "scope.host.hook_invocations": 1,
+        "scope.host.logical_storage_reads": 14,
+        "scope.host.operation.SELECT.rows_materialized": 47,
+        "scope.host.operation.SELECT.rows_read": 47,
+        "scope.host.operation.SELECT.rows_visited": 47,
+        "scope.host.operation.SELECT.sql_statements": 14,
+        "scope.host.renderer.consumer_visible_tokens": 357,
+        "scope.host.renderer.counter_calls": 14,
+        "scope.host.renderer.counter_input_bytes": 2024,
+        "scope.host.renderer.escaped_text_input_bytes": 884,
+        "scope.host.renderer.final_counter_calls": 1,
+        "scope.host.renderer.final_counter_input_bytes": 1018,
+        "scope.host.renderer.fragment_counter_calls": 13,
+        "scope.host.renderer.fragment_counter_input_bytes": 1006,
+        "scope.host.renderer.items_considered": 11,
+        "scope.host.renderer.items_rendered": 11,
+        "scope.host.renderer.rendered_bytes": 1018,
+        "scope.host.renderer.sidecar_bytes": 5372,
+        "scope.host.renderer.sidecar_entries": 11,
+        "scope.host.renderer.visible_bytes": 1018,
+        "scope.host.rows_materialized": 47,
+        "scope.host.rows_read": 47,
+        "scope.host.rows_visited": 47,
+        "scope.host.sql_statements": 14,
+        "sql_input_bytes": 3044,
+        "sql_statements": 38
+       },
+       "item_count": 11,
+       "items": [
+        {
+         "citation": "user:m01 [doc bb8195ab22af; chunk 1/1; event 49e3a1c38e88; asserted]",
+         "content_sha256": "b892a28da05f1734b5fdc3d26c711aa718e012274d3bd06942ec48aa0ba51069",
+         "event_id": "49e3a1c38e881a4a47df2fddbdb0a897",
+         "source": "user:m01",
+         "units": 21
+        },
+        {
+         "citation": "user:m05 [doc 0e3bcef85847; chunk 1/1; event b39201dbbe3f; asserted]",
+         "content_sha256": "473fa51221b0c9a34990c1ea9d14538332e26038be787166f75503651e0f84e7",
+         "event_id": "b39201dbbe3fa731ad4ef4be52e5522e",
+         "source": "user:m05",
+         "units": 25
+        },
+        {
+         "citation": "user:m09 [doc c92017d14c49; chunk 1/1; event 9063b98dfd7a; asserted]",
+         "content_sha256": "175fe882f6694ba8a5a4bcdbd47b50cb2663cc2e35374aa8f5666d1cc899e277",
+         "event_id": "9063b98dfd7ac4d0c52c5da8748639cb",
+         "source": "user:m09",
+         "units": 25
+        },
+        {
+         "citation": "user:m02 [doc e0ccfc429dd1; chunk 1/1; event ad461b9bf8aa; asserted]",
+         "content_sha256": "950b8063ab84f4b802a1f67a93deb73b27dc8b0059bbc4e90034600cb6eef34e",
+         "event_id": "ad461b9bf8aaaec57fd0c9369bf530ea",
+         "source": "user:m02",
+         "units": 29
+        },
+        {
+         "citation": "user:m07 [doc 6a7741707049; chunk 1/1; event c87563e071dd; asserted]",
+         "content_sha256": "ffe6acda51fb0898ca6864681c102b30d9d9c91b56bb8908f0d2bdf95dffc13d",
+         "event_id": "c87563e071ddff7d7a66bbea85eed13f",
+         "source": "user:m07",
+         "units": 22
+        },
+        {
+         "citation": "user:m11 [doc fbe45690b754; chunk 1/1; event fb636a5d4cb5; asserted]",
+         "content_sha256": "db70c5ebbb4aa39f74d29ec4704bea2191001170b60b95c81ad510e40cac83c8",
+         "event_id": "fb636a5d4cb539ac95ef3330443d973c",
+         "source": "user:m11",
+         "units": 21
+        },
+        {
+         "citation": "user:m06 [doc a539dadcfb6e; chunk 1/1; event 221b3de9e51e; asserted]",
+         "content_sha256": "924da2a8061d525eecb131b8683153f8915d0eff1766281688367881cabdf684",
+         "event_id": "221b3de9e51edaae06a3c5565e214b9a",
+         "source": "user:m06",
+         "units": 27
+        },
+        {
+         "citation": "user:m04 [doc 0918b9a08e21; chunk 1/1; event debc191d82a4; asserted]",
+         "content_sha256": "7d86ef80524a080580dcdba8e12bfb2ac720a026fe9022dc6f9c73aa6ed74a0d",
+         "event_id": "debc191d82a4e46ff1285256a0153251",
+         "source": "user:m04",
+         "units": 22
+        },
+        {
+         "citation": "user:m00 [doc 3e973189b99a; chunk 1/1; event e7c9e9ff9e21; asserted]",
+         "content_sha256": "36874d565494087b953e5affbe821cf69480386091a34c7688716b0934ba9d2b",
+         "event_id": "e7c9e9ff9e215c81531944242fe893e1",
+         "source": "user:m00",
+         "units": 23
+        },
+        {
+         "citation": "user:m03 [doc 505fce84d841; chunk 1/1; event 71200b95c193; asserted]",
+         "content_sha256": "d289760c5f00ff57652fd4750c622c9250a6a7237fa70a1084d6eac193ed9064",
+         "event_id": "71200b95c1938007faf66e128887a3b9",
+         "source": "user:m03",
+         "units": 25
+        },
+        {
+         "citation": "user:m08 [doc 0ad116061924; chunk 1/1; event f5bb2031ca26; asserted]",
+         "content_sha256": "a9be4b0e8234053306c38fc49c1b2d04b0984e692176bc182f9c38711a18a617",
+         "event_id": "f5bb2031ca26ecc97ee67f0610dbdff7",
+         "source": "user:m08",
+         "units": 22
+        }
+       ],
+       "privacy": "content-free",
+       "query": "who reported the checkout latency regression",
+       "renderer": {
+        "cycle_id": "7e97d2cac812273291a80d0ebab90c89",
+        "id": "consumer-context.compact-citations.v2",
+        "operations": {
+         "algorithm": "additive-fragments.v1",
+         "counter_calls": 14,
+         "counter_input_bytes": 2024,
+         "escaped_text_input_bytes": 884,
+         "final_counter_calls": 1,
+         "final_counter_input_bytes": 1018,
+         "fragment_counter_calls": 13,
+         "fragment_counter_input_bytes": 1006,
+         "items_considered": 11,
+         "items_rendered": 11,
+         "prefix_renders": 0,
+         "sidecar_bytes": 5372,
+         "sidecar_entries": 11,
+         "visible_bytes": 1018
+        },
+        "provenance_root": "21c74331ebaded5cafcdddc1e274ec8940a7b680cb84f334e5468489bd60c41b",
+        "rendered_bytes": 1018,
+        "rendered_sha256": "95693088f82b73d73e6d7d757c78183b69e85aceb4ceabed0fbd04e0bc1e5764",
+        "sidecar_sha256": "429dc4733542d7184b1aa40d528f7eb4e5c4daaa617ff622b6a134072bd8f0a5"
+       },
+       "scope": {
+        "agent": "default",
+        "profile": "event.schema.v1",
+        "tenant": "default",
+        "user": "default"
+       },
+       "serving_module": {
+        "abi_version": 2,
+        "capabilities": [
+         "cap.text.v1",
+         "cap.lexicon.v1"
+        ],
+        "hooks": {
+         "m5_rank": "1",
+         "m6_pack": "1"
+        },
+        "module_root": "2efa129a82a21a281d7e1998d243b8f1907fd9044df65931d1e3611e0229e3fc",
+        "module_sha256": "135b66c56251b8496377188afd125ccf010d60232730c92aef0cbdb704359e26",
+        "policy_id": "slayston-bridgefill-event.schema.v1",
+        "profile": "event.schema.v1"
+       },
+       "token_budget": 800,
+       "total_units": 357,
+       "truncated": false
+      },
+      "receipt_sha256": "2e3a0bf65399dd7289eaa7982fb96f964b67dd4b979237c2b23341d905f487c1"
+     }
+    },
+    "profile_id": "event.schema.v1"
+   },
+   "install": {
+    "authority_mode": "genesis",
+    "command": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/fresh/bin/coretex",
+    "config": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/fresh/consumer.json",
+    "epoch": null,
+    "extra_wheels": [
+     {
+      "filename": "coretex_memory_agent-1.1.2+consumerfix1-py3-none-any.whl",
+      "sha256": "39718563c1f9c85a6eb3d2eef61b563daafa9a8541ae6cdbe62beee2a3f144c6",
+      "size": 71719
+     }
+    ],
+    "frontier_root": "61dc53eaa635564527c599677c0b979b670d4482c380647ce60cf5e18334a1a5",
+    "module_root": "2efa129a82a21a281d7e1998d243b8f1907fd9044df65931d1e3611e0229e3fc",
+    "ok": true,
+    "operation": "install",
+    "profile": "event.schema.v1",
+    "release_root": "8703e1ca880fe2abdafa4d758eb3e813fe651bce993c5e66c2cb2d4f30aa827e",
+    "store": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/fresh/memory.db",
+    "store_retained": false,
+    "version": "1.1.2"
+   },
+   "sidecar": {
+    "ready": {
+     "authority_mode": "genesis",
+     "judge": {
+      "available": true,
+      "bound": true,
+      "reason": null
+     },
+     "module_root": "2efa129a82a21a281d7e1998d243b8f1907fd9044df65931d1e3611e0229e3fc",
+     "profile": "event.schema.v1",
+     "ready": true,
+     "url": "http://127.0.0.1:18799"
+    },
+    "status": {
+     "addon_installed": false,
+     "bound": {
+      "available": true,
+      "bound": true,
+      "descriptor_root": "a542b636a5bfdec656e87250f9df45c0946a56c090559eca30dfd2c564e4e237",
+      "provider_id": "judge.provider.fake",
+      "reason": null,
+      "requested": true,
+      "scope_id": "agent=default|profile=event.schema.v1|tenant=default|user=default",
+      "store_id": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/fresh/memory.db"
+     },
+     "config_path": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/fresh/.jev/jev.json",
+     "configured": {
+      "effective": true,
+      "key_available": true,
+      "key_source": "key_file",
+      "reason": "enabled with a usable key",
+      "requested": true
+     },
+     "control": "coretex jev enable|disable",
+     "install": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/fresh",
+     "key_path": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/fresh/.jev/jev.key",
+     "probe": "running-sidecar",
+     "provider_attached": true,
+     "restart_required": false,
+     "sets": {
+      "CORETEX_JEV_CONFIG": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/fresh/.jev/jev.json",
+      "CORETEX_JEV_ENABLED": "1",
+      "CORETEX_JUDGE_ENABLED": "1"
+     },
+     "sidecar": {
+      "pid": 1648243,
+      "started_at": "2026-09-24T19:29:27Z",
+      "url": "http://127.0.0.1:18799"
+     },
+     "summary": "a judgment provider IS attached to this store"
+    }
+   }
+  },
+  "upgrade": {
+   "install_1_1_1": {
+    "authority_mode": "genesis",
+    "command": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/upgrade/bin/coretex",
+    "config": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/upgrade/consumer.json",
+    "epoch": null,
+    "extra_wheels": [
+     {
+      "filename": "coretex_memory_agent-1.1.2+consumerfix1-py3-none-any.whl",
+      "sha256": "39718563c1f9c85a6eb3d2eef61b563daafa9a8541ae6cdbe62beee2a3f144c6",
+      "size": 71719
+     }
+    ],
+    "frontier_root": "c54212b84ae42c3c84f08f324a69963f197108f9ab88122a61a14bd7a20216e6",
+    "module_root": "2e42a4fccdd9bef401ba63f0b2a4cf3ae90ccd13d0f67fb0ab2549785820444f",
+    "ok": true,
+    "operation": "install",
+    "profile": "event.schema.v1",
+    "release_root": "7beda14d3957d4bf63b38f2f4c39c7fa653970a697eb9c3b1856c3d3c59136c2",
+    "store": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/upgrade/memory.db",
+    "store_retained": false,
+    "version": "1.1.1"
+   },
+   "post": {
+    "event_counts": {
+     "live": 12,
+     "retracted": 0,
+     "total": 12
+    },
+    "module_root": "2efa129a82a21a281d7e1998d243b8f1907fd9044df65931d1e3611e0229e3fc",
+    "packs": {
+     "what did the team decide about the storage budget": {
+      "context_sha256": "b5038ec8174ecd65d146fecb1f6c66eabf755922d1bc9a0afe6621facaabecec",
+      "items": 11,
+      "receipt": {
+       "as_of": null,
+       "at": 0,
+       "counter": {
+        "id": "counter.v1",
+        "version": "1"
+       },
+       "cycle_id": "e2a03aa9760d021302d9c6f01210eaf6",
+       "deterministic_host_work": {
+        "cardinality.m4_candidates": 11,
+        "cardinality.m5_results": 11,
+        "cardinality.m6_selected": 11,
+        "hook.m4_candidates.invocations": 1,
+        "hook.m5_rank.invocations": 1,
+        "hook.m6_pack.invocations": 1,
+        "hook_invocations": 3,
+        "logical_storage_reads": 40,
+        "operation.SELECT.rows_materialized": 83,
+        "operation.SELECT.rows_read": 83,
+        "operation.SELECT.rows_visited": 83,
+        "operation.SELECT.sql_statements": 40,
+        "renderer.consumer_visible_tokens": 357,
+        "renderer.counter_calls": 14,
+        "renderer.counter_input_bytes": 2024,
+        "renderer.escaped_text_input_bytes": 884,
+        "renderer.final_counter_calls": 1,
+        "renderer.final_counter_input_bytes": 1018,
+        "renderer.fragment_counter_calls": 13,
+        "renderer.fragment_counter_input_bytes": 1006,
+        "renderer.items_considered": 11,
+        "renderer.items_rendered": 11,
+        "renderer.rendered_bytes": 1018,
+        "renderer.sidecar_bytes": 5372,
+        "renderer.sidecar_entries": 11,
+        "renderer.visible_bytes": 1018,
+        "rows_materialized": 83,
+        "rows_read": 83,
+        "rows_visited": 83,
+        "scope.hook.cardinality.m5_results": 11,
+        "scope.hook.cardinality.m6_selected": 11,
+        "scope.hook.hook.m5_rank.invocations": 1,
+        "scope.hook.hook.m6_pack.invocations": 1,
+        "scope.hook.hook_invocations": 2,
+        "scope.hook.logical_storage_reads": 24,
+        "scope.hook.operation.SELECT.rows_materialized": 35,
+        "scope.hook.operation.SELECT.rows_read": 35,
+        "scope.hook.operation.SELECT.rows_visited": 35,
+        "scope.hook.operation.SELECT.sql_statements": 24,
+        "scope.hook.rows_materialized": 35,
+        "scope.hook.rows_read": 35,
+        "scope.hook.rows_visited": 35,
+        "scope.hook.sql_statements": 24,
+        "scope.host.cardinality.m4_candidates": 11,
+        "scope.host.hook.m4_candidates.invocations": 1,
+        "scope.host.hook_invocations": 1,
+        "scope.host.logical_storage_reads": 16,
+        "scope.host.operation.SELECT.rows_materialized": 48,
+        "scope.host.operation.SELECT.rows_read": 48,
+        "scope.host.operation.SELECT.rows_visited": 48,
+        "scope.host.operation.SELECT.sql_statements": 16,
+        "scope.host.renderer.consumer_visible_tokens": 357,
+        "scope.host.renderer.counter_calls": 14,
+        "scope.host.renderer.counter_input_bytes": 2024,
+        "scope.host.renderer.escaped_text_input_bytes": 884,
+        "scope.host.renderer.final_counter_calls": 1,
+        "scope.host.renderer.final_counter_input_bytes": 1018,
+        "scope.host.renderer.fragment_counter_calls": 13,
+        "scope.host.renderer.fragment_counter_input_bytes": 1006,
+        "scope.host.renderer.items_considered": 11,
+        "scope.host.renderer.items_rendered": 11,
+        "scope.host.renderer.rendered_bytes": 1018,
+        "scope.host.renderer.sidecar_bytes": 5372,
+        "scope.host.renderer.sidecar_entries": 11,
+        "scope.host.renderer.visible_bytes": 1018,
+        "scope.host.rows_materialized": 48,
+        "scope.host.rows_read": 48,
+        "scope.host.rows_visited": 48,
+        "scope.host.sql_statements": 16,
+        "sql_input_bytes": 3400,
+        "sql_statements": 40
+       },
+       "item_count": 11,
+       "items": [
+        {
+         "citation": "user:m11 [doc fbe45690b754; chunk 1/1; event fb636a5d4cb5; asserted]",
+         "content_sha256": "db70c5ebbb4aa39f74d29ec4704bea2191001170b60b95c81ad510e40cac83c8",
+         "event_id": "fb636a5d4cb539ac95ef3330443d973c",
+         "source": "user:m11",
+         "units": 21
+        },
+        {
+         "citation": "user:m04 [doc 0918b9a08e21; chunk 1/1; event debc191d82a4; asserted]",
+         "content_sha256": "7d86ef80524a080580dcdba8e12bfb2ac720a026fe9022dc6f9c73aa6ed74a0d",
+         "event_id": "debc191d82a4e46ff1285256a0153251",
+         "source": "user:m04",
+         "units": 22
+        },
+        {
+         "citation": "user:m00 [doc 3e973189b99a; chunk 1/1; event e7c9e9ff9e21; asserted]",
+         "content_sha256": "36874d565494087b953e5affbe821cf69480386091a34c7688716b0934ba9d2b",
+         "event_id": "e7c9e9ff9e215c81531944242fe893e1",
+         "source": "user:m00",
+         "units": 23
+        },
+        {
+         "citation": "user:m08 [doc 0ad116061924; chunk 1/1; event f5bb2031ca26; asserted]",
+         "content_sha256": "a9be4b0e8234053306c38fc49c1b2d04b0984e692176bc182f9c38711a18a617",
+         "event_id": "f5bb2031ca26ecc97ee67f0610dbdff7",
+         "source": "user:m08",
+         "units": 22
+        },
+        {
+         "citation": "user:m07 [doc 6a7741707049; chunk 1/1; event c87563e071dd; asserted]",
+         "content_sha256": "ffe6acda51fb0898ca6864681c102b30d9d9c91b56bb8908f0d2bdf95dffc13d",
+         "event_id": "c87563e071ddff7d7a66bbea85eed13f",
+         "source": "user:m07",
+         "units": 22
+        },
+        {
+         "citation": "user:m02 [doc e0ccfc429dd1; chunk 1/1; event ad461b9bf8aa; asserted]",
+         "content_sha256": "950b8063ab84f4b802a1f67a93deb73b27dc8b0059bbc4e90034600cb6eef34e",
+         "event_id": "ad461b9bf8aaaec57fd0c9369bf530ea",
+         "source": "user:m02",
+         "units": 29
+        },
+        {
+         "citation": "user:m05 [doc 0e3bcef85847; chunk 1/1; event b39201dbbe3f; asserted]",
+         "content_sha256": "473fa51221b0c9a34990c1ea9d14538332e26038be787166f75503651e0f84e7",
+         "event_id": "b39201dbbe3fa731ad4ef4be52e5522e",
+         "source": "user:m05",
+         "units": 25
+        },
+        {
+         "citation": "user:m06 [doc a539dadcfb6e; chunk 1/1; event 221b3de9e51e; asserted]",
+         "content_sha256": "924da2a8061d525eecb131b8683153f8915d0eff1766281688367881cabdf684",
+         "event_id": "221b3de9e51edaae06a3c5565e214b9a",
+         "source": "user:m06",
+         "units": 27
+        },
+        {
+         "citation": "user:m03 [doc 505fce84d841; chunk 1/1; event 71200b95c193; asserted]",
+         "content_sha256": "d289760c5f00ff57652fd4750c622c9250a6a7237fa70a1084d6eac193ed9064",
+         "event_id": "71200b95c1938007faf66e128887a3b9",
+         "source": "user:m03",
+         "units": 25
+        },
+        {
+         "citation": "user:m01 [doc bb8195ab22af; chunk 1/1; event 49e3a1c38e88; asserted]",
+         "content_sha256": "b892a28da05f1734b5fdc3d26c711aa718e012274d3bd06942ec48aa0ba51069",
+         "event_id": "49e3a1c38e881a4a47df2fddbdb0a897",
+         "source": "user:m01",
+         "units": 21
+        },
+        {
+         "citation": "user:m09 [doc c92017d14c49; chunk 1/1; event 9063b98dfd7a; asserted]",
+         "content_sha256": "175fe882f6694ba8a5a4bcdbd47b50cb2663cc2e35374aa8f5666d1cc899e277",
+         "event_id": "9063b98dfd7ac4d0c52c5da8748639cb",
+         "source": "user:m09",
+         "units": 25
+        }
+       ],
+       "privacy": "content-free",
+       "query": "what did the team decide about the storage budget",
+       "renderer": {
+        "cycle_id": "e2a03aa9760d021302d9c6f01210eaf6",
+        "id": "consumer-context.compact-citations.v2",
+        "operations": {
+         "algorithm": "additive-fragments.v1",
+         "counter_calls": 14,
+         "counter_input_bytes": 2024,
+         "escaped_text_input_bytes": 884,
+         "final_counter_calls": 1,
+         "final_counter_input_bytes": 1018,
+         "fragment_counter_calls": 13,
+         "fragment_counter_input_bytes": 1006,
+         "items_considered": 11,
+         "items_rendered": 11,
+         "prefix_renders": 0,
+         "sidecar_bytes": 5372,
+         "sidecar_entries": 11,
+         "visible_bytes": 1018
+        },
+        "provenance_root": "3e89dbf63e944c9bcfab73fab8af433caa19547978c6615ccd7fcef3ecfb2ed8",
+        "rendered_bytes": 1018,
+        "rendered_sha256": "b5038ec8174ecd65d146fecb1f6c66eabf755922d1bc9a0afe6621facaabecec",
+        "sidecar_sha256": "ec14353e01ccdb994f96caa6f09b0e7b1d9f6bf5290f7de6afd87b55601eed21"
+       },
+       "scope": {
+        "agent": "default",
+        "profile": "event.schema.v1",
+        "tenant": "default",
+        "user": "default"
+       },
+       "serving_module": {
+        "abi_version": 2,
+        "capabilities": [
+         "cap.text.v1",
+         "cap.lexicon.v1"
+        ],
+        "hooks": {
+         "m5_rank": "1",
+         "m6_pack": "1"
+        },
+        "module_root": "2efa129a82a21a281d7e1998d243b8f1907fd9044df65931d1e3611e0229e3fc",
+        "module_sha256": "135b66c56251b8496377188afd125ccf010d60232730c92aef0cbdb704359e26",
+        "policy_id": "slayston-bridgefill-event.schema.v1",
+        "profile": "event.schema.v1"
+       },
+       "token_budget": 800,
+       "total_units": 357,
+       "truncated": false
+      },
+      "receipt_sha256": "5cc9992bb08ed2e564082644d6a2137ca1947eb20e117e6706ff712d5f5d959f"
+     },
+     "which vendor was chosen and why": {
+      "context_sha256": "6494b9f8ed6fb1c999eed0cbd8807f1290d2ba18ee627e7923d584d42822edf3",
+      "items": 5,
+      "receipt": {
+       "as_of": null,
+       "at": 0,
+       "counter": {
+        "id": "counter.v1",
+        "version": "1"
+       },
+       "cycle_id": "508f45983f089ec023d3a795c75a925b",
+       "deterministic_host_work": {
+        "cardinality.m4_candidates": 5,
+        "cardinality.m5_results": 5,
+        "cardinality.m6_selected": 5,
+        "hook.m4_candidates.invocations": 1,
+        "hook.m5_rank.invocations": 1,
+        "hook.m6_pack.invocations": 1,
+        "hook_invocations": 3,
+        "logical_storage_reads": 32,
+        "operation.SELECT.rows_materialized": 58,
+        "operation.SELECT.rows_read": 58,
+        "operation.SELECT.rows_visited": 58,
+        "operation.SELECT.sql_statements": 32,
+        "renderer.consumer_visible_tokens": 170,
+        "renderer.counter_calls": 8,
+        "renderer.counter_input_bytes": 978,
+        "renderer.escaped_text_input_bytes": 425,
+        "renderer.final_counter_calls": 1,
+        "renderer.final_counter_input_bytes": 492,
+        "renderer.fragment_counter_calls": 7,
+        "renderer.fragment_counter_input_bytes": 486,
+        "renderer.items_considered": 5,
+        "renderer.items_rendered": 5,
+        "renderer.rendered_bytes": 492,
+        "renderer.sidecar_bytes": 2550,
+        "renderer.sidecar_entries": 5,
+        "renderer.visible_bytes": 492,
+        "rows_materialized": 58,
+        "rows_read": 58,
+        "rows_visited": 58,
+        "scope.hook.cardinality.m5_results": 5,
+        "scope.hook.cardinality.m6_selected": 5,
+        "scope.hook.hook.m5_rank.invocations": 1,
+        "scope.hook.hook.m6_pack.invocations": 1,
+        "scope.hook.hook_invocations": 2,
+        "scope.hook.logical_storage_reads": 18,
+        "scope.hook.operation.SELECT.rows_materialized": 29,
+        "scope.hook.operation.SELECT.rows_read": 29,
+        "scope.hook.operation.SELECT.rows_visited": 29,
+        "scope.hook.operation.SELECT.sql_statements": 18,
+        "scope.hook.rows_materialized": 29,
+        "scope.hook.rows_read": 29,
+        "scope.hook.rows_visited": 29,
+        "scope.hook.sql_statements": 18,
+        "scope.host.cardinality.m4_candidates": 5,
+        "scope.host.hook.m4_candidates.invocations": 1,
+        "scope.host.hook_invocations": 1,
+        "scope.host.logical_storage_reads": 14,
+        "scope.host.operation.SELECT.rows_materialized": 29,
+        "scope.host.operation.SELECT.rows_read": 29,
+        "scope.host.operation.SELECT.rows_visited": 29,
+        "scope.host.operation.SELECT.sql_statements": 14,
+        "scope.host.renderer.consumer_visible_tokens": 170,
+        "scope.host.renderer.counter_calls": 8,
+        "scope.host.renderer.counter_input_bytes": 978,
+        "scope.host.renderer.escaped_text_input_bytes": 425,
+        "scope.host.renderer.final_counter_calls": 1,
+        "scope.host.renderer.final_counter_input_bytes": 492,
+        "scope.host.renderer.fragment_counter_calls": 7,
+        "scope.host.renderer.fragment_counter_input_bytes": 486,
+        "scope.host.renderer.items_considered": 5,
+        "scope.host.renderer.items_rendered": 5,
+        "scope.host.renderer.rendered_bytes": 492,
+        "scope.host.renderer.sidecar_bytes": 2550,
+        "scope.host.renderer.sidecar_entries": 5,
+        "scope.host.renderer.visible_bytes": 492,
+        "scope.host.rows_materialized": 29,
+        "scope.host.rows_read": 29,
+        "scope.host.rows_visited": 29,
+        "scope.host.sql_statements": 14,
+        "sql_input_bytes": 2690,
+        "sql_statements": 32
+       },
+       "item_count": 5,
+       "items": [
+        {
+         "citation": "user:m03 [doc 505fce84d841; chunk 1/1; event 71200b95c193; asserted]",
+         "content_sha256": "d289760c5f00ff57652fd4750c622c9250a6a7237fa70a1084d6eac193ed9064",
+         "event_id": "71200b95c1938007faf66e128887a3b9",
+         "source": "user:m03",
+         "units": 25
+        },
+        {
+         "citation": "user:m09 [doc c92017d14c49; chunk 1/1; event 9063b98dfd7a; asserted]",
+         "content_sha256": "175fe882f6694ba8a5a4bcdbd47b50cb2663cc2e35374aa8f5666d1cc899e277",
+         "event_id": "9063b98dfd7ac4d0c52c5da8748639cb",
+         "source": "user:m09",
+         "units": 25
+        },
+        {
+         "citation": "user:m11 [doc fbe45690b754; chunk 1/1; event fb636a5d4cb5; asserted]",
+         "content_sha256": "db70c5ebbb4aa39f74d29ec4704bea2191001170b60b95c81ad510e40cac83c8",
+         "event_id": "fb636a5d4cb539ac95ef3330443d973c",
+         "source": "user:m11",
+         "units": 21
+        },
+        {
+         "citation": "user:m05 [doc 0e3bcef85847; chunk 1/1; event b39201dbbe3f; asserted]",
+         "content_sha256": "473fa51221b0c9a34990c1ea9d14538332e26038be787166f75503651e0f84e7",
+         "event_id": "b39201dbbe3fa731ad4ef4be52e5522e",
+         "source": "user:m05",
+         "units": 25
+        },
+        {
+         "citation": "user:m06 [doc a539dadcfb6e; chunk 1/1; event 221b3de9e51e; asserted]",
+         "content_sha256": "924da2a8061d525eecb131b8683153f8915d0eff1766281688367881cabdf684",
+         "event_id": "221b3de9e51edaae06a3c5565e214b9a",
+         "source": "user:m06",
+         "units": 27
+        }
+       ],
+       "privacy": "content-free",
+       "query": "which vendor was chosen and why",
+       "renderer": {
+        "cycle_id": "508f45983f089ec023d3a795c75a925b",
+        "id": "consumer-context.compact-citations.v2",
+        "operations": {
+         "algorithm": "additive-fragments.v1",
+         "counter_calls": 8,
+         "counter_input_bytes": 978,
+         "escaped_text_input_bytes": 425,
+         "final_counter_calls": 1,
+         "final_counter_input_bytes": 492,
+         "fragment_counter_calls": 7,
+         "fragment_counter_input_bytes": 486,
+         "items_considered": 5,
+         "items_rendered": 5,
+         "prefix_renders": 0,
+         "sidecar_bytes": 2550,
+         "sidecar_entries": 5,
+         "visible_bytes": 492
+        },
+        "provenance_root": "529e4e9666190949f3054f267a490bc25d6e2b32eff6af602912b4872400053c",
+        "rendered_bytes": 492,
+        "rendered_sha256": "6494b9f8ed6fb1c999eed0cbd8807f1290d2ba18ee627e7923d584d42822edf3",
+        "sidecar_sha256": "4e27603f0bcdbbe5272086fdd782b0da60adbf37df42c18cbc2261f43e56df02"
+       },
+       "scope": {
+        "agent": "default",
+        "profile": "event.schema.v1",
+        "tenant": "default",
+        "user": "default"
+       },
+       "serving_module": {
+        "abi_version": 2,
+        "capabilities": [
+         "cap.text.v1",
+         "cap.lexicon.v1"
+        ],
+        "hooks": {
+         "m5_rank": "1",
+         "m6_pack": "1"
+        },
+        "module_root": "2efa129a82a21a281d7e1998d243b8f1907fd9044df65931d1e3611e0229e3fc",
+        "module_sha256": "135b66c56251b8496377188afd125ccf010d60232730c92aef0cbdb704359e26",
+        "policy_id": "slayston-bridgefill-event.schema.v1",
+        "profile": "event.schema.v1"
+       },
+       "token_budget": 800,
+       "total_units": 170,
+       "truncated": false
+      },
+      "receipt_sha256": "ac36c1866a02849f69896fd63a90552bbe46fd0da044c0768218559a06900d08"
+     },
+     "who reported the checkout latency regression": {
+      "context_sha256": "95693088f82b73d73e6d7d757c78183b69e85aceb4ceabed0fbd04e0bc1e5764",
+      "items": 11,
+      "receipt": {
+       "as_of": null,
+       "at": 0,
+       "counter": {
+        "id": "counter.v1",
+        "version": "1"
+       },
+       "cycle_id": "7e97d2cac812273291a80d0ebab90c89",
+       "deterministic_host_work": {
+        "cardinality.m4_candidates": 11,
+        "cardinality.m5_results": 11,
+        "cardinality.m6_selected": 11,
+        "hook.m4_candidates.invocations": 1,
+        "hook.m5_rank.invocations": 1,
+        "hook.m6_pack.invocations": 1,
+        "hook_invocations": 3,
+        "logical_storage_reads": 38,
+        "operation.SELECT.rows_materialized": 82,
+        "operation.SELECT.rows_read": 82,
+        "operation.SELECT.rows_visited": 82,
+        "operation.SELECT.sql_statements": 38,
+        "renderer.consumer_visible_tokens": 357,
+        "renderer.counter_calls": 14,
+        "renderer.counter_input_bytes": 2024,
+        "renderer.escaped_text_input_bytes": 884,
+        "renderer.final_counter_calls": 1,
+        "renderer.final_counter_input_bytes": 1018,
+        "renderer.fragment_counter_calls": 13,
+        "renderer.fragment_counter_input_bytes": 1006,
+        "renderer.items_considered": 11,
+        "renderer.items_rendered": 11,
+        "renderer.rendered_bytes": 1018,
+        "renderer.sidecar_bytes": 5372,
+        "renderer.sidecar_entries": 11,
+        "renderer.visible_bytes": 1018,
+        "rows_materialized": 82,
+        "rows_read": 82,
+        "rows_visited": 82,
+        "scope.hook.cardinality.m5_results": 11,
+        "scope.hook.cardinality.m6_selected": 11,
+        "scope.hook.hook.m5_rank.invocations": 1,
+        "scope.hook.hook.m6_pack.invocations": 1,
+        "scope.hook.hook_invocations": 2,
+        "scope.hook.logical_storage_reads": 24,
+        "scope.hook.operation.SELECT.rows_materialized": 35,
+        "scope.hook.operation.SELECT.rows_read": 35,
+        "scope.hook.operation.SELECT.rows_visited": 35,
+        "scope.hook.operation.SELECT.sql_statements": 24,
+        "scope.hook.rows_materialized": 35,
+        "scope.hook.rows_read": 35,
+        "scope.hook.rows_visited": 35,
+        "scope.hook.sql_statements": 24,
+        "scope.host.cardinality.m4_candidates": 11,
+        "scope.host.hook.m4_candidates.invocations": 1,
+        "scope.host.hook_invocations": 1,
+        "scope.host.logical_storage_reads": 14,
+        "scope.host.operation.SELECT.rows_materialized": 47,
+        "scope.host.operation.SELECT.rows_read": 47,
+        "scope.host.operation.SELECT.rows_visited": 47,
+        "scope.host.operation.SELECT.sql_statements": 14,
+        "scope.host.renderer.consumer_visible_tokens": 357,
+        "scope.host.renderer.counter_calls": 14,
+        "scope.host.renderer.counter_input_bytes": 2024,
+        "scope.host.renderer.escaped_text_input_bytes": 884,
+        "scope.host.renderer.final_counter_calls": 1,
+        "scope.host.renderer.final_counter_input_bytes": 1018,
+        "scope.host.renderer.fragment_counter_calls": 13,
+        "scope.host.renderer.fragment_counter_input_bytes": 1006,
+        "scope.host.renderer.items_considered": 11,
+        "scope.host.renderer.items_rendered": 11,
+        "scope.host.renderer.rendered_bytes": 1018,
+        "scope.host.renderer.sidecar_bytes": 5372,
+        "scope.host.renderer.sidecar_entries": 11,
+        "scope.host.renderer.visible_bytes": 1018,
+        "scope.host.rows_materialized": 47,
+        "scope.host.rows_read": 47,
+        "scope.host.rows_visited": 47,
+        "scope.host.sql_statements": 14,
+        "sql_input_bytes": 3044,
+        "sql_statements": 38
+       },
+       "item_count": 11,
+       "items": [
+        {
+         "citation": "user:m01 [doc bb8195ab22af; chunk 1/1; event 49e3a1c38e88; asserted]",
+         "content_sha256": "b892a28da05f1734b5fdc3d26c711aa718e012274d3bd06942ec48aa0ba51069",
+         "event_id": "49e3a1c38e881a4a47df2fddbdb0a897",
+         "source": "user:m01",
+         "units": 21
+        },
+        {
+         "citation": "user:m05 [doc 0e3bcef85847; chunk 1/1; event b39201dbbe3f; asserted]",
+         "content_sha256": "473fa51221b0c9a34990c1ea9d14538332e26038be787166f75503651e0f84e7",
+         "event_id": "b39201dbbe3fa731ad4ef4be52e5522e",
+         "source": "user:m05",
+         "units": 25
+        },
+        {
+         "citation": "user:m09 [doc c92017d14c49; chunk 1/1; event 9063b98dfd7a; asserted]",
+         "content_sha256": "175fe882f6694ba8a5a4bcdbd47b50cb2663cc2e35374aa8f5666d1cc899e277",
+         "event_id": "9063b98dfd7ac4d0c52c5da8748639cb",
+         "source": "user:m09",
+         "units": 25
+        },
+        {
+         "citation": "user:m02 [doc e0ccfc429dd1; chunk 1/1; event ad461b9bf8aa; asserted]",
+         "content_sha256": "950b8063ab84f4b802a1f67a93deb73b27dc8b0059bbc4e90034600cb6eef34e",
+         "event_id": "ad461b9bf8aaaec57fd0c9369bf530ea",
+         "source": "user:m02",
+         "units": 29
+        },
+        {
+         "citation": "user:m07 [doc 6a7741707049; chunk 1/1; event c87563e071dd; asserted]",
+         "content_sha256": "ffe6acda51fb0898ca6864681c102b30d9d9c91b56bb8908f0d2bdf95dffc13d",
+         "event_id": "c87563e071ddff7d7a66bbea85eed13f",
+         "source": "user:m07",
+         "units": 22
+        },
+        {
+         "citation": "user:m11 [doc fbe45690b754; chunk 1/1; event fb636a5d4cb5; asserted]",
+         "content_sha256": "db70c5ebbb4aa39f74d29ec4704bea2191001170b60b95c81ad510e40cac83c8",
+         "event_id": "fb636a5d4cb539ac95ef3330443d973c",
+         "source": "user:m11",
+         "units": 21
+        },
+        {
+         "citation": "user:m06 [doc a539dadcfb6e; chunk 1/1; event 221b3de9e51e; asserted]",
+         "content_sha256": "924da2a8061d525eecb131b8683153f8915d0eff1766281688367881cabdf684",
+         "event_id": "221b3de9e51edaae06a3c5565e214b9a",
+         "source": "user:m06",
+         "units": 27
+        },
+        {
+         "citation": "user:m04 [doc 0918b9a08e21; chunk 1/1; event debc191d82a4; asserted]",
+         "content_sha256": "7d86ef80524a080580dcdba8e12bfb2ac720a026fe9022dc6f9c73aa6ed74a0d",
+         "event_id": "debc191d82a4e46ff1285256a0153251",
+         "source": "user:m04",
+         "units": 22
+        },
+        {
+         "citation": "user:m00 [doc 3e973189b99a; chunk 1/1; event e7c9e9ff9e21; asserted]",
+         "content_sha256": "36874d565494087b953e5affbe821cf69480386091a34c7688716b0934ba9d2b",
+         "event_id": "e7c9e9ff9e215c81531944242fe893e1",
+         "source": "user:m00",
+         "units": 23
+        },
+        {
+         "citation": "user:m03 [doc 505fce84d841; chunk 1/1; event 71200b95c193; asserted]",
+         "content_sha256": "d289760c5f00ff57652fd4750c622c9250a6a7237fa70a1084d6eac193ed9064",
+         "event_id": "71200b95c1938007faf66e128887a3b9",
+         "source": "user:m03",
+         "units": 25
+        },
+        {
+         "citation": "user:m08 [doc 0ad116061924; chunk 1/1; event f5bb2031ca26; asserted]",
+         "content_sha256": "a9be4b0e8234053306c38fc49c1b2d04b0984e692176bc182f9c38711a18a617",
+         "event_id": "f5bb2031ca26ecc97ee67f0610dbdff7",
+         "source": "user:m08",
+         "units": 22
+        }
+       ],
+       "privacy": "content-free",
+       "query": "who reported the checkout latency regression",
+       "renderer": {
+        "cycle_id": "7e97d2cac812273291a80d0ebab90c89",
+        "id": "consumer-context.compact-citations.v2",
+        "operations": {
+         "algorithm": "additive-fragments.v1",
+         "counter_calls": 14,
+         "counter_input_bytes": 2024,
+         "escaped_text_input_bytes": 884,
+         "final_counter_calls": 1,
+         "final_counter_input_bytes": 1018,
+         "fragment_counter_calls": 13,
+         "fragment_counter_input_bytes": 1006,
+         "items_considered": 11,
+         "items_rendered": 11,
+         "prefix_renders": 0,
+         "sidecar_bytes": 5372,
+         "sidecar_entries": 11,
+         "visible_bytes": 1018
+        },
+        "provenance_root": "21c74331ebaded5cafcdddc1e274ec8940a7b680cb84f334e5468489bd60c41b",
+        "rendered_bytes": 1018,
+        "rendered_sha256": "95693088f82b73d73e6d7d757c78183b69e85aceb4ceabed0fbd04e0bc1e5764",
+        "sidecar_sha256": "429dc4733542d7184b1aa40d528f7eb4e5c4daaa617ff622b6a134072bd8f0a5"
+       },
+       "scope": {
+        "agent": "default",
+        "profile": "event.schema.v1",
+        "tenant": "default",
+        "user": "default"
+       },
+       "serving_module": {
+        "abi_version": 2,
+        "capabilities": [
+         "cap.text.v1",
+         "cap.lexicon.v1"
+        ],
+        "hooks": {
+         "m5_rank": "1",
+         "m6_pack": "1"
+        },
+        "module_root": "2efa129a82a21a281d7e1998d243b8f1907fd9044df65931d1e3611e0229e3fc",
+        "module_sha256": "135b66c56251b8496377188afd125ccf010d60232730c92aef0cbdb704359e26",
+        "policy_id": "slayston-bridgefill-event.schema.v1",
+        "profile": "event.schema.v1"
+       },
+       "token_budget": 800,
+       "total_units": 357,
+       "truncated": false
+      },
+      "receipt_sha256": "2e3a0bf65399dd7289eaa7982fb96f964b67dd4b979237c2b23341d905f487c1"
+     }
+    },
+    "profile_id": "event.schema.v1"
+   },
+   "pre": {
+    "event_counts": {
+     "live": 12,
+     "retracted": 0,
+     "total": 12
+    },
+    "module_root": "2e42a4fccdd9bef401ba63f0b2a4cf3ae90ccd13d0f67fb0ab2549785820444f",
+    "packs": {
+     "what did the team decide about the storage budget": {
+      "context_sha256": "b5038ec8174ecd65d146fecb1f6c66eabf755922d1bc9a0afe6621facaabecec",
+      "items": 11,
+      "receipt": {
+       "as_of": null,
+       "at": 0,
+       "counter": {
+        "id": "counter.v1",
+        "version": "1"
+       },
+       "cycle_id": "e2a03aa9760d021302d9c6f01210eaf6",
+       "deterministic_host_work": {
+        "cardinality.m4_candidates": 11,
+        "cardinality.m5_results": 11,
+        "cardinality.m6_selected": 11,
+        "hook.m4_candidates.invocations": 1,
+        "hook.m5_rank.invocations": 1,
+        "hook.m6_pack.invocations": 1,
+        "hook_invocations": 3,
+        "logical_storage_reads": 40,
+        "operation.SELECT.rows_materialized": 83,
+        "operation.SELECT.rows_read": 83,
+        "operation.SELECT.rows_visited": 83,
+        "operation.SELECT.sql_statements": 40,
+        "renderer.consumer_visible_tokens": 357,
+        "renderer.counter_calls": 14,
+        "renderer.counter_input_bytes": 2024,
+        "renderer.escaped_text_input_bytes": 884,
+        "renderer.final_counter_calls": 1,
+        "renderer.final_counter_input_bytes": 1018,
+        "renderer.fragment_counter_calls": 13,
+        "renderer.fragment_counter_input_bytes": 1006,
+        "renderer.items_considered": 11,
+        "renderer.items_rendered": 11,
+        "renderer.rendered_bytes": 1018,
+        "renderer.sidecar_bytes": 5372,
+        "renderer.sidecar_entries": 11,
+        "renderer.visible_bytes": 1018,
+        "rows_materialized": 83,
+        "rows_read": 83,
+        "rows_visited": 83,
+        "scope.hook.cardinality.m5_results": 11,
+        "scope.hook.cardinality.m6_selected": 11,
+        "scope.hook.hook.m5_rank.invocations": 1,
+        "scope.hook.hook.m6_pack.invocations": 1,
+        "scope.hook.hook_invocations": 2,
+        "scope.hook.logical_storage_reads": 24,
+        "scope.hook.operation.SELECT.rows_materialized": 35,
+        "scope.hook.operation.SELECT.rows_read": 35,
+        "scope.hook.operation.SELECT.rows_visited": 35,
+        "scope.hook.operation.SELECT.sql_statements": 24,
+        "scope.hook.rows_materialized": 35,
+        "scope.hook.rows_read": 35,
+        "scope.hook.rows_visited": 35,
+        "scope.hook.sql_statements": 24,
+        "scope.host.cardinality.m4_candidates": 11,
+        "scope.host.hook.m4_candidates.invocations": 1,
+        "scope.host.hook_invocations": 1,
+        "scope.host.logical_storage_reads": 16,
+        "scope.host.operation.SELECT.rows_materialized": 48,
+        "scope.host.operation.SELECT.rows_read": 48,
+        "scope.host.operation.SELECT.rows_visited": 48,
+        "scope.host.operation.SELECT.sql_statements": 16,
+        "scope.host.renderer.consumer_visible_tokens": 357,
+        "scope.host.renderer.counter_calls": 14,
+        "scope.host.renderer.counter_input_bytes": 2024,
+        "scope.host.renderer.escaped_text_input_bytes": 884,
+        "scope.host.renderer.final_counter_calls": 1,
+        "scope.host.renderer.final_counter_input_bytes": 1018,
+        "scope.host.renderer.fragment_counter_calls": 13,
+        "scope.host.renderer.fragment_counter_input_bytes": 1006,
+        "scope.host.renderer.items_considered": 11,
+        "scope.host.renderer.items_rendered": 11,
+        "scope.host.renderer.rendered_bytes": 1018,
+        "scope.host.renderer.sidecar_bytes": 5372,
+        "scope.host.renderer.sidecar_entries": 11,
+        "scope.host.renderer.visible_bytes": 1018,
+        "scope.host.rows_materialized": 48,
+        "scope.host.rows_read": 48,
+        "scope.host.rows_visited": 48,
+        "scope.host.sql_statements": 16,
+        "sql_input_bytes": 3400,
+        "sql_statements": 40
+       },
+       "item_count": 11,
+       "items": [
+        {
+         "citation": "user:m11 [doc fbe45690b754; chunk 1/1; event fb636a5d4cb5; asserted]",
+         "content_sha256": "db70c5ebbb4aa39f74d29ec4704bea2191001170b60b95c81ad510e40cac83c8",
+         "event_id": "fb636a5d4cb539ac95ef3330443d973c",
+         "source": "user:m11",
+         "units": 21
+        },
+        {
+         "citation": "user:m04 [doc 0918b9a08e21; chunk 1/1; event debc191d82a4; asserted]",
+         "content_sha256": "7d86ef80524a080580dcdba8e12bfb2ac720a026fe9022dc6f9c73aa6ed74a0d",
+         "event_id": "debc191d82a4e46ff1285256a0153251",
+         "source": "user:m04",
+         "units": 22
+        },
+        {
+         "citation": "user:m00 [doc 3e973189b99a; chunk 1/1; event e7c9e9ff9e21; asserted]",
+         "content_sha256": "36874d565494087b953e5affbe821cf69480386091a34c7688716b0934ba9d2b",
+         "event_id": "e7c9e9ff9e215c81531944242fe893e1",
+         "source": "user:m00",
+         "units": 23
+        },
+        {
+         "citation": "user:m08 [doc 0ad116061924; chunk 1/1; event f5bb2031ca26; asserted]",
+         "content_sha256": "a9be4b0e8234053306c38fc49c1b2d04b0984e692176bc182f9c38711a18a617",
+         "event_id": "f5bb2031ca26ecc97ee67f0610dbdff7",
+         "source": "user:m08",
+         "units": 22
+        },
+        {
+         "citation": "user:m07 [doc 6a7741707049; chunk 1/1; event c87563e071dd; asserted]",
+         "content_sha256": "ffe6acda51fb0898ca6864681c102b30d9d9c91b56bb8908f0d2bdf95dffc13d",
+         "event_id": "c87563e071ddff7d7a66bbea85eed13f",
+         "source": "user:m07",
+         "units": 22
+        },
+        {
+         "citation": "user:m02 [doc e0ccfc429dd1; chunk 1/1; event ad461b9bf8aa; asserted]",
+         "content_sha256": "950b8063ab84f4b802a1f67a93deb73b27dc8b0059bbc4e90034600cb6eef34e",
+         "event_id": "ad461b9bf8aaaec57fd0c9369bf530ea",
+         "source": "user:m02",
+         "units": 29
+        },
+        {
+         "citation": "user:m05 [doc 0e3bcef85847; chunk 1/1; event b39201dbbe3f; asserted]",
+         "content_sha256": "473fa51221b0c9a34990c1ea9d14538332e26038be787166f75503651e0f84e7",
+         "event_id": "b39201dbbe3fa731ad4ef4be52e5522e",
+         "source": "user:m05",
+         "units": 25
+        },
+        {
+         "citation": "user:m06 [doc a539dadcfb6e; chunk 1/1; event 221b3de9e51e; asserted]",
+         "content_sha256": "924da2a8061d525eecb131b8683153f8915d0eff1766281688367881cabdf684",
+         "event_id": "221b3de9e51edaae06a3c5565e214b9a",
+         "source": "user:m06",
+         "units": 27
+        },
+        {
+         "citation": "user:m03 [doc 505fce84d841; chunk 1/1; event 71200b95c193; asserted]",
+         "content_sha256": "d289760c5f00ff57652fd4750c622c9250a6a7237fa70a1084d6eac193ed9064",
+         "event_id": "71200b95c1938007faf66e128887a3b9",
+         "source": "user:m03",
+         "units": 25
+        },
+        {
+         "citation": "user:m01 [doc bb8195ab22af; chunk 1/1; event 49e3a1c38e88; asserted]",
+         "content_sha256": "b892a28da05f1734b5fdc3d26c711aa718e012274d3bd06942ec48aa0ba51069",
+         "event_id": "49e3a1c38e881a4a47df2fddbdb0a897",
+         "source": "user:m01",
+         "units": 21
+        },
+        {
+         "citation": "user:m09 [doc c92017d14c49; chunk 1/1; event 9063b98dfd7a; asserted]",
+         "content_sha256": "175fe882f6694ba8a5a4bcdbd47b50cb2663cc2e35374aa8f5666d1cc899e277",
+         "event_id": "9063b98dfd7ac4d0c52c5da8748639cb",
+         "source": "user:m09",
+         "units": 25
+        }
+       ],
+       "privacy": "content-free",
+       "query": "what did the team decide about the storage budget",
+       "renderer": {
+        "cycle_id": "e2a03aa9760d021302d9c6f01210eaf6",
+        "id": "consumer-context.compact-citations.v2",
+        "operations": {
+         "algorithm": "additive-fragments.v1",
+         "counter_calls": 14,
+         "counter_input_bytes": 2024,
+         "escaped_text_input_bytes": 884,
+         "final_counter_calls": 1,
+         "final_counter_input_bytes": 1018,
+         "fragment_counter_calls": 13,
+         "fragment_counter_input_bytes": 1006,
+         "items_considered": 11,
+         "items_rendered": 11,
+         "prefix_renders": 0,
+         "sidecar_bytes": 5372,
+         "sidecar_entries": 11,
+         "visible_bytes": 1018
+        },
+        "provenance_root": "3e89dbf63e944c9bcfab73fab8af433caa19547978c6615ccd7fcef3ecfb2ed8",
+        "rendered_bytes": 1018,
+        "rendered_sha256": "b5038ec8174ecd65d146fecb1f6c66eabf755922d1bc9a0afe6621facaabecec",
+        "sidecar_sha256": "ec14353e01ccdb994f96caa6f09b0e7b1d9f6bf5290f7de6afd87b55601eed21"
+       },
+       "scope": {
+        "agent": "default",
+        "profile": "event.schema.v1",
+        "tenant": "default",
+        "user": "default"
+       },
+       "serving_module": {
+        "abi_version": 2,
+        "capabilities": [
+         "cap.text.v1",
+         "cap.lexicon.v1"
+        ],
+        "hooks": {
+         "m5_rank": "1",
+         "m6_pack": "1"
+        },
+        "module_root": "2e42a4fccdd9bef401ba63f0b2a4cf3ae90ccd13d0f67fb0ab2549785820444f",
+        "module_sha256": "135b66c56251b8496377188afd125ccf010d60232730c92aef0cbdb704359e26",
+        "policy_id": "slayston-bridgefill-event.schema.v1",
+        "profile": "event.schema.v1"
+       },
+       "token_budget": 800,
+       "total_units": 357,
+       "truncated": false
+      },
+      "receipt_sha256": "cda459988bd4ea6e8dc573d1cf11a37c56a73bda851ca3e2a1f7bf651f125949"
+     },
+     "which vendor was chosen and why": {
+      "context_sha256": "6494b9f8ed6fb1c999eed0cbd8807f1290d2ba18ee627e7923d584d42822edf3",
+      "items": 5,
+      "receipt": {
+       "as_of": null,
+       "at": 0,
+       "counter": {
+        "id": "counter.v1",
+        "version": "1"
+       },
+       "cycle_id": "508f45983f089ec023d3a795c75a925b",
+       "deterministic_host_work": {
+        "cardinality.m4_candidates": 5,
+        "cardinality.m5_results": 5,
+        "cardinality.m6_selected": 5,
+        "hook.m4_candidates.invocations": 1,
+        "hook.m5_rank.invocations": 1,
+        "hook.m6_pack.invocations": 1,
+        "hook_invocations": 3,
+        "logical_storage_reads": 32,
+        "operation.SELECT.rows_materialized": 58,
+        "operation.SELECT.rows_read": 58,
+        "operation.SELECT.rows_visited": 58,
+        "operation.SELECT.sql_statements": 32,
+        "renderer.consumer_visible_tokens": 170,
+        "renderer.counter_calls": 8,
+        "renderer.counter_input_bytes": 978,
+        "renderer.escaped_text_input_bytes": 425,
+        "renderer.final_counter_calls": 1,
+        "renderer.final_counter_input_bytes": 492,
+        "renderer.fragment_counter_calls": 7,
+        "renderer.fragment_counter_input_bytes": 486,
+        "renderer.items_considered": 5,
+        "renderer.items_rendered": 5,
+        "renderer.rendered_bytes": 492,
+        "renderer.sidecar_bytes": 2550,
+        "renderer.sidecar_entries": 5,
+        "renderer.visible_bytes": 492,
+        "rows_materialized": 58,
+        "rows_read": 58,
+        "rows_visited": 58,
+        "scope.hook.cardinality.m5_results": 5,
+        "scope.hook.cardinality.m6_selected": 5,
+        "scope.hook.hook.m5_rank.invocations": 1,
+        "scope.hook.hook.m6_pack.invocations": 1,
+        "scope.hook.hook_invocations": 2,
+        "scope.hook.logical_storage_reads": 18,
+        "scope.hook.operation.SELECT.rows_materialized": 29,
+        "scope.hook.operation.SELECT.rows_read": 29,
+        "scope.hook.operation.SELECT.rows_visited": 29,
+        "scope.hook.operation.SELECT.sql_statements": 18,
+        "scope.hook.rows_materialized": 29,
+        "scope.hook.rows_read": 29,
+        "scope.hook.rows_visited": 29,
+        "scope.hook.sql_statements": 18,
+        "scope.host.cardinality.m4_candidates": 5,
+        "scope.host.hook.m4_candidates.invocations": 1,
+        "scope.host.hook_invocations": 1,
+        "scope.host.logical_storage_reads": 14,
+        "scope.host.operation.SELECT.rows_materialized": 29,
+        "scope.host.operation.SELECT.rows_read": 29,
+        "scope.host.operation.SELECT.rows_visited": 29,
+        "scope.host.operation.SELECT.sql_statements": 14,
+        "scope.host.renderer.consumer_visible_tokens": 170,
+        "scope.host.renderer.counter_calls": 8,
+        "scope.host.renderer.counter_input_bytes": 978,
+        "scope.host.renderer.escaped_text_input_bytes": 425,
+        "scope.host.renderer.final_counter_calls": 1,
+        "scope.host.renderer.final_counter_input_bytes": 492,
+        "scope.host.renderer.fragment_counter_calls": 7,
+        "scope.host.renderer.fragment_counter_input_bytes": 486,
+        "scope.host.renderer.items_considered": 5,
+        "scope.host.renderer.items_rendered": 5,
+        "scope.host.renderer.rendered_bytes": 492,
+        "scope.host.renderer.sidecar_bytes": 2550,
+        "scope.host.renderer.sidecar_entries": 5,
+        "scope.host.renderer.visible_bytes": 492,
+        "scope.host.rows_materialized": 29,
+        "scope.host.rows_read": 29,
+        "scope.host.rows_visited": 29,
+        "scope.host.sql_statements": 14,
+        "sql_input_bytes": 2690,
+        "sql_statements": 32
+       },
+       "item_count": 5,
+       "items": [
+        {
+         "citation": "user:m03 [doc 505fce84d841; chunk 1/1; event 71200b95c193; asserted]",
+         "content_sha256": "d289760c5f00ff57652fd4750c622c9250a6a7237fa70a1084d6eac193ed9064",
+         "event_id": "71200b95c1938007faf66e128887a3b9",
+         "source": "user:m03",
+         "units": 25
+        },
+        {
+         "citation": "user:m09 [doc c92017d14c49; chunk 1/1; event 9063b98dfd7a; asserted]",
+         "content_sha256": "175fe882f6694ba8a5a4bcdbd47b50cb2663cc2e35374aa8f5666d1cc899e277",
+         "event_id": "9063b98dfd7ac4d0c52c5da8748639cb",
+         "source": "user:m09",
+         "units": 25
+        },
+        {
+         "citation": "user:m11 [doc fbe45690b754; chunk 1/1; event fb636a5d4cb5; asserted]",
+         "content_sha256": "db70c5ebbb4aa39f74d29ec4704bea2191001170b60b95c81ad510e40cac83c8",
+         "event_id": "fb636a5d4cb539ac95ef3330443d973c",
+         "source": "user:m11",
+         "units": 21
+        },
+        {
+         "citation": "user:m05 [doc 0e3bcef85847; chunk 1/1; event b39201dbbe3f; asserted]",
+         "content_sha256": "473fa51221b0c9a34990c1ea9d14538332e26038be787166f75503651e0f84e7",
+         "event_id": "b39201dbbe3fa731ad4ef4be52e5522e",
+         "source": "user:m05",
+         "units": 25
+        },
+        {
+         "citation": "user:m06 [doc a539dadcfb6e; chunk 1/1; event 221b3de9e51e; asserted]",
+         "content_sha256": "924da2a8061d525eecb131b8683153f8915d0eff1766281688367881cabdf684",
+         "event_id": "221b3de9e51edaae06a3c5565e214b9a",
+         "source": "user:m06",
+         "units": 27
+        }
+       ],
+       "privacy": "content-free",
+       "query": "which vendor was chosen and why",
+       "renderer": {
+        "cycle_id": "508f45983f089ec023d3a795c75a925b",
+        "id": "consumer-context.compact-citations.v2",
+        "operations": {
+         "algorithm": "additive-fragments.v1",
+         "counter_calls": 8,
+         "counter_input_bytes": 978,
+         "escaped_text_input_bytes": 425,
+         "final_counter_calls": 1,
+         "final_counter_input_bytes": 492,
+         "fragment_counter_calls": 7,
+         "fragment_counter_input_bytes": 486,
+         "items_considered": 5,
+         "items_rendered": 5,
+         "prefix_renders": 0,
+         "sidecar_bytes": 2550,
+         "sidecar_entries": 5,
+         "visible_bytes": 492
+        },
+        "provenance_root": "529e4e9666190949f3054f267a490bc25d6e2b32eff6af602912b4872400053c",
+        "rendered_bytes": 492,
+        "rendered_sha256": "6494b9f8ed6fb1c999eed0cbd8807f1290d2ba18ee627e7923d584d42822edf3",
+        "sidecar_sha256": "4e27603f0bcdbbe5272086fdd782b0da60adbf37df42c18cbc2261f43e56df02"
+       },
+       "scope": {
+        "agent": "default",
+        "profile": "event.schema.v1",
+        "tenant": "default",
+        "user": "default"
+       },
+       "serving_module": {
+        "abi_version": 2,
+        "capabilities": [
+         "cap.text.v1",
+         "cap.lexicon.v1"
+        ],
+        "hooks": {
+         "m5_rank": "1",
+         "m6_pack": "1"
+        },
+        "module_root": "2e42a4fccdd9bef401ba63f0b2a4cf3ae90ccd13d0f67fb0ab2549785820444f",
+        "module_sha256": "135b66c56251b8496377188afd125ccf010d60232730c92aef0cbdb704359e26",
+        "policy_id": "slayston-bridgefill-event.schema.v1",
+        "profile": "event.schema.v1"
+       },
+       "token_budget": 800,
+       "total_units": 170,
+       "truncated": false
+      },
+      "receipt_sha256": "40e979c8bab665697289d264423826c75853af1a12c4b7bf9622000216772cf5"
+     },
+     "who reported the checkout latency regression": {
+      "context_sha256": "95693088f82b73d73e6d7d757c78183b69e85aceb4ceabed0fbd04e0bc1e5764",
+      "items": 11,
+      "receipt": {
+       "as_of": null,
+       "at": 0,
+       "counter": {
+        "id": "counter.v1",
+        "version": "1"
+       },
+       "cycle_id": "7e97d2cac812273291a80d0ebab90c89",
+       "deterministic_host_work": {
+        "cardinality.m4_candidates": 11,
+        "cardinality.m5_results": 11,
+        "cardinality.m6_selected": 11,
+        "hook.m4_candidates.invocations": 1,
+        "hook.m5_rank.invocations": 1,
+        "hook.m6_pack.invocations": 1,
+        "hook_invocations": 3,
+        "logical_storage_reads": 38,
+        "operation.SELECT.rows_materialized": 82,
+        "operation.SELECT.rows_read": 82,
+        "operation.SELECT.rows_visited": 82,
+        "operation.SELECT.sql_statements": 38,
+        "renderer.consumer_visible_tokens": 357,
+        "renderer.counter_calls": 14,
+        "renderer.counter_input_bytes": 2024,
+        "renderer.escaped_text_input_bytes": 884,
+        "renderer.final_counter_calls": 1,
+        "renderer.final_counter_input_bytes": 1018,
+        "renderer.fragment_counter_calls": 13,
+        "renderer.fragment_counter_input_bytes": 1006,
+        "renderer.items_considered": 11,
+        "renderer.items_rendered": 11,
+        "renderer.rendered_bytes": 1018,
+        "renderer.sidecar_bytes": 5372,
+        "renderer.sidecar_entries": 11,
+        "renderer.visible_bytes": 1018,
+        "rows_materialized": 82,
+        "rows_read": 82,
+        "rows_visited": 82,
+        "scope.hook.cardinality.m5_results": 11,
+        "scope.hook.cardinality.m6_selected": 11,
+        "scope.hook.hook.m5_rank.invocations": 1,
+        "scope.hook.hook.m6_pack.invocations": 1,
+        "scope.hook.hook_invocations": 2,
+        "scope.hook.logical_storage_reads": 24,
+        "scope.hook.operation.SELECT.rows_materialized": 35,
+        "scope.hook.operation.SELECT.rows_read": 35,
+        "scope.hook.operation.SELECT.rows_visited": 35,
+        "scope.hook.operation.SELECT.sql_statements": 24,
+        "scope.hook.rows_materialized": 35,
+        "scope.hook.rows_read": 35,
+        "scope.hook.rows_visited": 35,
+        "scope.hook.sql_statements": 24,
+        "scope.host.cardinality.m4_candidates": 11,
+        "scope.host.hook.m4_candidates.invocations": 1,
+        "scope.host.hook_invocations": 1,
+        "scope.host.logical_storage_reads": 14,
+        "scope.host.operation.SELECT.rows_materialized": 47,
+        "scope.host.operation.SELECT.rows_read": 47,
+        "scope.host.operation.SELECT.rows_visited": 47,
+        "scope.host.operation.SELECT.sql_statements": 14,
+        "scope.host.renderer.consumer_visible_tokens": 357,
+        "scope.host.renderer.counter_calls": 14,
+        "scope.host.renderer.counter_input_bytes": 2024,
+        "scope.host.renderer.escaped_text_input_bytes": 884,
+        "scope.host.renderer.final_counter_calls": 1,
+        "scope.host.renderer.final_counter_input_bytes": 1018,
+        "scope.host.renderer.fragment_counter_calls": 13,
+        "scope.host.renderer.fragment_counter_input_bytes": 1006,
+        "scope.host.renderer.items_considered": 11,
+        "scope.host.renderer.items_rendered": 11,
+        "scope.host.renderer.rendered_bytes": 1018,
+        "scope.host.renderer.sidecar_bytes": 5372,
+        "scope.host.renderer.sidecar_entries": 11,
+        "scope.host.renderer.visible_bytes": 1018,
+        "scope.host.rows_materialized": 47,
+        "scope.host.rows_read": 47,
+        "scope.host.rows_visited": 47,
+        "scope.host.sql_statements": 14,
+        "sql_input_bytes": 3044,
+        "sql_statements": 38
+       },
+       "item_count": 11,
+       "items": [
+        {
+         "citation": "user:m01 [doc bb8195ab22af; chunk 1/1; event 49e3a1c38e88; asserted]",
+         "content_sha256": "b892a28da05f1734b5fdc3d26c711aa718e012274d3bd06942ec48aa0ba51069",
+         "event_id": "49e3a1c38e881a4a47df2fddbdb0a897",
+         "source": "user:m01",
+         "units": 21
+        },
+        {
+         "citation": "user:m05 [doc 0e3bcef85847; chunk 1/1; event b39201dbbe3f; asserted]",
+         "content_sha256": "473fa51221b0c9a34990c1ea9d14538332e26038be787166f75503651e0f84e7",
+         "event_id": "b39201dbbe3fa731ad4ef4be52e5522e",
+         "source": "user:m05",
+         "units": 25
+        },
+        {
+         "citation": "user:m09 [doc c92017d14c49; chunk 1/1; event 9063b98dfd7a; asserted]",
+         "content_sha256": "175fe882f6694ba8a5a4bcdbd47b50cb2663cc2e35374aa8f5666d1cc899e277",
+         "event_id": "9063b98dfd7ac4d0c52c5da8748639cb",
+         "source": "user:m09",
+         "units": 25
+        },
+        {
+         "citation": "user:m02 [doc e0ccfc429dd1; chunk 1/1; event ad461b9bf8aa; asserted]",
+         "content_sha256": "950b8063ab84f4b802a1f67a93deb73b27dc8b0059bbc4e90034600cb6eef34e",
+         "event_id": "ad461b9bf8aaaec57fd0c9369bf530ea",
+         "source": "user:m02",
+         "units": 29
+        },
+        {
+         "citation": "user:m07 [doc 6a7741707049; chunk 1/1; event c87563e071dd; asserted]",
+         "content_sha256": "ffe6acda51fb0898ca6864681c102b30d9d9c91b56bb8908f0d2bdf95dffc13d",
+         "event_id": "c87563e071ddff7d7a66bbea85eed13f",
+         "source": "user:m07",
+         "units": 22
+        },
+        {
+         "citation": "user:m11 [doc fbe45690b754; chunk 1/1; event fb636a5d4cb5; asserted]",
+         "content_sha256": "db70c5ebbb4aa39f74d29ec4704bea2191001170b60b95c81ad510e40cac83c8",
+         "event_id": "fb636a5d4cb539ac95ef3330443d973c",
+         "source": "user:m11",
+         "units": 21
+        },
+        {
+         "citation": "user:m06 [doc a539dadcfb6e; chunk 1/1; event 221b3de9e51e; asserted]",
+         "content_sha256": "924da2a8061d525eecb131b8683153f8915d0eff1766281688367881cabdf684",
+         "event_id": "221b3de9e51edaae06a3c5565e214b9a",
+         "source": "user:m06",
+         "units": 27
+        },
+        {
+         "citation": "user:m04 [doc 0918b9a08e21; chunk 1/1; event debc191d82a4; asserted]",
+         "content_sha256": "7d86ef80524a080580dcdba8e12bfb2ac720a026fe9022dc6f9c73aa6ed74a0d",
+         "event_id": "debc191d82a4e46ff1285256a0153251",
+         "source": "user:m04",
+         "units": 22
+        },
+        {
+         "citation": "user:m00 [doc 3e973189b99a; chunk 1/1; event e7c9e9ff9e21; asserted]",
+         "content_sha256": "36874d565494087b953e5affbe821cf69480386091a34c7688716b0934ba9d2b",
+         "event_id": "e7c9e9ff9e215c81531944242fe893e1",
+         "source": "user:m00",
+         "units": 23
+        },
+        {
+         "citation": "user:m03 [doc 505fce84d841; chunk 1/1; event 71200b95c193; asserted]",
+         "content_sha256": "d289760c5f00ff57652fd4750c622c9250a6a7237fa70a1084d6eac193ed9064",
+         "event_id": "71200b95c1938007faf66e128887a3b9",
+         "source": "user:m03",
+         "units": 25
+        },
+        {
+         "citation": "user:m08 [doc 0ad116061924; chunk 1/1; event f5bb2031ca26; asserted]",
+         "content_sha256": "a9be4b0e8234053306c38fc49c1b2d04b0984e692176bc182f9c38711a18a617",
+         "event_id": "f5bb2031ca26ecc97ee67f0610dbdff7",
+         "source": "user:m08",
+         "units": 22
+        }
+       ],
+       "privacy": "content-free",
+       "query": "who reported the checkout latency regression",
+       "renderer": {
+        "cycle_id": "7e97d2cac812273291a80d0ebab90c89",
+        "id": "consumer-context.compact-citations.v2",
+        "operations": {
+         "algorithm": "additive-fragments.v1",
+         "counter_calls": 14,
+         "counter_input_bytes": 2024,
+         "escaped_text_input_bytes": 884,
+         "final_counter_calls": 1,
+         "final_counter_input_bytes": 1018,
+         "fragment_counter_calls": 13,
+         "fragment_counter_input_bytes": 1006,
+         "items_considered": 11,
+         "items_rendered": 11,
+         "prefix_renders": 0,
+         "sidecar_bytes": 5372,
+         "sidecar_entries": 11,
+         "visible_bytes": 1018
+        },
+        "provenance_root": "21c74331ebaded5cafcdddc1e274ec8940a7b680cb84f334e5468489bd60c41b",
+        "rendered_bytes": 1018,
+        "rendered_sha256": "95693088f82b73d73e6d7d757c78183b69e85aceb4ceabed0fbd04e0bc1e5764",
+        "sidecar_sha256": "429dc4733542d7184b1aa40d528f7eb4e5c4daaa617ff622b6a134072bd8f0a5"
+       },
+       "scope": {
+        "agent": "default",
+        "profile": "event.schema.v1",
+        "tenant": "default",
+        "user": "default"
+       },
+       "serving_module": {
+        "abi_version": 2,
+        "capabilities": [
+         "cap.text.v1",
+         "cap.lexicon.v1"
+        ],
+        "hooks": {
+         "m5_rank": "1",
+         "m6_pack": "1"
+        },
+        "module_root": "2e42a4fccdd9bef401ba63f0b2a4cf3ae90ccd13d0f67fb0ab2549785820444f",
+        "module_sha256": "135b66c56251b8496377188afd125ccf010d60232730c92aef0cbdb704359e26",
+        "policy_id": "slayston-bridgefill-event.schema.v1",
+        "profile": "event.schema.v1"
+       },
+       "token_budget": 800,
+       "total_units": 357,
+       "truncated": false
+      },
+      "receipt_sha256": "934ed541648ac2cec682bbdcbd6184ee49e88aeb4866769e26d57f15902a7fc2"
+     }
+    },
+    "profile_id": "event.schema.v1"
+   },
+   "pre_store": {
+    "path": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/upgrade/memory.db",
+    "sha256": "792fb7d9c2d75a392774ac6e59cfae5ca62c87897ef3b23b2641674aedfb2bf7"
+   },
+   "rollback": {
+    "command": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/upgrade/bin/coretex",
+    "event_counts": {
+     "live": 12,
+     "retracted": 0,
+     "total": 12
+    },
+    "module_root": "2e42a4fccdd9bef401ba63f0b2a4cf3ae90ccd13d0f67fb0ab2549785820444f",
+    "ok": true,
+    "operation": "rollback",
+    "release_root": "7beda14d3957d4bf63b38f2f4c39c7fa653970a697eb9c3b1856c3d3c59136c2",
+    "store": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/upgrade/memory.db",
+    "store_retained": true,
+    "version": "1.1.1"
+   },
+   "sidecar": {
+    "ready": {
+     "authority_mode": "genesis",
+     "judge": {
+      "available": true,
+      "bound": true,
+      "reason": null
+     },
+     "module_root": "2efa129a82a21a281d7e1998d243b8f1907fd9044df65931d1e3611e0229e3fc",
+     "profile": "event.schema.v1",
+     "ready": true,
+     "url": "http://127.0.0.1:18799"
+    },
+    "status": {
+     "addon_installed": false,
+     "bound": {
+      "available": true,
+      "bound": true,
+      "descriptor_root": "a542b636a5bfdec656e87250f9df45c0946a56c090559eca30dfd2c564e4e237",
+      "provider_id": "judge.provider.fake",
+      "reason": null,
+      "requested": true,
+      "scope_id": "agent=default|profile=event.schema.v1|tenant=default|user=default",
+      "store_id": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/upgrade/memory.db"
+     },
+     "config_path": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/upgrade/.jev/jev.json",
+     "configured": {
+      "effective": true,
+      "key_available": true,
+      "key_source": "key_file",
+      "reason": "enabled with a usable key",
+      "requested": true
+     },
+     "control": "coretex jev enable|disable",
+     "install": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/upgrade",
+     "key_path": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/upgrade/.jev/jev.key",
+     "probe": "running-sidecar",
+     "provider_attached": true,
+     "restart_required": false,
+     "sets": {
+      "CORETEX_JEV_CONFIG": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/upgrade/.jev/jev.json",
+      "CORETEX_JEV_ENABLED": "1",
+      "CORETEX_JUDGE_ENABLED": "1"
+     },
+     "sidecar": {
+      "pid": 1649356,
+      "started_at": "2026-09-24T19:29:55Z",
+      "url": "http://127.0.0.1:18799"
+     },
+     "summary": "a judgment provider IS attached to this store"
+    }
+   },
+   "upgrade": {
+    "authority_mode": "genesis",
+    "changed": true,
+    "command": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/upgrade/bin/coretex",
+    "event_counts": {
+     "live": 12,
+     "retracted": 0,
+     "total": 12
+    },
+    "extra_wheels": [
+     {
+      "filename": "coretex_memory_agent-1.1.2+consumerfix1-py3-none-any.whl",
+      "sha256": "39718563c1f9c85a6eb3d2eef61b563daafa9a8541ae6cdbe62beee2a3f144c6",
+      "size": 71719
+     }
+    ],
+    "from_release": "7beda14d3957d4bf63b38f2f4c39c7fa653970a697eb9c3b1856c3d3c59136c2",
+    "from_version": "1.1.1",
+    "module_root": "2efa129a82a21a281d7e1998d243b8f1907fd9044df65931d1e3611e0229e3fc",
+    "ok": true,
+    "operation": "upgrade",
+    "previous_generation_kept": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/upgrade/gen/7beda14d3957d4bf63b38f2f4c39c7fa653970a697eb9c3b1856c3d3c59136c2",
+    "profile": "event.schema.v1",
+    "re_ingestion": false,
+    "release_root": "8703e1ca880fe2abdafa4d758eb3e813fe651bce993c5e66c2cb2d4f30aa827e",
+    "rollback": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/upgrade/bin/coretex rollback",
+    "store": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/upgrade/memory.db",
+    "store_retained": true,
+    "store_size_after": 77824,
+    "store_size_before": 77824,
+    "version": "1.1.2"
+   }
+  }
+ },
+ "checks": [
+  {
+   "arm": "install",
+   "bed": "fresh",
+   "check": "fresh install completes on the public installer",
+   "detail": "1.1.2",
+   "pass": true
+  },
+  {
+   "arm": "install",
+   "bed": "fresh",
+   "check": "store populated",
+   "detail": {
+    "live": 12,
+    "retracted": 0,
+    "total": 12
+   },
+   "pass": true
+  },
+  {
+   "arm": "absent",
+   "bed": "fresh",
+   "check": "provider_attached == False",
+   "detail": {
+    "bound": {
+     "authority_mode": "genesis",
+     "available": false,
+     "bound": false,
+     "descriptor_root": null,
+     "profile": "event.schema.v1",
+     "provider_id": null,
+     "reason": null,
+     "requested": false,
+     "scope_id": null,
+     "store": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/fresh/memory.db",
+     "store_id": null
+    },
+    "sets": {
+     "CORETEX_JEV_CONFIG": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/fresh/.jev/jev.json",
+     "CORETEX_JEV_ENABLED": "0",
+     "CORETEX_JUDGE_ENABLED": "0"
+    },
+    "summary": "no judgment provider is attached; this store serves the complete local path"
+   },
+   "pass": true
+  },
+  {
+   "arm": "absent",
+   "bed": "fresh",
+   "check": "rendered bytes + receipt identical to pre-addon baseline",
+   "pass": true
+  },
+  {
+   "arm": "absent",
+   "bed": "fresh",
+   "check": "store counts unchanged",
+   "detail": {
+    "live": 12,
+    "retracted": 0,
+    "total": 12
+   },
+   "pass": true
+  },
+  {
+   "arm": "absent",
+   "bed": "fresh",
+   "check": "addon not installed",
+   "pass": true
+  },
+  {
+   "arm": "absent",
+   "bed": "fresh",
+   "check": "zero blocked network attempts",
+   "detail": 0,
+   "pass": true
+  },
+  {
+   "arm": "installed-disabled",
+   "bed": "fresh",
+   "check": "provider_attached == False",
+   "detail": {
+    "bound": {
+     "authority_mode": "genesis",
+     "available": false,
+     "bound": false,
+     "descriptor_root": null,
+     "profile": "event.schema.v1",
+     "provider_id": null,
+     "reason": null,
+     "requested": false,
+     "scope_id": null,
+     "store": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/fresh/memory.db",
+     "store_id": null
+    },
+    "sets": {
+     "CORETEX_JEV_CONFIG": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/fresh/.jev/jev.json",
+     "CORETEX_JEV_ENABLED": "0",
+     "CORETEX_JUDGE_ENABLED": "0"
+    },
+    "summary": "no judgment provider is attached; this store serves the complete local path"
+   },
+   "pass": true
+  },
+  {
+   "arm": "installed-disabled",
+   "bed": "fresh",
+   "check": "rendered bytes + receipt identical to pre-addon baseline",
+   "pass": true
+  },
+  {
+   "arm": "installed-disabled",
+   "bed": "fresh",
+   "check": "store counts unchanged",
+   "detail": {
+    "live": 12,
+    "retracted": 0,
+    "total": 12
+   },
+   "pass": true
+  },
+  {
+   "arm": "installed-disabled",
+   "bed": "fresh",
+   "check": "addon IS installed",
+   "pass": true
+  },
+  {
+   "arm": "installed-disabled",
+   "bed": "fresh",
+   "check": "launcher sets JUDGE=0 and JEV=0",
+   "detail": {
+    "CORETEX_JEV_CONFIG": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/fresh/.jev/jev.json",
+    "CORETEX_JEV_ENABLED": "0",
+    "CORETEX_JUDGE_ENABLED": "0"
+   },
+   "pass": true
+  },
+  {
+   "arm": "installed-disabled",
+   "bed": "fresh",
+   "check": "zero blocked network attempts",
+   "detail": 0,
+   "pass": true
+  },
+  {
+   "arm": "enabled-no-key",
+   "bed": "fresh",
+   "check": "two-condition enable stays OFF without a key",
+   "detail": "enabled, but no key is resolvable: run `coretex jev enable --key -`",
+   "pass": true
+  },
+  {
+   "arm": "enabled-no-key",
+   "bed": "fresh",
+   "check": "provider_attached == False",
+   "detail": {
+    "bound": {
+     "authority_mode": "genesis",
+     "available": false,
+     "bound": false,
+     "descriptor_root": null,
+     "profile": "event.schema.v1",
+     "provider_id": null,
+     "reason": null,
+     "requested": false,
+     "scope_id": null,
+     "store": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/fresh/memory.db",
+     "store_id": null
+    },
+    "sets": {
+     "CORETEX_JEV_CONFIG": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/fresh/.jev/jev.json",
+     "CORETEX_JEV_ENABLED": "0",
+     "CORETEX_JUDGE_ENABLED": "0"
+    },
+    "summary": "no judgment provider is attached; this store serves the complete local path"
+   },
+   "pass": true
+  },
+  {
+   "arm": "enabled-no-key",
+   "bed": "fresh",
+   "check": "rendered bytes + receipt identical to pre-addon baseline",
+   "pass": true
+  },
+  {
+   "arm": "enabled-no-key",
+   "bed": "fresh",
+   "check": "store counts unchanged",
+   "detail": {
+    "live": 12,
+    "retracted": 0,
+    "total": 12
+   },
+   "pass": true
+  },
+  {
+   "arm": "enabled-no-key",
+   "bed": "fresh",
+   "check": "zero blocked network attempts",
+   "detail": 0,
+   "pass": true
+  },
+  {
+   "arm": "enabled-fake",
+   "bed": "fresh",
+   "check": "enable is effective with an explicit on and a key",
+   "detail": "enabled with a usable key",
+   "pass": true
+  },
+  {
+   "arm": "enabled-fake",
+   "bed": "fresh",
+   "check": "the key never appears in the control output",
+   "pass": true
+  },
+  {
+   "arm": "enabled-fake",
+   "bed": "fresh",
+   "check": "provider_attached == True",
+   "detail": {
+    "bound": {
+     "authority_mode": "genesis",
+     "available": true,
+     "bound": true,
+     "descriptor_root": "a542b636a5bfdec656e87250f9df45c0946a56c090559eca30dfd2c564e4e237",
+     "profile": "event.schema.v1",
+     "provider_id": "judge.provider.fake",
+     "reason": null,
+     "requested": true,
+     "scope_id": "agent=default|profile=event.schema.v1|tenant=default|user=default",
+     "store": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/fresh/memory.db",
+     "store_id": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/fresh/memory.db"
+    },
+    "sets": {
+     "CORETEX_JEV_CONFIG": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/fresh/.jev/jev.json",
+     "CORETEX_JEV_ENABLED": "1",
+     "CORETEX_JUDGE_ENABLED": "1"
+    },
+    "summary": "a judgment provider IS attached to this store"
+   },
+   "pass": true
+  },
+  {
+   "arm": "enabled-fake",
+   "bed": "fresh",
+   "check": "rendered bytes + receipt identical to pre-addon baseline",
+   "pass": true
+  },
+  {
+   "arm": "enabled-fake",
+   "bed": "fresh",
+   "check": "store counts unchanged",
+   "detail": {
+    "live": 12,
+    "retracted": 0,
+    "total": 12
+   },
+   "pass": true
+  },
+  {
+   "arm": "enabled-fake",
+   "bed": "fresh",
+   "check": "launcher sets JUDGE=1 and JEV=1",
+   "detail": {
+    "CORETEX_JEV_CONFIG": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/fresh/.jev/jev.json",
+    "CORETEX_JEV_ENABLED": "1",
+    "CORETEX_JUDGE_ENABLED": "1"
+   },
+   "pass": true
+  },
+  {
+   "arm": "enabled-fake",
+   "bed": "fresh",
+   "check": "bound provider is the resolved entry point",
+   "detail": "judge.provider.fake",
+   "pass": true
+  },
+  {
+   "arm": "enabled-fake",
+   "bed": "fresh",
+   "check": "zero blocked network attempts",
+   "detail": 0,
+   "pass": true
+  },
+  {
+   "arm": "enabled-fake",
+   "bed": "fresh",
+   "check": "sidecar reports a ready serve",
+   "detail": {
+    "authority_mode": "genesis",
+    "judge": {
+     "available": true,
+     "bound": true,
+     "reason": null
+    },
+    "module_root": "2efa129a82a21a281d7e1998d243b8f1907fd9044df65931d1e3611e0229e3fc",
+    "profile": "event.schema.v1",
+    "ready": true,
+    "url": "http://127.0.0.1:18799"
+   },
+   "pass": true
+  },
+  {
+   "arm": "enabled-fake",
+   "bed": "fresh",
+   "check": "status probes the RUNNING serving process",
+   "detail": "running-sidecar",
+   "pass": true
+  },
+  {
+   "arm": "enabled-fake",
+   "bed": "fresh",
+   "check": "the running process really has a provider attached",
+   "detail": {
+    "available": true,
+    "bound": true,
+    "descriptor_root": "a542b636a5bfdec656e87250f9df45c0946a56c090559eca30dfd2c564e4e237",
+    "provider_id": "judge.provider.fake",
+    "reason": null,
+    "requested": true,
+    "scope_id": "agent=default|profile=event.schema.v1|tenant=default|user=default",
+    "store_id": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/fresh/memory.db"
+   },
+   "pass": true
+  },
+  {
+   "arm": "provider-failure",
+   "bed": "fresh",
+   "check": "provider_attached == True",
+   "detail": {
+    "bound": {
+     "authority_mode": "genesis",
+     "available": true,
+     "bound": true,
+     "descriptor_root": "a542b636a5bfdec656e87250f9df45c0946a56c090559eca30dfd2c564e4e237",
+     "profile": "event.schema.v1",
+     "provider_id": "judge.provider.fake",
+     "reason": null,
+     "requested": true,
+     "scope_id": "agent=default|profile=event.schema.v1|tenant=default|user=default",
+     "store": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/fresh/memory.db",
+     "store_id": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/fresh/memory.db"
+    },
+    "sets": {
+     "CORETEX_JEV_CONFIG": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/fresh/.jev/jev.json",
+     "CORETEX_JEV_ENABLED": "1",
+     "CORETEX_JUDGE_ENABLED": "1"
+    },
+    "summary": "a judgment provider IS attached to this store"
+   },
+   "pass": true
+  },
+  {
+   "arm": "provider-failure",
+   "bed": "fresh",
+   "check": "rendered bytes + receipt identical to pre-addon baseline",
+   "pass": true
+  },
+  {
+   "arm": "provider-failure",
+   "bed": "fresh",
+   "check": "store counts unchanged",
+   "detail": {
+    "live": 12,
+    "retracted": 0,
+    "total": 12
+   },
+   "pass": true
+  },
+  {
+   "arm": "provider-failure",
+   "bed": "fresh",
+   "check": "the complete local pack is still returned",
+   "pass": true
+  },
+  {
+   "arm": "provider-failure",
+   "bed": "fresh",
+   "check": "zero blocked network attempts",
+   "detail": 0,
+   "pass": true
+  },
+  {
+   "arm": "provider-deadline",
+   "bed": "fresh",
+   "check": "provider_attached == True",
+   "detail": {
+    "bound": {
+     "authority_mode": "genesis",
+     "available": true,
+     "bound": true,
+     "descriptor_root": "a542b636a5bfdec656e87250f9df45c0946a56c090559eca30dfd2c564e4e237",
+     "profile": "event.schema.v1",
+     "provider_id": "judge.provider.fake",
+     "reason": null,
+     "requested": true,
+     "scope_id": "agent=default|profile=event.schema.v1|tenant=default|user=default",
+     "store": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/fresh/memory.db",
+     "store_id": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/fresh/memory.db"
+    },
+    "sets": {
+     "CORETEX_JEV_CONFIG": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/fresh/.jev/jev.json",
+     "CORETEX_JEV_ENABLED": "1",
+     "CORETEX_JUDGE_ENABLED": "1"
+    },
+    "summary": "a judgment provider IS attached to this store"
+   },
+   "pass": true
+  },
+  {
+   "arm": "provider-deadline",
+   "bed": "fresh",
+   "check": "rendered bytes + receipt identical to pre-addon baseline",
+   "pass": true
+  },
+  {
+   "arm": "provider-deadline",
+   "bed": "fresh",
+   "check": "store counts unchanged",
+   "detail": {
+    "live": 12,
+    "retracted": 0,
+    "total": 12
+   },
+   "pass": true
+  },
+  {
+   "arm": "provider-deadline",
+   "bed": "fresh",
+   "check": "the complete local pack is still returned",
+   "pass": true
+  },
+  {
+   "arm": "provider-deadline",
+   "bed": "fresh",
+   "check": "zero blocked network attempts",
+   "detail": 0,
+   "pass": true
+  },
+  {
+   "arm": "provider-declines",
+   "bed": "fresh",
+   "check": "provider_attached == False",
+   "detail": {
+    "bound": {
+     "authority_mode": "genesis",
+     "available": false,
+     "bound": true,
+     "descriptor_root": "7cebf5f28a38808c8fb3e634556cb753541de973ef04b22b81bf19e6f1f9d705",
+     "profile": "event.schema.v1",
+     "provider_id": "judge.unavailable.v1",
+     "reason": "disabled",
+     "requested": true,
+     "scope_id": "agent=default|profile=event.schema.v1|tenant=default|user=default",
+     "store": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/fresh/memory.db",
+     "store_id": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/fresh/memory.db"
+    },
+    "sets": {
+     "CORETEX_JEV_CONFIG": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/fresh/.jev/jev.json",
+     "CORETEX_JEV_ENABLED": "1",
+     "CORETEX_JUDGE_ENABLED": "1"
+    },
+    "summary": "no judgment provider is attached; this store serves the complete local path"
+   },
+   "pass": true
+  },
+  {
+   "arm": "provider-declines",
+   "bed": "fresh",
+   "check": "rendered bytes + receipt identical to pre-addon baseline",
+   "pass": true
+  },
+  {
+   "arm": "provider-declines",
+   "bed": "fresh",
+   "check": "store counts unchanged",
+   "detail": {
+    "live": 12,
+    "retracted": 0,
+    "total": 12
+   },
+   "pass": true
+  },
+  {
+   "arm": "provider-declines",
+   "bed": "fresh",
+   "check": "typed absence, not an error",
+   "detail": "disabled",
+   "pass": true
+  },
+  {
+   "arm": "disabled-after-use",
+   "bed": "fresh",
+   "check": "explicit off",
+   "pass": true
+  },
+  {
+   "arm": "disabled-uninstalled",
+   "bed": "fresh",
+   "check": "provider_attached == False",
+   "detail": {
+    "bound": {
+     "authority_mode": "genesis",
+     "available": false,
+     "bound": false,
+     "descriptor_root": null,
+     "profile": "event.schema.v1",
+     "provider_id": null,
+     "reason": null,
+     "requested": false,
+     "scope_id": null,
+     "store": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/fresh/memory.db",
+     "store_id": null
+    },
+    "sets": {
+     "CORETEX_JEV_CONFIG": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/fresh/.jev/jev.json",
+     "CORETEX_JEV_ENABLED": "0",
+     "CORETEX_JUDGE_ENABLED": "0"
+    },
+    "summary": "no judgment provider is attached; this store serves the complete local path"
+   },
+   "pass": true
+  },
+  {
+   "arm": "disabled-uninstalled",
+   "bed": "fresh",
+   "check": "rendered bytes + receipt identical to pre-addon baseline",
+   "pass": true
+  },
+  {
+   "arm": "disabled-uninstalled",
+   "bed": "fresh",
+   "check": "store counts unchanged",
+   "detail": {
+    "live": 12,
+    "retracted": 0,
+    "total": 12
+   },
+   "pass": true
+  },
+  {
+   "arm": "disabled-uninstalled",
+   "bed": "fresh",
+   "check": "store still serves after removal",
+   "pass": true
+  },
+  {
+   "arm": "disabled-uninstalled",
+   "bed": "fresh",
+   "check": "zero blocked network attempts",
+   "detail": 0,
+   "pass": true
+  },
+  {
+   "arm": "digest",
+   "bed": "refusal",
+   "check": "a wheel digest that differs from the inventory is refused",
+   "detail": "h: source check5/refused/gen/8703e1ca880fe2abdafa4d758eb3e813fe651bce993c5e66c2cb2d4f30aa827e/.venv/bin/activate\n{\"ok\": false, \"error\": \"ValueError\", \"detail\": \"inventory/release artifact mismatch: runtime_wheel\", \"retry\": \"Fix the reported issue and rerun the same command; local data is retained.\"}",
+   "pass": true
+  },
+  {
+   "arm": "pin",
+   "bed": "refusal",
+   "check": "a tampered cached inventory never shadows the pinned bytes",
+   "detail": "agent==1.1.2+consumerfix1 (from file:///var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/pinned/gen/8703e1ca880fe2abdafa4d758eb3e813fe651bce993c5e66c2cb2d4f30aa827e/tools/coretex_memory_agent-1.1.2+consumerfix1-py3-none-any.whl)\n4/4 Bind the memory store and prepare the vector index",
+   "pass": true
+  },
+  {
+   "arm": "pin",
+   "bed": "refusal",
+   "check": "the cache is refreshed to the pinned inventory",
+   "pass": true
+  },
+  {
+   "arm": "pre",
+   "bed": "upgrade",
+   "check": "1.1.1 installation completes",
+   "detail": "1.1.1",
+   "pass": true
+  },
+  {
+   "arm": "upgrade",
+   "bed": "upgrade",
+   "check": "upgrade completes and reports 1.1.2",
+   "detail": "1.1.2",
+   "pass": true
+  },
+  {
+   "arm": "upgrade",
+   "bed": "upgrade",
+   "check": "the SAME store file is retained",
+   "detail": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/upgrade/memory.db",
+   "pass": true
+  },
+  {
+   "arm": "upgrade",
+   "bed": "upgrade",
+   "check": "the installer declares no re-ingestion",
+   "pass": true
+  },
+  {
+   "arm": "upgrade",
+   "bed": "upgrade",
+   "check": "every memory survives the upgrade",
+   "detail": {
+    "after": {
+     "live": 12,
+     "retracted": 0,
+     "total": 12
+    },
+    "before": {
+     "live": 12,
+     "retracted": 0,
+     "total": 12
+    }
+   },
+   "pass": true
+  },
+  {
+   "arm": "upgrade",
+   "bed": "upgrade",
+   "check": "the store opens under 1.1.2 without re-ingestion",
+   "pass": true
+  },
+  {
+   "arm": "upgrade",
+   "bed": "upgrade",
+   "check": "the serving module is the 1.1.2 generation",
+   "detail": {
+    "1.1.1": "2e42a4fccdd9bef401ba63f0b2a4cf3ae90ccd13d0f67fb0ab2549785820444f",
+    "1.1.2": "2efa129a82a21a281d7e1998d243b8f1907fd9044df65931d1e3611e0229e3fc"
+   },
+   "pass": true
+  },
+  {
+   "arm": "upgrade",
+   "bed": "upgrade",
+   "check": "the previous generation is kept for rollback",
+   "pass": true
+  },
+  {
+   "arm": "absent",
+   "bed": "upgrade",
+   "check": "provider_attached == False",
+   "detail": {
+    "bound": {
+     "authority_mode": "genesis",
+     "available": false,
+     "bound": false,
+     "descriptor_root": null,
+     "profile": "event.schema.v1",
+     "provider_id": null,
+     "reason": null,
+     "requested": false,
+     "scope_id": null,
+     "store": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/upgrade/memory.db",
+     "store_id": null
+    },
+    "sets": {
+     "CORETEX_JEV_CONFIG": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/upgrade/.jev/jev.json",
+     "CORETEX_JEV_ENABLED": "0",
+     "CORETEX_JUDGE_ENABLED": "0"
+    },
+    "summary": "no judgment provider is attached; this store serves the complete local path"
+   },
+   "pass": true
+  },
+  {
+   "arm": "absent",
+   "bed": "upgrade",
+   "check": "rendered bytes + receipt identical to pre-addon baseline",
+   "pass": true
+  },
+  {
+   "arm": "absent",
+   "bed": "upgrade",
+   "check": "store counts unchanged",
+   "detail": {
+    "live": 12,
+    "retracted": 0,
+    "total": 12
+   },
+   "pass": true
+  },
+  {
+   "arm": "absent",
+   "bed": "upgrade",
+   "check": "addon not installed",
+   "pass": true
+  },
+  {
+   "arm": "absent",
+   "bed": "upgrade",
+   "check": "zero blocked network attempts",
+   "detail": 0,
+   "pass": true
+  },
+  {
+   "arm": "installed-disabled",
+   "bed": "upgrade",
+   "check": "provider_attached == False",
+   "detail": {
+    "bound": {
+     "authority_mode": "genesis",
+     "available": false,
+     "bound": false,
+     "descriptor_root": null,
+     "profile": "event.schema.v1",
+     "provider_id": null,
+     "reason": null,
+     "requested": false,
+     "scope_id": null,
+     "store": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/upgrade/memory.db",
+     "store_id": null
+    },
+    "sets": {
+     "CORETEX_JEV_CONFIG": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/upgrade/.jev/jev.json",
+     "CORETEX_JEV_ENABLED": "0",
+     "CORETEX_JUDGE_ENABLED": "0"
+    },
+    "summary": "no judgment provider is attached; this store serves the complete local path"
+   },
+   "pass": true
+  },
+  {
+   "arm": "installed-disabled",
+   "bed": "upgrade",
+   "check": "rendered bytes + receipt identical to pre-addon baseline",
+   "pass": true
+  },
+  {
+   "arm": "installed-disabled",
+   "bed": "upgrade",
+   "check": "store counts unchanged",
+   "detail": {
+    "live": 12,
+    "retracted": 0,
+    "total": 12
+   },
+   "pass": true
+  },
+  {
+   "arm": "installed-disabled",
+   "bed": "upgrade",
+   "check": "addon IS installed",
+   "pass": true
+  },
+  {
+   "arm": "installed-disabled",
+   "bed": "upgrade",
+   "check": "launcher sets JUDGE=0 and JEV=0",
+   "detail": {
+    "CORETEX_JEV_CONFIG": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/upgrade/.jev/jev.json",
+    "CORETEX_JEV_ENABLED": "0",
+    "CORETEX_JUDGE_ENABLED": "0"
+   },
+   "pass": true
+  },
+  {
+   "arm": "installed-disabled",
+   "bed": "upgrade",
+   "check": "zero blocked network attempts",
+   "detail": 0,
+   "pass": true
+  },
+  {
+   "arm": "enabled-no-key",
+   "bed": "upgrade",
+   "check": "two-condition enable stays OFF without a key",
+   "detail": "enabled, but no key is resolvable: run `coretex jev enable --key -`",
+   "pass": true
+  },
+  {
+   "arm": "enabled-no-key",
+   "bed": "upgrade",
+   "check": "provider_attached == False",
+   "detail": {
+    "bound": {
+     "authority_mode": "genesis",
+     "available": false,
+     "bound": false,
+     "descriptor_root": null,
+     "profile": "event.schema.v1",
+     "provider_id": null,
+     "reason": null,
+     "requested": false,
+     "scope_id": null,
+     "store": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/upgrade/memory.db",
+     "store_id": null
+    },
+    "sets": {
+     "CORETEX_JEV_CONFIG": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/upgrade/.jev/jev.json",
+     "CORETEX_JEV_ENABLED": "0",
+     "CORETEX_JUDGE_ENABLED": "0"
+    },
+    "summary": "no judgment provider is attached; this store serves the complete local path"
+   },
+   "pass": true
+  },
+  {
+   "arm": "enabled-no-key",
+   "bed": "upgrade",
+   "check": "rendered bytes + receipt identical to pre-addon baseline",
+   "pass": true
+  },
+  {
+   "arm": "enabled-no-key",
+   "bed": "upgrade",
+   "check": "store counts unchanged",
+   "detail": {
+    "live": 12,
+    "retracted": 0,
+    "total": 12
+   },
+   "pass": true
+  },
+  {
+   "arm": "enabled-no-key",
+   "bed": "upgrade",
+   "check": "zero blocked network attempts",
+   "detail": 0,
+   "pass": true
+  },
+  {
+   "arm": "enabled-fake",
+   "bed": "upgrade",
+   "check": "enable is effective with an explicit on and a key",
+   "detail": "enabled with a usable key",
+   "pass": true
+  },
+  {
+   "arm": "enabled-fake",
+   "bed": "upgrade",
+   "check": "the key never appears in the control output",
+   "pass": true
+  },
+  {
+   "arm": "enabled-fake",
+   "bed": "upgrade",
+   "check": "provider_attached == True",
+   "detail": {
+    "bound": {
+     "authority_mode": "genesis",
+     "available": true,
+     "bound": true,
+     "descriptor_root": "a542b636a5bfdec656e87250f9df45c0946a56c090559eca30dfd2c564e4e237",
+     "profile": "event.schema.v1",
+     "provider_id": "judge.provider.fake",
+     "reason": null,
+     "requested": true,
+     "scope_id": "agent=default|profile=event.schema.v1|tenant=default|user=default",
+     "store": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/upgrade/memory.db",
+     "store_id": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/upgrade/memory.db"
+    },
+    "sets": {
+     "CORETEX_JEV_CONFIG": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/upgrade/.jev/jev.json",
+     "CORETEX_JEV_ENABLED": "1",
+     "CORETEX_JUDGE_ENABLED": "1"
+    },
+    "summary": "a judgment provider IS attached to this store"
+   },
+   "pass": true
+  },
+  {
+   "arm": "enabled-fake",
+   "bed": "upgrade",
+   "check": "rendered bytes + receipt identical to pre-addon baseline",
+   "pass": true
+  },
+  {
+   "arm": "enabled-fake",
+   "bed": "upgrade",
+   "check": "store counts unchanged",
+   "detail": {
+    "live": 12,
+    "retracted": 0,
+    "total": 12
+   },
+   "pass": true
+  },
+  {
+   "arm": "enabled-fake",
+   "bed": "upgrade",
+   "check": "launcher sets JUDGE=1 and JEV=1",
+   "detail": {
+    "CORETEX_JEV_CONFIG": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/upgrade/.jev/jev.json",
+    "CORETEX_JEV_ENABLED": "1",
+    "CORETEX_JUDGE_ENABLED": "1"
+   },
+   "pass": true
+  },
+  {
+   "arm": "enabled-fake",
+   "bed": "upgrade",
+   "check": "bound provider is the resolved entry point",
+   "detail": "judge.provider.fake",
+   "pass": true
+  },
+  {
+   "arm": "enabled-fake",
+   "bed": "upgrade",
+   "check": "zero blocked network attempts",
+   "detail": 0,
+   "pass": true
+  },
+  {
+   "arm": "enabled-fake",
+   "bed": "upgrade",
+   "check": "sidecar reports a ready serve",
+   "detail": {
+    "authority_mode": "genesis",
+    "judge": {
+     "available": true,
+     "bound": true,
+     "reason": null
+    },
+    "module_root": "2efa129a82a21a281d7e1998d243b8f1907fd9044df65931d1e3611e0229e3fc",
+    "profile": "event.schema.v1",
+    "ready": true,
+    "url": "http://127.0.0.1:18799"
+   },
+   "pass": true
+  },
+  {
+   "arm": "enabled-fake",
+   "bed": "upgrade",
+   "check": "status probes the RUNNING serving process",
+   "detail": "running-sidecar",
+   "pass": true
+  },
+  {
+   "arm": "enabled-fake",
+   "bed": "upgrade",
+   "check": "the running process really has a provider attached",
+   "detail": {
+    "available": true,
+    "bound": true,
+    "descriptor_root": "a542b636a5bfdec656e87250f9df45c0946a56c090559eca30dfd2c564e4e237",
+    "provider_id": "judge.provider.fake",
+    "reason": null,
+    "requested": true,
+    "scope_id": "agent=default|profile=event.schema.v1|tenant=default|user=default",
+    "store_id": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/upgrade/memory.db"
+   },
+   "pass": true
+  },
+  {
+   "arm": "provider-failure",
+   "bed": "upgrade",
+   "check": "provider_attached == True",
+   "detail": {
+    "bound": {
+     "authority_mode": "genesis",
+     "available": true,
+     "bound": true,
+     "descriptor_root": "a542b636a5bfdec656e87250f9df45c0946a56c090559eca30dfd2c564e4e237",
+     "profile": "event.schema.v1",
+     "provider_id": "judge.provider.fake",
+     "reason": null,
+     "requested": true,
+     "scope_id": "agent=default|profile=event.schema.v1|tenant=default|user=default",
+     "store": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/upgrade/memory.db",
+     "store_id": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/upgrade/memory.db"
+    },
+    "sets": {
+     "CORETEX_JEV_CONFIG": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/upgrade/.jev/jev.json",
+     "CORETEX_JEV_ENABLED": "1",
+     "CORETEX_JUDGE_ENABLED": "1"
+    },
+    "summary": "a judgment provider IS attached to this store"
+   },
+   "pass": true
+  },
+  {
+   "arm": "provider-failure",
+   "bed": "upgrade",
+   "check": "rendered bytes + receipt identical to pre-addon baseline",
+   "pass": true
+  },
+  {
+   "arm": "provider-failure",
+   "bed": "upgrade",
+   "check": "store counts unchanged",
+   "detail": {
+    "live": 12,
+    "retracted": 0,
+    "total": 12
+   },
+   "pass": true
+  },
+  {
+   "arm": "provider-failure",
+   "bed": "upgrade",
+   "check": "the complete local pack is still returned",
+   "pass": true
+  },
+  {
+   "arm": "provider-failure",
+   "bed": "upgrade",
+   "check": "zero blocked network attempts",
+   "detail": 0,
+   "pass": true
+  },
+  {
+   "arm": "provider-deadline",
+   "bed": "upgrade",
+   "check": "provider_attached == True",
+   "detail": {
+    "bound": {
+     "authority_mode": "genesis",
+     "available": true,
+     "bound": true,
+     "descriptor_root": "a542b636a5bfdec656e87250f9df45c0946a56c090559eca30dfd2c564e4e237",
+     "profile": "event.schema.v1",
+     "provider_id": "judge.provider.fake",
+     "reason": null,
+     "requested": true,
+     "scope_id": "agent=default|profile=event.schema.v1|tenant=default|user=default",
+     "store": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/upgrade/memory.db",
+     "store_id": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/upgrade/memory.db"
+    },
+    "sets": {
+     "CORETEX_JEV_CONFIG": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/upgrade/.jev/jev.json",
+     "CORETEX_JEV_ENABLED": "1",
+     "CORETEX_JUDGE_ENABLED": "1"
+    },
+    "summary": "a judgment provider IS attached to this store"
+   },
+   "pass": true
+  },
+  {
+   "arm": "provider-deadline",
+   "bed": "upgrade",
+   "check": "rendered bytes + receipt identical to pre-addon baseline",
+   "pass": true
+  },
+  {
+   "arm": "provider-deadline",
+   "bed": "upgrade",
+   "check": "store counts unchanged",
+   "detail": {
+    "live": 12,
+    "retracted": 0,
+    "total": 12
+   },
+   "pass": true
+  },
+  {
+   "arm": "provider-deadline",
+   "bed": "upgrade",
+   "check": "the complete local pack is still returned",
+   "pass": true
+  },
+  {
+   "arm": "provider-deadline",
+   "bed": "upgrade",
+   "check": "zero blocked network attempts",
+   "detail": 0,
+   "pass": true
+  },
+  {
+   "arm": "provider-declines",
+   "bed": "upgrade",
+   "check": "provider_attached == False",
+   "detail": {
+    "bound": {
+     "authority_mode": "genesis",
+     "available": false,
+     "bound": true,
+     "descriptor_root": "7cebf5f28a38808c8fb3e634556cb753541de973ef04b22b81bf19e6f1f9d705",
+     "profile": "event.schema.v1",
+     "provider_id": "judge.unavailable.v1",
+     "reason": "disabled",
+     "requested": true,
+     "scope_id": "agent=default|profile=event.schema.v1|tenant=default|user=default",
+     "store": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/upgrade/memory.db",
+     "store_id": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/upgrade/memory.db"
+    },
+    "sets": {
+     "CORETEX_JEV_CONFIG": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/upgrade/.jev/jev.json",
+     "CORETEX_JEV_ENABLED": "1",
+     "CORETEX_JUDGE_ENABLED": "1"
+    },
+    "summary": "no judgment provider is attached; this store serves the complete local path"
+   },
+   "pass": true
+  },
+  {
+   "arm": "provider-declines",
+   "bed": "upgrade",
+   "check": "rendered bytes + receipt identical to pre-addon baseline",
+   "pass": true
+  },
+  {
+   "arm": "provider-declines",
+   "bed": "upgrade",
+   "check": "store counts unchanged",
+   "detail": {
+    "live": 12,
+    "retracted": 0,
+    "total": 12
+   },
+   "pass": true
+  },
+  {
+   "arm": "provider-declines",
+   "bed": "upgrade",
+   "check": "typed absence, not an error",
+   "detail": "disabled",
+   "pass": true
+  },
+  {
+   "arm": "disabled-after-use",
+   "bed": "upgrade",
+   "check": "explicit off",
+   "pass": true
+  },
+  {
+   "arm": "disabled-uninstalled",
+   "bed": "upgrade",
+   "check": "provider_attached == False",
+   "detail": {
+    "bound": {
+     "authority_mode": "genesis",
+     "available": false,
+     "bound": false,
+     "descriptor_root": null,
+     "profile": "event.schema.v1",
+     "provider_id": null,
+     "reason": null,
+     "requested": false,
+     "scope_id": null,
+     "store": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/upgrade/memory.db",
+     "store_id": null
+    },
+    "sets": {
+     "CORETEX_JEV_CONFIG": "/var/lib/botcoin-coordinator-data/claude-installer-20260924/check5/upgrade/.jev/jev.json",
+     "CORETEX_JEV_ENABLED": "0",
+     "CORETEX_JUDGE_ENABLED": "0"
+    },
+    "summary": "no judgment provider is attached; this store serves the complete local path"
+   },
+   "pass": true
+  },
+  {
+   "arm": "disabled-uninstalled",
+   "bed": "upgrade",
+   "check": "rendered bytes + receipt identical to pre-addon baseline",
+   "pass": true
+  },
+  {
+   "arm": "disabled-uninstalled",
+   "bed": "upgrade",
+   "check": "store counts unchanged",
+   "detail": {
+    "live": 12,
+    "retracted": 0,
+    "total": 12
+   },
+   "pass": true
+  },
+  {
+   "arm": "disabled-uninstalled",
+   "bed": "upgrade",
+   "check": "store still serves after removal",
+   "pass": true
+  },
+  {
+   "arm": "disabled-uninstalled",
+   "bed": "upgrade",
+   "check": "zero blocked network attempts",
+   "detail": 0,
+   "pass": true
+  },
+  {
+   "arm": "rollback",
+   "bed": "upgrade",
+   "check": "rollback returns the launcher to 1.1.1",
+   "detail": "1.1.1",
+   "pass": true
+  },
+  {
+   "arm": "rollback",
+   "bed": "upgrade",
+   "check": "the same store is still served",
+   "pass": true
+  },
+  {
+   "arm": "rollback",
+   "bed": "upgrade",
+   "check": "memories survive the rollback",
+   "detail": {
+    "after": {
+     "live": 12,
+     "retracted": 0,
+     "total": 12
+    },
+    "before": {
+     "live": 12,
+     "retracted": 0,
+     "total": 12
+    }
+   },
+   "pass": true
+  },
+  {
+   "arm": "rollback",
+   "bed": "upgrade",
+   "check": "rolled-back serve matches the pre-upgrade bytes",
+   "pass": true
+  }
+ ],
+ "finished_at": "2026-09-24T19:30:03Z",
+ "format": "coretex.consumer-install-check/v1",
+ "release": {},
+ "started_at": "2026-09-24T19:29:13Z",
+ "summary": {
+  "checks": 111,
+  "failed": 0,
+  "passed": 111
+ }
+}

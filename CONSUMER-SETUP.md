@@ -24,7 +24,11 @@ All three profiles adopt current confirmed mined modules. Use one installation
 and store per profile. A conflicting existing directory/profile is refused.
 
 The helper is also available from the [public client source](https://github.com/botcoinmoney/coretex-client/blob/main/tools/coretex-setup.py).
-It downloads hash-pinned tools and wheels. Its private environment uses the
+It carries exactly one pin — the generated release inventory
+(`tools/release-inventory.json`) — and reads the version, the release root, every
+wheel name and every digest from it, refusing any artifact whose bytes do not match
+what the inventory declares. A new release is published by regenerating that
+inventory, not by editing the installer. Its private environment uses the
 [Astral uv Python installer](https://docs.astral.sh/uv/guides/install-python/)
 when Python 3.10 is missing. The current automated installer targets Linux amd64;
 other platforms require separate qualification and manual package setup.
@@ -65,6 +69,34 @@ For an **existing store**, stop its writer, back it up, and set `store` in
 Run `./coretex/bin/coretex prewarm` before restarting traffic. This rebuilds derived
 indexes and preserves records; it does not resurrect retracted history. The
 shortened-history repair remains a separate explicit operation.
+
+## Upgrade to a new release, and roll back
+
+An installation is **generational**. The tools, the private environment and the
+verified release of one release root live under `<install>/gen/<release_root>/`;
+the memory store, its configuration and the addon's enable state live at the top
+and are never rewritten by an upgrade.
+
+```sh
+./coretex/bin/coretex upgrade      # new tools, SAME memories
+./coretex/bin/coretex rollback     # previous tools, SAME memories
+./coretex/bin/coretex which        # which generation is serving, and its extras
+```
+
+| upgraded | preserved |
+|---|---|
+| the verified release directory and its objects | `memory.db` — every record, its canonical ids and its history |
+| the runtime, adapter and current-state client wheels | the store's profile and scope |
+| the serving module generation and its retrieval binding | the addon's enable state and its `0600` key |
+| the launcher and the installation's tools | the installation path and the configured store path |
+
+**No re-ingestion and no cache rebuild is required**: the store opens under the new
+release as it is. The previous generation is kept on disk, so `rollback` re-points
+the launcher at it against the same store; `UPGRADE-HISTORY.json` records each
+move with the configuration it replaced.
+
+Earlier installations refused to proceed when the release changed and asked for a
+new directory. That is gone: the release change is what `upgrade` is for.
 
 ## Authority and scope
 
@@ -146,89 +178,126 @@ Hermes uses a separate Python 3.11 environment and the sidecar connector below.
 The memory adapter install above is already complete; these additional commands
 install and configure the agent harness itself.
 
-## Optional: the Jev evidence filter (addon)
+## Optional: the Jev addon
 
-The adapter works with no key and no account. The **Jev addon** is optional and
-**default OFF**: install it, hand it a key once, and every serve is checked by a
-third-party evidence judge that drops served records it rules are not evidence for
-the query. Without it — or with it installed but not enabled — the adapter serves
-exactly the bytes it serves today.
+The adapter is complete without it. Ingestion, retrieval, citation, history,
+correction and packing are the local M1–M6 flow; no account, key, network call or
+third-party service takes part in any of them. The **Jev addon** is a separate,
+optional wheel that supplies *judgments* to that flow, and it is **default OFF**.
+
+### How it composes (M5/M6), and what it is not
+
+The addon is a provider for the host capability `cap.judge.v1`. When it is on, the
+host offers a judgment of a candidate record to the mined module; **selection stays
+in M6**, where the current CoreTex state decides what to pack. The addon never
+filters, drops or rewrites anything on its own, and there is **no separate
+post-filter stage** — earlier drafts of this guide described one, and it does not
+exist in this release. Do not enable an old filter alongside the M6 policy.
+
+* Conversation retrieval (`conv.pref.v1`) is **conservative**: judgments inform
+  ordering, and the packed set is not trimmed on their account.
+* Aggressive trimming is **explicit opt-in** and is not enabled by any flag in
+  this release.
+* No ingestion-time annotation or correction integration is part of this release.
+
+### One control
 
 ```sh
-./coretex/.venv/bin/pip install coretex-memory-jev        # or: coretex-memory[jev]
-./coretex/bin/coretex setup --jev-key                      # prompts; never echoes the key
+./coretex/bin/coretex jev enable --key -     # reads one line from stdin; never echoed
+./coretex/bin/coretex jev status
+./coretex/bin/coretex jev disable
 ```
 
-`setup --jev-key` writes the key to `~/.coretex/jev.key` (mode `0600`) and a
-**key-free** `~/.coretex/jev.json`:
+`./coretex/bin/coretex setup --jev-key -` is the same thing under the name the core
+CLI uses. Enabling is **two-condition**: it takes effect only when you turned it on
+*and* a key is resolvable. Either one missing leaves the complete local path
+running, with no addon import, credential probe or socket.
+
+What `enable` actually sets, for every serving process this launcher starts:
+
+| variable | read by | why it is needed |
+|---|---|---|
+| `CORETEX_JUDGE_ENABLED=1` | `AgentMemory.open` | binds a provider to the **serving store**; without it nothing is bound, whatever the addon config says |
+| `CORETEX_JEV_ENABLED=1` | the addon factory | the addon's own opt-in |
+| `CORETEX_JEV_CONFIG` | the addon | this installation's key-free config |
+
+`disable` sets the first two to `0`, and explicit off wins over anything inherited
+from your environment. The key is never an argument, never exported by the
+launcher and never printed: it is written to `<install>/.jev/jev.key` at mode
+`0600`, and the config file beside it carries only `enabled`, `key_file` and
+`cache_dir`. A key placed in the config *file* is refused.
+
+`jev status` does **not** read that configuration back to you. It reports the
+provider bound to this store's serving process — the running sidecar's own captured
+binding when one is up, otherwise a real open of the store:
 
 ```json
-{"enabled": true, "key_file": "/home/you/.coretex/jev.key",
- "policy_pack": "gns-cond-lex-v1"}
+{"provider_attached": true, "probe": "running-sidecar",
+ "bound": {"bound": true, "available": true, "provider_id": "..."},
+ "sets": {"CORETEX_JUDGE_ENABLED": "1", "CORETEX_JEV_ENABLED": "1"}}
 ```
 
-Equivalent without the CLI: export `JEV_API_KEY` and `CORETEX_JEV_ENABLED=1`.
-A key placed in the config *file* is refused — keys live in the `0600` file or the
-environment only.
+A provider is resolved **once, when the store is opened**. After `enable` or
+`disable`, restart `coretex serve`; `jev status` says `restart_required` when a
+running process no longer matches the current decision.
 
-A key alone is not enough: the adapter refuses to run any consumer stage unless the
-store was opened asking for one. That is the second, deliberate switch — an
-evaluator or benchmark store can never be given a filter, because nothing but this
-adapter can ask:
+### What "fully off" means on each path
 
-```python
-from coretex_memory_agent.agent import AgentMemory
+| path | what it needs from Jev | what still works |
+|---|---|---|
+| **Standalone adapter** (addon absent, explicitly disabled, or no usable key) | nothing: no account, key, call or cache answer | the complete local M1–M6 flow — ingestion, retrieval, citation, history, correction, packing. Removing the addon after use leaves the same store usable, and the rendered bytes and receipt are identical to an installation that never had it |
+| **Miner development and evaluation** | nothing: no Jev account, key or per-submission API call | judgments come from the **local sealed table**, which is fixture data. Local improvement stays rewardable under the declared dual-mode rules; an enhanced-only gain cannot pay for a local regression or resource growth |
 
-memory = AgentMemory.open("./coretex/store.db", profile="doc.tool.v1",
-                          allow_consumer_stage=True)   # default False
-```
+Initial installation and module synchronization use the network; that traffic is
+distinct from Jev traffic, and disabling the addon means zero Jev requests and no
+cached-answer use.
 
-Check it without spending anything (`GET /v1/models` is free):
+### The sealed table is a separate download
+
+The miner/validator kit tar (~22 MB) contains **no** sealed-table member. The table
+is a separate verified download:
+
+| | |
+|---|---|
+| file | `sealed-table.jsonl` |
+| size | 105,797,400 bytes |
+| SHA-256 | `7214033f9a10e21599f33358b90590e3502127383e916293e945f00381c9cb23` |
+| table root | `30baa7d4248c79e7bc125fda8151f8275e5ce5b9e56fe525c6a0dc3a76680557` |
+
+Verify both the file hash and the table root before use. Release 1.1.2 **declares
+this table as a scoring input**: a judged evaluation with missing or mismatched rows
+is refused, not silently downgraded. The table is local data, so a stored copy keeps
+working unchanged if the live service ever disappears — that is a different question
+from removing the declaration, which would need its own prospective release
+identity.
+
+### Cost, latency and privacy when it is on
+
+Roughly $0.000057 per judged reference; the defaults cap a session at 2,000 calls
+and $1.00, and one serve at 16 calls and 400 ms, at most 4 requests in flight.
+Answers are cached per (store, scope), and the cache is invalidated automatically
+when a record is deleted, retracted, superseded or re-scoped. If the service is
+slow, down, or a cap is reached, the serve returns the **whole local pack** — never
+blocked, never partially enhanced. When it runs, the query text and the text of the
+references being judged are sent to `api.typesafe.ai`; receipts, cycle ids,
+provenance roots, scope (tenant/user/agent/session), module identity and the
+rendered context are not. If your records may not leave the host, leave it off.
+
+The addon ships as `coretex-jev-addon`, a separate optional wheel that is not part
+of the runtime or adapter release. Install it into the installation's private
+environment:
 
 ```sh
-./coretex/bin/coretex jev status     # {"key_available": true, "key_length": 107, "status": 200}
+python3 coretex-setup.py --dir ./coretex --install-addon ./coretex_jev_addon-0.1.0-py3-none-any.whl
 ```
-
-**What "on" changes.** Each serve may issue up to one judge call per served
-record. Records the judge rules non-evidence are dropped before rendering, so the
-reader pays for fewer tokens; the receipt gains a `consumer_filter` block naming
-the rule, the threshold and every dropped record. **What "off" guarantees:** the
-rendered context and the receipt are byte-identical to an install without the
-addon.
-
-**Cost and latency.** Roughly $0.000049 per record judged; the defaults cap a
-session at 2,000 calls / $1.00 and one serve at 16 calls and 400 ms. Answers are
-cached by content, so a repeated query costs nothing. If the service is slow,
-down, or the cap is reached, the serve proceeds **unfiltered** — never blocked,
-never degraded.
-
-**Privacy.** When the filter runs, the query text and the text of each served
-record are sent to `api.typesafe.ai`. Nothing else leaves: no receipts, cycle
-ids, provenance roots, sidecars, scope (tenant/user/agent/session), module
-identity, or rendered context. If your records may not leave the host, do not
-enable the addon.
-
-**Choosing a rule.** `--policy-pack` selects a versioned rule set:
-
-| pack | calls | measured |
-|---|---|---|
-| `gns-cond-lex-v1` *(default)* | only on lexically ambiguous queries | −18 to −21 % reader bytes, 0 lost answers on 3 offline cases |
-| `gns-eager-v1` | every served record | same quality, more calls and latency |
-| `s-only-cond-lex-v1` | ambiguous queries | cheaper guard; **document stores lose an answer** — event-shaped stores only |
-| `off-v1` | none | installed and inert |
-
-All figures are offline diagnostics on generated cases, not a service guarantee.
-
-The addon is a **separate optional wheel**, published on its own and not part of the
-runtime or adapter release. The runtime only provides the seam it plugs into; with
-no addon installed there is nothing to turn on.
 
 ### With Hermes
 
 The addon lives in the **sidecar process** that owns the store, not in the Hermes
-plugin. `hermes-home/config.yaml` is unchanged. Start the sidecar with the addon
-enabled and the sealed render the provider wraps verbatim is unchanged — only
-which records reached the renderer.
+plugin. `hermes-home/config.yaml` is unchanged. Enable it with
+`./coretex/bin/coretex jev enable` and restart `./coretex/bin/coretex serve`: the
+sidecar captures the binding when it opens the store, and `jev status` reports what
+that running process actually bound.
 
 ## Install Hermes and the connector
 
