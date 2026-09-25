@@ -58,8 +58,8 @@
   "doc.tool.v1"
  ],
  "release_root": "4a6fb5b95ecb383dd27030e73ea04b00c3f5a5c8698fa800a8c76fe41ec7da15",
- "source": "https://raw.githubusercontent.com/botcoinmoney/coretex-client/c3044cff723c4b23157aaae9327089ac5c999905/",
- "source_commit": "c3044cff723c4b23157aaae9327089ac5c999905",
+ "source": "https://raw.githubusercontent.com/botcoinmoney/coretex-client/dbc4fd46e5c6ec1a80705f9516eaf27643de4940/",
+ "source_commit": "dbc4fd46e5c6ec1a80705f9516eaf27643de4940",
  "support": {
   "numeric_runtime_amd64": {
    "filename": "numeric-runtime-amd64.tar",
