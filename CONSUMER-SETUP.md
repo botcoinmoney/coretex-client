@@ -162,7 +162,15 @@ report takes no table (`judge_table_unexpected`).
 
 ## Python integration
 
-Use the installation's `./coretex/.venv/bin/python`:
+Use the active generation's Python, reported by `coretex which` (there is no
+`./coretex/.venv` shortcut):
+
+```sh
+CORETEX_PYTHON="$(./coretex/bin/coretex which | python3 -c 'import json,sys; print(json.load(sys.stdin)["python"])')"
+"$CORETEX_PYTHON" your_script.py
+```
+
+For example, `your_script.py` can use the consumer API:
 
 ```python
 from coretex_consumer.config import load_config, load_authority
