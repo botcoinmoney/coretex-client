@@ -618,9 +618,16 @@ def upgrade(prefix, inventory, args, env):
     if pointer is None:
         raise ValueError('no existing installation to upgrade in ' + str(prefix))
     if pointer['release_root'] == inventory['release_root'] and not args.force:
-        return {'ok': True, 'operation': 'upgrade', 'changed': False,
+        result = {'ok': True, 'operation': 'upgrade', 'changed': False,
                 'version': inventory['version'], 'release_root': inventory['release_root'],
                 'detail': 'already on this release'}
+        if args.install_addon:
+            result['addon'] = install_addon(Path(pointer['dir']), inventory,
+                                            args.install_addon, env)
+        jev = jev_control(prefix, Path(pointer['dir']), args, env)
+        if jev is not None:
+            result['jev'] = jev
+        return result
     before_config = read_json(prefix / 'consumer.json')
     store = Path(before_config['store'])
     if not store.exists():
@@ -728,6 +735,9 @@ def setup(args):
                       'version': pointer['version'], 'release_root': pointer['release_root']}
             if pointer.get('authority_mode', 'chain') == 'chain':
                 result.update(json.loads(run([prefix / 'bin/coretex', 'sync'], env, capture=True)))
+            if args.install_addon:
+                result['addon'] = install_addon(Path(pointer['dir']), inventory,
+                                                args.install_addon, env)
             jev = jev_control(prefix, Path(pointer['dir']), args, env)
             if jev is not None:
                 result['jev'] = jev
