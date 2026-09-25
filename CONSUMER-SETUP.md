@@ -22,6 +22,8 @@ Success ends with JSON containing `"ok": true` and the installed command path.
 `--profile` selects lexical `event.schema.v1`; `doc.tool.v1` is also lexical.
 All three profiles adopt current confirmed mined modules. Use one installation
 and store per profile. A conflicting existing directory/profile is refused.
+Re-running setup or installing the optional addon without `--profile` keeps the
+existing installation's profile.
 
 The helper is also available from the [public client source](https://github.com/botcoinmoney/coretex-client/blob/main/tools/coretex-setup.py).
 It carries exactly one pin — the generated release inventory

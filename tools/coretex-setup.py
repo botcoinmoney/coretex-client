@@ -720,6 +720,12 @@ def setup(args):
             return rollback(prefix, args, env)
         inventory = load_inventory(prefix / 'tools' / INVENTORY['name'], args.source_dir,
                                    args.inventory)
+        if args.profile is None:
+            # Re-running setup or adding an optional wheel keeps the existing store's
+            # profile. The event default applies only to a genuinely new installation.
+            marker = read_json(prefix / 'INSTALL-STATE.json') or {}
+            pointer = current(prefix) or {}
+            args.profile = marker.get('profile') or pointer.get('profile') or 'event.schema.v1'
         if args.profile not in inventory['profiles']:
             raise ValueError('profile %r is not in this release' % args.profile)
         prepare_directory(prefix, args.profile, inventory, args.upgrade)
@@ -748,7 +754,9 @@ def setup(args):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--dir', default='./coretex', help='private installation directory')
-    parser.add_argument('--profile', default='event.schema.v1')
+    parser.add_argument('--profile', default=None,
+                        help='profile for a new store (default event.schema.v1); '
+                             'omitted on an existing install keeps its profile')
     parser.add_argument('--upgrade', action='store_true',
                         help='update the tools of an existing installation, KEEPING its memories')
     parser.add_argument('--rollback', action='store_true',

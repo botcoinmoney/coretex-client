@@ -4,12 +4,15 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "coretex-consumer"
-version = "0.1.0"
+version = "0.1.1"
 description = "Confirmed current-state sync for the CoreTex memory adapter, without admission replay"
 requires-python = ">=3.10"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
-dependencies = ["coretex-memory-agent==1.1.0"]
+# The adapter an installation runs is decided by the RELEASE INVENTORY it installs from,
+# not by a literal here: ``==1.1.0`` failed `uv pip check` on every release after 1.1.0,
+# so a 1.1.2 consumer installation could not complete.
+dependencies = ["coretex-memory-agent>=1.1.0"]
 
 [project.scripts]
 coretex-consumer = "coretex_consumer.cli:main"
