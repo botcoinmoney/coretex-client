@@ -18,7 +18,8 @@ Two beds:
 Arms (each bed): addon absent; addon installed but disabled; enabled with no key; enabled with a
 deterministic FAKE provider; provider failure; provider deadline; disabled and uninstalled after
 use. Every arm re-renders the same fixed queries and compares the rendered bytes and the receipt
-against the pre-addon baseline.
+against the pre-addon baseline. Explicitly off arms require full receipt identity; enabled
+arms retain provider diagnostics and measured work while requiring identical evidence.
 
 This does not re-run quality studies: the 917-query three-profile zero-difference identity gate
 already recorded for this runtime is the evidence for local identity. What is new here is the
@@ -34,6 +35,7 @@ import shutil
 import subprocess
 import sys
 import time
+import zipfile
 from pathlib import Path
 
 NETGUARD = '''# installation-check instrumentation: refuse and record every outbound socket
@@ -147,7 +149,7 @@ class Install:
         """The rendered bytes and receipt for the fixed queries, plus the store's own counts."""
         packs = {}
         for query in QUERIES:
-            payload = self.json_launcher('context', query, '--budget', '800')
+            payload = self.json_launcher('context', query, '--budget', '160')
             packs[query] = {'context_sha256': sha(payload['context'].encode()),
                             'receipt_sha256': sha(json.dumps(payload['receipt'], sort_keys=True,
                                                              default=str).encode()),
@@ -194,7 +196,7 @@ def describe_inventory(path: Path) -> dict:
                 optional=sorted(inventory.get('optional', {})))
 
 
-def diff_packs(baseline: dict, other: dict):
+def diff_packs(baseline: dict, other: dict, *, enabled=False):
     changed = []
     for query, row in baseline['packs'].items():
         against = other['packs'].get(query)
@@ -203,8 +205,16 @@ def diff_packs(baseline: dict, other: dict):
             continue
         if row['context_sha256'] != against['context_sha256']:
             changed.append({'query': query, 'detail': 'context bytes differ'})
-        elif row['receipt_sha256'] != against['receipt_sha256']:
-            changed.append({'query': query, 'detail': 'receipt differs'})
+        else:
+            left, right = row['receipt'], against['receipt']
+            # Provider attempts must remain visible in the receipt. All evidence,
+            # provenance, renderer, scope and module fields still compare exactly.
+            if enabled:
+                allowed = {'judge', 'deterministic_host_work'}
+                left = {k: v for k, v in left.items() if k not in allowed}
+                right = {k: v for k, v in right.items() if k not in allowed}
+            if left != right:
+                changed.append({'query': query, 'detail': 'receipt differs'})
     return changed
 
 
@@ -250,11 +260,26 @@ class Harness:
     def jev_arms(self, bed: str, install: Install, baseline: dict):
         addon = self.args.addon_wheel
         fake = self.args.fake_wheel
+        call_log = self.work / (bed + "-provider-calls.jsonl")
+        os.environ["CORETEX_FAKE_JUDGE_LOG"] = str(call_log)
+        addon_import = self.work / (bed + "-addon-wheel-import")
+        addon_import.mkdir()
+        # The addon reads its template as a real file. Extract only its package,
+        # retaining the test entry point; these are unchanged, recorded wheel bytes.
+        with zipfile.ZipFile(addon) as archive:
+            for name in archive.namelist():
+                if name.startswith("coretex_jev_addon/"):
+                    archive.extract(name, addon_import)
+        os.environ["CORETEX_TEST_ADDON_IMPORT"] = str(addon_import)
+
+        def calls():
+            return [json.loads(line) for line in call_log.read_text().splitlines()] \
+                if call_log.exists() else []
 
         def status():
             return install.json_launcher('jev', 'status')
 
-        def compare(arm, env=None, expect_attached=None):
+        def compare(arm, env=None, expect_attached=None, expect_changed=False, enabled=False):
             report = status()
             if expect_attached is not None:
                 self.record(bed, arm, 'provider_attached == %s' % expect_attached,
@@ -263,9 +288,15 @@ class Harness:
                              'bound': report.get('bound'), 'sets': report['sets']})
             before = install.netguard_hits()
             snap = install.snapshot()
-            changed = diff_packs(baseline, snap)
-            self.record(bed, arm, 'rendered bytes + receipt identical to pre-addon baseline',
-                        not changed, changed or None)
+            changed = diff_packs(baseline, snap, enabled=enabled)
+            self.record(bed, arm,
+                        'provider changes the served pack' if expect_changed else
+                        ('rendered bytes + evidence receipt identical; judge diagnostics and work retained'
+                         if enabled else 'rendered bytes + receipt identical to pre-addon baseline'),
+                        (any(row['context_sha256'] != snap['packs'][q]['context_sha256']
+                             for q, row in baseline['packs'].items()) if expect_changed
+                         else not changed), changed or None)
+            self.results['beds'][bed].setdefault('snapshots', {})[arm] = snap
             self.record(bed, arm, 'store counts unchanged',
                         snap['event_counts'] == baseline['event_counts'],
                         snap['event_counts'])
@@ -305,7 +336,14 @@ class Harness:
                     keyed['effective'] is True, keyed['reason'])
         self.record(bed, 'enabled-fake', 'the key never appears in the control output',
                     'fake-installation-check-key' not in json.dumps(keyed))
-        report, hits = compare('enabled-fake', expect_attached=True)
+        before_calls = len(calls())
+        report, hits = compare('enabled-fake', expect_attached=True, enabled=True)
+        self.record(bed, 'enabled-fake', 'provider receives nonempty judgment states',
+                    any(row['states'] > 0 for row in calls()[before_calls:]),
+                    calls()[before_calls:])
+        os.environ['CORETEX_FAKE_JUDGE_MODE'] = 'trim'
+        compare('enabled-trim', expect_attached=True, expect_changed=True, enabled=True)
+        os.environ.pop('CORETEX_FAKE_JUDGE_MODE', None)
         self.record(bed, 'enabled-fake', 'launcher sets JUDGE=1 and JEV=1',
                     report['sets']['CORETEX_JUDGE_ENABLED'] == '1'
                     and report['sets']['CORETEX_JEV_ENABLED'] == '1', report['sets'])
@@ -320,17 +358,30 @@ class Harness:
         # 5. provider failure, then deadline
         for arm, mode in (('provider-failure', 'fail'), ('provider-deadline', 'timeout')):
             os.environ['CORETEX_FAKE_JUDGE_MODE'] = mode
-            report, hits = compare(arm, expect_attached=True)
-            self.record(bed, arm, 'the complete local pack is still returned',
-                        all(row['items'] > 0 for row in report and
-                            self.results['beds'][bed].get('baseline', {}).get('packs', {}).values())
-                        or True)
+            before_calls = len(calls())
+            report, hits = compare(arm, expect_attached=True, enabled=True)
+            self.record(bed, arm, 'failure was exercised by actual judgment calls',
+                        any(row['mode'] == mode and row['states'] > 0
+                            for row in calls()[before_calls:]), calls()[before_calls:])
+            snap = self.results['beds'][bed]['snapshots'][arm]
+            self.record(bed, arm, 'the complete nonempty local pack is restored',
+                        not diff_packs(baseline, snap, enabled=True) and
+                        any(row['items'] > 0 for row in snap['packs'].values()))
+            self.record(bed, arm, 'failure reason and recovery recorded',
+                        all(row['receipt'].get('judge', {}).get('judge_recovery') is True
+                            and row['receipt']['judge'].get('recovery_reason') ==
+                                ('deadline' if mode == 'timeout' else 'failed')
+                            for row in snap['packs'].values()))
+            if mode == 'timeout':
+                timings = [r for r in calls()[before_calls:] if 'elapsed' in r]
+                self.record(bed, arm, 'real addon returns by deadline before stalled transport',
+                            bool(timings) and all(r['elapsed'] < 1.5 for r in timings), timings)
             self.record(bed, arm, 'zero blocked network attempts', hits == 0, hits)
             os.environ.pop('CORETEX_FAKE_JUDGE_MODE', None)
 
         # 6. declining factory (installed, configured, but refuses to build)
         os.environ['CORETEX_FAKE_JUDGE_MODE'] = 'decline'
-        report, hits = compare('provider-declines', expect_attached=False)
+        report, hits = compare('provider-declines', expect_attached=False, enabled=True)
         self.record(bed, 'provider-declines', 'typed absence, not an error',
                     (report.get('bound') or {}).get('reason') in ('disabled', 'no_provider'),
                     (report.get('bound') or {}).get('reason'))
@@ -344,6 +395,8 @@ class Harness:
         self.record(bed, 'disabled-uninstalled', 'store still serves after removal',
                     report['bound'] is not None)
         self.record(bed, 'disabled-uninstalled', 'zero blocked network attempts', hits == 0, hits)
+        os.environ.pop("CORETEX_FAKE_JUDGE_LOG", None)
+        os.environ.pop("CORETEX_TEST_ADDON_IMPORT", None)
         return served
 
     def probe_sidecar(self, bed, install: Install, arm):

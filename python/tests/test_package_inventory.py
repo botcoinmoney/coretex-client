@@ -5,7 +5,7 @@ from pathlib import Path
 
 PACKAGE = Path(__file__).parents[1] / "coretex_validator"
 PYTHON_MEMBERS = {
-    "__init__.py", "abi.py", "activation.py", "benchmark_replay.py", "canonical_suite.py",
+    "__init__.py", "abi.py", "activation.py", "baseline_composition.py", "benchmark_replay.py", "canonical_suite.py",
     "cli.py", "compat_lock.py",
     "discovery.py", "dispatch.py", "epoch_law.py", "eval_artifact.py", "frontier.py",
     "join.py", "keccak256.py", "parent_execution.py", "publication.py",
@@ -27,3 +27,12 @@ def test_source_package_has_one_exact_current_inventory():
 def test_package_carries_no_private_key_material():
     prohibited = {".env", "id_rsa", "id_ed25519", "operator.key", "secret.key"}
     assert not ({path.name for path in PACKAGE.rglob("*")} & prohibited)
+
+
+def test_builder_and_release_reader_agree_on_the_package_inventory():
+    import importlib.util
+    from coretex_validator.release import _VALIDATOR_MEMBERS
+    spec = importlib.util.spec_from_file_location('validator_builder', PACKAGE.parent / 'build_release.py')
+    builder = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(builder)
+    assert _VALIDATOR_MEMBERS == builder.PACKAGE_MEMBERS

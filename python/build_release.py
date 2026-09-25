@@ -104,7 +104,7 @@ DIST_INFO = f"{DIST}-{VERSION}.dist-info"
 SDIST_ROOT = f"{DIST}-{VERSION}"
 
 PYTHON_MEMBERS = frozenset({
-    "__init__.py", "abi.py", "activation.py", "benchmark_replay.py", "canonical_suite.py",
+    "__init__.py", "abi.py", "activation.py", "baseline_composition.py", "benchmark_replay.py", "canonical_suite.py",
     "cli.py", "compat_lock.py",
     "discovery.py", "dispatch.py", "epoch_law.py", "eval_artifact.py", "frontier.py",
     "join.py", "keccak256.py", "parent_execution.py", "publication.py",

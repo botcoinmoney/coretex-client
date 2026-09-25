@@ -46,8 +46,8 @@
    "distribution": "coretex-jev-addon",
    "filename": "coretex_jev_addon-0.1.0-py3-none-any.whl",
    "note": "optional; default OFF; never required by the local M1-M6 path",
-   "sha256": "1edb33e2ecdd635dbbea3c7f3a1f4b8907363f3243170c1a4673c81a06deef94",
-   "size": 140763,
+   "sha256": "e937086924c54c001a6f14fec0724228dec7cc5ebf30652e9538bea3474ea2c5",
+   "size": 49304,
    "version": "0.1.0"
   }
  },
@@ -57,9 +57,9 @@
   "conv.pref.v1",
   "doc.tool.v1"
  ],
- "release_root": "c1616ec3c6c02a6dda55da5ef4b40ce402a0fe4cc4a3965f9c3697108de18218",
- "source": "https://raw.githubusercontent.com/botcoinmoney/coretex-client/c7565fc005a9249a99bba8700b3e644210d9db27/",
- "source_commit": "c7565fc005a9249a99bba8700b3e644210d9db27",
+ "release_root": "4a6fb5b95ecb383dd27030e73ea04b00c3f5a5c8698fa800a8c76fe41ec7da15",
+ "source": "https://raw.githubusercontent.com/botcoinmoney/coretex-client/c3044cff723c4b23157aaae9327089ac5c999905/",
+ "source_commit": "c3044cff723c4b23157aaae9327089ac5c999905",
  "support": {
   "numeric_runtime_amd64": {
    "filename": "numeric-runtime-amd64.tar",
@@ -107,8 +107,8 @@
    "distribution": "coretex-validator",
    "filename": "coretex_validator-1.1.2-py3-none-any.whl",
    "path": "artifacts/coretex_validator-1.1.2-py3-none-any.whl",
-   "sha256": "c0a1e2c62b86432745260ed1171cda45454579675c5e37dd4b99d85b033a8a0c",
-   "size": 889866,
+   "sha256": "0863b63ba5e7688e27fd54a1cab49f62b02a51e8a6feb35d4fa12510a28a9012",
+   "size": 892831,
    "version": "1.1.2"
   }
  },

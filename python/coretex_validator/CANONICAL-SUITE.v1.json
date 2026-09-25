@@ -792,7 +792,7 @@
             "work_fuel": 107060301
           }
         },
-        "release_root": "3b144b900cdecca44510e5892feecbf2702b15406ce612645235e6392c5853c0"
+        "release_root": "afa47220dc47d11a6efaff95c602bc2b4ee8796bc3048682a3333554ac0d173d"
       },
       "doc.tool.v1": {
         "candidate_provider": {
@@ -843,7 +843,7 @@
             "work_fuel": 1927252
           }
         },
-        "release_root": "7285e18391105322ff697b989167020d236f42e3dbf0b8c1d2204334cf978d8c"
+        "release_root": "72f03d985563e9a128d405f76a2c7b2d84b45928fdef1d26d4c99d601c4a4a4a"
       },
       "event.schema.v1": {
         "candidate_provider": {
@@ -896,7 +896,7 @@
             "work_fuel": 1994749
           }
         },
-        "release_root": "2efa129a82a21a281d7e1998d243b8f1907fd9044df65931d1e3611e0229e3fc"
+        "release_root": "0db94d419f1e76440613b341c37d1ef8e1562cf770a5dc7b78fd13bfd884b2a0"
       }
     }
   },

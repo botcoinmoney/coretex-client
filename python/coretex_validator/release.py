@@ -68,7 +68,7 @@ _VALIDATOR_MEMBERS = frozenset({
     "CANONICAL-SUITE.v1.json", "COUNTER_RESOURCE_LAW.v1.json", "LAW.md",
     "RELEASE-CONTRACT.v1.json", "RIG-CONTRACT-AUTHORITY.base-mainnet.json",
     "RIG-WIRE-BINDING.v1.json", "__init__.py", "abi.py", "activation.py",
-    "benchmark_replay.py", "compat_lock.py", "canonical_suite.py", "cli.py", "discovery.py",
+    "baseline_composition.py", "benchmark_replay.py", "compat_lock.py", "canonical_suite.py", "cli.py", "discovery.py",
     "dispatch.py", "epoch_law.py",
     "eval_artifact.py", "frontier.py", "join.py", "keccak256.py", "parent_execution.py",
     "publication.py", "receipt_chain.py", "release.py", "release_schema.py", "replay.py",
@@ -665,7 +665,9 @@ def load(path: str) -> ReleaseDirectory:
     # successor release it is shipped inside, which is how a judged 1.1.2 image failed to build.
     bridge = _json(object_bytes["baseline_bridge_root"], "baseline bridge")
     bridge_format = bridge.get("format")
-    if bridge_format == "coretex.release-baseline-bridge/v2":
+    from . import baseline_composition
+    composed_bridge = bridge_format == baseline_composition.FORMAT
+    if bridge_format == "coretex.release-baseline-bridge/v2" or composed_bridge:
         frozen = bridge.get("frozen_parent")
         if not isinstance(frozen, Mapping) or set(frozen) != {
                 "frontier", "frontier_root", "observed_epoch_context", "status_sha256"}:
@@ -756,25 +758,15 @@ def load(path: str) -> ReleaseDirectory:
             raise ReleaseError("baseline descriptor differs from the release profile binding")
         if is_reference and document.get("abi") != expected_reference_abi:
             raise ReleaseError("baseline reference ABI differs from this release")
-        if not is_reference and bridge_format == "coretex.release-baseline-bridge/v2":
-            # A SUCCESSOR DOES NOT RECORD WHERE A MODULE CAME FROM, IT RECORDS A REWRAP. `v1`'s
-            # `origins` said "this module was imported from there"; `v2`'s `modules` says "the
-            # parent frontier's accepted module for this profile, re-wrapped so its runtime bounds
-            # pin this release, with the SOURCE BYTES UNCHANGED". `v5/successor_baseline.py` is
-            # the rule this mirrors, and the chain it checks is the one that matters here:
-            #
-            #   parent frontier profile root == original manifest self hash == modules.<p>.
-            #     original_release_root
-            #   module.py bytes == modules.<p>.module_sha256 == original == successor
-            #   successor manifest self hash == modules.<p>.successor_release_root ==
-            #     bridge.profile_releases.<p>
-            #
-            # so a module the parent never accepted, or source bytes that moved under the rewrap,
-            # refuse here exactly as they refuse in the builder.
+        if not is_reference and (bridge_format == "coretex.release-baseline-bridge/v2" or composed_bridge):
+            # v2 binds an unchanged executable; v3 binds an explicit measured composition
+            # while preserving the original executable and manifest inside the hashed bridge.
+            # In both cases the original identity must be the confirmed parent's profile.
             row = bridge["modules"][profile]
-            if not isinstance(row, Mapping) or set(row) != {
+            expected_fields = {
                     "path", "module_sha256", "original_release_root", "original_manifest",
-                    "successor_release_root"}:
+                    "successor_release_root"} | ({"composition"} if composed_bridge else set())
+            if not isinstance(row, Mapping) or set(row) != expected_fields:
                 raise ReleaseError(f"successor bridge module {profile} has another shape")
             original = row["original_manifest"]
             original_root = pub.root_of(
@@ -786,8 +778,15 @@ def load(path: str) -> ReleaseDirectory:
                 raise ReleaseError(
                     "successor bridge does not rewrap the module the parent frontier accepted")
             if _sha(module_bytes) != row["module_sha256"] \
-                    or original.get("module_sha256") != row["module_sha256"] \
                     or document.get("module_sha256") != row["module_sha256"]:
+                raise ReleaseError("baseline module source differs from its recorded origin")
+            if composed_bridge:
+                try:
+                    baseline_composition.validate_origin(
+                        profile, original, document, module_bytes, row["composition"])
+                except ValueError as exc:
+                    raise ReleaseError("invalid composed baseline: " + str(exc)) from exc
+            elif original.get("module_sha256") != row["module_sha256"]:
                 raise ReleaseError("baseline module source differs from its recorded origin")
             if document.get("manifest_self_sha256") != row["successor_release_root"] \
                     or bridge["profile_releases"].get(profile) != row["successor_release_root"]:
